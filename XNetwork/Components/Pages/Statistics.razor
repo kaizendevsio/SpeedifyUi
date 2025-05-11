@@ -1,71 +1,157 @@
-﻿@page "/stats"
+﻿@page "/statistics"
 @inject XNetwork.Services.SpeedifyService SpeedifyService
-@using XNetwork.Services
-@inject IJSRuntime JS
+@implements IAsyncDisposable
 
-<h2 class="text-lg font-semibold mb-4">Realtime Speeds</h2>
+<PageTitle>Live Statistics</PageTitle>
 
-@if (error != null)
+<h1>Live Speedify Statistics</h1>
+
+@if (isLoading && !_stats.Any())
 {
-    <ErrorBanner Message="@error" Retry="Init"/>
+    <p><em>Loading initial statistics...</em></p>
 }
-else if (adapters == null)
+else if (!string.IsNullOrEmpty(errorMessage))
 {
-    <p class="text-gray-500">Loading…</p>
-}
-else
-{
-    <div class="grid gap-4 sm:grid-cols-2">
-        @foreach (var a in adapters)
-        {
-            <div class="bg-white p-3 rounded shadow">
-                <h3 class="font-medium mb-1">@a.name (@a.isp)</h3>
-                <canvas id="@($"c{a.adapterID}")" class="w-full h-44"></canvas>
-            </div>
-        }
+    <div class="alert alert-danger" role="alert">
+        @errorMessage
     </div>
 }
 
+@if (_stats.Any())
+{
+    <table class="table table-striped table-hover">
+        <thead class="thead-dark">
+            <tr>
+                <th>Adapter ID</th>
+                <th>Download (Mbps)</th>
+                <th>Upload (Mbps)</th>
+                <th>RTT (ms)</th>
+                <th>Loss (%)</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var stat in _stats.OrderBy(s => s.Adapter))
+            {
+                <tr>
+                    <td>@stat.Adapter</td>
+                    <td>@(Math.Round(stat.DownBps / (1024 * 1024), 2))</td>
+                    <td>@(Math.Round(stat.UpBps / (1024 * 1024), 2))</td>
+                    <td>@stat.RttMs</td>
+                    <td>@Math.Round(stat.LossPct, 2)</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+else if (!isLoading && string.IsNullOrEmpty(errorMessage))
+{
+    <p><em>No statistics available or all adapters are filtered out. Ensure Speedify is running and connected.</em></p>
+}
+
+<button class="btn btn-primary mt-3" @onclick="StartStreamingStats" disabled="@isStreaming">Start Streaming</button>
+<button class="btn btn-danger mt-3" @onclick="StopStreamingStats" disabled="@(!isStreaming)">Stop Streaming</button>
+
 @code {
-    IReadOnlyList<Adapter>? adapters;
-    IJSObjectReference? js;
-    string? error;
+    private List<XNetwork.Services.Stats> _stats = new List<XNetwork.Services.Stats>();
+    private CancellationTokenSource _statsCts;
+    private bool isLoading = true;
+    private bool isStreaming = false;
+    private string errorMessage = string.Empty;
 
-    protected override async Task OnInitializedAsync() => await Init();
-
-    async Task Init()
+    protected override async Task OnInitializedAsync()
     {
+        // The original error mentioned JSInterop in OnInitializedAsync.
+        // For now, we are not calling any JS chart initialization here to avoid the 'ids.forEach' error.
+        // If charts are needed, JSInterop calls for them should be carefully reviewed.
+        // Example: await JSRuntime.InvokeVoidAsync("someChartFunction", chartData);
+        
+        // Automatically start streaming when the page loads.
+        await StartStreamingStats();
+    }
+
+    private async Task StartStreamingStats()
+    {
+        if (isStreaming) return;
+
+        StopStreamingStats(); // Ensure any previous stream is stopped
+        _statsCts = new CancellationTokenSource();
+        isStreaming = true;
+        isLoading = !_stats.Any(); // Show loading only if stats list is empty
+        errorMessage = string.Empty;
+        StateHasChanged();
+
         try
         {
-            adapters = await SpeedifyService.GetAdaptersAsync();
-            js = await JS.InvokeAsync<IJSObjectReference>("import", "/js/charts.js");
-            await js.InvokeVoidAsync("initAll", adapters.Select(a => $"c{a.adapterID}").ToArray());
-            _ = Poll();
+            // Create a temporary list to buffer stats for one "event" or update cycle
+            // This helps in case multiple adapters' stats come in quick succession
+            // from one "connection_stats" block in the JSON stream.
+            var currentBatchStats = new Dictionary<string, XNetwork.Services.Stats>();
+
+            await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
+            {
+                // Update the entry in the current batch
+                currentBatchStats[statEntry.Adapter] = statEntry;
+
+                // Update the main list for display
+                // This approach replaces or adds, ensuring the UI reflects the latest for each adapter.
+                var existingStatIndex = _stats.FindIndex(s => s.Adapter == statEntry.Adapter);
+                if (existingStatIndex != -1)
+                {
+                    _stats[existingStatIndex] = statEntry;
+                }
+                else
+                {
+                    _stats.Add(statEntry);
+                }
+                
+                // If you want to update the UI after each individual stat entry:
+                // StateHasChanged(); 
+            }
+             // If you prefer to update UI after a full pass of available stats in one stream iteration:
+            isLoading = false; // Loaded initial set
+            StateHasChanged(); 
         }
-        catch (SpeedifyException ex)
+        catch (OperationCanceledException)
         {
-            error = ex.Message;
+            Console.WriteLine("Statistics streaming was canceled by the user or component disposal.");
+            errorMessage = "Streaming stopped.";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error streaming statistics: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+            errorMessage = $"An error occurred while streaming statistics: {ex.Message}";
+        }
+        finally
+        {
+            isStreaming = false;
+            isLoading = false;
+            StateHasChanged();
         }
     }
 
-    async Task Poll()
+    private void StopStreamingStats()
     {
-        while (true)
+        if (_statsCts != null)
         {
-            await Task.Delay(1000);
-            if (js == null) break;
-            try
-            {
-                var s = await SpeedifyService.GetStatsAsync();
-                var map = s.ToDictionary(x => x.adapter);
-                var down = adapters!.Select(a => map.TryGetValue(a.adapterID, out var st) ? st.downBps / 1_000_000 : 0).ToArray();
-                var up = adapters!.Select(a => map.TryGetValue(a.adapterID, out var st) ? st.upBps / 1_000_000 : 0).ToArray();
-                await js.InvokeVoidAsync("updateAll", down, up);
-            }
-            catch
-            {
-            }
+            _statsCts.Cancel();
+            _statsCts.Dispose();
+            _statsCts = null;
         }
+        isStreaming = false;
+        // isLoading = false; // Don't set isLoading to false here if we might restart
+        Console.WriteLine("Streaming stopped.");
+        // StateHasChanged(); // Optional: update UI to reflect stopped state immediately
     }
 
+    // Implement IAsyncDisposable to ensure the CancellationTokenSource is disposed
+    // when the component is removed from the UI.
+    public async ValueTask DisposeAsync()
+    {
+        StopStreamingStats();
+        // If there were any JS objects created via JSInterop that need explicit disposal:
+        // await chartModule.InvokeVoidAsync("disposeCharts"); // Example
+        // await chartModule.DisposeAsync(); // Example
+        await Task.CompletedTask; // Placeholder if no other async disposal is needed
+    }
 }
