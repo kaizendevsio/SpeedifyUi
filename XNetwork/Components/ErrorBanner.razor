@@ -1,0 +1,9 @@
+﻿<div class="bg-red-100 text-red-800 p-4 rounded mb-4 flex items-center justify-between">
+    <span>@Message</span>
+    <button class="ml-4 text-sm underline" @onclick="Retry">retry</button>
+</div>
+
+@code{
+    [Parameter,EditorRequired] public string Message { get; set; } = default!;
+    [Parameter] public EventCallback Retry { get; set; }
+}

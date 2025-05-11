@@ -1,0 +1,29 @@
+﻿@page "/controls"
+@using System.Diagnostics
+@inject XNetwork.Services.SpeedifyService S
+
+<h2 class="text-lg font-semibold mb-4">Advanced Controls</h2>
+
+@if (msg != null)
+{
+    <p class="p-4 bg-green-100 text-green-800 rounded">@msg</p>
+}
+
+<div class="space-y-4">
+    <button class="px-4 py-2 bg-red-600 text-white rounded" @onclick="@(()=>Do("stop"))">Stop Tunnel</button>
+    <button class="px-4 py-2 bg-blue-600 text-white rounded" @onclick="@(()=>Do("start"))">Start Tunnel</button>
+    <button class="px-4 py-2 bg-yellow-500 text-white rounded" @onclick="@(()=>Do("restart"))">Restart Tunnel</button>
+    <button class="px-4 py-2 bg-gray-800 text-white rounded" @onclick="@(()=>Do("mode redundant"))">Set Redundant Mode</button>
+    <button class="px-4 py-2 bg-gray-800 text-white rounded" @onclick="@(()=>Do("mode speed"))">Set Speed Mode</button>
+</div>
+
+@code{
+    string? msg;
+
+    async Task Do(string cmd)
+    {
+        await Task.Run(() => Process.Start("speedify_cli", cmd)!.WaitForExit());
+        msg = $"Executed: {cmd}";
+    }
+
+}

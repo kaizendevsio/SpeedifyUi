@@ -1,0 +1,24 @@
+﻿@inherits LayoutComponentBase
+<div class="min-h-screen flex flex-col bg-gray-100">
+    <header class="bg-white shadow">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
+            <h1 class="text-xl font-semibold text-gray-800">X Network</h1>
+
+            <nav class="flex gap-6 text-gray-600">
+                <NavLink href="/"        Match="NavLinkMatch.All">Adapters</NavLink>
+                <NavLink href="/stats">Stats</NavLink>
+                <NavLink href="/controls">Controls</NavLink>
+            </nav>
+        </div>
+    </header>
+
+    <main class="flex-1 p-4 sm:p-6">
+        @Body
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

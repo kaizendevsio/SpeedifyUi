@@ -1,0 +1,64 @@
+﻿@page "/stats"
+@using XNetwork.Services
+@inject XNetwork.Services.SpeedifyService S
+@inject IJSRuntime JS
+
+<h2 class="text-lg font-semibold mb-4">Realtime Speeds</h2>
+
+@if (error!=null)
+{
+    <ErrorBanner Message="@error" Retry="Init" />
+}
+else if (stats == null)
+{
+    <p>Loading…</p>
+}
+else
+{
+    <div class="grid gap-6 md:grid-cols-2">
+        @foreach (var g in graphs)
+        {
+            <canvas id="@g.Id" class="w-full h-60 bg-white shadow rounded"></canvas>
+        }
+    </div>
+}
+
+@code {
+    record G(string Id,string Label,string Adapter);
+    List<G> graphs = new();
+    List<Stats>? stats;
+    string? error;
+    IJSObjectReference? mod;
+    DotNetObjectReference<Statistics>? self;
+
+    protected override async Task OnInitializedAsync() => await Init();
+    async Task Init()
+    {
+        try
+        {
+            stats = (await S.GetStatsAsync()).ToList();
+            graphs = stats.Select(s => new G($"c{s.adapter}", s.adapter, s.adapter)).ToList();
+            mod = await JS.InvokeAsync<IJSObjectReference>("import", "/js/charts.js");
+            self = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("initCharts", graphs.Select(g=>g.Id).ToArray());
+            _ = UpdateLoop(); error=null;
+        }
+        catch (SpeedifyException ex){ error = ex.Message; }
+    }
+
+    async Task UpdateLoop()
+    {
+        while (true)
+        {
+            await Task.Delay(1000);
+            try
+            {
+                stats = (await S.GetStatsAsync()).ToList();
+                var down = stats.Select(s=>s.downBps/1_000_000).ToArray();
+                var up   = stats.Select(s=>s.upBps  /1_000_000).ToArray();
+                await mod!.InvokeVoidAsync("updateCharts", down, up);
+            }
+            catch { /* swallow to keep loop alive */ }
+        }
+    }
+}
