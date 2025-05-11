@@ -4,68 +4,101 @@
 
 <PageTitle>Live Statistics</PageTitle>
 
-<h1>Live Speedify Statistics</h1>
+<div class="container mx-auto px-4 py-8 font-inter">
 
-@if (isLoading && !_stats.Any())
-{
-    <p><em>Loading initial statistics...</em></p>
-}
-else if (!string.IsNullOrEmpty(errorMessage))
-{
-    <div class="alert alert-danger" role="alert">
-        @errorMessage
+    <h1 class="text-3xl font-bold text-gray-800 mb-6">Live Speedify Statistics</h1>
+
+    @if (isLoading && !_stats.Any())
+    {
+        <div class="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded relative mb-4" role="alert">
+            <strong class="font-bold">Loading...</strong>
+            <span class="block sm:inline">Fetching initial statistics, please wait.</span>
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">
+            <strong class="font-bold">Error!</strong>
+            <span class="block sm:inline">@errorMessage</span>
+        </div>
+    }
+
+    @if (_stats.Any())
+    {
+        <div class="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg mb-6">
+            <table class="min-w-full divide-y divide-gray-200">
+                <thead class="bg-gray-700">
+                    <tr>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
+                            Adapter ID
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
+                            Download (Mbps)
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
+                            Upload (Mbps)
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
+                            RTT (ms)
+                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
+                            Loss (%)
+                        </th>
+                    </tr>
+                </thead>
+                <tbody class="bg-white divide-y divide-gray-200">
+                    @foreach (var stat in _stats.OrderBy(s => s.Adapter))
+                    {
+                        <tr class="hover:bg-gray-100">
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">@stat.Adapter</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.DownBps / (1000 * 1000), 2))</td> <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.UpBps / (1000 * 1000), 2))</td>   <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@stat.RttMs</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@Math.Round(stat.LossPct, 2)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else if (!isLoading && string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative" role="alert">
+            <strong class="font-bold">No Data</strong>
+            <span class="block sm:inline">No statistics available. Ensure Speedify is running and connected, or try starting the stream.</span>
+        </div>
+    }
+
+    <div class="mt-6 flex space-x-3">
+        <button 
+            class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75
+                   @(isStreaming ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 focus:ring-blue-500")"
+            @onclick="StartStreamingStats" 
+            disabled="@isStreaming">
+            Start Streaming
+        </button>
+        <button 
+            class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75
+                   @(!isStreaming ? "bg-gray-400 cursor-not-allowed" : "bg-red-600 hover:bg-red-700 focus:ring-red-500")"
+            @onclick="StopStreamingStats" 
+            disabled="@(!isStreaming)">
+            Stop Streaming
+        </button>
     </div>
-}
-
-@if (_stats.Any())
-{
-    <table class="table table-striped table-hover">
-        <thead class="thead-dark">
-            <tr>
-                <th>Adapter ID</th>
-                <th>Download (Mbps)</th>
-                <th>Upload (Mbps)</th>
-                <th>RTT (ms)</th>
-                <th>Loss (%)</th>
-            </tr>
-        </thead>
-        <tbody>
-            @foreach (var stat in _stats.OrderBy(s => s.Adapter))
-            {
-                <tr>
-                    <td>@stat.Adapter</td>
-                    <td>@(Math.Round(stat.DownBps / (1024 * 1024), 2))</td>
-                    <td>@(Math.Round(stat.UpBps / (1024 * 1024), 2))</td>
-                    <td>@stat.RttMs</td>
-                    <td>@Math.Round(stat.LossPct, 2)</td>
-                </tr>
-            }
-        </tbody>
-    </table>
-}
-else if (!isLoading && string.IsNullOrEmpty(errorMessage))
-{
-    <p><em>No statistics available or all adapters are filtered out. Ensure Speedify is running and connected.</em></p>
-}
-
-<button class="btn btn-primary mt-3" @onclick="StartStreamingStats" disabled="@isStreaming">Start Streaming</button>
-<button class="btn btn-danger mt-3" @onclick="StopStreamingStats" disabled="@(!isStreaming)">Stop Streaming</button>
+</div>
 
 @code {
+    // Assuming XNetwork.Services.Stats record is:
+    // public record Stats(string AdapterID, double DownBps, double UpBps, double RttMs, double LossPct);
+
     private List<XNetwork.Services.Stats> _stats = new List<XNetwork.Services.Stats>();
     private CancellationTokenSource _statsCts;
-    private bool isLoading = true;
+    private bool isLoading = true; // Start with loading true
     private bool isStreaming = false;
     private string errorMessage = string.Empty;
 
     protected override async Task OnInitializedAsync()
     {
-        // The original error mentioned JSInterop in OnInitializedAsync.
-        // For now, we are not calling any JS chart initialization here to avoid the 'ids.forEach' error.
-        // If charts are needed, JSInterop calls for them should be carefully reviewed.
-        // Example: await JSRuntime.InvokeVoidAsync("someChartFunction", chartData);
-        
         // Automatically start streaming when the page loads.
+        // The isLoading flag will be managed within StartStreamingStats
         await StartStreamingStats();
     }
 
@@ -73,27 +106,23 @@ else if (!isLoading && string.IsNullOrEmpty(errorMessage))
     {
         if (isStreaming) return;
 
-        StopStreamingStats(); // Ensure any previous stream is stopped
+        StopStreamingStats(); 
         _statsCts = new CancellationTokenSource();
+        
         isStreaming = true;
-        isLoading = !_stats.Any(); // Show loading only if stats list is empty
+        isLoading = !_stats.Any(); // Set loading to true only if there are no stats yet.
         errorMessage = string.Empty;
-        StateHasChanged();
+        await InvokeAsync(StateHasChanged);
 
         try
         {
-            // Create a temporary list to buffer stats for one "event" or update cycle
-            // This helps in case multiple adapters' stats come in quick succession
-            // from one "connection_stats" block in the JSON stream.
-            var currentBatchStats = new Dictionary<string, XNetwork.Services.Stats>();
-
             await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
             {
-                // Update the entry in the current batch
-                currentBatchStats[statEntry.Adapter] = statEntry;
+                if (isLoading) // Turn off initial loading once first stat comes in
+                {
+                    isLoading = false;
+                }
 
-                // Update the main list for display
-                // This approach replaces or adds, ensuring the UI reflects the latest for each adapter.
                 var existingStatIndex = _stats.FindIndex(s => s.Adapter == statEntry.Adapter);
                 if (existingStatIndex != -1)
                 {
@@ -103,30 +132,29 @@ else if (!isLoading && string.IsNullOrEmpty(errorMessage))
                 {
                     _stats.Add(statEntry);
                 }
-                
-                // If you want to update the UI after each individual stat entry:
-                // StateHasChanged(); 
+                await InvokeAsync(StateHasChanged); // Update UI as each stat entry arrives
             }
-             // If you prefer to update UI after a full pass of available stats in one stream iteration:
-            isLoading = false; // Loaded initial set
-            StateHasChanged(); 
+            // This part might not be reached if the stream is continuous and only ends on cancellation
+            isLoading = false; 
         }
         catch (OperationCanceledException)
         {
             Console.WriteLine("Statistics streaming was canceled by the user or component disposal.");
             errorMessage = "Streaming stopped.";
+            isLoading = false; // Ensure loading is false if canceled
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error streaming statistics: {ex.Message}");
             Console.WriteLine(ex.StackTrace);
-            errorMessage = $"An error occurred while streaming statistics: {ex.Message}";
+            errorMessage = $"An error occurred: {ex.Message}";
+            isLoading = false; // Ensure loading is false on error
         }
         finally
         {
             isStreaming = false;
-            isLoading = false;
-            StateHasChanged();
+            // isLoading is set within catch blocks or after first stat
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -138,20 +166,17 @@ else if (!isLoading && string.IsNullOrEmpty(errorMessage))
             _statsCts.Dispose();
             _statsCts = null;
         }
-        isStreaming = false;
-        // isLoading = false; // Don't set isLoading to false here if we might restart
-        Console.WriteLine("Streaming stopped.");
-        // StateHasChanged(); // Optional: update UI to reflect stopped state immediately
+        if (isStreaming) // Only log and change state if it was actually streaming
+        {
+            isStreaming = false;
+            Console.WriteLine("Streaming stopped.");
+            InvokeAsync(StateHasChanged); // Update UI to reflect stopped state
+        }
     }
 
-    // Implement IAsyncDisposable to ensure the CancellationTokenSource is disposed
-    // when the component is removed from the UI.
     public async ValueTask DisposeAsync()
     {
         StopStreamingStats();
-        // If there were any JS objects created via JSInterop that need explicit disposal:
-        // await chartModule.InvokeVoidAsync("disposeCharts"); // Example
-        // await chartModule.DisposeAsync(); // Example
-        await Task.CompletedTask; // Placeholder if no other async disposal is needed
+        await Task.CompletedTask; 
     }
 }
