@@ -26,34 +26,22 @@
 
     @if (_stats.Any())
     {
-        <div class="shadow overflow-hidden border-b border-gray-200 sm:rounded-lg mb-6">
+        <div class="hidden sm:block shadow overflow-hidden border-b border-gray-200 sm:rounded-lg mb-6">
             <table class="min-w-full divide-y divide-gray-200">
                 <thead class="bg-gray-700">
                     <tr>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
-                            Adapter / ISP
-                        </th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
-                            Download (Mbps)
-                        </th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
-                            Upload (Mbps)
-                        </th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
-                            RTT (ms)
-                        </th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">
-                            Loss (%)
-                        </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">Adapter / ISP</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">DL (Mbps)</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">UL (Mbps)</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">RTT (ms)</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">Loss (%)</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                     @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.Adapter)))
                     {
                         <tr class="hover:bg-gray-50">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                @GetAdapterDisplayName(stat.Adapter)
-                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">@GetAdapterDisplayName(stat.Adapter)</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.DownBps / (1000 * 1000), 2))</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.UpBps / (1000 * 1000), 2))</td>
                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@stat.RttMs</td>
@@ -64,10 +52,25 @@
             </table>
         </div>
 
-        @if (_chartsInitialized) // Only show chart section if successfully initialized
+        <div class="sm:hidden grid grid-cols-1 gap-4 mb-6">
+            @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.Adapter)))
+            {
+                <div class="bg-white shadow-lg rounded-lg p-4 border border-gray-200">
+                    <h3 class="text-lg font-semibold text-blue-600 mb-2">@GetAdapterDisplayName(stat.Adapter)</h3>
+                    <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                        <span class="font-medium text-gray-600">Download:</span> <span class="text-gray-800">@(Math.Round(stat.DownBps / (1000 * 1000), 2)) Mbps</span>
+                        <span class="font-medium text-gray-600">Upload:</span> <span class="text-gray-800">@(Math.Round(stat.UpBps / (1000 * 1000), 2)) Mbps</span>
+                        <span class="font-medium text-gray-600">RTT:</span> <span class="text-gray-800">@stat.RttMs ms</span>
+                        <span class="font-medium text-gray-600">Loss:</span> <span class="text-gray-800">@Math.Round(stat.LossPct, 2) %</span>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @if (_chartsSuccessfullyInitialized)
         {
             <h2 class="text-2xl font-semibold text-gray-700 my-6">Historical Data Charts</h2>
-            <div class="grid grid-cols-1 gap-6 mb-6">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                 <div>
                     <h3 class="text-lg font-medium text-gray-600 mb-2">Download Speed (Mbps)</h3>
                     <div class="chart-container h-64 md:h-80 bg-white p-4 rounded-lg shadow-md">
@@ -86,11 +89,17 @@
                         <canvas id="rttChart"></canvas>
                     </div>
                 </div>
+                <div>
+                    <h3 class="text-lg font-medium text-gray-600 mb-2">Loss (%)</h3>
+                    <div class="chart-container h-64 md:h-80 bg-white p-4 rounded-lg shadow-md">
+                        <canvas id="lossChart"></canvas>
+                    </div>
+                </div>
             </div>
         }
-        else if (!isInitialLoading && _jsModuleLoaded && _adapters.Any()) // If module loaded, adapters present, but charts not init
+        else if (!isInitialLoading && _jsModuleLoaded && _adapters.Any()) 
         {
-             <p class="text-orange-600">Charts could not be initialized. Check console for errors.</p>
+             <p class="text-orange-600 font-semibold">Charts are initializing or encountered an issue. Please wait or check console for errors.</p>
         }
     }
     else if (!isInitialLoading && string.IsNullOrEmpty(errorMessage))
@@ -106,8 +115,8 @@
             class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75
                    @(isStreaming ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 focus:ring-blue-500")"
             @onclick="HandleStartStreaming" 
-            disabled="@isStreaming">
-            Start Streaming
+            disabled="@isStreaming || isInitialLoading">
+            @if(isStreaming && !isInitialLoading) { <text>Streaming...</text> } else { <text>Start Streaming</text>}
         </button>
         <button
             class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75
@@ -120,6 +129,9 @@
 </div>
 
 @code {
+    // Assumes XNetwork.Services.Stats record is: public record Stats(string AdapterID, double DownBps, double UpBps, double RttMs, double LossPct);
+    // Assumes XNetwork.Services.Adapter record is: public record Adapter(string AdapterID, string Name, string Isp, ...);
+
     private List<XNetwork.Services.Stats> _stats = new List<XNetwork.Services.Stats>();
     private List<XNetwork.Services.Adapter> _adapters = new List<XNetwork.Services.Adapter>();
     private CancellationTokenSource? _statsCts;
@@ -129,37 +141,37 @@
     private string errorMessage = string.Empty;
 
     private IJSObjectReference? _chartModule;
-    private bool _jsModuleLoaded = false; // Flag to track if the JS module is loaded
-    private bool _chartsInitialized = false;
+    private bool _jsModuleLoaded = false;
+    private bool _chartsSuccessfullyInitialized = false; // Flag to track if JS chart init was successful
     private Timer? _chartUpdateTimer;
+    private bool _manualStartAttempted = false; 
 
+    // Batched data for charts
     private Dictionary<string, Dictionary<string, double>> _batchedChartData = new()
     {
         { "downloadChart", new Dictionary<string, double>() },
         { "uploadChart", new Dictionary<string, double>() },
-        { "rttChart", new Dictionary<string, double>() }
+        { "rttChart", new Dictionary<string, double>() },
+        { "lossChart", new Dictionary<string, double>() }
     };
 
     protected override async Task OnInitializedAsync()
     {
-        Console.WriteLine("Statistics.razor: OnInitializedAsync started.");
-        isInitialLoading = true; // Explicitly set at the beginning
-        await LoadInitialData(); 
-        // Streaming and chart initialization will be triggered by OnAfterRenderAsync
-        // after the first render ensures DOM elements are available and JS module can be loaded.
-        Console.WriteLine("Statistics.razor: OnInitializedAsync finished.");
+        Console.WriteLine("Statistics.razor: OnInitializedAsync - Starting initial data load.");
+        isInitialLoading = true; // Set loading state
+        await LoadInitialData(); // Fetch adapter data
+        // Chart and JS module initialization is deferred to OnAfterRenderAsync
     }
 
     private async Task LoadInitialData()
     {
-        Console.WriteLine("Statistics.razor: LoadInitialData started.");
         try
         {
             _adapters = (await SpeedifyService.GetAdaptersAsync()).ToList();
             if (!_adapters.Any())
             {
                 Console.WriteLine("Statistics.razor: No network adapters found from SpeedifyService.");
-                // Error message will be set in OnAfterRenderAsync if needed
+                // errorMessage will be set later if this causes issues for chart/stream start
             }
             else
             {
@@ -171,52 +183,60 @@
             Console.WriteLine($"Statistics.razor: Error loading adapters: {ex.Message}");
             errorMessage = $"Could not load adapter information: {ex.Message}";
         }
-        // Do not call StateHasChanged here; let OnAfterRenderAsync or subsequent methods handle it.
     }
     
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            Console.WriteLine("Statistics.razor: OnAfterRenderAsync (firstRender) started.");
-            try
+            Console.WriteLine("Statistics.razor: OnAfterRenderAsync (firstRender) - Attempting to load JS module and initialize charts.");
+            
+            // Step 1: Ensure JS Module is loaded
+            if (!_jsModuleLoaded)
             {
-                _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
-                _jsModuleLoaded = true;
-                Console.WriteLine("Statistics.razor: ChartJS module loaded successfully.");
+                try
+                {
+                    _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
+                    _jsModuleLoaded = true;
+                    Console.WriteLine("Statistics.razor: ChartJS module loaded successfully.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Statistics.razor: Error loading chart module: {ex.Message}");
+                    errorMessage = "Failed to load charting library. Charts will not be available.";
+                    _jsModuleLoaded = false;
+                    isInitialLoading = false; // Stop loading as critical part failed
+                    await InvokeAsync(StateHasChanged);
+                    return; // Exit if module fails to load
+                }
+            }
 
-                if (string.IsNullOrEmpty(errorMessage) && _adapters.Any())
-                {
-                    await InitializeCharts(); // Attempt to initialize charts now that DOM and JS module are ready
-                    if (_chartsInitialized && !isStreaming) // If charts are good and not already streaming
-                    {
-                       await StartStreamingStats();
-                    }
-                    else if (!_chartsInitialized)
-                    {
-                         Console.WriteLine("Statistics.razor: Charts were not initialized successfully after module load.");
-                         // errorMessage might already be set by InitializeCharts
-                         if(string.IsNullOrEmpty(errorMessage)) errorMessage = "Charts could not be initialized.";
-                    }
-                }
-                else if (!_adapters.Any() && string.IsNullOrEmpty(errorMessage))
-                {
-                     errorMessage = "No network adapters found. Cannot display statistics or charts.";
-                     Console.WriteLine("Statistics.razor: No adapters available after first render to initialize charts or start stream.");
-                }
-            }
-            catch (Exception ex)
+            // Step 2: Initialize Charts if module loaded and adapters are present
+            if (_jsModuleLoaded && _adapters.Any() && !string.IsNullOrEmpty(errorMessage) == false) // Check for pre-existing errors
             {
-                Console.WriteLine($"Statistics.razor: Error loading chart module in OnAfterRenderAsync: {ex.Message}");
-                errorMessage = "Failed to load charting library. Charts will not be available.";
-                _jsModuleLoaded = false;
+                await InitializeChartsInternal(); // This method sets _chartsSuccessfullyInitialized
             }
-            finally
+            else if (!_adapters.Any() && string.IsNullOrEmpty(errorMessage))
             {
-                isInitialLoading = false; // Initial setup phase is complete
-                await InvokeAsync(StateHasChanged);
-                Console.WriteLine($"Statistics.razor: OnAfterRenderAsync (firstRender) finished. isInitialLoading: {isInitialLoading}, errorMessage: {errorMessage}");
+                 errorMessage = "No network adapters found. Cannot display statistics or charts.";
+                 Console.WriteLine("Statistics.razor: No adapters available to initialize charts.");
             }
+
+
+            // Step 3: Attempt to auto-start streaming if everything is set up
+            if (_chartsSuccessfullyInitialized && !isStreaming && !_manualStartAttempted && string.IsNullOrEmpty(errorMessage))
+            {
+                Console.WriteLine("Statistics.razor: OnAfterRenderAsync - Conditions met for auto-starting stream.");
+                await StartStreamingStatsInternal();
+            }
+            else
+            {
+                 Console.WriteLine($"Statistics.razor: OnAfterRenderAsync - Auto-start conditions NOT met. Error: '{errorMessage}', JSLoaded: {_jsModuleLoaded}, ChartsInit: {_chartsSuccessfullyInitialized}, Streaming: {isStreaming}, ManualStart: {_manualStartAttempted}");
+            }
+            
+            isInitialLoading = false; // All initial setup attempts are complete
+            await InvokeAsync(StateHasChanged);
+            Console.WriteLine($"Statistics.razor: OnAfterRenderAsync (firstRender) finished. isInitialLoading: {isInitialLoading}, Charts Initialized: {_chartsSuccessfullyInitialized}");
         }
     }
 
@@ -226,111 +246,135 @@
         return adapter != null ? (!string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name) : adapterId;
     }
 
-    private async Task InitializeCharts() // No "IfNeeded" as it's called when conditions are met
+    // Renamed to InitializeChartsInternal to avoid confusion
+    private async Task InitializeChartsInternal()
     {
-        if (!_jsModuleLoaded || _chartModule == null || _chartsInitialized || !_adapters.Any()) return;
+        if (!_jsModuleLoaded || _chartModule == null || _chartsSuccessfullyInitialized || !_adapters.Any())
+        {
+            Console.WriteLine($"Statistics.razor: InitializeChartsInternal skipped. JSLoaded: {_jsModuleLoaded}, ChartModuleNull: {_chartModule == null}, ChartsInited: {_chartsSuccessfullyInitialized}, AdaptersCount: {_adapters.Count}");
+            return;
+        }
 
-        Console.WriteLine("Statistics.razor: InitializeCharts started.");
+        Console.WriteLine("Statistics.razor: InitializeChartsInternal attempting...");
         var adapterIdsForChart = _adapters.Select(a => a.AdapterId).ToArray();
         var adapterDisplayNamesForChart = _adapters.Select(x => GetAdapterDisplayName(x.AdapterId)).ToArray();
         var initialTimestamp = DateTime.Now.ToString("HH:mm:ss");
+        bool allChartsOk = true;
 
         try
         {
-            await _chartModule.InvokeVoidAsync("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp);
-            await _chartModule.InvokeVoidAsync("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp);
-            await _chartModule.InvokeVoidAsync("initializeOrUpdateChart", "rttChart", "RTT (ms)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp);
-            _chartsInitialized = true;
-            Console.WriteLine("Statistics.razor: Charts initialized successfully via JS Interop.");
+            // Invoke JS and check return value for each chart
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) allChartsOk = false;
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) allChartsOk = false;
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) allChartsOk = false;
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) allChartsOk = false;
+
+            if (allChartsOk)
+            {
+                _chartsSuccessfullyInitialized = true;
+                Console.WriteLine("Statistics.razor: All charts initialized successfully via JS Interop.");
+            }
+            else
+            {
+                 _chartsSuccessfullyInitialized = false;
+                 // Avoid overwriting a more specific error from adapter loading
+                 if(string.IsNullOrEmpty(errorMessage)) errorMessage = "One or more charts failed to initialize. Check console for details (e.g., canvas not found).";
+                 Console.WriteLine("Statistics.razor: One or more charts failed to initialize based on JS return values.");
+            }
         }
         catch (JSException ex)
         {
             Console.WriteLine($"Statistics.razor: JSException during chart initialization: {ex.Message}");
-            errorMessage = $"Error initializing charts (JS Error: {ex.Message.Split('\n')[0]}). Charts may not display correctly.";
-            _chartsInitialized = false;
+            errorMessage = $"Error initializing charts (JS Error). Charts may not display correctly.";
+            _chartsSuccessfullyInitialized = false;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Statistics.razor: General exception during chart initialization: {ex.Message}");
             errorMessage = "An unexpected error occurred while setting up charts.";
-            _chartsInitialized = false;
+            _chartsSuccessfullyInitialized = false;
         }
-        // StateHasChanged will be called by the caller (OnAfterRenderAsync)
     }
     
-    private async Task HandleStartStreaming() // Renamed to avoid confusion with internal StartStreamingStats
+    private async Task HandleStartStreaming()
     {
         if (isStreaming) return;
-        isInitialLoading = true; // Indicate activity
-        errorMessage = string.Empty; // Clear previous errors
+        _manualStartAttempted = true;
+        isInitialLoading = true; // Show loading indicator while preparing to stream
+        errorMessage = string.Empty;
         await InvokeAsync(StateHasChanged);
 
+        // Ensure adapters are loaded
         if (!_adapters.Any())
         {
-            await LoadInitialData(); // Try to load adapters if missing
+            await LoadInitialData();
+            if (!_adapters.Any()) // Still no adapters
+            {
+                errorMessage = "No adapters loaded. Cannot start streaming.";
+                isInitialLoading = false;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
         }
-
-        if (!_adapters.Any())
+        
+        // Ensure JS module is loaded and charts are initialized
+        if (!_jsModuleLoaded || !_chartsSuccessfullyInitialized)
         {
-            errorMessage = "No adapters loaded. Cannot start streaming.";
+            await OnAfterRenderAsync(true); // Re-run the first render logic to try and init JS/charts
+            if (!_jsModuleLoaded || !_chartsSuccessfullyInitialized) // Check again
+            {
+                if(string.IsNullOrEmpty(errorMessage)) errorMessage = "Cannot start streaming. Charting system not ready.";
+                isInitialLoading = false;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+        }
+        
+        // If all good, start streaming
+        await StartStreamingStatsInternal();
+    }
+
+    private async Task StartStreamingStatsInternal() 
+    {
+        if (isStreaming) return;
+        if (!_chartsSuccessfullyInitialized) { // Final check
+            errorMessage = "Cannot start streaming: Charts are not ready.";
             isInitialLoading = false;
             await InvokeAsync(StateHasChanged);
             return;
         }
-        
-        if (!_chartsInitialized && _jsModuleLoaded && _chartModule != null)
-        {
-            await InitializeCharts(); // Try to initialize charts if not done yet
-        }
-        await StartStreamingStats();
-    }
 
-    private async Task StartStreamingStats()
-    {
-        if (isStreaming) return; // Already streaming
-        if (!_adapters.Any()) { // Should be caught by HandleStartStreaming, but defensive check
-            errorMessage = "Cannot start streaming: No adapter data.";
-            isInitialLoading = false; // Ensure loading indicator is off
-            await InvokeAsync(StateHasChanged);
-            return;
-        }
-
-        Console.WriteLine("Statistics.razor: StartStreamingStats called.");
-        StopStreamingStats(); 
+        Console.WriteLine("Statistics.razor: StartStreamingStatsInternal called.");
+        StopStreamingStatsInternal(); 
         _statsCts = new CancellationTokenSource();
         isStreaming = true;
-        // errorMessage should be cleared by HandleStartStreaming if called from button
-        // isInitialLoading is true if this is the very first successful stream attempt
+        // isInitialLoading will be set to false once first data arrives or if error
         
         await InvokeAsync(StateHasChanged); 
 
         try
         {
             _chartUpdateTimer?.Dispose();
-            _chartUpdateTimer = new Timer(PushBatchedChartDataToJs, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.1)); // Slightly offset
+            _chartUpdateTimer = new Timer(PushBatchedChartDataToJs, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.1));
 
             await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
             {
-                if (isInitialLoading) isInitialLoading = false;
+                if (isInitialLoading) isInitialLoading = false; // First data point received
 
                 var existingStatIndex = _stats.FindIndex(s => s.Adapter == statEntry.Adapter);
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
 
-                if (_chartsInitialized) // Only batch if charts are ready
-                {
-                    string adapterDisplayName = GetAdapterDisplayName(statEntry.Adapter);
-                    _batchedChartData["downloadChart"][adapterDisplayName] = Math.Round(statEntry.DownBps / (1000 * 1000), 2);
-                    _batchedChartData["uploadChart"][adapterDisplayName] = Math.Round(statEntry.UpBps / (1000 * 1000), 2);
-                    _batchedChartData["rttChart"][adapterDisplayName] = statEntry.RttMs;
-                }
+                string adapterDisplayName = GetAdapterDisplayName(statEntry.Adapter);
+                _batchedChartData["downloadChart"][adapterDisplayName] = Math.Round(statEntry.DownBps / (1000 * 1000), 2);
+                _batchedChartData["uploadChart"][adapterDisplayName] = Math.Round(statEntry.UpBps / (1000 * 1000), 2);
+                _batchedChartData["rttChart"][adapterDisplayName] = statEntry.RttMs;
+                _batchedChartData["lossChart"][adapterDisplayName] = Math.Round(statEntry.LossPct, 2);
+                
                 await InvokeAsync(StateHasChanged); 
             }
         }
-        catch (OperationCanceledException)
-        {
-            Console.WriteLine("Statistics.razor: Statistics streaming was canceled.");
-        }
+        catch (OperationCanceledException) { Console.WriteLine("Statistics.razor: Statistics streaming was canceled."); }
         catch (Exception ex)
         {
             Console.WriteLine($"Statistics.razor: Error during statistics streaming: {ex.Message}\n{ex.StackTrace}");
@@ -341,94 +385,70 @@
             Console.WriteLine("Statistics.razor: Streaming loop finished or was broken.");
             isStreaming = false;
             isInitialLoading = false; 
-            _chartUpdateTimer?.Dispose();
-            _chartUpdateTimer = null;
+            _chartUpdateTimer?.Dispose(); _chartUpdateTimer = null;
             await InvokeAsync(StateHasChanged);
         }
     }
     
     private async void PushBatchedChartDataToJs(object? state)
     {
-        if (!_chartsInitialized || _chartModule == null || !isStreaming || (_statsCts?.IsCancellationRequested ?? true)) return;
-
+        if (!_chartsSuccessfullyInitialized || _chartModule == null || !isStreaming || (_statsCts?.IsCancellationRequested ?? true)) return;
         string currentTime = DateTime.Now.ToString("HH:mm:ss");
-        
         try
         {
-            // Create copies of dictionaries to avoid modification during enumeration if interop is slow
-            var downloadData = new Dictionary<string, double>(_batchedChartData["downloadChart"]);
-            var uploadData = new Dictionary<string, double>(_batchedChartData["uploadChart"]);
+            var dlData = new Dictionary<string, double>(_batchedChartData["downloadChart"]);
+            var ulData = new Dictionary<string, double>(_batchedChartData["uploadChart"]);
             var rttData = new Dictionary<string, double>(_batchedChartData["rttChart"]);
+            var lossData = new Dictionary<string, double>(_batchedChartData["lossChart"]);
 
-            if (downloadData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "downloadChart", currentTime, downloadData);
-            if (uploadData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", currentTime, uploadData);
+            // Only call JS if there's data for that specific chart to avoid unnecessary interop
+            if (dlData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "downloadChart", currentTime, dlData);
+            if (ulData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", currentTime, ulData);
             if (rttData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "rttChart", currentTime, rttData);
+            if (lossData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "lossChart", currentTime, lossData);
 
-            // Clear original batched data after successful invocation
-            if (downloadData.Any()) _batchedChartData["downloadChart"].Clear();
-            if (uploadData.Any()) _batchedChartData["uploadChart"].Clear();
+            if (dlData.Any()) _batchedChartData["downloadChart"].Clear();
+            if (ulData.Any()) _batchedChartData["uploadChart"].Clear();
             if (rttData.Any()) _batchedChartData["rttChart"].Clear();
+            if (lossData.Any()) _batchedChartData["lossChart"].Clear();
         }
         catch (JSDisconnectedException ex) {
             Console.WriteLine($"Statistics.razor: JSDisconnectedException in PushBatchedChartDataToJs: {ex.Message}. Stopping stream.");
-            await InvokeAsync(StopStreamingStats); // Stop streaming if JS interop is broken
+            await InvokeAsync(StopStreamingStatsInternal); 
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Statistics.razor: Error in PushBatchedChartDataToJs: {ex.Message}");
-            // Potentially stop streaming or set an error flag if this happens repeatedly
-        }
+        catch (Exception ex) { Console.WriteLine($"Statistics.razor: Error in PushBatchedChartDataToJs: {ex.Message}"); }
     }
 
-    private void HandleStopStreaming() // Renamed to avoid confusion
-    {
-        StopStreamingStats();
-    }
+    private void HandleStopStreaming() { StopStreamingStatsInternal(); }
 
-    private void StopStreamingStats()
+    private void StopStreamingStatsInternal()
     {
-        _chartUpdateTimer?.Dispose();
-        _chartUpdateTimer = null;
-
+        _chartUpdateTimer?.Dispose(); _chartUpdateTimer = null;
         if (_statsCts != null)
         {
-            if (!_statsCts.IsCancellationRequested)
-            {
-                _statsCts.Cancel();
-                Console.WriteLine("Statistics.razor: Cancellation token cancelled.");
-            }
-            _statsCts.Dispose(); 
-            _statsCts = null;
+            if (!_statsCts.IsCancellationRequested) _statsCts.Cancel();
+            _statsCts.Dispose(); _statsCts = null;
         }
         if (isStreaming) 
         {
             isStreaming = false;
-            Console.WriteLine("Statistics.razor: Streaming stopped by StopStreamingStats call.");
-            // InvokeAsync(StateHasChanged); // Let the caller handle UI update if needed
+            Console.WriteLine("Statistics.razor: Streaming stopped.");
+            InvokeAsync(StateHasChanged); 
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        Console.WriteLine("Statistics.razor: DisposeAsync called.");
-        StopStreamingStats(); 
+        StopStreamingStatsInternal(); 
         if (_chartModule != null)
         {
             try
             {
-                if (_chartsInitialized) await _chartModule.InvokeVoidAsync("disposeAllCharts");
+                if (_chartsSuccessfullyInitialized) await _chartModule.InvokeVoidAsync("disposeAllCharts");
                 await _chartModule.DisposeAsync();
-                Console.WriteLine("Statistics.razor: Chart module disposed.");
             }
-            catch(Exception ex)
-            {
-                Console.WriteLine($"Statistics.razor: Error disposing chart module: {ex.Message}");
-            }
-            finally
-            {
-                _chartModule = null; 
-                _chartsInitialized = false; 
-            }
+            catch(Exception ex) { Console.WriteLine($"Statistics.razor: Error disposing chart module: {ex.Message}"); }
+            finally { _chartModule = null; _chartsSuccessfullyInitialized = false; }
         }
     }
 }

@@ -4,7 +4,7 @@
 const charts = {};
 const MAX_DATA_POINTS = 30; // Number of historical data points to show on charts
 
-// Default colors for chart lines (add more if you expect more than 5 adapters)
+// Default colors for chart lines
 const lineColors = [
     'rgba(54, 162, 235, 1)',  // Blue
     'rgba(255, 99, 132, 1)',  // Red
@@ -18,30 +18,35 @@ const lineColors = [
 export function initializeOrUpdateChart(chartId, yAxisLabel, adapterIds, adapterNames, initialTimestamp) {
     const ctx = document.getElementById(chartId);
     if (!ctx) {
-        console.error(`Chart canvas with ID ${chartId} not found.`);
-        return;
+        console.error(`Chart canvas with ID ${chartId} not found during initialization.`);
+        return false; // Indicate failure
+    }
+
+    // If chart already exists, destroy it before re-creating
+    // This handles cases where initialization might be called multiple times,
+    // though the C# side tries to prevent this.
+    if (charts[chartId]) {
+        console.warn(`Chart ${chartId} already exists. Destroying and re-initializing.`);
+        charts[chartId].destroy();
+        delete charts[chartId];
     }
 
     const datasets = adapterIds.map((adapterId, index) => ({
-        label: adapterNames[index] || adapterId, // Use adapter name or ID as label
-        data: [], // Start with empty data
+        // Use adapterId for internal tracking, adapterNames for display label
+        label: adapterNames[index] || adapterId,
+        adapterId: adapterId, // Store original adapter ID for data mapping
+        data: [],
         borderColor: lineColors[index % lineColors.length],
-        backgroundColor: lineColors[index % lineColors.length].replace('1)', '0.1)'), // For area fill if used
+        backgroundColor: lineColors[index % lineColors.length].replace('1)', '0.1)'),
         tension: 0.1,
         fill: false
     }));
 
-    if (charts[chartId]) {
-        // If chart exists, update its datasets (e.g., if adapters change)
-        charts[chartId].data.labels = initialTimestamp ? [initialTimestamp] : [];
-        charts[chartId].data.datasets = datasets;
-        charts[chartId].update();
-    } else {
-        // Create new chart
+    try {
         charts[chartId] = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: initialTimestamp ? [initialTimestamp] : [], // Initial timestamp label
+                labels: initialTimestamp ? [initialTimestamp] : [],
                 datasets: datasets
             },
             options: {
@@ -63,7 +68,7 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, adapterIds, adapter
                     }
                 },
                 animation: {
-                    duration: 200 // Smooth transition for updates
+                    duration: 150 // Slightly faster animation
                 },
                 plugins: {
                     legend: {
@@ -76,35 +81,61 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, adapterIds, adapter
                 }
             }
         });
+        console.log(`Chart ${chartId} initialized successfully.`);
+        return true; // Indicate success
+    } catch (error) {
+        console.error(`Error creating chart ${chartId}:`, error);
+        return false; // Indicate failure
     }
 }
 
 // Function to add a new data point to all datasets in a specific chart
-export function addDataToChart(chartId, timestamp, dataPoints) {
-    // dataPoints is an object: { adapterId1: value1, adapterId2: value2, ... }
+export function addDataToChart(chartId, timestamp, dataPointsByAdapterDisplayName) {
+    // dataPointsByAdapterDisplayName is an object: { "ISP (Adapter Name)": value1, ... }
     const chart = charts[chartId];
     if (!chart) {
-        console.error(`Chart with ID ${chartId} not found for adding data.`);
+        // This can happen if initialization failed or was called before DOM ready.
+        // console.warn(`Chart with ID ${chartId} not found for adding data. Data for timestamp ${timestamp} might be lost for this chart.`);
         return;
     }
 
-    // Add new timestamp label
-    chart.data.labels.push(timestamp);
-    if (chart.data.labels.length > MAX_DATA_POINTS) {
-        chart.data.labels.shift(); // Remove oldest label
-    }
+    if (chart.data.labels.includes(timestamp) && chart.data.labels.length > 1) {
+        // If timestamp already exists and it's not the very first point, update existing points
+        // This handles cases where multiple adapters report at slightly different sub-second times
+        // but we group them under the same second-level timestamp.
+        // console.log(`Updating data for existing timestamp ${timestamp} in chart ${chartId}`);
+        const labelIndex = chart.data.labels.indexOf(timestamp);
+        chart.data.datasets.forEach(dataset => {
+            const adapterDisplayName = dataset.label; // Dataset label is the display name
+            if (dataPointsByAdapterDisplayName[adapterDisplayName] !== undefined) {
+                dataset.data[labelIndex] = dataPointsByAdapterDisplayName[adapterDisplayName];
+            }
+        });
 
-    chart.data.datasets.forEach(dataset => {
-        const adapterId = dataset.label; // Assuming label is set to AdapterID or a unique name
-        const value = dataPoints[adapterId] !== undefined ? dataPoints[adapterId] : null; // Use null for missing data to create gaps
-
-        dataset.data.push(value);
-        if (dataset.data.length > MAX_DATA_POINTS) {
-            dataset.data.shift(); // Remove oldest data point
+    } else {
+        // Add new timestamp label if it doesn't exist or if it's the first point
+        if (!chart.data.labels.includes(timestamp)) {
+            chart.data.labels.push(timestamp);
+            if (chart.data.labels.length > MAX_DATA_POINTS) {
+                chart.data.labels.shift(); // Remove oldest label
+            }
         }
-    });
 
-    chart.update();
+        chart.data.datasets.forEach(dataset => {
+            const adapterDisplayName = dataset.label; // Dataset label is the display name
+            const value = dataPointsByAdapterDisplayName[adapterDisplayName] !== undefined ? dataPointsByAdapterDisplayName[adapterDisplayName] : NaN; // Use NaN for missing data
+
+            dataset.data.push(value);
+            if (dataset.data.length > MAX_DATA_POINTS) {
+                dataset.data.shift(); // Remove oldest data point
+            }
+        });
+    }
+    try {
+        chart.update('none'); // 'none' for no animation, 'quiet' for minimal
+    } catch (error) {
+        console.error(`Error updating chart ${chartId}:`, error);
+    }
 }
 
 // Function to dispose of a chart
@@ -116,9 +147,10 @@ export function disposeChart(chartId) {
     }
 }
 
-// Function to dispose all charts (e.g., when component is disposed)
+// Function to dispose all charts
 export function disposeAllCharts() {
     for (const chartId in charts) {
         disposeChart(chartId);
     }
+    console.log("All charts disposed.");
 }
