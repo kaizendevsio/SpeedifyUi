@@ -1,0 +1,5 @@
+﻿<span class="px-2 py-1 rounded text-white @(State == "connected" ? "bg-green-500" : "bg-red-500")">@State</span>
+
+@code {
+    [Parameter] public string State { get; set; } = "";
+}

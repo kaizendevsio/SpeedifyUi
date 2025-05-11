@@ -1,0 +1,16 @@
+﻿@using XNetwork.Services
+<div class="flex flex-wrap gap-1 mt-2">
+    @foreach (var p in _prios)
+    {
+        <button class="px-2 py-1 border rounded text-xs @(Adapter.priority == p ? "bg-blue-600 text-white" : "")"
+                @onclick="()=>Click(p)">@p</button>
+    }
+</div>
+
+@code {
+    [Parameter] public Adapter Adapter { get; set; } = default!;
+    [Parameter] public EventCallback<(string, string)> OnChange { get; set; }
+    string[] _prios = ["primary", "secondary", "always", "never"];
+    
+    Task Click(string p) => OnChange.InvokeAsync((Adapter.adapterID, p));
+}

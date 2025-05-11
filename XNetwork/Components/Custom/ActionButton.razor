@@ -1,0 +1,6 @@
+﻿<button class="px-4 py-2 rounded text-white @Css" @onclick="OnClick">@Text</button>
+@code{
+    [Parameter] public string Text{get;set;}="";
+    [Parameter] public string Css{get;set;}="";
+    [Parameter] public EventCallback OnClick{get;set;}
+}

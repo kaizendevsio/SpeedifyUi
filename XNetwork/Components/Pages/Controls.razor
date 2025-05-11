@@ -1,29 +1,46 @@
 ﻿@page "/controls"
-@using System.Diagnostics
-@inject XNetwork.Services.SpeedifyService S
+@using XNetwork.Services
+@using XNetwork.Components.Custom
+@inject XNetwork.Services.SpeedifyService SpeedifyService
 
-<h2 class="text-lg font-semibold mb-4">Advanced Controls</h2>
+<h2 class="text-lg font-semibold mb-4">Controls & Settings</h2>
 
-@if (msg != null)
+@if(error!=null)
 {
-    <p class="p-4 bg-green-100 text-green-800 rounded">@msg</p>
+    <ErrorBanner Message="@error" Retry="Load" />
+}
+else if(settings==null)
+{
+    <p>Loading…</p>
+}
+else
+{
+    <div class="bg-white shadow rounded p-4 mb-6">
+        <h3 class="font-semibold mb-2">Current Settings</h3>
+        <p class="text-sm">Mode: <span class="font-medium">@settings.mode</span></p>
+        <p class="text-sm">Auto-start: @Bool(settings.autoStart)</p>
+        <p class="text-sm">Encrypted: @Bool(settings.encrypted)</p>
+    </div>
+
+    <div class="flex flex-wrap gap-3">
+        <ActionButton Text="Stop Tunnel"     Css="bg-red-600"    OnClick="@(()=>Do(()=>SpeedifyService.StopAsync()))" />
+        <ActionButton Text="Start Tunnel"    Css="bg-blue-600"   OnClick="@(()=>Do(()=>SpeedifyService.StartAsync()))" />
+        <ActionButton Text="Restart Tunnel"  Css="bg-amber-500"  OnClick="@(()=>Do(()=>SpeedifyService.RestartAsync()))" />
+        <ActionButton Text="Set Redundant"   Css="bg-gray-800"   OnClick="@(()=>Do(()=>SpeedifyService.SetModeAsync("redundant")))" />
+        <ActionButton Text="Set Speed Mode"  Css="bg-gray-800"   OnClick="@(()=>Do(()=>SpeedifyService.SetModeAsync("speed")))" />
+    </div>
 }
 
-<div class="space-y-4">
-    <button class="px-4 py-2 bg-red-600 text-white rounded" @onclick="@(()=>Do("stop"))">Stop Tunnel</button>
-    <button class="px-4 py-2 bg-blue-600 text-white rounded" @onclick="@(()=>Do("start"))">Start Tunnel</button>
-    <button class="px-4 py-2 bg-yellow-500 text-white rounded" @onclick="@(()=>Do("restart"))">Restart Tunnel</button>
-    <button class="px-4 py-2 bg-gray-800 text-white rounded" @onclick="@(()=>Do("mode redundant"))">Set Redundant Mode</button>
-    <button class="px-4 py-2 bg-gray-800 text-white rounded" @onclick="@(()=>Do("mode speed"))">Set Speed Mode</button>
-</div>
-
 @code{
-    string? msg;
+    XNetwork.Services.Settings? settings;
+    string? error;
 
-    async Task Do(string cmd)
-    {
-        await Task.Run(() => Process.Start("speedify_cli", cmd)!.WaitForExit());
-        msg = $"Executed: {cmd}";
+    string Bool(bool v)=>v?"✔":"✖";
+
+    protected override async Task OnInitializedAsync()=> await Load();
+    async Task Load(){
+        try{ settings = await SpeedifyService.GetSettingsAsync(); error=null; }
+        catch(SpeedifyException ex){ error=ex.Message; }
     }
-
+    async Task Do(Func<Task> f){ await f(); await Load(); }
 }

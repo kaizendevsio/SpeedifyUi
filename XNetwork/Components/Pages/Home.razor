@@ -1,10 +1,11 @@
 ﻿@page "/"
 @using XNetwork.Services
-@inject XNetwork.Services.SpeedifyService S
+@using XNetwork.Components.Custom
+@inject XNetwork.Services.SpeedifyService SpeedifyService
 
 @if (error != null)
 {
-    <ErrorBanner Message="@(error)" Retry="Load" />
+    <ErrorBanner Message="@(error)" Retry="Load"/>
 }
 else if (adapters == null)
 {
@@ -12,38 +13,56 @@ else if (adapters == null)
 }
 else
 {
-    <div class="overflow-x-auto">
+    <!-- mobile: card list -->
+    <div class="space-y-4 sm:hidden">
+        @foreach (var a in adapters)
+        {
+            <div class="bg-white shadow rounded p-4 flex flex-col gap-2">
+                <div class="flex justify-between">
+                    <span class="font-medium">@a.name</span>
+                    <StatePill State="@a.state"/>
+                </div>
+                <div class="text-sm text-gray-600">@a.isp</div>
+                <div class="text-sm">Priority: <span class="font-medium">@a.priority</span></div>
+                <PriorityButtons Adapter="@a" OnChange="Change"/>
+            </div>
+        }
+    </div>
+
+    <div class="hidden sm:block overflow-x-auto">
         <table class="min-w-full bg-white shadow rounded-lg">
             <thead class="bg-gray-50 text-xs uppercase text-gray-600">
-                <tr>
-                    <th class="px-4 py-2">Name</th>
-                    <th class="px-4 py-2">ISP</th>
-                    <th class="px-4 py-2">State</th>
-                    <th class="px-4 py-2">Priority</th>
-                    <th class="px-4 py-2">Actions</th>
-                </tr>
+            <tr>
+                <th class="px-4 py-2">Name</th>
+                <th class="px-4 py-2">ISP</th>
+                <th class="px-4 py-2">State</th>
+                <th class="px-4 py-2">Priority</th>
+                <th class="px-4 py-2">Actions</th>
+            </tr>
             </thead>
             <tbody class="text-sm">
-                @foreach (var a in adapters)
-                {
-                    <tr class="border-t">
-                        <td class="px-4 py-2">@a.name</td>
-                        <td class="px-4 py-2">@a.isp</td>
-                        <td class="px-4 py-2">
-                            <span class="px-2 py-1 rounded text-white @(a.state=="connected"?"bg-green-500":"bg-red-500")">@a.state</span>
-                        </td>
-                        <td class="px-4 py-2">@a.priority</td>
-                        <td class="px-4 py-2">
-                            @foreach (var p in prios)
-                            {
-                                <button class="mx-1 px-2 py-1 rounded border text-xs @(a.priority==p?"bg-blue-500 text-white":"")"
-                                        @onclick="() => Change(a.adapterID,p)">
-                                    @p
-                                </button>
-                            }
-                        </td>
-                    </tr>
-                }
+            @foreach (var a in adapters)
+            {
+                <tr class="border-t">
+                    <td class="px-4 py-2">@a.name</td>
+                    <td class="px-4 py-2">@a.isp</td>
+                    <td class="px-4 py-2">
+                        <span
+                            class="px-2 py-1 rounded text-white @(a.state == "connected" ? "bg-green-500" : "bg-red-500")">@a.state</span>
+                    </td>
+                    <td class="px-4 py-2">@a.priority</td>
+                    <td class="px-4 py-2">
+                        @foreach (var p in prios)
+                        {
+                            <button
+                                class="mx-1 px-2 py-1 rounded border text-xs @(a.priority == p ? "bg-blue-500 text-white" : "")"
+                                @onclick="() => Change((a.adapterID,p))">
+                                @p
+                            </button>
+                        }
+                    </td>
+                </tr>
+            }
             </tbody>
         </table>
     </div>
@@ -56,11 +75,30 @@ else
     string[] prios = ["primary", "secondary", "always", "never"];
 
     protected override async Task OnInitializedAsync() => await Load();
+
     async Task Load()
     {
-        try { adapters = (await S.GetAdaptersAsync()).ToList(); error=null; }
-        catch (SpeedifyException ex){ error = ex.Message; }
+        try
+        {
+            adapters = (await SpeedifyService.GetAdaptersAsync()).ToList();
+            error = null;
+        }
+        catch (SpeedifyException ex)
+        {
+            error = ex.Message;
+        }
     }
-    async Task Change(string id,string p){ await S.SetPriAsync(id,p); await Load(); }
-    async Task Restart()               { await S.RestartAsync(); await Load(); }
+
+    async Task Change((string id, string p) valueTuple)
+    {
+        await SpeedifyService.SetPriorityAsync(valueTuple.id, valueTuple.p);
+        await Load();
+    }
+
+    async Task Restart()
+    {
+        await SpeedifyService.RestartAsync();
+        await Load();
+    }
+
 }

@@ -1,64 +1,71 @@
 ﻿@page "/stats"
+@inject XNetwork.Services.SpeedifyService SpeedifyService
 @using XNetwork.Services
-@inject XNetwork.Services.SpeedifyService S
 @inject IJSRuntime JS
 
 <h2 class="text-lg font-semibold mb-4">Realtime Speeds</h2>
 
-@if (error!=null)
+@if (error != null)
 {
-    <ErrorBanner Message="@error" Retry="Init" />
+    <ErrorBanner Message="@error" Retry="Init"/>
 }
-else if (stats == null)
+else if (adapters == null)
 {
-    <p>Loading…</p>
+    <p class="text-gray-500">Loading…</p>
 }
 else
 {
-    <div class="grid gap-6 md:grid-cols-2">
-        @foreach (var g in graphs)
+    <div class="grid gap-4 sm:grid-cols-2">
+        @foreach (var a in adapters)
         {
-            <canvas id="@g.Id" class="w-full h-60 bg-white shadow rounded"></canvas>
+            <div class="bg-white p-3 rounded shadow">
+                <h3 class="font-medium mb-1">@a.name (@a.isp)</h3>
+                <canvas id="@($"c{a.adapterID}")" class="w-full h-44"></canvas>
+            </div>
         }
     </div>
 }
 
 @code {
-    record G(string Id,string Label,string Adapter);
-    List<G> graphs = new();
-    List<Stats>? stats;
+    IReadOnlyList<Adapter>? adapters;
+    IJSObjectReference? js;
     string? error;
-    IJSObjectReference? mod;
-    DotNetObjectReference<Statistics>? self;
 
     protected override async Task OnInitializedAsync() => await Init();
+
     async Task Init()
     {
         try
         {
-            stats = (await S.GetStatsAsync()).ToList();
-            graphs = stats.Select(s => new G($"c{s.adapter}", s.adapter, s.adapter)).ToList();
-            mod = await JS.InvokeAsync<IJSObjectReference>("import", "/js/charts.js");
-            self = DotNetObjectReference.Create(this);
-            await JS.InvokeVoidAsync("initCharts", graphs.Select(g=>g.Id).ToArray());
-            _ = UpdateLoop(); error=null;
+            adapters = await SpeedifyService.GetAdaptersAsync();
+            js = await JS.InvokeAsync<IJSObjectReference>("import", "/js/charts.js");
+            await js.InvokeVoidAsync("initAll", adapters.Select(a => $"c{a.adapterID}").ToArray());
+            _ = Poll();
         }
-        catch (SpeedifyException ex){ error = ex.Message; }
+        catch (SpeedifyException ex)
+        {
+            error = ex.Message;
+        }
     }
 
-    async Task UpdateLoop()
+    async Task Poll()
     {
         while (true)
         {
             await Task.Delay(1000);
+            if (js == null) break;
             try
             {
-                stats = (await S.GetStatsAsync()).ToList();
-                var down = stats.Select(s=>s.downBps/1_000_000).ToArray();
-                var up   = stats.Select(s=>s.upBps  /1_000_000).ToArray();
-                await mod!.InvokeVoidAsync("updateCharts", down, up);
+                var s = await SpeedifyService.GetStatsAsync();
+                var map = s.ToDictionary(x => x.adapter);
+                var down = adapters!.Select(a => map.TryGetValue(a.adapterID, out var st) ? st.downBps / 1_000_000 : 0).ToArray();
+                var up = adapters!.Select(a => map.TryGetValue(a.adapterID, out var st) ? st.upBps / 1_000_000 : 0).ToArray();
+                await js.InvokeVoidAsync("updateAll", down, up);
             }
-            catch { /* swallow to keep loop alive */ }
+            catch
+            {
+            }
         }
     }
+
 }
