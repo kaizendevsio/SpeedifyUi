@@ -1,4 +1,3 @@
-import Chart from "https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.esm.js";
 let charts=[];
 export function initAll(ids){
     ids.forEach(id=>{
