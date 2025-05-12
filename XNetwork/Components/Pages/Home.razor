@@ -247,9 +247,15 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await base.OnInitializedAsync();
         Console.WriteLine("AdaptersPage: OnInitializedAsync");
-        await LoadDataAsync(); 
-        _initialLoadComplete = true; 
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        Console.WriteLine("AdaptersPage: OnAfterRenderAsync");
+        await base.OnAfterRenderAsync(firstRender);
+        await LoadDataAsync();
         _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadDataAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
