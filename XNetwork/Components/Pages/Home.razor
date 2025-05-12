@@ -1,34 +1,80 @@
 ﻿@page "/"
+@using XNetwork.Models
 @using XNetwork.Services
-@* Assuming these are your custom components - you might need to style them separately *@
 @* @using XNetwork.Components.Custom *@ 
 @inject XNetwork.Services.SpeedifyService SpeedifyService
 
-<PageTitle>Network Adapters</PageTitle>
+<PageTitle>Network Adapters & Status</PageTitle>
 
 <div class="container mx-auto px-4 py-8 font-inter">
-    <h1 class="text-3xl font-bold text-gray-800 mb-6">Network Adapters</h1>
+    
+    <div class="mb-8 p-4 sm:p-6 bg-white shadow-lg rounded-xl border border-gray-200">
+        <div class="flex flex-col sm:flex-row justify-between items-center">
+            <div>
+                <h2 class="text-2xl font-semibold text-gray-800 mb-2">Speedify Status</h2>
+                @if (_speedifySettings == null && string.IsNullOrEmpty(_error))
+                {
+                    <p class="text-gray-500">Loading status...</p>
+                }
+                else if (_speedifySettings != null)
+                {
+                    <div class="flex items-center space-x-3 mb-2">
+                        <span class="px-3 py-1 text-sm font-semibold rounded-full @GetGlobalStatePillClass(_speedifySettings.State)">
+                            @_speedifySettings.State.ToUpper()
+                        </span>
+                        @if (_speedifySettings.State.ToLowerInvariant() == "connected" && !string.IsNullOrEmpty(_speedifySettings.CurrentServerFriendlyName))
+                        {
+                            <span class="text-sm text-gray-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1 text-green-500" viewBox="0 0 20 20" fill="currentColor">
+                                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                                </svg>
+                                Connected to: <strong>@_speedifySettings.CurrentServerFriendlyName</strong> 
+                                @if(!string.IsNullOrEmpty(_speedifySettings.CurrentServerCity) && !string.IsNullOrEmpty(_speedifySettings.CurrentServerCountry))
+                                {
+                                    <span class="text-gray-500">(@_speedifySettings.CurrentServerCity, @_speedifySettings.CurrentServerCountry)</span>
+                                }
+                            </span>
+                        }
+                    </div>
+                    <p class="text-sm text-gray-600">Mode: <span class="font-semibold capitalize">@_speedifySettings.Mode</span> | Encryption: <span class="font-semibold">@(_speedifySettings.Encrypted ? "On" : "Off")</span></p>
+                }
+                 else if (!string.IsNullOrEmpty(_error)) {
+                    <p class="text-sm text-red-600">Could not load Speedify status.</p>
+                }
+            </div>
+            <div class="mt-4 sm:mt-0">
+                <button class="px-4 py-2 bg-yellow-500 text-white font-semibold rounded-lg shadow-md hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-opacity-75 transition-colors duration-150 flex items-center text-sm sm:text-base" 
+                        @onclick="RestartSpeedifyAsync">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+                      <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+                    </svg>
+                    Restart Speedify
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <h1 class="text-2xl sm:text-3xl font-bold text-gray-800 mb-6">Network Adapters</h1>
 
-    @if (!string.IsNullOrEmpty(error))
-    {
+    @if (!string.IsNullOrEmpty(_error) && _adapters == null) {
         <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6" role="alert">
             <p class="font-bold">Error</p>
-            <p>@error</p>
+            <p>@_error</p>
             <button @onclick="LoadDataAsync" class="mt-2 px-3 py-1 bg-red-500 text-white text-sm font-semibold rounded hover:bg-red-600">Retry</button>
         </div>
     }
-    else if (adapters == null)
+    else if (_adapters == null)
     {
         <p class="text-gray-500">Loading adapters...</p>
     }
-    else if (!adapters.Any())
+    else if (!_adapters.Any())
     {
         <p class="text-gray-500">No network adapters found.</p>
     }
     else
     {
         <div class="space-y-4 sm:hidden">
-            @foreach (var adapter in adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
+            @foreach (var adapter in _adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
             {
                 var currentStats = GetStatsForAdapter(adapter.AdapterId);
                 <div class="bg-white shadow-lg rounded-xl p-5 border border-gray-200 hover:shadow-xl transition-shadow duration-300">
@@ -36,14 +82,13 @@
                         <h2 class="text-xl font-semibold text-blue-600">
                             @(!string.IsNullOrEmpty(adapter.Isp) ? adapter.Isp : adapter.Name)
                         </h2>
-                        <span class="px-3 py-1 text-xs font-semibold rounded-full
-                                     @GetStatePillClass(adapter.State)">
+                        <span class="px-3 py-1 text-xs font-semibold rounded-full @GetStatePillClass(adapter.State)">
                             @adapter.State
                         </span>
                     </div>
 
                     <div class="text-sm text-gray-600 mb-1">
-                        <span class="font-medium">Adapter:</span> @adapter.Name 
+                        <span class="font-medium">Adapter:</span> @adapter.Name
                         @if (!string.IsNullOrEmpty(adapter.AdapterId) && adapter.Name != adapter.AdapterId)
                         {
                             <span class="text-gray-500 text-xs">(@adapter.AdapterId)</span>
@@ -51,52 +96,56 @@
                     </div>
                     @if (!string.IsNullOrEmpty(adapter.Type))
                     {
-                        <div class="text-sm text-gray-600 mb-3"><span class="font-medium">Type:</span> @adapter.Type</div>
+                        <div class="text-sm text-gray-600"><span class="font-medium">Type:</span> @adapter.Type</div>
                     }
-                    
+                    @if (!string.IsNullOrEmpty(currentStats?.LocalIp))
+                    {
+                        <div class="text-sm text-gray-600 mb-3"><span
+                                class="font-medium">Local IP:</span> @currentStats.LocalIp</div>
+                    }
+                    else if (currentStats?.PrivateIp != null)
+                    {
+                        <div class="text-sm text-gray-600">
+                            <span class="font-medium">Local IP:</span> @currentStats.PrivateIp
+                        </div>
+                    }
+
+
                     <div class="my-3 p-3 bg-gray-50 rounded-lg">
                         <div class="flex justify-around items-center text-center">
                             <div>
                                 <div class="text-xs text-gray-500 uppercase">Download</div>
-                                <div class="text-lg font-semibold text-green-600">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-.707-3.707l3.5-3.5a1 1 0 00-1.414-1.414L10 10.586 8.621 9.207a1 1 0 00-1.414 1.414l2.5 2.5a1 1 0 001.414 0z" clip-rule="evenodd" />
-                                    </svg>
-                                    @(currentStats != null ? Math.Round(currentStats.DownBps / (1000 * 1000), 2) : 0) <span class="text-xs">Mbps</span>
+                                <div class="text-lg font-semibold text-green-600 flex items-center justify-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5 mr-1" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586L7.707 9.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 10.586V7z" clip-rule="evenodd" /></svg>
+                                    @(currentStats != null ? Math.Round(currentStats.ReceiveBps / (1000 * 1000), 2) : 0) <span class="text-xs ml-1">Mbps</span>
                                 </div>
                             </div>
                             <div>
                                 <div class="text-xs text-gray-500 uppercase">Upload</div>
-                                <div class="text-lg font-semibold text-blue-600">
-                                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.707-12.293l-3.5 3.5a1 1 0 001.414 1.414L10 9.414l1.379 1.379a1 1 0 001.414-1.414l-2.5-2.5a1 1 0 00-1.414 0z" clip-rule="evenodd" />
-                                    </svg>
-                                    @(currentStats != null ? Math.Round(currentStats.UpBps / (1000 * 1000), 2) : 0) <span class="text-xs">Mbps</span>
+                                <div class="text-lg font-semibold text-blue-600 flex items-center justify-center">
+                                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 sm:h-5 sm:w-5 mr-1" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 2a8 8 0 100 16 8 8 0 000-16zm-1 11a1 1 0 102 0V9.414l1.293 1.293a1 1 0 001.414-1.414l-3-3a1 1 0 00-1.414 0l-3 3a1 1 0 101.414 1.414L9 9.414V13z" clip-rule="evenodd" /></svg>
+                                    @(currentStats != null ? Math.Round(currentStats.SendBps / (1000 * 1000), 2) : 0) <span class="text-xs ml-1">Mbps</span>
                                 </div>
                             </div>
                         </div>
-                         @if (currentStats != null)
+                        @if (currentStats != null)
                         {
-                            <div class="text-center mt-2 text-xs text-gray-500">
-                                RTT: @currentStats.RttMs ms | Loss: @Math.Round(currentStats.LossPct,1)%
+                            <div class="text-center mt-2 text-xs text-gray-500">RTT: @currentStats.LatencyMs ms |
+                                Loss (DL / UL): @Math.Round(currentStats.LossReceive, 1)% / @Math.Round(currentStats.LossSend, 1)%
                             </div>
                         }
                     </div>
 
                     <div class="mt-3">
-                        <div class="text-sm mb-1"><span class="font-medium">Priority:</span> <span class="capitalize">@adapter.Priority</span></div>
-                        <div class="flex flex-wrap gap-2">
-                            @foreach (var p in prios)
+                        <label for="priority-select-@adapter.AdapterId" class="block text-sm font-medium text-gray-700 mb-1">Priority:</label>
+                        <select id="priority-select-@adapter.AdapterId" 
+                                class="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm capitalize"
+                                @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value.ToString())">
+                            @foreach (var p in _prios)
                             {
-                                <button class="px-3 py-1.5 text-xs font-medium rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1
-                                             @(adapter.Priority == p 
-                                                ? "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500" 
-                                                : "bg-gray-200 text-gray-700 hover:bg-gray-300 focus:ring-indigo-500")"
-                                        @onclick="() => ChangePriority(adapter.AdapterId, p)">
-                                    @p.ToUpper()
-                                </button>
+                                <option value="@p" selected="@(adapter.Priority == p)">@p</option>
                             }
-                        </div>
+                        </select>
                     </div>
                 </div>
             }
@@ -106,95 +155,84 @@
             <table class="min-w-full bg-white">
                 <thead class="bg-gray-700 text-gray-50">
                     <tr>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Adapter Name</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">ISP</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Adapter / ISP</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">IP (Local/Public)</th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">State</th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">DL / UL (Mbps)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">RTT (ms) / Loss (%)</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">RTT (ms)</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Loss (%) DL / UP </th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Priority</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Actions</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200 text-sm">
-                    @foreach (var adapter in adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
+                    @foreach (var adapter in _adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
                     {
                         var currentStats = GetStatsForAdapter(adapter.AdapterId);
                         <tr class="hover:bg-gray-50 transition-colors duration-150">
-                            <td class="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
-                                @adapter.Name
-                                @if (!string.IsNullOrEmpty(adapter.Type))
-                                {
-                                    <div class="text-xs text-gray-500">@adapter.Type</div>
-                                }
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-700">@adapter.Isp</td>
                             <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="px-3 py-1 text-xs font-semibold rounded-full leading-tight @GetStatePillClass(adapter.State)">
-                                    @adapter.State
-                                </span>
+                                <div class="font-medium text-gray-900">@adapter.Name</div>
+                                <div class="text-xs text-gray-500">@adapter.Isp @(!string.IsNullOrEmpty(adapter.Type) ? $"({adapter.Type})" : "")</div>
                             </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-700">
-                                @if (currentStats != null)
-                                {
-                                    <span class="text-green-600">@Math.Round(currentStats.DownBps / (1000 * 1000), 2) /</span> 
-                                    <span class ="text-blue-600" > @Math.Round(currentStats.UpBps / (1000 * 1000), 2) </span>
-                                }
-                                else
-                                {
-                                    <text>N/A</text>
-                                }
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-700">
-                                @if (currentStats != null)
-                                {
-                                    <span>@currentStats.RttMs /</span> 
-                                    <span> @Math.Round(currentStats.LossPct, 1) % </span>
-                                }
-                                else
-                                {
-                                    <text>N/A</text>
-                                }
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap capitalize text-gray-700">@adapter.Priority</td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <div class="flex space-x-1">
-                                    @foreach (var p in prios)
-                                    {
-                                        <button class="px-2.5 py-1.5 text-xs font-medium rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-1
-                                                     @(adapter.Priority == p 
-                                                        ? "bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500" 
-                                                        : "bg-gray-200 text-gray-700 hover:bg-gray-300 focus:ring-indigo-500")"
-                                                @onclick="() => ChangePriority(adapter.AdapterId, p)">
-                                            @p.ToUpper()
-                                        </button>
+                            <td class="px-6 py-4 whitespace-nowrap text-gray-700 text-xs">
+                                @if(currentStats != null) {
+                                    <div>@currentStats.PrivateIp</div>
+                                    @if(currentStats.LocalIp != currentStats.PrivateIp && !string.IsNullOrEmpty(currentStats.LocalIp)) {
+                                        <div class="text-gray-500">(@currentStats.LocalIp)</div>
                                     }
-                                </div>
+                                } else { <text>N/A</text>}
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <span class="px-3 py-1 text-xs font-semibold rounded-full leading-tight @GetStatePillClass(adapter.State)"> @adapter.State </span>
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap text-gray-700">
+                                @if (currentStats != null) {
+                                    <span class="text-green-600">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 2) /</span>  
+                                    <span class="text-blue-600">@Math.Round(currentStats.SendBps / (1000 * 1000), 2)</span>
+                                } else { <text>N/A</text> }
+                            </td>
+                             <td class="px-6 py-4 whitespace-nowrap text-gray-700">
+                                @if (currentStats != null) {
+                                    <span>@currentStats.LatencyMs</span>
+                                } else { <text>N/A</text> }
+                            </td>
+                             <td class="px-6 py-4 whitespace-nowrap text-gray-700">
+                                @if (currentStats != null) {
+                                    <span>@Math.Round(currentStats.LossReceive, 1)% /</span>
+                                    <span>@Math.Round(currentStats.LossSend, 1)%</span>
+                                } else { <text>N/A</text> }
+                            </td>
+                            <td class="px-6 py-4 whitespace-nowrap">
+                                <select class="block w-full pl-2 pr-8 py-1.5 text-xs border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 rounded-md shadow-sm capitalize"
+                                        @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value.ToString())">
+                                    @foreach (var p in _prios)
+                                    {
+                                        <option value="@p" selected="@(adapter.Priority == p)">@p</option>
+                                    }
+                                </select>
                             </td>
                         </tr>
                     }
                 </tbody>
             </table>
         </div>
-        <button class="mt-8 px-6 py-2 bg-yellow-500 text-white font-semibold rounded-lg shadow-md hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-opacity-75 transition-colors duration-150" 
-                @onclick="RestartSpeedifyAsync">
-            Restart Speedify
-        </button>
     }
 </div>
 
 @code {
-    private IReadOnlyList<Adapter>? adapters;
-    private Dictionary<string, Stats> currentAdapterStats = new Dictionary<string, Stats>();
-    private string? error;
-    private readonly string[] prios = ["automatic", "always", "secondary", "backup", "never"]; 
+    private IReadOnlyList<Adapter>? _adapters;
+    private Dictionary<string, ConnectionItem> _currentAdapterStats = new();
+    private Settings? _speedifySettings; // For global status
+    private string? _error;
+    private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"]; 
 
     private Timer? _autoRefreshTimer;
 
     protected override async Task OnInitializedAsync()
     {
         Console.WriteLine("AdaptersPage: OnInitializedAsync");
-        await LoadDataAsync();
-        _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadDataAsync), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        await LoadDataAsync(); // Initial load
+        // Setup timer for auto-refresh, ensuring it calls LoadDataAsync on the UI thread
+        _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadDataAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
     private async Task LoadDataAsync()
@@ -202,63 +240,58 @@
         Console.WriteLine("AdaptersPage: LoadDataAsync called");
         try
         {
+            // Fetch adapters and global settings concurrently
             var adaptersTask = SpeedifyService.GetAdaptersAsync();
+            //var settingsTask = SpeedifyService.GetSettingsAsync(); // Fetch global settings
             
-            var newStats = new Dictionary<string, Stats>();
+            var newStats = new Dictionary<string, ConnectionItem>();
+            // Short timeout for stats as it's a stream and we just want a snapshot
             var statsCts = new CancellationTokenSource(TimeSpan.FromSeconds(1.5)); 
             try
             {
                 await foreach (var statEntry in SpeedifyService.GetStatsAsync(statsCts.Token))
                 {
-                    newStats[statEntry.Adapter] = statEntry; 
+                    newStats[statEntry.AdapterId] = statEntry; 
                 }
             }
-            catch(OperationCanceledException)
-            {
-                 Console.WriteLine("AdaptersPage: Stats fetching cancelled due to timeout during LoadDataAsync.");
-            }
-            catch(Exception ex)
-            {
-                 Console.WriteLine($"AdaptersPage: Error fetching stats during LoadDataAsync: {ex.Message}");
-            }
-            finally{
-                statsCts.Dispose();
-            }
+            catch(OperationCanceledException) { /* Expected if stream doesn't complete quickly */ }
+            catch(Exception ex) { Console.WriteLine($"AdaptersPage: Error fetching stats: {ex.Message}"); }
+            finally { statsCts.Dispose(); }
 
-            adapters = await adaptersTask;
-            currentAdapterStats = newStats; 
-            error = null;
+            _adapters = await adaptersTask;
+            //_speedifySettings = await settingsTask; // Store global settings
+            _currentAdapterStats = newStats; 
+            _error = null; // Clear previous error on successful load
         }
         catch (SpeedifyException ex)
         {
-            error = ex.Message;
-            Console.WriteLine($"AdaptersPage: SpeedifyException in LoadDataAsync: {ex.Message}");
+            _error = ex.Message;
+            Console.WriteLine($"AdaptersPage: SpeedifyException: {ex.Message}");
         }
         catch (Exception ex)
         {
-            error = $"An unexpected error occurred: {ex.Message}";
-             Console.WriteLine($"AdaptersPage: Generic Exception in LoadDataAsync: {ex.Message}");
+            _error = $"An unexpected error occurred: {ex.Message}";
+            Console.WriteLine($"AdaptersPage: Generic Exception: {ex.Message}");
         }
         await InvokeAsync(StateHasChanged); 
     }
 
-    private Stats? GetStatsForAdapter(string AdapterId)
+    private ConnectionItem? GetStatsForAdapter(string adapterId)
     {
-        currentAdapterStats.TryGetValue(AdapterId, out var stats);
+        _currentAdapterStats.TryGetValue(adapterId, out var stats);
         return stats;
     }
 
-    private async Task ChangePriority(string AdapterId, string newPriority)
+    private async Task ChangePriority(string adapterId, string? newPriority)
     {
+        if (string.IsNullOrEmpty(newPriority)) return;
         try
         {
-            await SpeedifyService.SetPriorityAsync(AdapterId, newPriority);
+            Console.WriteLine($"AdaptersPage: Changing priority for {adapterId} to {newPriority}");
+            await SpeedifyService.SetPriorityAsync(adapterId, newPriority);
             await LoadDataAsync(); 
         }
-        catch (SpeedifyException ex)
-        {
-            error = ex.Message;
-        }
+        catch (SpeedifyException ex) { _error = ex.Message; }
     }
 
     private async Task RestartSpeedifyAsync()
@@ -266,39 +299,34 @@
         try
         {
             await SpeedifyService.RestartAsync();
-            await Task.Delay(1000); 
+            await Task.Delay(2000); // Give Speedify a moment to restart
             await LoadDataAsync(); 
         }
-        catch (SpeedifyException ex)
-        {
-            error = ex.Message;
-        }
+        catch (SpeedifyException ex) { _error = ex.Message; }
     }
 
-    private string GetStatePillClass(string state)
+    private string GetStatePillClass(string state) => state.ToLowerInvariant() switch
     {
-        return state.ToLowerInvariant() switch
-        {
-            "connected" => "bg-green-100 text-green-700",
-            "connecting" => "bg-yellow-100 text-yellow-700",
-            "disconnecting" => "bg-orange-100 text-orange-700",
-            "disconnected" => "bg-red-100 text-red-700",
-            _ => "bg-gray-100 text-gray-700",
-        };
-    }
+        "connected" => "bg-green-100 text-green-700",
+        "connecting" => "bg-yellow-100 text-yellow-700",
+        "disconnecting" => "bg-orange-100 text-orange-700",
+        "disconnected" => "bg-red-100 text-red-700",
+        _ => "bg-gray-100 text-gray-700",
+    };
+    
+    private string GetGlobalStatePillClass(string state) => state.ToLowerInvariant() switch
+    {
+        "connected" => "bg-green-500 text-white",
+        "connecting" => "bg-yellow-500 text-white",
+        "disconnecting" => "bg-orange-500 text-white",
+        "disconnected" => "bg-red-500 text-white",
+        _ => "bg-gray-500 text-white",
+    };
 
-    // Helper method to define sort order for adapter states
-    private int GetSortOrderForState(string state)
+    private int GetSortOrderForState(string state) => state.ToLowerInvariant() switch
     {
-        return state.ToLowerInvariant() switch
-        {
-            "connected" => 0,
-            "connecting" => 1,
-            "disconnecting" => 2, // Or another intermediate state
-            "disconnected" => 3,
-            _ => 4, // Other states last
-        };
-    }
+        "connected" => 0, "connecting" => 1, "disconnecting" => 2, "disconnected" => 3, _ => 4,
+    };
 
     public void Dispose()
     {

@@ -6,18 +6,19 @@ using XNetwork.Models;
 
 namespace XNetwork.Services;
 
-public record Adapter(
-    string AdapterId,
-    string Name,
-    string Isp,
-    string State,
-    string Priority,
-    string WorkingPriority,
-    string Type);
 
-public record Stats(string Adapter, double DownBps, double UpBps, double RttMs, double LossPct);
-
-public record Settings(string Mode, bool AutoStart, bool Encrypted);
+// In SpeedifyService.cs
+public record Settings(
+    string Mode,
+    bool AutoStart,
+    bool Encrypted,
+    string State, // e.g., "connected", "disconnected"
+    string? CurrentServerFriendlyName,
+    string? CurrentServerCountry,
+    string? CurrentServerCity
+    // Add other fields from 'status -j' as needed, like public IP of the VPN
+    // string? PublicIpAddress 
+);
 
 public class SpeedifyException(string message) : Exception(message);
 
@@ -215,37 +216,10 @@ public class SpeedifyService
 
     public async Task<Settings> GetSettingsAsync(CancellationToken cancellationToken = default)
     {
-        try
-        {
-            var rawJson = await Task.Run(() => RunTerminatingCommand("status -j"), cancellationToken)
-                .ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(rawJson);
-            var root = doc.RootElement;
-            return new Settings(
-                root.GetProperty("mode").GetString() ?? "unknown",
-                root.GetProperty("autoStart").GetBoolean(),
-                root.GetProperty("encrypted").GetBoolean());
-        }
-        catch (SpeedifyException ex) // Catch specific exception from RunTerminatingCommand
-        {
-            Console.WriteLine(
-                $"SpeedifyService: 'status -j' failed ({ex.Message}), falling back to plain text 'status'.");
-            var txt = await Task.Run(() => RunTerminatingCommand("status"), cancellationToken).ConfigureAwait(false);
-
-            string GrabValue(string key) =>
-                txt.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                    .FirstOrDefault(l => l.Contains(key, StringComparison.OrdinalIgnoreCase))?
-                    .Split(':')
-                    .LastOrDefault()?.Trim() ?? "";
-
-            return new Settings(
-                GrabValue("Mode").ToLowerInvariant(),
-                GrabValue("AutoStart").Equals("on", StringComparison.OrdinalIgnoreCase),
-                GrabValue("Encrypted").Equals("yes", StringComparison.OrdinalIgnoreCase));
-        }
+        throw new AbandonedMutexException();
     }
 
-    public async IAsyncEnumerable<Stats> GetStatsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<ConnectionItem> GetStatsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await foreach (var jsonDocString in StreamCommandOutputAsync("stats", cancellationToken).ConfigureAwait(false))
         {
@@ -259,8 +233,7 @@ public class SpeedifyService
             }
             catch (JsonException ex)
             {
-                Console.WriteLine(
-                    $"SpeedifyService: Error deserializing root stats JSON array: '{jsonDocString.Substring(0, Math.Min(jsonDocString.Length, 200))}'. Error: {ex.Message}");
+                Console.WriteLine($"SpeedifyService: Error deserializing root stats JSON array: '{jsonDocString.Substring(0, Math.Min(jsonDocString.Length, 200))}'. Error: {ex.Message}");
                 continue; // Skip this malformed document
             }
 
@@ -297,13 +270,7 @@ public class SpeedifyService
                         !conn.ConnectionId.EndsWith("%proxy")) // Filter out proxy connections
                     {
                         // This yield is now outside a try-catch that would violate CS1626/CS1627
-                        yield return new Stats(
-                            Adapter: conn.AdapterId,
-                            DownBps: conn.ReceiveBps,
-                            UpBps: conn.SendBps,
-                            RttMs: conn.LatencyMs,
-                            LossPct: conn.LossSend * 100.0 // Convert fraction to percentage
-                        );
+                        yield return conn;
                     }
                 }
             }

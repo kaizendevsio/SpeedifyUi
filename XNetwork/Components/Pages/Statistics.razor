@@ -1,6 +1,7 @@
 ﻿@page "/statistics"
 @inject XNetwork.Services.SpeedifyService SpeedifyService
 @inject IJSRuntime JSRuntime
+@using XNetwork.Models
 @implements IAsyncDisposable
 
 <PageTitle>Live Statistics & Charts</PageTitle>
@@ -34,18 +35,18 @@
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">DL (Mbps)</th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">UL (Mbps)</th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">RTT (ms)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">Loss (%)</th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">Loss (DL / UL) (%)</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
-                    @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.Adapter)))
+                    @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.AdapterId)))
                     {
                         <tr class="hover:bg-gray-50">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">@GetAdapterDisplayName(stat.Adapter)</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.DownBps / (1000 * 1000), 2))</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.UpBps / (1000 * 1000), 2))</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@stat.RttMs</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@Math.Round(stat.LossPct, 2)</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">@GetAdapterDisplayName(stat.AdapterId)</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.ReceiveBps / (1000 * 1000), 2))</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.SendBps / (1000 * 1000), 2))</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@stat.LatencyMs</td>
+                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@Math.Round(stat.LossReceive, 2)% / @Math.Round(stat.LossSend, 2)%</td>
                         </tr>
                     }
                 </tbody>
@@ -53,15 +54,15 @@
         </div>
 
         <div class="sm:hidden grid grid-cols-1 gap-4 mb-6">
-            @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.Adapter)))
+            @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.AdapterId)))
             {
                 <div class="bg-white shadow-lg rounded-lg p-4 border border-gray-200">
-                    <h3 class="text-lg font-semibold text-blue-600 mb-2">@GetAdapterDisplayName(stat.Adapter)</h3>
+                    <h3 class="text-lg font-semibold text-blue-600 mb-2">@GetAdapterDisplayName(stat.AdapterId)</h3>
                     <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                        <span class="font-medium text-gray-600">Download:</span> <span class="text-gray-800">@(Math.Round(stat.DownBps / (1000 * 1000), 2)) Mbps</span>
-                        <span class="font-medium text-gray-600">Upload:</span> <span class="text-gray-800">@(Math.Round(stat.UpBps / (1000 * 1000), 2)) Mbps</span>
-                        <span class="font-medium text-gray-600">RTT:</span> <span class="text-gray-800">@stat.RttMs ms</span>
-                        <span class="font-medium text-gray-600">Loss:</span> <span class="text-gray-800">@Math.Round(stat.LossPct, 2) %</span>
+                        <span class="font-medium text-gray-600">Download:</span> <span class="text-gray-800">@(Math.Round(stat.ReceiveBps / (1000 * 1000), 2)) Mbps</span>
+                        <span class="font-medium text-gray-600">Upload:</span> <span class="text-gray-800">@(Math.Round(stat.SendBps / (1000 * 1000), 2)) Mbps</span>
+                        <span class="font-medium text-gray-600">RTT:</span> <span class="text-gray-800">@stat.LatencyMs ms</span>
+                        <span class="font-medium text-gray-600">Loss (DL / UL):</span> <span class="text-gray-800">@Math.Round(stat.LossReceive, 2)% / @Math.Round(stat.LossSend, 2)%</span>
                     </div>
                 </div>
             }
@@ -138,8 +139,8 @@
 </div>
 
 @code {
-    private List<XNetwork.Services.Stats> _stats = new List<XNetwork.Services.Stats>();
-    private List<XNetwork.Services.Adapter> _adapters = new List<XNetwork.Services.Adapter>();
+    private List<ConnectionItem> _stats = new();
+    private List<Adapter> _adapters = new();
     private CancellationTokenSource? _statsCts;
 
     private bool isInitialLoading = true;
@@ -366,20 +367,23 @@
             {
                 if (isInitialLoading) isInitialLoading = false;
 
-                var existingStatIndex = _stats.FindIndex(s => s.Adapter == statEntry.Adapter);
+                var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
 
-                string adapterDisplayName = GetAdapterDisplayName(statEntry.Adapter);
-                _batchedChartData["downloadChart"][adapterDisplayName] = Math.Round(statEntry.DownBps / (1000 * 1000), 2);
-                _batchedChartData["uploadChart"][adapterDisplayName] = Math.Round(statEntry.UpBps / (1000 * 1000), 2);
-                _batchedChartData["rttChart"][adapterDisplayName] = statEntry.RttMs;
-                _batchedChartData["lossChart"][adapterDisplayName] = Math.Round(statEntry.LossPct, 2);
+                string adapterDisplayName = GetAdapterDisplayName(statEntry.AdapterId);
+                _batchedChartData["downloadChart"][adapterDisplayName] = Math.Round(statEntry.ReceiveBps / (1000 * 1000), 2);
+                _batchedChartData["uploadChart"][adapterDisplayName] = Math.Round(statEntry.SendBps / (1000 * 1000), 2);
+                _batchedChartData["rttChart"][adapterDisplayName] = statEntry.LatencyMs;
+                _batchedChartData["lossChart"][adapterDisplayName] = Math.Round(statEntry.LossReceive + statEntry.LossSend, 2);
                 
                 await InvokeAsync(StateHasChanged); 
             }
         }
-        catch (OperationCanceledException) { Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Statistics streaming was canceled."); }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Statistics streaming was canceled.");
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Error during statistics streaming: {ex.Message}\n{ex.StackTrace}");
