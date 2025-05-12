@@ -98,7 +98,7 @@
                 <div class="bg-white shadow-lg rounded-xl p-5 border border-gray-200 hover:shadow-xl transition-shadow duration-300">
                     <div class="flex justify-between items-start mb-2">
                         <h2 class="text-xl font-semibold text-blue-600">
-                            @(!string.IsNullOrEmpty(adapter.Isp) ? adapter.Isp : adapter.Name) > @adapter.AdapterId
+                            @GetAdapterDisplayName(adapter.AdapterId)
                         </h2>
                         <span class="px-3 py-1 text-xs font-semibold rounded-full @GetStatePillClass(adapter.State)">
                             @adapter.State
@@ -236,12 +236,12 @@
 
 @code {
     private IReadOnlyList<Adapter>? _adapters;
-    private Dictionary<string, ConnectionItem> _currentAdapterStats = new();
+    private List<ConnectionItem> _stats = new();
     private Settings? _speedifySettings; 
     private string? _error;
+    private CancellationTokenSource? _statsCts;
     private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"]; 
 
-    private Timer? _autoRefreshTimer;
     private bool _initialLoadComplete = false; 
     private bool _isProcessingAction = false; 
 
@@ -256,37 +256,33 @@
         Console.WriteLine("AdaptersPage: OnAfterRenderAsync");
         await base.OnAfterRenderAsync(firstRender);
         await LoadDataAsync();
-        _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadDataAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
+    private string GetAdapterDisplayName(string adapterId)
+    {
+        var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
+        return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp}" : adapter.Name : adapterId;
+    }
+    
     private async Task LoadDataAsync()
     {
         if (_isProcessingAction && _initialLoadComplete) return; 
 
         Console.WriteLine("AdaptersPage: LoadDataAsync called");
-        
+        _statsCts = new CancellationTokenSource();
         try
         {
-            var adaptersTask = SpeedifyService.GetAdaptersAsync();
-            var settingsTask = SpeedifyService.GetSettingsAsync(); 
-            
-            var newStats = new Dictionary<string, ConnectionItem>();
-            var statsCts = new CancellationTokenSource(TimeSpan.FromSeconds(1.5)); 
-            try
+            await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
             {
-                await foreach (var statEntry in SpeedifyService.GetStatsAsync(statsCts.Token)) 
-                {
-                    newStats[statEntry.AdapterId] = statEntry; 
-                }
-            }
-            catch(OperationCanceledException) { /* Expected */ }
-            catch(Exception ex) { Console.WriteLine($"AdaptersPage: Error fetching stats: {ex.Message}"); }
-            finally { statsCts.Dispose(); }
+                _adapters = await SpeedifyService.GetAdaptersAsync();
+                _speedifySettings = await SpeedifyService.GetSettingsAsync();
 
-            _adapters = await adaptersTask;
-            _speedifySettings = await settingsTask; 
-            _currentAdapterStats = newStats; 
-            _error = null; 
+                var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
+                if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
+                else _stats.Add(statEntry);
+                
+                await InvokeAsync(StateHasChanged); 
+            }
         }
         catch (SpeedifyException ex)
         {
@@ -302,13 +298,11 @@
         {
             if (!_initialLoadComplete) _initialLoadComplete = true; 
         }
-        await InvokeAsync(StateHasChanged); 
     }
 
     private ConnectionItem? GetStatsForAdapter(string adapterId)
     {
-        _currentAdapterStats.TryGetValue(adapterId, out var stats);
-        return stats;
+        return _stats.FirstOrDefault(x => x.AdapterId == adapterId);
     }
 
     private async Task ChangePriority(string adapterId, string? newPriority)
@@ -376,9 +370,11 @@
 
     public async ValueTask DisposeAsync()
     {
-        if (_autoRefreshTimer != null)
+        if (_statsCts != null)
         {
-            await _autoRefreshTimer.DisposeAsync();
+            if (!_statsCts.IsCancellationRequested) await _statsCts.CancelAsync();
+            _statsCts.Dispose(); 
+            _statsCts = null;
         }
         Console.WriteLine("AdaptersPage: Disposed");
     }
