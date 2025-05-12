@@ -78,7 +78,7 @@
         <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6" role="alert">
             <p class="font-bold">Error Loading Adapters</p>
             <p>@_error</p>
-            <button @onclick="LoadDataAsync" class="mt-2 px-3 py-1 bg-red-500 text-white text-sm font-semibold rounded hover:bg-red-600" disabled="@_isProcessingAction">Retry</button>
+            <button @onclick="StreamSpeedifyDataAsync" class="mt-2 px-3 py-1 bg-red-500 text-white text-sm font-semibold rounded hover:bg-red-600" disabled="@_isProcessingAction">Retry</button>
         </div>
     }
     else if (_adapters == null && !_initialLoadComplete) 
@@ -240,22 +240,23 @@
     private Settings? _speedifySettings; 
     private string? _error;
     private CancellationTokenSource? _statsCts;
+    private Timer? _autoRefreshTimer;
     private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"]; 
 
     private bool _initialLoadComplete = false; 
     private bool _isProcessingAction = false; 
 
-    protected override async Task OnInitializedAsync()
-    {
-        await base.OnInitializedAsync();
-        Console.WriteLine("AdaptersPage: OnInitializedAsync");
-    }
-
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         Console.WriteLine("AdaptersPage: OnAfterRenderAsync");
         await base.OnAfterRenderAsync(firstRender);
-        await LoadDataAsync();
+
+        if (firstRender)
+        {
+            _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+            await InvokeAsync(LoadAdaptersAndSettingsAsync);
+            await StreamSpeedifyDataAsync();
+        }
     }
 
     private string GetAdapterDisplayName(string adapterId)
@@ -263,20 +264,24 @@
         var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
         return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp}" : adapter.Name : adapterId;
     }
+
+    private async Task LoadAdaptersAndSettingsAsync()
+    {
+        _adapters = await SpeedifyService.GetAdaptersAsync();
+        _speedifySettings = await SpeedifyService.GetSettingsAsync();
+        await InvokeAsync(StateHasChanged);
+    }
     
-    private async Task LoadDataAsync()
+    private async Task StreamSpeedifyDataAsync()
     {
         if (_isProcessingAction && _initialLoadComplete) return; 
 
-        Console.WriteLine("AdaptersPage: LoadDataAsync called");
+        Console.WriteLine("AdaptersPage: StreamDataAsync called");
         _statsCts = new CancellationTokenSource();
         try
         {
             await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
             {
-                _adapters = await SpeedifyService.GetAdaptersAsync();
-                _speedifySettings = await SpeedifyService.GetSettingsAsync();
-
                 var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
@@ -315,7 +320,7 @@
         {
             Console.WriteLine($"AdaptersPage: Changing priority for {adapterId} to {newPriority}");
             await SpeedifyService.SetPriorityAsync(adapterId, newPriority);
-            await LoadDataAsync(); 
+            await StreamSpeedifyDataAsync(); 
         }
         catch (SpeedifyException ex) { _error = ex.Message; }
         finally
@@ -335,7 +340,7 @@
         {
             await SpeedifyService.RestartAsync();
             await Task.Delay(2000); 
-            await LoadDataAsync(); 
+            await StreamSpeedifyDataAsync(); 
         }
         catch (SpeedifyException ex) { _error = ex.Message; }
         finally
@@ -376,6 +381,12 @@
             _statsCts.Dispose(); 
             _statsCts = null;
         }
+        
+        if (_autoRefreshTimer != null)
+        {
+            await _autoRefreshTimer.DisposeAsync();
+        }
+        
         Console.WriteLine("AdaptersPage: Disposed");
     }
 }
