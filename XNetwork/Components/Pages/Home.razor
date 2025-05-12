@@ -268,7 +268,7 @@
     private async Task LoadAdaptersAndSettingsAsync()
     {
         _adapters = await SpeedifyService.GetAdaptersAsync();
-        _speedifySettings = await SpeedifyService.GetSettingsAsync();
+        //_speedifySettings = await SpeedifyService.GetSettingsAsync();
         await InvokeAsync(StateHasChanged);
     }
     
