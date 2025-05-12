@@ -1,0 +1,21 @@
+﻿<div class="flex flex-col items-center justify-center p-4 @ContainerClass">
+    <div class="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin @SpinnerClass"></div>
+    @if (!string.IsNullOrWhiteSpace(Message))
+    {
+        <p class="mt-3 text-sm text-gray-600 @MessageClass">@Message</p>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string Message { get; set; } = "Loading...";
+
+    [Parameter]
+    public string SpinnerClass { get; set; } = ""; // e.g., "w-16 h-16 border-t-4" for larger spinner
+
+    [Parameter]
+    public string MessageClass { get; set; } = ""; // e.g., "text-lg font-semibold"
+
+    [Parameter]
+    public string ContainerClass { get; set; } = ""; // e.g., "py-10" for more vertical padding
+}

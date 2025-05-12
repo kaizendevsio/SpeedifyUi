@@ -1,9 +1,8 @@
 ﻿@page "/"
-@using XNetwork.Models
-@using XNetwork.Services
-@* @using XNetwork.Components.Custom *@ 
-@inject XNetwork.Services.SpeedifyService SpeedifyService
-@implements IAsyncDisposable
+@using XNetwork.Models @using XNetwork.Services
+@using XNetwork.Components.Custom
+@inject SpeedifyService SpeedifyService
+@implements IAsyncDisposable 
 
 <PageTitle>Network Adapters & Status</PageTitle>
 
@@ -13,9 +12,19 @@
         <div class="flex flex-col sm:flex-row justify-between items-center">
             <div>
                 <h2 class="text-2xl font-semibold text-gray-800 mb-2">Speedify Status</h2>
-                @if (_speedifySettings == null && string.IsNullOrEmpty(_error))
+                @if (_speedifySettings == null && string.IsNullOrEmpty(_error) && _initialLoadComplete) 
                 {
-                    <p class="text-gray-500">Loading status...</p>
+                    <Preloader Message="Loading status..." 
+                               ContainerClass="py-2 items-start" 
+                               MessageClass="text-xs ml-2" 
+                               SpinnerClass="w-5 h-5 border-2"/>
+                }
+                else if (_speedifySettings == null && string.IsNullOrEmpty(_error) && !_initialLoadComplete)
+                {
+                    <Preloader Message="Loading status..." 
+                               ContainerClass="py-2 items-start" 
+                               MessageClass="text-xs ml-2" 
+                               SpinnerClass="w-5 h-5 border-2"/> 
                 }
                 else if (_speedifySettings != null)
                 {
@@ -26,26 +35,33 @@
                         @if (_speedifySettings.State.ToLowerInvariant() == "connected" && !string.IsNullOrEmpty(_speedifySettings.CurrentServerFriendlyName))
                         {
                             <span class="text-sm text-gray-700">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1 text-green-500" viewBox="0 0 20 20" fill="currentColor">
-                                  <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 inline-block mr-1 text-green-500"
+                                     viewBox="0 0 20 20" fill="currentColor">
+                                  <path fill-rule="evenodd"
+                                        d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                                        clip-rule="evenodd"/>
                                 </svg>
-                                Connected to: <strong>@_speedifySettings.CurrentServerFriendlyName</strong> 
-                                @if(!string.IsNullOrEmpty(_speedifySettings.CurrentServerCity) && !string.IsNullOrEmpty(_speedifySettings.CurrentServerCountry))
+                                Connected to: <strong>@_speedifySettings.CurrentServerFriendlyName</strong>
+                                @if (!string.IsNullOrEmpty(_speedifySettings.CurrentServerCity) && !string.IsNullOrEmpty(_speedifySettings.CurrentServerCountry))
                                 {
-                                    <span class="text-gray-500">(@_speedifySettings.CurrentServerCity, @_speedifySettings.CurrentServerCountry)</span>
+                                    <span
+                                        class="text-gray-500">(@_speedifySettings.CurrentServerCity, @_speedifySettings.CurrentServerCountry)</span>
                                 }
                             </span>
                         }
                     </div>
-                    <p class="text-sm text-gray-600">Mode: <span class="font-semibold capitalize">@_speedifySettings.Mode</span> | Encryption: <span class="font-semibold">@(_speedifySettings.Encrypted ? "On" : "Off")</span></p>
+                    <p class="text-sm text-gray-600">Mode: <span
+                            class="font-semibold capitalize">@_speedifySettings.Mode</span> | Encryption: <span
+                            class="font-semibold">@(_speedifySettings.Encrypted ? "On" : "Off")</span></p>
                 }
-                 else if (!string.IsNullOrEmpty(_error)) {
+                else if (!string.IsNullOrEmpty(_error))
+                {
                     <p class="text-sm text-red-600">Could not load Speedify status.</p>
                 }
             </div>
             <div class="mt-4 sm:mt-0">
                 <button class="px-4 py-2 bg-yellow-500 text-white font-semibold rounded-lg shadow-md hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-opacity-75 transition-colors duration-150 flex items-center text-sm sm:text-base" 
-                        @onclick="RestartSpeedifyAsync">
+                        @onclick="RestartSpeedifyAsync" disabled="@_isProcessingAction">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
                       <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
                     </svg>
@@ -57,22 +73,23 @@
     
     <h1 class="text-2xl sm:text-3xl font-bold text-gray-800 mb-6">Network Adapters</h1>
 
-    @if (!string.IsNullOrEmpty(_error) && _adapters == null) {
+    @if (!string.IsNullOrEmpty(_error) && _adapters == null && !_initialLoadComplete) 
+    {
         <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-6" role="alert">
-            <p class="font-bold">Error</p>
+            <p class="font-bold">Error Loading Adapters</p>
             <p>@_error</p>
-            <button @onclick="LoadDataAsync" class="mt-2 px-3 py-1 bg-red-500 text-white text-sm font-semibold rounded hover:bg-red-600">Retry</button>
+            <button @onclick="LoadDataAsync" class="mt-2 px-3 py-1 bg-red-500 text-white text-sm font-semibold rounded hover:bg-red-600" disabled="@_isProcessingAction">Retry</button>
         </div>
     }
-    else if (_adapters == null)
+    else if (_adapters == null && !_initialLoadComplete) 
     {
-        <p class="text-gray-500">Loading adapters...</p>
+        <Preloader Message="Loading adapters..." ContainerClass="py-10" />
     }
-    else if (!_adapters.Any())
+    else if (_adapters != null && !_adapters.Any())
     {
         <p class="text-gray-500">No network adapters found.</p>
     }
-    else
+    else if (_adapters != null) 
     {
         <div class="space-y-4 sm:hidden">
             @foreach (var adapter in _adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
@@ -99,17 +116,17 @@
                     {
                         <div class="text-sm text-gray-600"><span class="font-medium">Type:</span> @adapter.Type</div>
                     }
-                    @if (!string.IsNullOrEmpty(currentStats?.LocalIp))
+                    @if (!string.IsNullOrEmpty(currentStats?.PrivateIp))
+                    {
+                        <div class="text-sm text-gray-600"><span
+                                class="font-medium">Local IP:</span> @currentStats.PrivateIp</div>
+                    }
+                    @if (!string.IsNullOrEmpty(currentStats?.LocalIp)) 
                     {
                         <div class="text-sm text-gray-600 mb-3"><span
-                                class="font-medium">Local IP:</span> @currentStats.LocalIp</div>
+                                class="font-medium">Public IP:</span> @currentStats.LocalIp</div>
                     }
-                    else if (currentStats?.PrivateIp != null)
-                    {
-                        <div class="text-sm text-gray-600">
-                            <span class="font-medium">Local IP:</span> @currentStats.PrivateIp
-                        </div>
-                    }
+                     else if (!string.IsNullOrEmpty(currentStats?.PrivateIp)) { <div class="mb-3"></div>}
 
 
                     <div class="my-3 p-3 bg-gray-50 rounded-lg">
@@ -132,7 +149,7 @@
                         @if (currentStats != null)
                         {
                             <div class="text-center mt-2 text-xs text-gray-500">RTT: @currentStats.LatencyMs ms |
-                                AdapterId (DL / UL): @Math.Round(currentStats.LossReceive, 1)% / @Math.Round(currentStats.LossSend, 1)%
+                                Loss (DL/UL): @Math.Round(currentStats.LossReceive * 100, 1)% / @Math.Round(currentStats.LossSend * 100, 1)%
                             </div>
                         }
                     </div>
@@ -141,7 +158,7 @@
                         <label for="priority-select-@adapter.AdapterId" class="block text-sm font-medium text-gray-700 mb-1">Priority:</label>
                         <select id="priority-select-@adapter.AdapterId" 
                                 class="block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md shadow-sm capitalize"
-                                @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value.ToString())">
+                                @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value?.ToString())" disabled="@_isProcessingAction">
                             @foreach (var p in _prios)
                             {
                                 <option value="@p" selected="@(adapter.Priority == p)">@p</option>
@@ -153,68 +170,70 @@
         </div>
 
         <div class="hidden sm:block shadow-lg overflow-hidden border-b border-gray-200 rounded-lg">
-            <table class="min-w-full bg-white">
-                <thead class="bg-gray-700 text-gray-50">
-                    <tr>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Adapter / ISP</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">IP (Local/Public)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">State</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">DL / UL (Mbps)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">RTT (ms)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">AdapterId (%) DL / UP </th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Priority</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200 text-sm">
-                    @foreach (var adapter in _adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
-                    {
-                        var currentStats = GetStatsForAdapter(adapter.AdapterId);
-                        <tr class="hover:bg-gray-50 transition-colors duration-150">
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <div class="font-medium text-gray-900">@adapter.Name</div>
-                                <div class="text-xs text-gray-500">@adapter.Isp @(!string.IsNullOrEmpty(adapter.Type) ? $"({adapter.Type})" : "")</div>
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-700 text-xs">
-                                @if(currentStats != null) {
-                                    <div>@currentStats.PrivateIp</div>
-                                    @if(currentStats.LocalIp != currentStats.PrivateIp && !string.IsNullOrEmpty(currentStats.LocalIp)) {
-                                        <div class="text-gray-500">(@currentStats.LocalIp)</div>
-                                    }
-                                } else { <text>N/A</text>}
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <span class="px-3 py-1 text-xs font-semibold rounded-full leading-tight @GetStatePillClass(adapter.State)"> @adapter.State </span>
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap text-gray-700">
-                                @if (currentStats != null) {
-                                    <span class="text-green-600">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 2) /</span>  
-                                    <span class="text-blue-600">@Math.Round(currentStats.SendBps / (1000 * 1000), 2)</span>
-                                } else { <text>N/A</text> }
-                            </td>
-                             <td class="px-6 py-4 whitespace-nowrap text-gray-700">
-                                @if (currentStats != null) {
-                                    <span>@currentStats.LatencyMs</span>
-                                } else { <text>N/A</text> }
-                            </td>
-                             <td class="px-6 py-4 whitespace-nowrap text-gray-700">
-                                @if (currentStats != null) {
-                                    <span>@Math.Round(currentStats.LossReceive, 1)% /</span>
-                                    <span>@Math.Round(currentStats.LossSend, 1)%</span>
-                                } else { <text>N/A</text> }
-                            </td>
-                            <td class="px-6 py-4 whitespace-nowrap">
-                                <select class="block w-full pl-2 pr-8 py-1.5 text-xs border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 rounded-md shadow-sm capitalize"
-                                        @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value.ToString())">
-                                    @foreach (var p in _prios)
-                                    {
-                                        <option value="@p" selected="@(adapter.Priority == p)">@p</option>
-                                    }
-                                </select>
-                            </td>
+            <div class="overflow-x-auto">
+                <table class="min-w-full bg-white">
+                    <thead class="bg-gray-700 text-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider sticky left-0 bg-gray-700 z-10">Adapter / ISP</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">IP (Local/Public)</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">State</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">DL / UL (Mbps)</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">RTT (ms)</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Loss (%) DL / UL</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider min-w-[200px]">Priority</th>
                         </tr>
-                    }
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200 text-sm">
+                        @foreach (var adapter in _adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
+                        {
+                            var currentStats = GetStatsForAdapter(adapter.AdapterId);
+                            <tr class="hover:bg-gray-50 transition-colors duration-150">
+                                <td class="px-6 py-4 whitespace-nowrap sticky left-0 bg-white hover:bg-gray-50 z-10">
+                                    <div class="font-medium text-gray-900">@adapter.Name</div>
+                                    <div class="text-xs text-gray-500">@adapter.Isp @(!string.IsNullOrEmpty(adapter.Type) ? $"({adapter.Type})" : "")</div>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-gray-700 text-xs">
+                                    @if(currentStats != null) {
+                                        <div>@currentStats.PrivateIp</div>
+                                        @if(currentStats.LocalIp != currentStats.PrivateIp && !string.IsNullOrEmpty(currentStats.LocalIp)) {
+                                            <div class="text-gray-500">(@currentStats.LocalIp)</div>
+                                        }
+                                    } else { <text>N/A</text>}
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    <span class="px-3 py-1 text-xs font-semibold rounded-full leading-tight @GetStatePillClass(adapter.State)"> @adapter.State </span>
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap text-gray-700">
+                                    @if (currentStats != null) {
+                                        <span class="text-green-600">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 2) /</span>  
+                                        <span class="text-blue-600">@Math.Round(currentStats.SendBps / (1000 * 1000), 2)</span>
+                                    } else { <text>N/A</text> }
+                                </td>
+                                 <td class="px-6 py-4 whitespace-nowrap text-gray-700">
+                                    @if (currentStats != null) {
+                                        <span>@currentStats.LatencyMs</span>
+                                    } else { <text>N/A</text> }
+                                </td>
+                                 <td class="px-6 py-4 whitespace-nowrap text-gray-700">
+                                    @if (currentStats != null) {
+                                        <span>@Math.Round(currentStats.LossReceive * 100, 1)% /</span>
+                                        <span>@Math.Round(currentStats.LossSend * 100, 1)%</span>
+                                    } else { <text>N/A</text> }
+                                </td>
+                                <td class="px-6 py-4 whitespace-nowrap min-w-[200px]">
+                                    <select class="block w-full pl-2 pr-8 py-1.5 text-xs border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 rounded-md shadow-sm capitalize"
+                                            @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value?.ToString())" disabled="@_isProcessingAction">
+                                        @foreach (var p in _prios)
+                                        {
+                                            <option value="@p" selected="@(adapter.Priority == p)">@p</option>
+                                        }
+                                    </select>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
         </div>
     }
 </div>
@@ -222,47 +241,50 @@
 @code {
     private IReadOnlyList<Adapter>? _adapters;
     private Dictionary<string, ConnectionItem> _currentAdapterStats = new();
-    private Settings? _speedifySettings; // For global status
+    private Settings? _speedifySettings; 
     private string? _error;
     private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"]; 
 
     private Timer? _autoRefreshTimer;
+    private bool _initialLoadComplete = false; 
+    private bool _isProcessingAction = false; 
 
     protected override async Task OnInitializedAsync()
     {
         Console.WriteLine("AdaptersPage: OnInitializedAsync");
-        await LoadDataAsync(); // Initial load
-        // Setup timer for auto-refresh, ensuring it calls LoadDataAsync on the UI thread
+        await LoadDataAsync(); 
+        _initialLoadComplete = true; 
         _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadDataAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
     }
 
     private async Task LoadDataAsync()
     {
+        if (_isProcessingAction && _initialLoadComplete) return; 
+
         Console.WriteLine("AdaptersPage: LoadDataAsync called");
+        
         try
         {
-            // Fetch adapters and global settings concurrently
             var adaptersTask = SpeedifyService.GetAdaptersAsync();
-            //var settingsTask = SpeedifyService.GetSettingsAsync(); // Fetch global settings
+            var settingsTask = SpeedifyService.GetSettingsAsync(); 
             
             var newStats = new Dictionary<string, ConnectionItem>();
-            // Short timeout for stats as it's a stream and we just want a snapshot
             var statsCts = new CancellationTokenSource(TimeSpan.FromSeconds(1.5)); 
             try
             {
-                await foreach (var statEntry in SpeedifyService.GetStatsAsync(statsCts.Token))
+                await foreach (var statEntry in SpeedifyService.GetStatsAsync(statsCts.Token)) 
                 {
                     newStats[statEntry.AdapterId] = statEntry; 
                 }
             }
-            catch(OperationCanceledException) { /* Expected if stream doesn't complete quickly */ }
+            catch(OperationCanceledException) { /* Expected */ }
             catch(Exception ex) { Console.WriteLine($"AdaptersPage: Error fetching stats: {ex.Message}"); }
             finally { statsCts.Dispose(); }
 
             _adapters = await adaptersTask;
-            //_speedifySettings = await settingsTask; // Store global settings
+            _speedifySettings = await settingsTask; 
             _currentAdapterStats = newStats; 
-            _error = null; // Clear previous error on successful load
+            _error = null; 
         }
         catch (SpeedifyException ex)
         {
@@ -273,6 +295,10 @@
         {
             _error = $"An unexpected error occurred: {ex.Message}";
             Console.WriteLine($"AdaptersPage: Generic Exception: {ex.Message}");
+        }
+        finally
+        {
+            if (!_initialLoadComplete) _initialLoadComplete = true; 
         }
         await InvokeAsync(StateHasChanged); 
     }
@@ -285,7 +311,10 @@
 
     private async Task ChangePriority(string adapterId, string? newPriority)
     {
-        if (string.IsNullOrEmpty(newPriority)) return;
+        if (string.IsNullOrEmpty(newPriority) || _isProcessingAction) return;
+        _isProcessingAction = true;
+        await InvokeAsync(StateHasChanged); 
+
         try
         {
             Console.WriteLine($"AdaptersPage: Changing priority for {adapterId} to {newPriority}");
@@ -293,17 +322,31 @@
             await LoadDataAsync(); 
         }
         catch (SpeedifyException ex) { _error = ex.Message; }
+        finally
+        {
+            _isProcessingAction = false;
+            await InvokeAsync(StateHasChanged); 
+        }
     }
 
     private async Task RestartSpeedifyAsync()
     {
+        if (_isProcessingAction) return;
+        _isProcessingAction = true;
+        await InvokeAsync(StateHasChanged);
+
         try
         {
             await SpeedifyService.RestartAsync();
-            await Task.Delay(2000); // Give Speedify a moment to restart
+            await Task.Delay(2000); 
             await LoadDataAsync(); 
         }
         catch (SpeedifyException ex) { _error = ex.Message; }
+        finally
+        {
+            _isProcessingAction = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private string GetStatePillClass(string state) => state.ToLowerInvariant() switch
@@ -329,16 +372,12 @@
         "connected" => 0, "connecting" => 1, "disconnecting" => 2, "disconnected" => 3, _ => 4,
     };
 
-    public void Dispose()
-    {
-        _autoRefreshTimer?.Dispose();
-        Console.WriteLine("AdaptersPage: Disposed");
-    }
-
     public async ValueTask DisposeAsync()
     {
-        if (_autoRefreshTimer != null) await _autoRefreshTimer.DisposeAsync();
+        if (_autoRefreshTimer != null)
+        {
+            await _autoRefreshTimer.DisposeAsync();
+        }
         Console.WriteLine("AdaptersPage: Disposed");
     }
-
 }
