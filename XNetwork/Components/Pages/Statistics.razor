@@ -160,6 +160,7 @@
     private bool _attemptedChartInitialization = false;
     private bool _readyForChartInitializationStep = false; // New flag for two-step init
     private Timer? _chartUpdateTimer;
+    private Timer? _autoRefreshTimer;
     private bool _manualStartAttempted = false; 
 
     private Dictionary<string, Dictionary<string, double>> _batchedChartData = new()
@@ -179,12 +180,13 @@
 
     private async Task LoadInitialData()
     {
-        Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Starting.");
+        Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData");
         try
         {
             _adapters = await SpeedifyService.GetAdaptersAsync();
-            if (!_adapters.Any()) Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - No adapters found.");
-            else Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Loaded {_adapters.Count} adapters.");
+            Console.WriteLine(!_adapters.Any() 
+                ? $"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - No adapters found."
+                : $"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Loaded {_adapters.Count} adapters.");
         }
         catch (Exception ex)
         {
@@ -200,6 +202,8 @@
         {
             Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (firstRender) - Step 1: Load JS Module & Adapters (adapters already loaded).");
             
+            _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadInitialData), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+
             await LoadInitialData(); 
             await EnsureJsModuleIsLoaded(); // Loads JS module
 
@@ -374,7 +378,11 @@
             await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
             {
                 if (_isInitialLoading) _isInitialLoading = false;
-
+                if (statEntry.Connected is false)
+                {
+                    return;
+                }
+                
                 var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
