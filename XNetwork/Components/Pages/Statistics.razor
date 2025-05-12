@@ -3,6 +3,7 @@
 @inject IJSRuntime JSRuntime
 @using System.Collections
 @using XNetwork.Models
+@using XNetwork.Components.Custom
 @implements IAsyncDisposable
 
 <PageTitle>Live Statistics & Charts</PageTitle>
@@ -17,6 +18,10 @@
             <strong class="font-bold">Loading...</strong>
             <span class="block sm:inline">Fetching initial data and preparing charts, please wait.</span>
         </div>
+        <Preloader Message="" 
+                   ContainerClass="py-2 items-start" 
+                   MessageClass="text-xs ml-2" 
+                   SpinnerClass="w-5 h-5 border-2"/>
     }
     else if (!string.IsNullOrEmpty(_errorMessage))
     {
@@ -262,7 +267,7 @@
     private string GetAdapterDisplayName(string adapterId)
     {
         var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
-        return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name : adapterId;
+        return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp}" : adapter.Name : adapterId;
     }
 
     private async Task InitializeChartsInternal()
