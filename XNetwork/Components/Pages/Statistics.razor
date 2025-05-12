@@ -255,10 +255,10 @@
         }
     }
 
-    private string GetAdapterDisplayName(string adapterId)
+    private string GetAdapterDisplayName(string AdapterId)
     {
-        var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
-        return adapter != null ? (!string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name) : adapterId;
+        var adapter = _adapters.FirstOrDefault(a => a.AdapterId == AdapterId);
+        return adapter != null ? (!string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name) : AdapterId;
     }
 
     private async Task InitializeChartsInternal()
@@ -273,7 +273,7 @@
         chartInitializationErrorMessage = string.Empty;
 
         Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): InitializeChartsInternal attempting...");
-        var adapterIdsForChart = _adapters.Select(a => a.AdapterId).ToArray();
+        var AdapterIdsForChart = _adapters.Select(a => a.AdapterId).ToArray();
         var adapterDisplayNamesForChart = _adapters.Select(x => GetAdapterDisplayName(x.AdapterId)).ToArray();
         var initialTimestamp = DateTime.Now.ToString("HH:mm:ss");
         bool allChartsOk = true;
@@ -281,10 +281,10 @@
 
         try
         {
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Download");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Upload");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("RTT");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Loss");}
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", AdapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Download");}
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", AdapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Upload");}
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", AdapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("RTT");}
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", AdapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Loss");}
 
             _chartsSuccessfullyInitialized = allChartsOk;
             if (allChartsOk) Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): All charts initialized successfully.");

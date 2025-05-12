@@ -4,7 +4,7 @@ namespace XNetwork.Models;
 
 public class ConnectionItem
 {
-    [JsonPropertyName("adapterID")]
+    [JsonPropertyName("AdapterId")]
     public string AdapterId { get; set; }
 
     [JsonPropertyName("connectionID")]

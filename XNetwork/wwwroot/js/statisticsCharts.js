@@ -15,7 +15,7 @@ const lineColors = [
 ];
 
 // Function to initialize a new chart or update it with initial datasets
-export function initializeOrUpdateChart(chartId, yAxisLabel, adapterIds, adapterNames, initialTimestamp) {
+export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapterNames, initialTimestamp) {
     const ctx = document.getElementById(chartId);
     if (!ctx) {
         console.error(`Chart canvas with ID ${chartId} not found during initialization.`);
@@ -31,10 +31,10 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, adapterIds, adapter
         delete charts[chartId];
     }
 
-    const datasets = adapterIds.map((adapterId, index) => ({
-        // Use adapterId for internal tracking, adapterNames for display label
-        label: adapterNames[index] || adapterId,
-        adapterId: adapterId, // Store original adapter ID for data mapping
+    const datasets = AdapterIds.map((AdapterId, index) => ({
+        // Use AdapterId for internal tracking, adapterNames for display label
+        label: adapterNames[index] || AdapterId,
+        AdapterId: AdapterId, // Store original adapter ID for data mapping
         data: [],
         borderColor: lineColors[index % lineColors.length],
         backgroundColor: lineColors[index % lineColors.length].replace('1)', '0.1)'),
