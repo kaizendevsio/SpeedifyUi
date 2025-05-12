@@ -26,7 +26,7 @@ public class SpeedifyService
 {
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    static string RunTerminatingCommand(string args)
+    string RunTerminatingCommand(string args)
     {
         var p = new Process
         {
@@ -176,8 +176,7 @@ public class SpeedifyService
         }
     }
 
-    public async Task<IReadOnlyList<Adapter>> GetAdaptersAsync()
-        => Json<List<Adapter>>(await Task.Run(() => RunTerminatingCommand("show adapters")));
+    public async Task<IReadOnlyList<Adapter>> GetAdaptersAsync() => Json<List<Adapter>>(RunTerminatingCommand("show adapters"));
 
     public async Task<IReadOnlyList<Adapter>> GetAdaptersAsync(CancellationToken cancellationToken = default)
     {
