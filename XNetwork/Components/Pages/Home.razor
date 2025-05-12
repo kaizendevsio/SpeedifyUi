@@ -3,6 +3,7 @@
 @using XNetwork.Services
 @* @using XNetwork.Components.Custom *@ 
 @inject XNetwork.Services.SpeedifyService SpeedifyService
+@implements IAsyncDisposable
 
 <PageTitle>Network Adapters & Status</PageTitle>
 
@@ -131,7 +132,7 @@
                         @if (currentStats != null)
                         {
                             <div class="text-center mt-2 text-xs text-gray-500">RTT: @currentStats.LatencyMs ms |
-                                Loss (DL / UL): @Math.Round(currentStats.LossReceive, 1)% / @Math.Round(currentStats.LossSend, 1)%
+                                AdapterId (DL / UL): @Math.Round(currentStats.LossReceive, 1)% / @Math.Round(currentStats.LossSend, 1)%
                             </div>
                         }
                     </div>
@@ -160,7 +161,7 @@
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">State</th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">DL / UL (Mbps)</th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">RTT (ms)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Loss (%) DL / UP </th>
+                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">AdapterId (%) DL / UP </th>
                         <th scope="col" class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Priority</th>
                     </tr>
                 </thead>
@@ -333,4 +334,11 @@
         _autoRefreshTimer?.Dispose();
         Console.WriteLine("AdaptersPage: Disposed");
     }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_autoRefreshTimer != null) await _autoRefreshTimer.DisposeAsync();
+        Console.WriteLine("AdaptersPage: Disposed");
+    }
+
 }
