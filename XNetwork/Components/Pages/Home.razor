@@ -98,7 +98,7 @@
                 <div class="bg-white shadow-lg rounded-xl p-5 border border-gray-200 hover:shadow-xl transition-shadow duration-300">
                     <div class="flex justify-between items-start mb-2">
                         <h2 class="text-xl font-semibold text-blue-600">
-                            @(!string.IsNullOrEmpty(adapter.Isp) ? adapter.Isp : adapter.Name)
+                            @(!string.IsNullOrEmpty(adapter.Isp) ? adapter.Isp : adapter.Name) > @adapter.AdapterId
                         </h2>
                         <span class="px-3 py-1 text-xs font-semibold rounded-full @GetStatePillClass(adapter.State)">
                             @adapter.State
