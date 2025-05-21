@@ -1,11 +1,18 @@
 using XNetwork.Components;
 using XNetwork.Services;
+using XNetwork.Models;
+using XNetwork.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+// Add network monitor service
+builder.Services.Configure<NetworkMonitorSettings>(
+    builder.Configuration.GetSection("NetworkMonitor"));
+builder.Services.AddHostedService<NetworkMonitorService>();
 builder.Services.AddSingleton<SpeedifyService>();
 
 var app = builder.Build();
