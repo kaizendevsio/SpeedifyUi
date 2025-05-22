@@ -11,15 +11,18 @@ public class NetworkMonitorService : BackgroundService
     private readonly NetworkMonitorSettings _settings;
     private readonly Dictionary<string, DateTime> _disconnectionTimes = new();
     private readonly IHostApplicationLifetime _appLifetime;
+    private readonly SpeedifyService _speedifyService;
 
     public NetworkMonitorService(
         ILogger<NetworkMonitorService> logger,
         IOptions<NetworkMonitorSettings> settings,
-        IHostApplicationLifetime appLifetime)
+        IHostApplicationLifetime appLifetime,
+        SpeedifyService speedifyService)
     {
         _logger = logger;
         _settings = settings.Value;
         _appLifetime = appLifetime;
+        _speedifyService = speedifyService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -72,53 +75,44 @@ public class NetworkMonitorService : BackgroundService
     {
         try
         {
-            var interfaces = NetworkInterface.GetAllNetworkInterfaces();
-            
-            foreach (var networkInterface in interfaces)
+            var adapters = await _speedifyService.GetAdaptersAsync(stoppingToken);
+            foreach (var adapter in adapters)
             {
-                // Skip interfaces that are not in the whitelist
-                if (!_settings.WhitelistedLinks.Contains(networkInterface.Name))
-                {
+                if (!_settings.WhitelistedLinks.Contains(adapter.Name))
                     continue;
-                }
 
-                bool isUp = networkInterface.OperationalStatus == OperationalStatus.Up;
-                
-                if (!isUp)
+                bool isDisconnected = adapter.State.ToLowerInvariant() == "disconnected";
+                if (isDisconnected)
                 {
-                    // If this is the first time we've seen this interface down, record the time
-                    if (!_disconnectionTimes.ContainsKey(networkInterface.Name))
+                    if (!_disconnectionTimes.ContainsKey(adapter.Name))
                     {
-                        _disconnectionTimes[networkInterface.Name] = DateTime.UtcNow;
-                        _logger.LogWarning("Network link {Link} is down. Will attempt restart after {Timeout} seconds",
-                            networkInterface.Name, _settings.DownTimeoutSeconds);
+                        _disconnectionTimes[adapter.Name] = DateTime.UtcNow;
+                        _logger.LogWarning("Speedify adapter {Link} is disconnected. Will attempt restart after {Timeout} seconds",
+                            adapter.Name, _settings.DownTimeoutSeconds);
                     }
                     else
                     {
-                        // Check if it's been down long enough to restart
-                        var downTime = DateTime.UtcNow - _disconnectionTimes[networkInterface.Name];
+                        var downTime = DateTime.UtcNow - _disconnectionTimes[adapter.Name];
                         if (downTime.TotalSeconds >= _settings.DownTimeoutSeconds)
                         {
-                            await RestartLink(networkInterface.Name, stoppingToken);
-                            // Reset the timer
-                            _disconnectionTimes.Remove(networkInterface.Name);
+                            await RestartLink(adapter.Name, stoppingToken);
+                            _disconnectionTimes.Remove(adapter.Name);
                         }
                     }
                 }
                 else
                 {
-                    // If the interface is up and was previously marked as down, remove it
-                    if (_disconnectionTimes.ContainsKey(networkInterface.Name))
+                    if (_disconnectionTimes.ContainsKey(adapter.Name))
                     {
-                        _logger.LogInformation("Network link {Link} is now up", networkInterface.Name);
-                        _disconnectionTimes.Remove(networkInterface.Name);
+                        _logger.LogInformation("Speedify adapter {Link} is now up", adapter.Name);
+                        _disconnectionTimes.Remove(adapter.Name);
                     }
                 }
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error checking network links");
+            _logger.LogError(ex, "Error checking Speedify adapters");
         }
     }
 
