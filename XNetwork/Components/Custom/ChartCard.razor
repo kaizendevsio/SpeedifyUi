@@ -1,0 +1,35 @@
+<!-- Chart Card Wrapper -->
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+    <div class="p-4">
+        <h3 class="font-semibold text-white">@Title</h3>
+        @if (ShowLegend && LegendItems != null && LegendItems.Any())
+        {
+            <div class="flex gap-4 text-xs mt-1">
+                @foreach (var item in LegendItems)
+                {
+                    <div class="flex items-center gap-1.5">
+                        <span class="w-2.5 h-2.5 rounded-full" style="background-color: @item.Color"></span>
+                        <span>@item.Label</span>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+    <div class="@CanvasContainerClass">
+        <canvas id="@ChartId"></canvas>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string ChartId { get; set; } = "";
+    [Parameter] public bool ShowLegend { get; set; } = false;
+    [Parameter] public List<LegendItem>? LegendItems { get; set; }
+    [Parameter] public string CanvasContainerClass { get; set; } = "h-64 w-full";
+
+    public class LegendItem
+    {
+        public string Label { get; set; } = "";
+        public string Color { get; set; } = "";
+    }
+}

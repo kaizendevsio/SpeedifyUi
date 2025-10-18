@@ -1,0 +1,24 @@
+<!-- Toggle Switch Component -->
+<div class="flex items-center justify-between">
+    <label for="@Id" class="font-medium text-white">@Label</label>
+    <label class="relative inline-flex items-center cursor-pointer">
+        <input type="checkbox" id="@Id" class="sr-only peer" checked="@IsEnabled" @onchange="HandleToggle">
+        <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+    </label>
+</div>
+
+@code {
+    [Parameter] public string Id { get; set; } = Guid.NewGuid().ToString();
+    [Parameter] public string Label { get; set; } = "";
+    [Parameter] public bool IsEnabled { get; set; } = false;
+    [Parameter] public EventCallback<bool> OnToggle { get; set; }
+
+    private async Task HandleToggle(ChangeEventArgs e)
+    {
+        if (e.Value is bool newValue)
+        {
+            IsEnabled = newValue;
+            await OnToggle.InvokeAsync(newValue);
+        }
+    }
+}

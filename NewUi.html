@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>X Network - Speedify Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" xintegrity="sha512-SnH5WK+bZxgPHs44uWIX+LLJAJ9/2PkPKZ5QiAj6Ta86w+fsb2TkcmfRyVX3pBnMFcV7oQPJkl9QevSCWr3W6A==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Simple script to toggle pages and active states
+        function showPage(pageId) {
+            // Hide all pages
+            document.querySelectorAll('[data-page]').forEach(page => {
+                page.classList.add('hidden');
+            });
+            // Show the selected page
+            document.getElementById(pageId).classList.remove('hidden');
+            
+            // --- Update active state for mobile nav ---
+            document.querySelectorAll('[data-nav-item]').forEach(item => {
+                item.classList.remove('text-blue-500', 'bg-slate-800');
+                item.classList.add('text-gray-400');
+            });
+            const mobileNavItem = document.querySelector(`[data-nav-item][onclick="showPage('${pageId}')"]`);
+            if(mobileNavItem) {
+                mobileNavItem.classList.add('text-blue-500', 'bg-slate-800');
+            }
+
+            // --- Update active state for desktop nav ---
+            document.querySelectorAll('[data-desktop-nav-item]').forEach(item => {
+                 item.classList.remove('text-white', 'bg-slate-800');
+                 item.classList.add('text-gray-400', 'hover:bg-slate-800', 'hover:text-white');
+            });
+            const desktopNavItem = document.querySelector(`[data-desktop-nav-item='${pageId}']`);
+            if(desktopNavItem) {
+                 desktopNavItem.classList.add('text-white', 'bg-slate-800');
+                 desktopNavItem.classList.remove('text-gray-400', 'hover:bg-slate-800', 'hover:text-white');
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Simple scrollbar styling for a modern look */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0f172a; /* slate-900 */
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #334155; /* slate-700 */
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #475569; /* slate-600 */
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-gray-200">
+
+    <div class="flex min-h-screen">
+        <!-- SIDEBAR (Desktop) -->
+        <aside class="hidden md:flex md:flex-col md:w-64 bg-slate-950 p-4 border-r border-slate-800 h-screen sticky top-0">
+            <div class="flex items-center gap-3 mb-8">
+                <div class="bg-blue-600 p-2 rounded-lg">
+                    <i class="fas fa-network-wired text-white text-2xl"></i>
+                </div>
+                <h1 class="text-2xl font-bold text-white">X Network</h1>
+            </div>
+            <nav class="flex flex-col gap-2">
+                <a href="#" data-desktop-nav-item="dashboard" onclick="showPage('dashboard')" class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200">
+                    <i class="fas fa-tachometer-alt w-6 text-center text-lg"></i>
+                    <span class="font-medium">Dashboard</span>
+                </a>
+                <a href="#" data-desktop-nav-item="details" onclick="showPage('details')" class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200">
+                    <i class="fas fa-chart-line w-6 text-center text-lg"></i>
+                    <span class="font-medium">Details</span>
+                </a>
+                <a href="#" data-desktop-nav-item="settings" onclick="showPage('settings')" class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200">
+                    <i class="fas fa-cog w-6 text-center text-lg"></i>
+                    <span class="font-medium">Settings</span>
+                </a>
+                <a href="#" data-desktop-nav-item="chat" onclick="showPage('chat')" class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200">
+                    <i class="fas fa-robot w-6 text-center text-lg"></i>
+                    <span class="font-medium">AI Assistant</span>
+                </a>
+            </nav>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="w-full pb-24 md:pb-0">
+             <!-- App Header (Mobile) -->
+            <header class="md:hidden sticky top-0 bg-slate-900/80 backdrop-blur-sm border-b border-slate-800 p-4">
+                <h1 class="text-xl font-bold text-center text-white">X Network</h1>
+            </header>
+
+            <!-- PAGE 1: Dashboard -->
+            <div id="dashboard" data-page>
+                <div class="p-4 md:p-6">
+                    <div class="hidden md:block">
+                        <h2 class="text-3xl font-bold text-white mb-1">Dashboard</h2>
+                        <p class="text-slate-400 mb-6">Manage and monitor network adapters in real-time.</p>
+                    </div>
+
+                    <!-- Overall Connection Summary -->
+                    <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden">
+                        <div class="p-4">
+                             <div class="flex items-center gap-3 mb-3">
+                                <i class="fas fa-signal text-green-400 text-lg"></i>
+                                <h3 class="font-semibold text-lg text-white">Excellent Connection</h3>
+                            </div>
+                            <div class="grid grid-cols-3 gap-4 text-sm">
+                                <div>
+                                    <p class="text-slate-400">Latency</p>
+                                    <p class="text-white font-bold text-xl">12 <span class="text-base font-medium text-slate-300">ms</span></p>
+                                </div>
+                                <div>
+                                    <p class="text-slate-400">Download</p>
+                                    <p class="text-white font-bold text-xl">85.3 <span class="text-base font-medium text-slate-300">Mbps</span></p>
+                                </div>
+                                <div>
+                                    <p class="text-slate-400">Upload</p>
+                                    <p class="text-white font-bold text-xl">15.9 <span class="text-base font-medium text-slate-300">Mbps</span></p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="w-full h-12">
+                           <canvas id="dashboardChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Adapter List -->
+                    <div class="space-y-3">
+                        <h3 class="text-lg font-semibold text-white px-1">Adapters</h3>
+                        <!-- Adapter Card 1: Wi-Fi -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg flex items-center gap-3 text-sm">
+                            <i class="fas fa-wifi text-green-400 text-lg w-5 text-center"></i>
+                            <p class="font-semibold text-white flex-grow min-w-0 truncate">Wi-Fi (eth0)</p>
+                            <div class="ml-auto flex items-center gap-3 sm:gap-4 flex-shrink-0 text-xs">
+                                <span class="inline-flex items-center gap-1.5"><i class="fas fa-arrow-down text-cyan-400"></i> 85.2</span>
+                                <span class="hidden sm:inline-flex items-center gap-1.5"><i class="fas fa-arrow-up text-pink-400"></i> 15.6</span>
+                                <span class="inline-flex items-center gap-1.5"><i class="far fa-clock text-slate-400"></i> 12ms</span>
+                            </div>
+                            <span class="text-xs font-medium bg-green-500/10 text-green-400 px-2.5 py-1 rounded-full flex-shrink-0">Online</span>
+                            <button class="bg-slate-700 hover:bg-slate-600 text-gray-300 w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0">
+                                <i class="fas fa-ellipsis-v"></i>
+                            </button>
+                        </div>
+
+                        <!-- Adapter Card 2: Cellular -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg flex items-center gap-3 text-sm">
+                            <i class="fas fa-signal text-cyan-400 text-lg w-5 text-center"></i>
+                            <p class="font-semibold text-white flex-grow min-w-0 truncate">Cellular (wwan0)</p>
+                             <div class="ml-auto flex items-center gap-3 sm:gap-4 flex-shrink-0 text-xs">
+                                <span class="inline-flex items-center gap-1.5"><i class="fas fa-arrow-down text-cyan-400"></i> 0.1</span>
+                                <span class="hidden sm:inline-flex items-center gap-1.5"><i class="fas fa-arrow-up text-pink-400"></i> 0.3</span>
+                                <span class="inline-flex items-center gap-1.5"><i class="far fa-clock text-slate-400"></i> 45ms</span>
+                            </div>
+                            <span class="text-xs font-medium bg-cyan-500/10 text-cyan-400 px-2.5 py-1 rounded-full flex-shrink-0">Standby</span>
+                            <button class="bg-slate-700 hover:bg-slate-600 text-gray-300 w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0">
+                                 <i class="fas fa-ellipsis-v"></i>
+                            </button>
+                        </div>
+
+                        <!-- Adapter Card 3: Ethernet (Disconnected) -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg flex items-center gap-3 text-sm opacity-60">
+                            <i class="fas fa-ethernet text-red-400 text-lg w-5 text-center"></i>
+                            <p class="font-semibold text-white flex-grow min-w-0 truncate">Ethernet (eth1)</p>
+                            <span class="text-xs font-medium bg-red-500/10 text-red-400 px-2.5 py-1 rounded-full flex-shrink-0 ml-auto">Offline</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PAGE 2: Details/Statistics -->
+            <div id="details" data-page class="hidden">
+                <div class="p-4 md:p-6">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
+                        <div>
+                             <h2 class="text-3xl font-bold text-white mb-1">Details & Statistics</h2>
+                             <p class="text-slate-400">Real-time network performance visualization.</p>
+                        </div>
+                        <div class="mt-4 sm:mt-0">
+                            <select class="bg-slate-800 border border-slate-700 rounded-md py-2 px-3 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-auto">
+                                <option>Last 15 seconds</option>
+                                <option>Last minute</option>
+                                <option>Last 5 minutes</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Charts Grid -->
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <!-- Chart Card 1: Throughput -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                            <div class="p-4">
+                                <h3 class="font-semibold text-white">Real-time Throughput (Mbps)</h3>
+                                <div class="flex gap-4 text-xs mt-1">
+                                    <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-cyan-400"></span> Download</div>
+                                    <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-pink-400"></span> Upload</div>
+                                </div>
+                            </div>
+                            <div class="h-64 w-full">
+                               <canvas id="throughputChart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Chart Card 2: Latency -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                            <div class="p-4">
+                                <h3 class="font-semibold text-white">Latency (ms)</h3>
+                                <div class="flex gap-4 text-xs mt-1">
+                                    <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-amber-400"></span> Wi-Fi</div>
+                                    <div class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-full bg-sky-400"></span> Cellular</div>
+                                </div>
+                            </div>
+                           <div class="h-64 w-full">
+                               <canvas id="latencyChart"></canvas>
+                            </div>
+                        </div>
+
+                        <!-- Chart Card 3: Packet Loss -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                             <div class="p-4">
+                                <h3 class="font-semibold text-white">Packet Loss (%)</h3>
+                             </div>
+                            <div class="h-64 w-full">
+                                <canvas id="packetLossChart"></canvas>
+                            </div>
+                        </div>
+
+                         <!-- Chart Card 4: Adapter Usage -->
+                         <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                             <div class="p-4">
+                                <h3 class="font-semibold text-white">Usage by Adapter</h3>
+                             </div>
+                            <div class="h-64 w-full flex items-center justify-center p-4">
+                               <canvas id="usageChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PAGE 3: Settings -->
+            <div id="settings" data-page class="hidden">
+                 <div class="p-4 md:p-6">
+                    <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
+                    <p class="text-slate-400 mb-6">Configure application and monitor behavior.</p>
+
+                    <div class="space-y-6 max-w-2xl">
+                        <!-- Section 1: Network Monitor -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                            <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Network Monitor</h3>
+                            <div class="space-y-4">
+                                <!-- Enable/Disable Toggle -->
+                                <div class="flex items-center justify-between">
+                                    <label for="monitor-enabled" class="font-medium text-white">Enable Background Monitoring</label>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="monitor-enabled" class="sr-only peer" checked>
+                                        <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                                    </label>
+                                </div>
+                                <!-- Whitelisted Adapters -->
+                                <div>
+                                    <label for="whitelisted-links" class="block mb-2 font-medium text-white">Whitelisted Adapters</label>
+                                    <input type="text" id="whitelisted-links" value="eth0, wwan0" class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                                    <p class="text-xs text-slate-400 mt-1">Comma-separated list of adapter IDs to monitor.</p>
+                                </div>
+                                <!-- Timeout -->
+                                <div>
+                                    <label for="down-timeout" class="block mb-2 font-medium text-white">Restart Timeout (seconds)</label>
+                                    <input type="number" id="down-timeout" value="30" class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                                    <p class="text-xs text-slate-400 mt-1">Time to wait before restarting a failed adapter.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Section 2: Connection Controls -->
+                        <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                            <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Controls</h3>
+                             <div class="space-y-3">
+                                <button class="w-full text-left flex items-center gap-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold py-3 px-4 rounded-md transition-colors">
+                                    <i class="fas fa-power-off w-5 text-center"></i>
+                                    <span>Disconnect All Connections</span>
+                                </button>
+                                <button class="w-full text-left flex items-center gap-3 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 px-4 rounded-md transition-colors">
+                                    <i class="fas fa-redo w-5 text-center"></i>
+                                    <span>Restart Speedify Service</span>
+                                </button>
+                             </div>
+                        </div>
+                        <div class="flex justify-end pt-2">
+                            <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg">
+                                Save Changes
+                            </button>
+                        </div>
+                    </div>
+                 </div>
+            </div>
+
+            <!-- PAGE 4: AI Chat -->
+            <div id="chat" data-page class="hidden">
+                 <div class="flex flex-col h-[calc(100vh-6rem)] md:h-[calc(100vh-3rem)] p-4 md:p-6">
+                    <div class="mb-6">
+                        <h2 class="text-3xl font-bold text-white mb-1">AI Assistant</h2>
+                        <p class="text-slate-400">Ask about network status or get troubleshooting help.</p>
+                    </div>
+                    
+                    <!-- Chat Messages Area -->
+                    <div class="flex-1 overflow-y-auto space-y-4 p-4 bg-slate-800/50 rounded-t-lg border border-b-0 border-slate-700">
+                        <!-- AI Message -->
+                        <div class="flex gap-3 max-w-md">
+                            <div class="w-8 h-8 rounded-full bg-blue-500 flex-shrink-0 flex items-center justify-center">
+                                <i class="fas fa-robot text-white text-sm"></i>
+                            </div>
+                            <div class="bg-slate-700 p-3 rounded-lg rounded-tl-none">
+                                <p class="text-sm">Hello! How can I help you with your network today? You can ask things like "What's the status of my Wi-Fi adapter?" or "Why is my latency high?".</p>
+                            </div>
+                        </div>
+                        <!-- User Message -->
+                        <div class="flex gap-3 justify-end">
+                             <div class="bg-blue-600 p-3 rounded-lg rounded-br-none max-w-md">
+                                <p class="text-sm text-white">What's the status of adapter eth0?</p>
+                            </div>
+                        </div>
+                         <!-- AI Message -->
+                        <div class="flex gap-3 max-w-md">
+                            <div class="w-8 h-8 rounded-full bg-blue-500 flex-shrink-0 flex items-center justify-center">
+                                <i class="fas fa-robot text-white text-sm"></i>
+                            </div>
+                            <div class="bg-slate-700 p-3 rounded-lg rounded-tl-none">
+                                <p class="text-sm">Adapter <code class="bg-slate-800 text-xs px-1 py-0.5 rounded">eth0</code> (Wi-Fi) is currently <strong class="text-green-400">Connected</strong> with a latency of 12ms and a throughput of 85.2 Mbps download / 15.6 Mbps upload.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Chat Input -->
+                    <div class="bg-slate-800/50 p-3 rounded-b-lg border border-t-0 border-slate-700">
+                        <div class="flex items-center gap-3">
+                            <input type="text" placeholder="Ask the AI assistant..." class="flex-1 bg-slate-900 border border-slate-700 rounded-full py-2.5 px-4 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                            <button class="bg-blue-600 hover:bg-blue-700 text-white w-10 h-10 rounded-full flex items-center justify-center transition-colors flex-shrink-0">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                 </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- BOTTOM NAVIGATION (Mobile) -->
+    <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-slate-950 border-t border-slate-800 grid grid-cols-4 gap-1 p-1">
+        <a href="#" data-nav-item onclick="showPage('dashboard')" class="flex flex-col items-center justify-center w-full p-2 rounded-lg">
+            <i class="fas fa-tachometer-alt text-xl mb-1"></i>
+            <span class="text-xs font-medium">Dashboard</span>
+        </a>
+        <a href="#" data-nav-item onclick="showPage('details')" class="flex flex-col items-center justify-center w-full p-2 rounded-lg">
+            <i class="fas fa-chart-line text-xl mb-1"></i>
+            <span class="text-xs font-medium">Details</span>
+        </a>
+        <a href="#" data-nav-item onclick="showPage('settings')" class="flex flex-col items-center justify-center w-full p-2 rounded-lg">
+            <i class="fas fa-cog text-xl mb-1"></i>
+            <span class="text-xs font-medium">Settings</span>
+        </a>
+        <a href="#" data-nav-item onclick="showPage('chat')" class="flex flex-col items-center justify-center w-full p-2 rounded-lg">
+            <i class="fas fa-robot text-xl mb-1"></i>
+            <span class="text-xs font-medium">AI Chat</span>
+        </a>
+    </nav>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Set the initial page on load
+            showPage('dashboard');
+
+            // --- Chart.js Initializations ---
+
+            const CHART_DEFAULTS = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: false,
+                    },
+                },
+                scales: {
+                    x: { 
+                        display: false,
+                        grid: {
+                            display: false
+                        } 
+                    },
+                    y: { 
+                        display: false,
+                        grid: {
+                            display: false
+                        }
+                    }
+                }
+            };
+
+            const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
+            const FONT_COLOR = '#94a3b8'; // slate-400
+
+            // 1. Dashboard Chart (Sparkline)
+            const dashboardCtx = document.getElementById('dashboardChart').getContext('2d');
+            new Chart(dashboardCtx, {
+                type: 'line',
+                data: {
+                    labels: Array(15).fill(''),
+                    datasets: [{
+                        data: [30, 10, 20, 35, 30, 15, 20, 25, 10, 15, 30, 25, 35, 20, 25],
+                        borderColor: '#0ea5e9', // light-blue-500
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.4,
+                    }]
+                },
+                options: CHART_DEFAULTS
+            });
+            
+            // 2. Throughput Chart
+            const throughputCtx = document.getElementById('throughputChart').getContext('2d');
+            new Chart(throughputCtx, {
+                type: 'line',
+                data: {
+                    labels: Array(15).fill(''),
+                     datasets: [{
+                        label: 'Download',
+                        data: [85, 88, 80, 82, 90, 75, 78, 83, 88, 92, 85, 80, 75, 85, 90],
+                        borderColor: '#22d3ee', // cyan-400
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.4,
+                    }, {
+                        label: 'Upload',
+                        data: [15, 12, 18, 16, 20, 14, 17, 15, 18, 22, 16, 14, 18, 15, 20],
+                        borderColor: '#f472b6', // pink-400
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.4,
+                    }]
+                },
+                options: { ...CHART_DEFAULTS, scales: { x: { display: true, ticks: { color: FONT_COLOR }, grid: { color: GRID_COLOR } }, y: { display: true, ticks: { color: FONT_COLOR }, grid: { color: GRID_COLOR } } } }
+            });
+
+            // 3. Latency Chart
+            const latencyCtx = document.getElementById('latencyChart').getContext('2d');
+            new Chart(latencyCtx, {
+                type: 'bar',
+                data: {
+                    labels: Array(10).fill(''),
+                    datasets: [{
+                        label: 'Wi-Fi',
+                        data: [12, 15, 10, 14, 11, 13, 16, 12, 14, 10],
+                        backgroundColor: '#f59e0b', // amber-400
+                        borderRadius: 4
+                    },{
+                        label: 'Cellular',
+                        data: [45, 50, 48, 55, 42, 47, 52, 44, 49, 53],
+                        backgroundColor: '#38bdf8', // sky-400
+                        borderRadius: 4
+                    }]
+                },
+                options: { ...CHART_DEFAULTS, scales: { x: { display: true, ticks: { color: FONT_COLOR }, grid: { display: false } }, y: { display: true, ticks: { color: FONT_COLOR }, grid: { color: GRID_COLOR } } } }
+            });
+
+            // 4. Packet Loss Chart
+            const packetLossCtx = document.getElementById('packetLossChart').getContext('2d');
+            new Chart(packetLossCtx, {
+                type: 'line',
+                data: {
+                    labels: Array(15).fill(''),
+                    datasets: [{
+                        label: 'Packet Loss',
+                        data: [0, 0, 0.1, 0, 0, 0.2, 0, 0, 0, 0.1, 0, 0, 0, 0.3, 0],
+                        borderColor: '#f472b6', // pink-400
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        tension: 0.4,
+                        fill: true,
+                        backgroundColor: 'rgba(244, 114, 182, 0.1)'
+                    }]
+                },
+                 options: { ...CHART_DEFAULTS, scales: { x: { display: true, ticks: { color: FONT_COLOR }, grid: { color: GRID_COLOR } }, y: { display: true, ticks: { color: FONT_COLOR }, grid: { color: GRID_COLOR } } } }
+            });
+
+            // 5. Usage Chart
+            const usageCtx = document.getElementById('usageChart').getContext('2d');
+            new Chart(usageCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Wi-Fi', 'Cellular'],
+                    datasets: [{
+                        data: [85, 15],
+                        backgroundColor: ['#22d3ee', '#38bdf8'],
+                        borderColor: '#1e293b', // slate-800
+                        borderWidth: 4,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '70%',
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                color: FONT_COLOR,
+                                boxWidth: 12,
+                                padding: 20
+                            }
+                        }
+                    }
+                }
+            });
+
+        });
+    </script>
+
+</body>
+</html>
+

@@ -4,14 +4,18 @@
 const charts = {};
 const MAX_DATA_POINTS = 30; // Number of historical data points to show on charts
 
-// Default colors for chart lines
+// Dark theme colors
+const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
+const FONT_COLOR = '#94a3b8'; // slate-400
+
+// Default colors for chart lines (updated for dark theme)
 const lineColors = [
-    'rgba(54, 162, 235, 1)',  // Blue
-    'rgba(255, 99, 132, 1)',  // Red
-    'rgba(75, 192, 192, 1)',  // Green
-    'rgba(255, 206, 86, 1)',  // Yellow
-    'rgba(153, 102, 255, 1)', // Purple
-    'rgba(255, 159, 64, 1)'   // Orange
+    '#22d3ee',  // cyan-400
+    '#f472b6',  // pink-400
+    '#f59e0b',  // amber-400
+    '#38bdf8',  // sky-400
+    '#a855f7',  // purple-400
+    '#fb923c'   // orange-400
 ];
 
 // Function to initialize a new chart or update it with initial datasets

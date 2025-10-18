@@ -1,4 +1,4 @@
-﻿@page "/statistics"
+﻿@page "/details"
 @inject XNetwork.Services.SpeedifyService SpeedifyService
 @inject IJSRuntime JSRuntime
 @using System.Collections
@@ -6,15 +6,26 @@
 @using XNetwork.Components.Custom
 @implements IAsyncDisposable
 
-<PageTitle>Live Statistics & Charts</PageTitle>
+<PageTitle>Details & Statistics - X Network</PageTitle>
 
-<div class="container mx-auto px-4 py-8 font-inter">
-
-    <h1 class="text-3xl font-bold text-gray-800 mb-6">Live Speedify Statistics</h1>
+<div class="p-4 md:p-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
+        <div>
+            <h2 class="text-3xl font-bold text-white mb-1">Details & Statistics</h2>
+            <p class="text-slate-400">Real-time network performance visualization.</p>
+        </div>
+        <div class="mt-4 sm:mt-0">
+            <select class="bg-slate-800 border border-slate-700 rounded-md py-2 px-3 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-auto">
+                <option>Last 15 seconds</option>
+                <option>Last minute</option>
+                <option>Last 5 minutes</option>
+            </select>
+        </div>
+    </div>
 
     @if (_isInitialLoading && !_isStreaming)
     {
-        <div class="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded-md relative mb-4" role="alert">
+        <div class="bg-blue-500/10 border border-blue-500/50 text-blue-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
             <strong class="font-bold">Loading...</strong>
             <span class="block sm:inline">Fetching initial data and preparing charts, please wait.</span>
         </div>
@@ -25,118 +36,66 @@
     }
     else if (!string.IsNullOrEmpty(_errorMessage))
     {
-        <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-md relative mb-4" role="alert">
+        <div class="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
             <strong class="font-bold">Error!</strong>
             <span class="block sm:inline">@_errorMessage</span>
         </div>
     }
 
-    @if (_stats.Any())
-    {
-        <div class="hidden sm:block shadow overflow-hidden border-b border-gray-200 sm:rounded-lg mb-6">
-            <table class="min-w-full divide-y divide-gray-200">
-                <thead class="bg-gray-700">
-                    <tr>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">Adapter / ISP</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">DL (Mbps)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">UL (Mbps)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">RTT (ms)</th>
-                        <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-50 uppercase tracking-wider">Loss (DL / UL) (%)</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                    @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.AdapterId)))
-                    {
-                        <tr class="hover:bg-gray-50">
-                            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">@GetAdapterDisplayName(stat.AdapterId)</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.ReceiveBps / (1000 * 1000), 2))</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@(Math.Round(stat.SendBps / (1000 * 1000), 2))</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@stat.LatencyMs</td>
-                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">@Math.Round(stat.LossReceive, 2)% / @Math.Round(stat.LossSend, 2)%</td>
-                        </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
-
-        <div class="sm:hidden grid grid-cols-1 gap-4 mb-6">
-            @foreach (var stat in _stats.OrderBy(s => GetAdapterDisplayName(s.AdapterId)))
-            {
-                <div class="bg-white shadow-lg rounded-lg p-4 border border-gray-200">
-                    <h3 class="text-lg font-semibold text-blue-600 mb-2">@GetAdapterDisplayName(stat.AdapterId)</h3>
-                    <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                        <span class="font-medium text-gray-600">Download:</span> <span class="text-gray-800">@(Math.Round(stat.ReceiveBps / (1000 * 1000), 2)) Mbps</span>
-                        <span class="font-medium text-gray-600">Upload:</span> <span class="text-gray-800">@(Math.Round(stat.SendBps / (1000 * 1000), 2)) Mbps</span>
-                        <span class="font-medium text-gray-600">RTT:</span> <span class="text-gray-800">@stat.LatencyMs ms</span>
-                        <span class="font-medium text-gray-600">Loss (DL / UL):</span> <span class="text-gray-800">@Math.Round(stat.LossReceive, 2)% / @Math.Round(stat.LossSend, 2)%</span>
-                    </div>
-                </div>
-            }
-        </div>
-    }
-    else if (!_isInitialLoading && string.IsNullOrEmpty(_errorMessage))
-    {
-        <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded-md relative" role="alert">
-            <strong class="font-bold">No Data</strong>
-            <span class="block sm:inline">No statistics available. Ensure Speedify is running and connected, or try starting the stream.</span>
-        </div>
-    }
-
     @if (_jsModuleLoaded && _adapters.Any())
     {
-        <h2 class="text-2xl font-semibold text-gray-700 my-6">Historical Data Charts</h2>
         @if (!_chartsSuccessfullyInitialized && _attemptedChartInitialization && !_isInitialLoading) 
         {
-            <p class="text-orange-600 font-semibold mb-4">
+            <p class="text-orange-400 font-semibold mb-4">
                 Charts could not be initialized. Please ensure Speedify is active and check the browser console for errors.
                 @if(!string.IsNullOrEmpty(_chartInitializationErrorMessage)) { <br /><span class="text-sm">Details: @_chartInitializationErrorMessage</span> }
             </p>
         }
         
+        <!-- Charts Grid -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <div>
-                <h3 class="text-lg font-medium text-gray-600 mb-2">Download Speed (Mbps)</h3>
-                <div class="chart-container h-64 md:h-80 bg-white p-4 rounded-lg shadow-md">
-                    <canvas id="downloadChart"></canvas>
-                </div>
-            </div>
-            <div>
-                <h3 class="text-lg font-medium text-gray-600 mb-2">Upload Speed (Mbps)</h3>
-                <div class="chart-container h-64 md:h-80 bg-white p-4 rounded-lg shadow-md">
-                    <canvas id="uploadChart"></canvas>
-                </div>
-            </div>
-            <div>
-                <h3 class="text-lg font-medium text-gray-600 mb-2">RTT (ms)</h3>
-                <div class="chart-container h-64 md:h-80 bg-white p-4 rounded-lg shadow-md">
-                    <canvas id="rttChart"></canvas>
-                </div>
-            </div>
-            <div>
-                <h3 class="text-lg font-medium text-gray-600 mb-2">Loss (%)</h3>
-                <div class="chart-container h-64 md:h-80 bg-white p-4 rounded-lg shadow-md">
-                    <canvas id="lossChart"></canvas>
-                </div>
-            </div>
+            <!-- Throughput Chart -->
+            <ChartCard Title="Real-time Throughput (Mbps)" 
+                      ChartId="downloadChart" 
+                      ShowLegend="true"
+                      LegendItems="@(new List<ChartCard.LegendItem> { 
+                          new() { Label = "Download", Color = "#22d3ee" },
+                          new() { Label = "Upload", Color = "#f472b6" }
+                      })" />
+
+            <!-- Latency Chart -->
+            <ChartCard Title="Latency (ms)" 
+                      ChartId="rttChart" 
+                      ShowLegend="true"
+                      LegendItems="@GetLatencyLegend()" />
+
+            <!-- Upload Chart -->
+            <ChartCard Title="Upload Speed (Mbps)" 
+                      ChartId="uploadChart" 
+                      ShowLegend="false" />
+
+            <!-- Loss Chart -->
+            <ChartCard Title="Packet Loss (%)" 
+                      ChartId="lossChart" 
+                      ShowLegend="false" />
         </div>
     }
     else if (!_isInitialLoading && !_adapters.Any() && string.IsNullOrEmpty(_errorMessage)) 
     {
-        <p class="text-gray-600 my-6">Adapter information not available, charts cannot be displayed.</p>
+        <p class="text-slate-400 my-6">Adapter information not available, charts cannot be displayed.</p>
     }
-
 
     <div class="mt-8 flex space-x-3">
         <button
-            class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75
-                   @(_isStreaming || _isInitialLoading ? "bg-gray-400 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 focus:ring-blue-500")"
+            class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75 transition-colors
+                   @(_isStreaming || _isInitialLoading ? "bg-slate-600 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 focus:ring-blue-500")"
             @onclick="HandleStartStreaming" 
-            disabled="@_isStreaming || isInitialLoading">
+            disabled="@(_isStreaming || _isInitialLoading)">
             @if(_isStreaming && !_isInitialLoading) { <text>Streaming...</text> } else { <text>Start Streaming</text>}
         </button>
         <button
-            class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75
-                   @(!_isStreaming ? "bg-gray-400 cursor-not-allowed" : "bg-red-600 hover:bg-red-700 focus:ring-red-500")"
+            class="px-6 py-2 rounded-md font-semibold text-white shadow-md focus:outline-none focus:ring-2 focus:ring-opacity-75 transition-colors
+                   @(!_isStreaming ? "bg-slate-600 cursor-not-allowed" : "bg-red-600 hover:bg-red-700 focus:ring-red-500")"
             @onclick="HandleStopStreaming"
             disabled="@(!_isStreaming)">
             Stop Streaming
@@ -158,7 +117,7 @@
     private bool _jsModuleLoaded = false;
     private bool _chartsSuccessfullyInitialized = false;
     private bool _attemptedChartInitialization = false;
-    private bool _readyForChartInitializationStep = false; // New flag for two-step init
+    private bool _readyForChartInitializationStep = false;
     private Timer? _chartUpdateTimer;
     private Timer? _autoRefreshTimer;
     private bool _manualStartAttempted = false; 
@@ -205,36 +164,33 @@
             _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadInitialData), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
 
             await LoadInitialData(); 
-            await EnsureJsModuleIsLoaded(); // Loads JS module
+            await EnsureJsModuleIsLoaded();
 
             await Task.Delay(10);
             
             if (_jsModuleLoaded && _adapters.Any() && string.IsNullOrEmpty(_errorMessage))
             {
-                // DOM for canvases should be rendered now because of the @if condition in HTML
-                // Set flag to initialize charts in the *next* OnAfterRenderAsync cycle.
                 _readyForChartInitializationStep = true; 
                 Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (firstRender) - JS Module loaded and adapters present. Ready for chart init step.");
-                await InvokeAsync(StateHasChanged); // Trigger re-render so next OnAfterRender can init charts
+                await InvokeAsync(StateHasChanged);
             }
             else if (!_adapters.Any() && string.IsNullOrEmpty(_errorMessage))
             {
                  _errorMessage = "No network adapters found. Cannot display statistics or charts.";
                  Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (firstRender) - No adapters, cannot proceed with charts.");
-                 _isInitialLoading = false; // Stop initial loading as we can't proceed
+                 _isInitialLoading = false;
                  await InvokeAsync(StateHasChanged);
             } else if (!_jsModuleLoaded && string.IsNullOrEmpty(_errorMessage)) {
                  _errorMessage = "Charting library failed to load. Charts unavailable.";
                  _isInitialLoading = false;
                  await InvokeAsync(StateHasChanged);
             }
-            // isInitialLoading will be set to false after chart init attempt or if it fails
         }
         else if (_readyForChartInitializationStep && !_chartsSuccessfullyInitialized && _jsModuleLoaded && _adapters.Any())
         {
             Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (subsequent, _readyForChartInitializationStep=true) - Step 2: Initialize Charts.");
-            await InitializeChartsInternal(); // Attempt to initialize charts
-            _readyForChartInitializationStep = false; // Reset flag
+            await InitializeChartsInternal();
+            _readyForChartInitializationStep = false;
 
             if (_chartsSuccessfullyInitialized && !_isStreaming && !_manualStartAttempted && string.IsNullOrEmpty(_errorMessage))
             {
@@ -245,8 +201,8 @@
             {
                 Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync - Post chart init - Auto-start conditions NOT met. Error: '{_errorMessage}', ChartsInit: {_chartsSuccessfullyInitialized}, Streaming: {_isStreaming}, ManualStart: {_manualStartAttempted}");
             }
-            _isInitialLoading = false; // Initial setup phase is complete
-            await InvokeAsync(StateHasChanged); // Update UI with chart status
+            _isInitialLoading = false;
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -274,12 +230,30 @@
         return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp}" : adapter.Name : adapterId;
     }
 
+    private List<ChartCard.LegendItem> GetLatencyLegend()
+    {
+        var legend = new List<ChartCard.LegendItem>();
+        var colors = new[] { "#f59e0b", "#38bdf8", "#22d3ee", "#a855f7" };
+        int colorIndex = 0;
+        
+        foreach (var adapter in _adapters.Take(4))
+        {
+            legend.Add(new ChartCard.LegendItem 
+            { 
+                Label = GetAdapterDisplayName(adapter.AdapterId), 
+                Color = colors[colorIndex++ % colors.Length] 
+            });
+        }
+        
+        return legend;
+    }
+
     private async Task InitializeChartsInternal()
     {
-        if (!_jsModuleLoaded || _chartModule == null || !_adapters.Any()) // Removed _chartsSuccessfullyInitialized from condition to allow re-attempt if needed by HandleStart
+        if (!_jsModuleLoaded || _chartModule == null || !_adapters.Any())
         {
             Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): InitializeChartsInternal skipped. JSLoaded: {_jsModuleLoaded}, ChartModuleNull: {_chartModule == null}, AdaptersCount: {_adapters.Count}");
-            _attemptedChartInitialization = true; // Mark that we tried
+            _attemptedChartInitialization = true;
             return;
         }
         _attemptedChartInitialization = true;
@@ -344,7 +318,6 @@
              _isInitialLoading = false; await InvokeAsync(StateHasChanged); return;
         }
         
-        // Always attempt to initialize charts if not already successful, as DOM might be ready now.
         if (!_chartsSuccessfullyInitialized) await InitializeChartsInternal(); 
         
         if (!_chartsSuccessfullyInitialized) {

@@ -1,0 +1,235 @@
+@page "/settings"
+@using XNetwork.Services
+@using XNetwork.Models
+@using XNetwork.Components.Custom
+@inject SpeedifyService SpeedifyService
+@inject IConfiguration Configuration
+
+<PageTitle>Settings - X Network</PageTitle>
+
+<div class="p-4 md:p-6">
+    <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
+    <p class="text-slate-400 mb-6">Configure application and monitor behavior.</p>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
+            <strong class="font-bold">Error!</strong>
+            <span class="block sm:inline">@_error</span>
+        </div>
+    }
+
+    @if (_isLoading)
+    {
+        <Preloader Message="Loading settings..." ContainerClass="py-10" />
+    }
+    else
+    {
+        <div class="space-y-6 max-w-2xl">
+            <!-- Section 1: Network Monitor -->
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Network Monitor</h3>
+                <div class="space-y-4">
+                    <!-- Enable/Disable Toggle -->
+                    <ToggleSwitch 
+                        Id="monitor-enabled"
+                        Label="Enable Background Monitoring"
+                        IsEnabled="_monitorSettings.Enabled"
+                        OnToggle="HandleMonitorToggle" />
+
+                    <!-- Whitelisted Adapters -->
+                    <div>
+                        <label for="whitelisted-links" class="block mb-2 font-medium text-white">Whitelisted Adapters</label>
+                        <input type="text" 
+                               id="whitelisted-links" 
+                               @bind="_whitelistedLinksInput" 
+                               class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                        <p class="text-xs text-slate-400 mt-1">Comma-separated list of adapter IDs to monitor.</p>
+                    </div>
+
+                    <!-- Timeout -->
+                    <div>
+                        <label for="down-timeout" class="block mb-2 font-medium text-white">Restart Timeout (seconds)</label>
+                        <input type="number" 
+                               id="down-timeout" 
+                               @bind="_monitorSettings.DownTimeoutSeconds" 
+                               class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
+                        <p class="text-xs text-slate-400 mt-1">Time to wait before restarting a failed adapter.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 2: Connection Controls -->
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Controls</h3>
+                <div class="space-y-3">
+                    <button class="w-full text-left flex items-center gap-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold py-3 px-4 rounded-md transition-colors"
+                            @onclick="DisconnectAll"
+                            disabled="@_isProcessing">
+                        <i class="fas fa-power-off w-5 text-center"></i>
+                        <span>Disconnect All Connections</span>
+                    </button>
+                    <button class="w-full text-left flex items-center gap-3 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 px-4 rounded-md transition-colors"
+                            @onclick="RestartSpeedify"
+                            disabled="@_isProcessing">
+                        <i class="fas fa-redo w-5 text-center"></i>
+                        <span>Restart Speedify Service</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Save Button -->
+            <div class="flex justify-end pt-2">
+                <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg"
+                        @onclick="SaveSettings"
+                        disabled="@_isProcessing">
+                    @if (_isProcessing)
+                    {
+                        <text>Saving...</text>
+                    }
+                    else
+                    {
+                        <text>Save Changes</text>
+                    }
+                </button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private NetworkMonitorSettings _monitorSettings = new();
+    private string _whitelistedLinksInput = "";
+    private string? _error;
+    private bool _isLoading = true;
+    private bool _isProcessing = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSettings();
+    }
+
+    private async Task LoadSettings()
+    {
+        _isLoading = true;
+        _error = null;
+
+        try
+        {
+            // Load network monitor settings from configuration
+            var monitorSection = Configuration.GetSection("NetworkMonitor");
+            if (monitorSection.Exists())
+            {
+                _monitorSettings = monitorSection.Get<NetworkMonitorSettings>() ?? new NetworkMonitorSettings();
+            }
+
+            // Convert whitelisted links to comma-separated string
+            _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load settings: {ex.Message}";
+            Console.WriteLine($"Settings: Error loading settings: {ex.Message}");
+        }
+        finally
+        {
+            _isLoading = false;
+        }
+    }
+
+    private async Task HandleMonitorToggle(bool enabled)
+    {
+        _monitorSettings.Enabled = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveSettings()
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            // Parse whitelisted links from input
+            var links = _whitelistedLinksInput
+                .Split(',')
+                .Select(s => s.Trim())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList();
+
+            _monitorSettings.WhitelistedLinks = links;
+
+            // TODO: Save settings to configuration file
+            // This would require writing to appsettings.json or a separate settings file
+            // For now, settings are only saved in memory during the session
+
+            Console.WriteLine($"Settings: Saved - Enabled: {_monitorSettings.Enabled}, Timeout: {_monitorSettings.DownTimeoutSeconds}, Links: {string.Join(", ", _monitorSettings.WhitelistedLinks)}");
+            
+            // Show success message briefly
+            await Task.Delay(500);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to save settings: {ex.Message}";
+            Console.WriteLine($"Settings: Error saving settings: {ex.Message}");
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task DisconnectAll()
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await SpeedifyService.StopAsync();
+            await Task.Delay(1000);
+        }
+        catch (SpeedifyException ex)
+        {
+            _error = $"Failed to disconnect: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"An unexpected error occurred: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RestartSpeedify()
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await SpeedifyService.RestartAsync();
+            await Task.Delay(2000);
+        }
+        catch (SpeedifyException ex)
+        {
+            _error = $"Failed to restart service: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"An unexpected error occurred: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+}

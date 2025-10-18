@@ -1,55 +1,80 @@
 ﻿@inherits LayoutComponentBase
 
-<div class="min-h-screen flex flex-col bg-gray-100 font-inter">
-
-    <header class="hidden sm:block bg-white shadow-md sticky top-0 z-50">
-        <div class="container mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
-                <div class="flex-shrink-0">
-                    <a href="/" class="text-2xl font-bold text-blue-600 hover:text-blue-700 transition-colors">
-                        X Network
-                    </a>
-                </div>
-
-                <nav class="flex items-center space-x-4 lg:space-x-6">
-                    <NavLink href="/" Match="NavLinkMatch.All" class="px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-200 hover:text-gray-900 transition-colors" ActiveClass="bg-blue-100 text-blue-700">Adapters</NavLink>
-                    <NavLink href="/statistics" class="px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-200 hover:text-gray-900 transition-colors" ActiveClass="bg-blue-100 text-blue-700">Stats</NavLink>
-                    <NavLink href="/controls" class="px-3 py-2 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-200 hover:text-gray-900 transition-colors" ActiveClass="bg-blue-100 text-blue-700">Controls</NavLink>
-                </nav>
+<div class="flex min-h-screen bg-slate-900">
+    <!-- SIDEBAR (Desktop) -->
+    <aside class="hidden md:flex md:flex-col md:w-64 bg-slate-950 p-4 border-r border-slate-800 h-screen sticky top-0">
+        <div class="flex items-center gap-3 mb-8">
+            <div class="bg-blue-600 p-2 rounded-lg">
+                <i class="fas fa-network-wired text-white text-2xl"></i>
             </div>
+            <h1 class="text-2xl font-bold text-white">X Network</h1>
         </div>
-    </header>
-    
-    <main class="flex-grow container mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-20 sm:pb-6">
-        @Body
-    </main>
-
-    <footer class="sm:hidden fixed inset-x-0 bottom-0 bg-white border-t border-gray-200 shadow-md z-50">
-        <nav class="container mx-auto px-2 flex justify-around items-center h-16">
-            <NavLink href="/" Match="NavLinkMatch.All" class="flex flex-col items-center justify-center text-gray-600 hover:text-blue-600 transition-colors w-1/3 pt-1 pb-1 group" ActiveClass="text-blue-600 border-t-2 border-blue-600">
-                <svg class="h-6 w-6 mb-1 group-[.active]:text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 12h9.75m-9.75 6h9.75M3.75 6h1.5m-1.5 6h1.5m-1.5 6h1.5" />
-                </svg>
-                <span class="text-xs font-medium group-[.active]:text-blue-600">Adapters</span>
+        <nav class="flex flex-col gap-2">
+            <NavLink href="/" Match="NavLinkMatch.All" 
+                     class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200 text-gray-400 hover:bg-slate-800 hover:text-white" 
+                     ActiveClass="text-white bg-slate-800">
+                <i class="fas fa-tachometer-alt w-6 text-center text-lg"></i>
+                <span class="font-medium">Dashboard</span>
             </NavLink>
-
-            <NavLink href="/statistics" class="flex flex-col items-center justify-center text-gray-600 hover:text-blue-600 transition-colors w-1/3 pt-1 pb-1 group" ActiveClass="text-blue-600 border-t-2 border-blue-600">
-                <svg class="h-6 w-6 mb-1 group-[.active]:text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25A1.125 1.125 0 0 1 9.75 19.875V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
-                </svg>
-                <span class="text-xs font-medium group-[.active]:text-blue-600">Stats</span>
+            <NavLink href="/details" 
+                     class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200 text-gray-400 hover:bg-slate-800 hover:text-white" 
+                     ActiveClass="text-white bg-slate-800">
+                <i class="fas fa-chart-line w-6 text-center text-lg"></i>
+                <span class="font-medium">Details</span>
             </NavLink>
-
-            <NavLink href="/controls" class="flex flex-col items-center justify-center text-gray-600 hover:text-blue-600 transition-colors w-1/3 pt-1 pb-1 group" ActiveClass="text-blue-600 border-t-2 border-blue-600">
-                <svg class="h-6 w-6 mb-1 group-[.active]:text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.646.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 1.255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.333.183-.582.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.759 6.759 0 0 1 0-1.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582.495.644-.869l.214-1.28Z" />
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                </svg>
-                <span class="text-xs font-medium group-[.active]:text-blue-600">Controls</span>
+            <NavLink href="/settings" 
+                     class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200 text-gray-400 hover:bg-slate-800 hover:text-white" 
+                     ActiveClass="text-white bg-slate-800">
+                <i class="fas fa-cog w-6 text-center text-lg"></i>
+                <span class="font-medium">Settings</span>
+            </NavLink>
+            <NavLink href="/ai-chat" 
+                     class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200 text-gray-400 hover:bg-slate-800 hover:text-white" 
+                     ActiveClass="text-white bg-slate-800">
+                <i class="fas fa-robot w-6 text-center text-lg"></i>
+                <span class="font-medium">AI Assistant</span>
             </NavLink>
         </nav>
-    </footer>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="w-full pb-24 md:pb-0">
+        <!-- App Header (Mobile) -->
+        <header class="md:hidden sticky top-0 bg-slate-900/80 backdrop-blur-sm border-b border-slate-800 p-4 z-40">
+            <h1 class="text-xl font-bold text-center text-white">X Network</h1>
+        </header>
+
+        @Body
+    </main>
 </div>
+
+<!-- BOTTOM NAVIGATION (Mobile) -->
+<nav class="md:hidden fixed bottom-0 left-0 right-0 bg-slate-950 border-t border-slate-800 grid grid-cols-4 gap-1 p-1 z-50">
+    <NavLink href="/" Match="NavLinkMatch.All" 
+             class="flex flex-col items-center justify-center w-full p-2 rounded-lg text-gray-400" 
+             ActiveClass="text-blue-500 bg-slate-800">
+        <i class="fas fa-tachometer-alt text-xl mb-1"></i>
+        <span class="text-xs font-medium">Dashboard</span>
+    </NavLink>
+    <NavLink href="/details" 
+             class="flex flex-col items-center justify-center w-full p-2 rounded-lg text-gray-400" 
+             ActiveClass="text-blue-500 bg-slate-800">
+        <i class="fas fa-chart-line text-xl mb-1"></i>
+        <span class="text-xs font-medium">Details</span>
+    </NavLink>
+    <NavLink href="/settings" 
+             class="flex flex-col items-center justify-center w-full p-2 rounded-lg text-gray-400" 
+             ActiveClass="text-blue-500 bg-slate-800">
+        <i class="fas fa-cog text-xl mb-1"></i>
+        <span class="text-xs font-medium">Settings</span>
+    </NavLink>
+    <NavLink href="/ai-chat" 
+             class="flex flex-col items-center justify-center w-full p-2 rounded-lg text-gray-400" 
+             ActiveClass="text-blue-500 bg-slate-800">
+        <i class="fas fa-robot text-xl mb-1"></i>
+        <span class="text-xs font-medium">AI Chat</span>
+    </NavLink>
+</nav>
 
 <div id="blazor-error-ui" class="fixed inset-0 z-[9999] flex items-end justify-center pointer-events-none sm:items-center" data-nosnippet>
     <div class="bg-red-600 text-white p-4 rounded-md shadow-lg m-4 max-w-md w-full pointer-events-auto sm:m-6">
@@ -72,5 +97,5 @@
 
 @code {
     // No C# code is needed in MainLayout for this specific hybrid navigation structure.
-    // The responsiveness is handled by Tailwind's sm: prefixes.
+    // The responsiveness is handled by Tailwind's md: prefixes.
 }

@@ -1,0 +1,76 @@
+@using XNetwork.Models
+@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+
+<!-- Overall Connection Summary -->
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden">
+    <div class="p-4">
+        <div class="flex items-center gap-3 mb-3">
+            <i class="fas fa-signal text-green-400 text-lg"></i>
+            <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
+        </div>
+        <div class="grid grid-cols-3 gap-4 text-sm">
+            <div>
+                <p class="text-slate-400">Latency</p>
+                <p class="text-white font-bold text-xl">@Latency <span class="text-base font-medium text-slate-300">ms</span></p>
+            </div>
+            <div>
+                <p class="text-slate-400">Download</p>
+                <p class="text-white font-bold text-xl">@Download <span class="text-base font-medium text-slate-300">Mbps</span></p>
+            </div>
+            <div>
+                <p class="text-slate-400">Upload</p>
+                <p class="text-white font-bold text-xl">@Upload <span class="text-base font-medium text-slate-300">Mbps</span></p>
+            </div>
+        </div>
+    </div>
+    <div class="w-full h-12">
+        <canvas id="dashboardChart"></canvas>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string ConnectionStatus { get; set; } = "Excellent Connection";
+    [Parameter] public int Latency { get; set; } = 12;
+    [Parameter] public double Download { get; set; } = 85.3;
+    [Parameter] public double Upload { get; set; } = 15.9;
+    
+    private IJSObjectReference? _chartModule;
+    private bool _chartInitialized = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_chartInitialized)
+        {
+            try
+            {
+                _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
+                await _chartModule.InvokeVoidAsync("initializeDashboardSparkline", "dashboardChart");
+                _chartInitialized = true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ConnectionSummary: Error initializing chart: {ex.Message}");
+            }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_chartModule != null)
+        {
+            try
+            {
+                if (_chartInitialized)
+                {
+                    await _chartModule.InvokeVoidAsync("disposeChart", "dashboardChart");
+                }
+                await _chartModule.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ConnectionSummary: Error disposing chart: {ex.Message}");
+            }
+        }
+    }
+}
