@@ -22,7 +22,7 @@
                         3 => "h-6",  // 100% height
                         _ => "h-2"
                     };
-                    var colorClass = isActive ? $"bg-{statusColor}" : "bg-slate-700";
+                    var colorClass = isActive ? GetBarColorClass(statusColor) : "bg-slate-700";
                     <div class="@heightClass @colorClass w-1.5 rounded-sm"></div>
                 }
             </div>
@@ -134,6 +134,22 @@
             var s when s.Contains("fair") => 2,       // 2 bars
             var s when s.Contains("partial") => 1,    // 1 bar
             _ => 0  // Poor or Disconnected - 0 bars
+        };
+    }
+
+    private string GetBarColorClass(string color)
+    {
+        // Tailwind requires full class names for JIT compilation
+        return color switch
+        {
+            "green-400" => "bg-green-400",
+            "cyan-400" => "bg-cyan-400",
+            "yellow-400" => "bg-yellow-400",
+            "orange-400" => "bg-orange-400",
+            "red-400" => "bg-red-400",
+            "red-500" => "bg-red-500",
+            "slate-400" => "bg-slate-400",
+            _ => "bg-slate-400"
         };
     }
 

@@ -249,3 +249,249 @@ cubicInterpolationMode: 'monotone', // Smooth interpolation
 - Reconnect timing (2 seconds) may need adjustment based on system performance
 - No visual feedback during reconnect operation (could add progress indicator)
 - Confirm responsive behavior on different screen sizes
+
+---
+
+## 2025-10-19 - Code Mode (UI Fixes from Screenshots)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/wwwroot/js/statisticsCharts.js`](XNetwork/wwwroot/js/statisticsCharts.js:78-95)
+- [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor:13-27,128-147)
+- [`XNetwork/Components/Pages/Settings.razor`](XNetwork/Components/Pages/Settings.razor:62-91,281-332)
+
+### Issue/Task
+Fixed three remaining UI issues identified from user screenshots:
+1. Chart legends showing unreadable black text on dark background
+2. Overall signal bars appearing empty/gray instead of colored
+3. Missing "Reboot Server" button on Settings page
+
+### Changes Made
+
+#### Issue 1: Chart Legend Text Color (statisticsCharts.js)
+
+**Problem**: Chart legends displayed black/dark gray text that was unreadable on the dark slate background.
+
+**Fix** (Lines 78-95):
+Added legend label styling to chart configuration in `initializeOrUpdateChart()`:
+```javascript
+plugins: {
+    legend: {
+        position: 'top',
+        labels: {
+            color: '#f1f5f9',  // slate-100 for readability on dark background
+            font: {
+                size: 12,
+                family: 'Inter'
+            },
+            padding: 10,
+            usePointStyle: true
+        }
+    },
+    // ... tooltip config
+}
+```
+
+**Result**: All chart legends (Download, Upload, Latency, Packet Loss) now display in light slate-100 color (#f1f5f9), making them clearly readable against the dark background.
+
+#### Issue 2: Signal Bar Colors Not Displaying (ConnectionSummary.razor)
+
+**Problem**: Signal bars on dashboard ConnectionSummary card showed as empty/gray instead of colored bars reflecting connection status.
+
+**Root Cause**: Tailwind CSS JIT compiler requires full class names in source code. String interpolation like `bg-{statusColor}` doesn't work because Tailwind can't detect these dynamic classes during build.
+
+**Fixes**:
+
+1. Changed signal bar rendering (Lines 13-27):
+   - Replaced `$"bg-{statusColor}"` with method call `GetBarColorClass(statusColor)`
+   - Bar now uses explicit Tailwind class from helper method
+
+2. Added `GetBarColorClass()` helper method (Lines 140-153):
+```csharp
+private string GetBarColorClass(string color)
+{
+    // Tailwind requires full class names for JIT compilation
+    return color switch
+    {
+        "green-400" => "bg-green-400",    // Excellent
+        "cyan-400" => "bg-cyan-400",      // Good
+        "yellow-400" => "bg-yellow-400",  // Fair
+        "orange-400" => "bg-orange-400",  // Partial
+        "red-400" => "bg-red-400",        // Poor
+        "red-500" => "bg-red-500",        // Disconnected
+        "slate-400" => "bg-slate-400",    // Default
+        _ => "bg-slate-400"
+    };
+}
+```
+
+**Result**: Signal bars now properly display in green/cyan/yellow/orange/red colors based on connection quality. Inactive bars remain slate-700.
+
+#### Issue 3: Add Reboot Server Button (Settings.razor)
+
+**Problem**: Settings page only had 3 buttons (Disconnect, Reconnect, Restart Service). User requested a 4th button to reboot the entire server/host.
+
+**Fixes**:
+
+1. Added "Reboot Server" button to UI (Lines 84-89):
+```razor
+<button class="w-full text-left flex items-center gap-3 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 font-semibold py-3 px-4 rounded-md transition-colors"
+        @onclick="RebootServer"
+        disabled="@_isProcessing">
+    <i class="fas fa-server w-5 text-center"></i>
+    <span>Reboot Server</span>
+</button>
+```
+- Purple color scheme to distinguish from other buttons
+- Server icon (`fa-server`) for visual identification
+- Positioned as 4th button after Restart Service
+
+2. Added `RebootServer()` method (Lines 281-332):
+```csharp
+private async Task RebootServer()
+{
+    _isProcessing = true;
+    _error = null;
+    await InvokeAsync(StateHasChanged);
+
+    try
+    {
+        Console.WriteLine("Settings: Initiating server reboot...");
+        
+        var startInfo = new System.Diagnostics.ProcessStartInfo();
+        
+        if (OperatingSystem.IsWindows())
+        {
+            startInfo.FileName = "shutdown";
+            startInfo.Arguments = "/r /t 5"; // Reboot in 5 seconds
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            startInfo.FileName = "/bin/bash";
+            startInfo.Arguments = "-c \"sudo reboot\"";
+        }
+        else
+        {
+            throw new PlatformNotSupportedException("Server reboot is only supported on Windows and Linux.");
+        }
+        
+        startInfo.RedirectStandardOutput = true;
+        startInfo.RedirectStandardError = true;
+        startInfo.UseShellExecute = false;
+        startInfo.CreateNoWindow = true;
+
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        if (process != null)
+        {
+            await process.WaitForExitAsync();
+            Console.WriteLine("Settings: Server reboot command executed.");
+        }
+        
+        await Task.Delay(1000);
+    }
+    catch (Exception ex)
+    {
+        _error = $"Failed to reboot server: {ex.Message}";
+        Console.WriteLine($"Settings: Error rebooting server: {ex.Message}");
+    }
+    finally
+    {
+        _isProcessing = false;
+        await InvokeAsync(StateHasChanged);
+    }
+}
+```
+
+**Platform Support**:
+- **Windows**: Uses `shutdown /r /t 5` (reboot in 5 seconds)
+- **Linux**: Uses `sudo reboot` via bash
+- Throws `PlatformNotSupportedException` for unsupported OS
+
+**Button Order** (final):
+1. Disconnect All (red) - Stops all connections
+2. Reconnect All (blue) - Disconnects then reconnects
+3. Restart Service (orange) - Restarts Speedify daemon
+4. **Reboot Server (purple)** - Reboots entire host system
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Warnings**: 16 pre-existing warnings (none related to these changes)
+- **Errors**: 0
+- **Exit Code**: 0
+
+### Technical Notes
+
+#### Chart.js Legend Configuration
+- Chart.js requires explicit legend styling in options config
+- Light color (#f1f5f9) ensures readability on dark backgrounds
+- `usePointStyle: true` makes legend markers match line styles
+- Font set to Inter for consistency with UI
+
+#### Tailwind JIT Compilation
+- **Critical**: Tailwind's JIT compiler scans source files at build time
+- Dynamic class strings (`bg-${variable}`) are NOT detected by JIT
+- All possible class names MUST appear explicitly in source code
+- Solution: Use switch expressions that return full class names like `"bg-green-400"`
+- Alternative: Use safelist in `tailwind.config.js` (not preferred for maintainability)
+
+#### Server Reboot Considerations
+- **Linux**: Requires sudo privileges (user must have passwordless sudo configured for `reboot` command)
+- **Windows**: User must have administrator privileges to execute shutdown command
+- 5-second delay on Windows gives time for graceful shutdown
+- Process exit code is not checked (system reboots before exit confirmation)
+- No confirmation dialog implemented (consider adding in future for safety)
+
+### Important Warnings
+
+1. **Reboot Button Security**:
+   - Server reboot is a DESTRUCTIVE operation
+   - Consider adding confirmation dialog before execution
+   - On Linux, requires sudo permissions to be configured
+   - On Windows, requires admin privileges
+
+2. **Tailwind Dynamic Classes**:
+   - NEVER use string interpolation for Tailwind classes
+   - Always use explicit class names or helper methods
+   - Document this pattern for future developers
+
+3. **Chart Legend Colors**:
+   - Color must be explicitly set for dark themes
+   - Test legend readability when changing theme colors
+
+### Testing Recommendations
+
+1. **Chart Legends**:
+   - Verify all 4 charts (Download, Upload, Latency, Packet Loss) show readable legends
+   - Check legend text color on different display brightnesses
+   - Confirm legend markers match line colors
+
+2. **Signal Bars**:
+   - Test all connection states: Excellent, Good, Fair, Partial, Poor, Disconnected
+   - Verify bars show correct colors (green→cyan→yellow→orange→red)
+   - Confirm inactive bars remain gray (slate-700)
+
+3. **Reboot Server Button**:
+   - **IMPORTANT**: Test in safe environment (development/test server only)
+   - Verify button is disabled during processing
+   - Test error handling when user lacks privileges
+   - Confirm error messages display appropriately
+   - Test on both Windows and Linux if applicable
+
+4. **Cross-Platform**:
+   - Verify reboot works on Windows (with admin rights)
+   - Verify reboot works on Linux (with sudo configured)
+   - Check error message on unsupported platforms
+
+### Future Improvements
+
+1. **Reboot Confirmation**: Add modal dialog asking "Are you sure you want to reboot the server?"
+2. **Reboot Countdown**: Display countdown before actual reboot (currently 5 seconds on Windows, immediate on Linux)
+3. **Privilege Check**: Verify user has required permissions before attempting reboot
+4. **Graceful Shutdown**: Add option to wait for active connections to close before rebooting
+5. **Tailwind Safelist**: Consider adding dynamic color classes to safelist if needed elsewhere
+
+### Related Files
+- Chart configuration: [`XNetwork/wwwroot/js/statisticsCharts.js`](XNetwork/wwwroot/js/statisticsCharts.js)
+- Signal bar component: [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor)
+- Settings controls: [`XNetwork/Components/Pages/Settings.razor`](XNetwork/Components/Pages/Settings.razor)
