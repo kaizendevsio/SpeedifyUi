@@ -1,3 +1,162 @@
+## 2025-10-19 - Code Mode (Critical Streaming Bug Fix - Statistics.razor)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/Components/Pages/Statistics.razor`](XNetwork/Components/Pages/Statistics.razor:379)
+
+### Issue/Task
+Fixed critical streaming bug that caused statistics streaming to stop unexpectedly when any adapter disconnected. The bug was caused by an early `return;` statement that exited the entire streaming loop instead of just skipping the disconnected adapter.
+
+**Root Cause**: Line 379 used `return;` which terminated the entire `await foreach` loop, killing the stream for all adapters when any single adapter disconnected.
+
+**Impact**: Users experienced complete loss of real-time statistics updates whenever an adapter disconnected, requiring manual restart of streaming.
+
+### Changes Made
+
+#### Fixed Early Exit in Streaming Loop (Statistics.razor:379)
+
+**Before**:
+```csharp
+if (statEntry.Connected is false)
+{
+    return;  // ← BUG: Exits entire loop, kills stream for ALL adapters
+}
+```
+
+**After**:
+```csharp
+if (statEntry.Connected is false)
+{
+    continue;  // Skip this adapter, keep stream alive for others
+}
+```
+
+**Why This Matters**:
+- `return;` terminates the entire `StartStreamingStatsInternal()` method
+- This exits the `await foreach` loop completely
+- Stream dies for ALL adapters, not just the disconnected one
+- `continue;` skips only the current iteration, preserving the stream
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Warnings**: 16 pre-existing warnings (none related to this change)
+- **Errors**: 0
+- **Exit Code**: 0
+- **Build Time**: 1.5 seconds
+
+### Technical Analysis
+
+#### The Bug's Logic Flow
+1. User starts streaming statistics
+2. Multiple adapters send stats in the stream
+3. One adapter disconnects (`statEntry.Connected = false`)
+4. **BUG**: `return;` exits `StartStreamingStatsInternal()` entirely
+5. Streaming stops for ALL adapters, even healthy ones
+6. User must manually click "Start Streaming" again
+
+#### The Fix's Logic Flow
+1. User starts streaming statistics
+2. Multiple adapters send stats in the stream
+3. One adapter disconnects (`statEntry.Connected = false`)
+4. **FIX**: `continue;` skips that adapter's data point
+5. Loop continues processing remaining adapters
+6. Stream stays alive, other adapters update normally
+
+#### Comparison with Home.razor
+The dashboard (Home.razor) doesn't have this early exit condition at all - it processes all incoming stats regardless of connection status. This inconsistency made Statistics.razor more fragile than necessary.
+
+### Important Notes
+
+1. **Resilient Streaming**:
+   - Stream now handles adapter disconnections gracefully
+   - Users don't need to manually restart after adapter state changes
+   - Matches the robust behavior of Home.razor's stats processing
+
+2. **No Functional Changes**:
+   - Stream still processes only connected adapters (other code filters them)
+   - Chart updates continue for active adapters
+   - Disconnected adapters simply don't contribute data points
+
+3. **Minimal Change**:
+   - One-word fix: `return` → `continue`
+   - No logic restructuring required
+   - No new dependencies or complexity
+
+### Testing Recommendations
+
+1. **Disconnect Scenario**:
+   - Start streaming on Statistics page
+   - Verify charts update normally
+   - Disconnect one adapter (WiFi off, unplug ethernet, etc.)
+   - Confirm streaming continues for remaining adapters
+   - Charts should keep updating for connected adapters
+
+2. **Reconnect Scenario**:
+   - With streaming active and one adapter disconnected
+   - Reconnect the disconnected adapter
+   - Verify it reappears in charts automatically
+   - No manual restart should be needed
+
+3. **All Disconnect**:
+   - Start streaming with multiple adapters
+   - Disconnect all adapters one by one
+   - Stream should continue running (even with no data)
+   - Reconnecting any adapter should resume updates
+
+4. **Stability**:
+   - Run streaming for extended period (30+ minutes)
+   - Simulate multiple disconnect/reconnect cycles
+   - Verify no memory leaks or performance degradation
+   - Stream should remain stable throughout
+
+### Related Architecture
+
+**Streaming Pattern**:
+```csharp
+await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
+{
+    if (statEntry.Connected is false)
+    {
+        continue;  // Skip disconnected, keep stream alive
+    }
+    
+    // Process connected adapters...
+}
+```
+
+**Benefits of This Pattern**:
+- Resilient to transient disconnections
+- No manual intervention required
+- Consistent with dashboard behavior
+- Simpler error handling
+
+### Known Limitations
+
+1. **No Visual Indicator**: When an adapter disconnects, there's no explicit UI feedback that streaming continues (could add toast notification in future)
+
+2. **Disconnected Adapter Data**: Charts don't show special markers for when adapters disconnect (could add visual gaps or indicators)
+
+3. **No Historical Backfill**: When adapter reconnects, charts don't backfill missing data from disconnection period (by design)
+
+### Future Enhancements
+
+1. **Disconnect Notifications**: Show brief toast when adapter disconnects: "Adapter X disconnected - streaming continues"
+
+2. **Visual Gaps**: Add markers or gaps in charts where adapters were disconnected
+
+3. **Auto-Cleanup**: Remove disconnected adapters from charts after X minutes of inactivity
+
+4. **Reconnect Alerts**: Notify when previously disconnected adapter comes back online
+
+### Conclusion
+
+This single-line fix resolves a critical usability issue where statistics streaming would unexpectedly stop. The fix aligns Statistics.razor with the more resilient behavior of Home.razor, ensuring a consistent and robust user experience across the application.
+
+**User Impact**: Users can now rely on continuous statistics streaming without manual intervention when adapters disconnect/reconnect during normal operation.
+
+---
+
 ## 2025-10-19 - Code Mode (Removed Idle Connection Status - Simplified Health Logic)
 
 **Agent**: Claude Code (Sonnet 4.5)

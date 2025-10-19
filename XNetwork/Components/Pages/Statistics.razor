@@ -376,7 +376,7 @@
                 if (_isInitialLoading) _isInitialLoading = false;
                 if (statEntry.Connected is false)
                 {
-                    return;
+                    continue;  // Skip this adapter, keep stream alive
                 }
                 
                 var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
