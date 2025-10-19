@@ -64,25 +64,25 @@
                 <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Controls</h3>
                 <div class="space-y-3">
                     <button class="w-full text-left flex items-center gap-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold py-3 px-4 rounded-md transition-colors"
-                            @onclick="DisconnectAll"
+                            @onclick="ShowDisconnectModal"
                             disabled="@_isProcessing">
                         <i class="fas fa-unlink w-5 text-center"></i>
                         <span>Disconnect All Connections</span>
                     </button>
                     <button class="w-full text-left flex items-center gap-3 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 font-semibold py-3 px-4 rounded-md transition-colors"
-                            @onclick="ReconnectAll"
+                            @onclick="ShowReconnectModal"
                             disabled="@_isProcessing">
                         <i class="fas fa-sync w-5 text-center"></i>
                         <span>Reconnect All Connections</span>
                     </button>
                     <button class="w-full text-left flex items-center gap-3 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 font-semibold py-3 px-4 rounded-md transition-colors"
-                            @onclick="RestartSpeedify"
+                            @onclick="ShowRestartModal"
                             disabled="@_isProcessing">
                         <i class="fas fa-power-off w-5 text-center"></i>
                         <span>Restart Speedify Service</span>
                     </button>
                     <button class="w-full text-left flex items-center gap-3 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 font-semibold py-3 px-4 rounded-md transition-colors"
-                            @onclick="RebootServer"
+                            @onclick="ShowRebootModal"
                             disabled="@_isProcessing">
                         <i class="fas fa-server w-5 text-center"></i>
                         <span>Reboot Server</span>
@@ -109,12 +109,55 @@
     }
 </div>
 
+<!-- Confirmation Modals -->
+<ConfirmationModal
+    IsVisible="_showDisconnectModal"
+    Title="Disconnect All Connections"
+    Message="Are you sure you want to disconnect all connections? This will stop all network adapters."
+    ConfirmText="Disconnect"
+    CancelText="Cancel"
+    ConfirmButtonClass="btn-red"
+    OnConfirm="HandleDisconnectConfirm" />
+
+<ConfirmationModal
+    IsVisible="_showReconnectModal"
+    Title="Reconnect All Connections"
+    Message="Are you sure you want to reconnect all connections? This will briefly interrupt connectivity."
+    ConfirmText="Reconnect"
+    CancelText="Cancel"
+    ConfirmButtonClass="btn-blue"
+    OnConfirm="HandleReconnectConfirm" />
+
+<ConfirmationModal
+    IsVisible="_showRestartModal"
+    Title="Restart Speedify Service"
+    Message="Are you sure you want to restart the Speedify service? This will briefly interrupt all connections."
+    ConfirmText="Restart"
+    CancelText="Cancel"
+    ConfirmButtonClass="btn-orange"
+    OnConfirm="HandleRestartConfirm" />
+
+<ConfirmationModal
+    IsVisible="_showRebootModal"
+    Title="Reboot Server"
+    Message="Are you sure you want to reboot the server? This will disconnect all users and services."
+    ConfirmText="Reboot Server"
+    CancelText="Cancel"
+    ConfirmButtonClass="btn-red"
+    OnConfirm="HandleRebootConfirm" />
+
 @code {
     private NetworkMonitorSettings _monitorSettings = new();
     private string _whitelistedLinksInput = "";
     private string? _error;
     private bool _isLoading = true;
     private bool _isProcessing = false;
+
+    // Modal visibility state
+    private bool _showDisconnectModal = false;
+    private bool _showReconnectModal = false;
+    private bool _showRestartModal = false;
+    private bool _showRebootModal = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -193,6 +236,73 @@
         }
     }
 
+    // Modal show methods
+    private void ShowDisconnectModal()
+    {
+        _showDisconnectModal = true;
+    }
+
+    private void ShowReconnectModal()
+    {
+        _showReconnectModal = true;
+    }
+
+    private void ShowRestartModal()
+    {
+        _showRestartModal = true;
+    }
+
+    private void ShowRebootModal()
+    {
+        _showRebootModal = true;
+    }
+
+    // Modal confirmation handlers
+    private async Task HandleDisconnectConfirm(bool confirmed)
+    {
+        _showDisconnectModal = false;
+        await InvokeAsync(StateHasChanged);
+
+        if (confirmed)
+        {
+            await DisconnectAll();
+        }
+    }
+
+    private async Task HandleReconnectConfirm(bool confirmed)
+    {
+        _showReconnectModal = false;
+        await InvokeAsync(StateHasChanged);
+
+        if (confirmed)
+        {
+            await ReconnectAll();
+        }
+    }
+
+    private async Task HandleRestartConfirm(bool confirmed)
+    {
+        _showRestartModal = false;
+        await InvokeAsync(StateHasChanged);
+
+        if (confirmed)
+        {
+            await RestartSpeedify();
+        }
+    }
+
+    private async Task HandleRebootConfirm(bool confirmed)
+    {
+        _showRebootModal = false;
+        await InvokeAsync(StateHasChanged);
+
+        if (confirmed)
+        {
+            await RebootServer();
+        }
+    }
+
+    // Actual action methods
     private async Task DisconnectAll()
     {
         _isProcessing = true;
