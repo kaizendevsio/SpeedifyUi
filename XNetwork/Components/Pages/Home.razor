@@ -42,12 +42,12 @@
         <div class="space-y-3">
             <h3 class="text-lg font-semibold text-white px-1">Adapters</h3>
             
-            @foreach (var adapter in _adapters.OrderBy(a => GetSortOrderForState(a.State)).ThenBy(a => a.Name))
+            @foreach (var adapter in GetSortedAdapters())
             {
                 var currentStats = GetStatsForAdapter(adapter.AdapterId);
                 var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
                 
-                <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg">
+                <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative">
                     <div class="flex items-center gap-3 text-sm">
                         <i class="@GetAdapterIcon(adapter.Type) @GetAdapterIconColor(adapter.State, isOffline) text-lg w-5 text-center"></i>
                         <p class="font-semibold text-white flex-grow min-w-0 truncate">
@@ -56,18 +56,18 @@
                         
                         @if (!isOffline && currentStats != null)
                         {
-                            <div class="ml-auto flex items-center gap-3 sm:gap-4 flex-shrink-0 text-xs">
+                            <div class="ml-auto flex items-center gap-3 sm:gap-4 flex-shrink-0">
                                 <span class="inline-flex items-center gap-1.5">
-                                    <i class="fas fa-arrow-down text-cyan-400"></i> 
-                                    @Math.Round(currentStats.ReceiveBps / (1000 * 1000), 1)
+                                    <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
+                                    <span class="text-lg font-semibold text-white">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 1)</span>
                                 </span>
                                 <span class="hidden sm:inline-flex items-center gap-1.5">
-                                    <i class="fas fa-arrow-up text-pink-400"></i> 
-                                    @Math.Round(currentStats.SendBps / (1000 * 1000), 1)
+                                    <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
+                                    <span class="text-lg font-semibold text-white">@Math.Round(currentStats.SendBps / (1000 * 1000), 1)</span>
                                 </span>
                                 <span class="inline-flex items-center gap-1.5">
-                                    <i class="far fa-clock text-slate-400"></i> 
-                                    @currentStats.LatencyMs ms
+                                    <i class="far fa-clock text-slate-400 text-sm"></i>
+                                    <span class="text-lg font-semibold text-white">@currentStats.LatencyMs<span class="text-xs text-white">ms</span></span>
                                 </span>
                             </div>
                         }
@@ -75,23 +75,34 @@
                         <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full flex-shrink-0 @(isOffline ? "ml-auto" : "")">
                             @adapter.State
                         </span>
-                    </div>
-                    
-                    @if (!isOffline)
-                    {
-                        <div class="mt-3 flex items-center gap-2">
-                            <label for="priority-select-@adapter.AdapterId" class="text-xs text-slate-400">Priority:</label>
-                            <select id="priority-select-@adapter.AdapterId" 
-                                    class="flex-1 bg-slate-900 border border-slate-700 rounded-md py-1.5 px-2 text-xs text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors capitalize"
-                                    @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value?.ToString())" 
-                                    disabled="@_isProcessingAction">
-                                @foreach (var p in _prios)
+                        
+                        @if (!isOffline)
+                        {
+                            <div class="relative">
+                                <button class="bg-slate-700 hover:bg-slate-600 text-gray-300 w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0"
+                                        @onclick="() => ToggleMenu(adapter.AdapterId)">
+                                    <i class="fas fa-ellipsis-v"></i>
+                                </button>
+                                
+                                @if (_openMenuAdapterId == adapter.AdapterId)
                                 {
-                                    <option value="@p" selected="@(adapter.Priority == p)">@p</option>
+                                    <div class="absolute right-0 top-10 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 min-w-[200px]">
+                                        <div class="p-3">
+                                            <label class="text-xs text-slate-400 mb-2 block">Priority</label>
+                                            <select class="w-full bg-slate-900 border border-slate-700 rounded-md py-1.5 px-2 text-xs text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors capitalize"
+                                                    @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value?.ToString())"
+                                                    disabled="@_isProcessingAction">
+                                                @foreach (var p in _prios)
+                                                {
+                                                    <option value="@p" selected="@(adapter.Priority == p)">@p</option>
+                                                }
+                                            </select>
+                                        </div>
+                                    </div>
                                 }
-                            </select>
-                        </div>
-                    }
+                            </div>
+                        }
+                    </div>
                 </div>
             }
         </div>
@@ -107,8 +118,9 @@
     private Timer? _autoRefreshTimer;
     private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"]; 
 
-    private bool _initialLoadComplete = false; 
-    private bool _isProcessingAction = false; 
+    private bool _initialLoadComplete = false;
+    private bool _isProcessingAction = false;
+    private string? _openMenuAdapterId = null;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -243,14 +255,64 @@
         };
     }
 
+    private void ToggleMenu(string adapterId)
+    {
+        _openMenuAdapterId = _openMenuAdapterId == adapterId ? null : adapterId;
+    }
+
+    private IEnumerable<Adapter> GetSortedAdapters()
+    {
+        if (_adapters == null) return Enumerable.Empty<Adapter>();
+        
+        // Filter out pure "disconnected" adapters - only show connected, connecting, standby, offline states
+        var visibleAdapters = _adapters.Where(a => a.State.ToLowerInvariant() != "disconnected");
+        
+        // Sort by state first, then by latency (for connected adapters)
+        return visibleAdapters
+            .OrderBy(a => GetSortOrderForState(a.State))
+            .ThenBy(a => {
+                var stats = GetStatsForAdapter(a.AdapterId);
+                return stats?.LatencyMs ?? int.MaxValue;
+            })
+            .ThenBy(a => {
+                var stats = GetStatsForAdapter(a.AdapterId);
+                return stats != null ? (stats.LossSend + stats.LossReceive) / 2 : double.MaxValue;
+            });
+    }
+
     private string GetOverallConnectionStatus()
     {
         if (_adapters == null || !_adapters.Any()) return "No Connection";
         
-        var connectedCount = _adapters.Count(a => a.State.ToLowerInvariant() == "connected");
+        var connectedAdapters = _adapters.Where(a => a.State.ToLowerInvariant() == "connected").ToList();
+        var connectedCount = connectedAdapters.Count;
+        
         if (connectedCount == 0) return "Disconnected";
-        if (connectedCount == _adapters.Count) return "Excellent Connection";
-        return "Partial Connection";
+        
+        // Get stats for connected adapters
+        var connectedStats = connectedAdapters
+            .Select(a => GetStatsForAdapter(a.AdapterId))
+            .Where(s => s != null)
+            .ToList();
+        
+        if (!connectedStats.Any()) return "Partial Connection";
+        
+        // Calculate quality metrics
+        var avgLatency = connectedStats.Average(s => s!.LatencyMs);
+        var avgPacketLoss = connectedStats.Average(s => (s!.LossSend + s.LossReceive) / 2);
+        var totalSpeed = connectedStats.Sum(s => s!.ReceiveBps + s.SendBps) / (1000 * 1000); // Mbps
+        
+        // Determine status based on performance
+        if (avgLatency < 50 && avgPacketLoss < 1 && totalSpeed > 10)
+            return "Excellent Connection";
+        else if (avgLatency < 100 && avgPacketLoss < 5 && totalSpeed > 5)
+            return "Good Connection";
+        else if (avgLatency < 200 && avgPacketLoss < 10)
+            return "Fair Connection";
+        else if (connectedCount < _adapters.Count / 2)
+            return "Partial Connection";
+        else
+            return "Poor Connection";
     }
 
     private int GetAverageLatency()

@@ -37,6 +37,8 @@
     
     private IJSObjectReference? _chartModule;
     private bool _chartInitialized = false;
+    private Timer? _chartUpdateTimer;
+    private double _previousDownload = 0;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -47,6 +49,9 @@
                 _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
                 await _chartModule.InvokeVoidAsync("initializeDashboardSparkline", "dashboardChart");
                 _chartInitialized = true;
+                
+                // Start timer to update sparkline every second
+                _chartUpdateTimer = new Timer(async _ => await UpdateSparkline(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
             }
             catch (Exception ex)
             {
@@ -55,8 +60,40 @@
         }
     }
 
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
+        
+        // Update sparkline if download speed changed
+        if (_chartInitialized && Download != _previousDownload)
+        {
+            _previousDownload = Download;
+            await UpdateSparkline();
+        }
+    }
+
+    private async Task UpdateSparkline()
+    {
+        if (_chartModule != null && _chartInitialized)
+        {
+            try
+            {
+                await _chartModule.InvokeVoidAsync("updateDashboardSparkline", "dashboardChart", Download);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ConnectionSummary: Error updating sparkline: {ex.Message}");
+            }
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
+        if (_chartUpdateTimer != null)
+        {
+            await _chartUpdateTimer.DisposeAsync();
+        }
+        
         if (_chartModule != null)
         {
             try

@@ -151,6 +151,110 @@ export function disposeChart(chartId) {
     }
 }
 
+// Function to initialize a dashboard sparkline chart
+export function initializeDashboardSparkline(chartId) {
+    const ctx = document.getElementById(chartId);
+    if (!ctx) {
+        console.error(`Chart canvas with ID ${chartId} not found during initialization.`);
+        return false;
+    }
+
+    // If chart already exists, destroy it before re-creating
+    if (charts[chartId]) {
+        console.warn(`Chart ${chartId} already exists. Destroying and re-initializing.`);
+        charts[chartId].destroy();
+        delete charts[chartId];
+    }
+
+    // Generate initial dummy data for sparkline
+    const labels = [];
+    const data = [];
+    const now = Date.now();
+    for (let i = 29; i >= 0; i--) {
+        labels.push('');
+        data.push(Math.random() * 100 + 20); // Random data between 20-120
+    }
+
+    try {
+        charts[chartId] = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    borderColor: '#22d3ee', // cyan-400
+                    backgroundColor: 'rgba(34, 211, 238, 0.1)',
+                    tension: 0.4,
+                    fill: true,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 0
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        display: false,
+                        grid: {
+                            display: false
+                        }
+                    },
+                    y: {
+                        display: false,
+                        grid: {
+                            display: false
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        enabled: false
+                    }
+                },
+                animation: {
+                    duration: 0
+                }
+            }
+        });
+        console.log(`Dashboard sparkline ${chartId} initialized successfully.`);
+        return true;
+    } catch (error) {
+        console.error(`Error creating dashboard sparkline ${chartId}:`, error);
+        return false;
+    }
+}
+
+// Function to update dashboard sparkline with new data point
+export function updateDashboardSparkline(chartId, value) {
+    const chart = charts[chartId];
+    if (!chart) {
+        console.warn(`Chart with ID ${chartId} not found for updating sparkline.`);
+        return;
+    }
+
+    // Add new data point and remove oldest
+    chart.data.datasets[0].data.push(value);
+    if (chart.data.datasets[0].data.length > MAX_DATA_POINTS) {
+        chart.data.datasets[0].data.shift();
+    }
+
+    chart.data.labels.push('');
+    if (chart.data.labels.length > MAX_DATA_POINTS) {
+        chart.data.labels.shift();
+    }
+
+    try {
+        chart.update('none');
+    } catch (error) {
+        console.error(`Error updating sparkline ${chartId}:`, error);
+    }
+}
+
 // Function to dispose all charts
 export function disposeAllCharts() {
     for (const chartId in charts) {

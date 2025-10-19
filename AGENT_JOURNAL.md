@@ -165,3 +165,175 @@ This file documents changes made to the project by AI agents, including dates, f
 6. Test AI Chat message sending and responses
 
 ---
+
+## Entry: 2025-10-19 - Code Mode - UI Refinements Based on User Testing
+
+**Agent Mode:** Code (💻)
+
+**Task:** Fix UI refinements based on user testing feedback by comparing implementation with original NewUi.html design.
+
+### Files Modified
+
+#### Pages Updated
+- **XNetwork/Components/Pages/Home.razor**
+  - **Issue 1 - Unreadable Text:** Increased font sizes for adapter metrics (text-xs → text-lg font-semibold)
+  - **Issue 2 - Priority Dropdown:** Moved priority selection from inline dropdown to 3-dot menu popover
+  - **Issue 3 - Disconnected Adapters:** Filtered out pure "disconnected" adapters from display
+  - **Issue 4 - Connection Status:** Implemented proper calculation based on latency, packet loss, and speed
+  - **Issue 5 - Adapter Sorting:** Sort by state (connected first), then latency, then packet loss
+  - Added `_openMenuAdapterId` field to track which menu is open
+  - Added `ToggleMenu()` method to handle menu display
+  - Added `GetSortedAdapters()` method with filtering and sorting logic
+  - Enhanced `GetOverallConnectionStatus()` with performance-based status calculation:
+    - Excellent: latency <50ms, packet loss <1%, speed >10 Mbps
+    - Good: latency <100ms, packet loss <5%, speed >5 Mbps
+    - Fair: latency <200ms, packet loss <10%
+    - Partial: less than half adapters connected
+    - Poor: otherwise
+
+#### Components Updated
+- **XNetwork/Components/Custom/ConnectionSummary.razor**
+  - **Issue 6 - Sparkline Chart:** Added chart update functionality
+  - Implemented `_chartUpdateTimer` for periodic sparkline updates
+  - Added `OnParametersSetAsync()` to update chart when download speed changes
+  - Added `UpdateSparkline()` method to push data to JavaScript
+  - Enhanced disposal to include timer cleanup
+
+#### JavaScript Updates  
+- **XNetwork/wwwroot/js/statisticsCharts.js**
+  - **Issue 6 - Sparkline Chart:** Implemented dashboard sparkline functionality
+  - Added `initializeDashboardSparkline()` function for minimal sparkline charts
+  - Added `updateDashboardSparkline()` function to add new data points
+  - Sparkline configuration:
+    - No axes, no legend, no tooltips
+    - Cyan (#22d3ee) line with subtle fill
+    - 30 data points max (rolling window)
+    - Smooth tension curve (0.4)
+
+### Changes Summary
+
+**1. Improved Readability**
+- Adapter card metrics now use `text-lg font-semibold text-white` instead of `text-xs`
+- Download/upload speeds clearly visible with larger numbers
+- Latency displayed with proper contrast and size
+- Icons sized appropriately (`text-sm` for icons)
+
+**2. Cleaner UI**
+- Priority dropdown removed from inline display
+- 3-dot menu button shows priority options in dropdown
+- Dropdown positioned absolutely (right-0 top-10)
+- Menu state tracked per adapter with `_openMenuAdapterId`
+
+**3. Better Filtering**
+- Only connected/connecting/standby/offline adapters shown
+- Pure "disconnected" state adapters hidden
+- Filter applied in `GetSortedAdapters()` method
+
+**4. Intelligent Status Calculation**
+- Status based on actual performance metrics not just count
+- Uses average latency, packet loss, and total speed
+- Five status levels: Excellent, Good, Fair, Partial, Poor
+- Considers both quantity and quality of connections
+
+**5. Smart Sorting**
+- Primary sort: Connection state (connected > connecting > others)
+- Secondary sort: Latency (lowest first)
+- Tertiary sort: Packet loss (lowest first)  
+- Best performing adapters appear at top
+
+**6. Working Sparkline**
+- Dashboard sparkline now initializes and updates properly
+- Shows real-time download speed trend
+- Updates every second via timer
+- Smooth animation with cyan color scheme
+- Properly disposed on component cleanup
+
+### Build Status
+- ✅ Build succeeded with 0 errors
+- ⚠️ 17 warnings (all pre-existing, none critical)
+- No new compilation issues introduced
+
+### Testing Recommendations
+
+1. Verify adapter card metrics are clearly readable
+2. Test 3-dot menu opens and priority can be changed
+3. Confirm disconnected adapters are hidden from view
+4. Check connection status shows appropriate level
+5. Verify adapters sort with best performers at top
+6. Confirm sparkline chart displays and updates
+7. Test responsive design still works correctly
+
+### Important Notes
+
+1. **Packet Loss Calculation:**
+   - ConnectionItem has `LossSend` and `LossReceive` properties
+   - Average of both used for sorting: `(LossSend + LossReceive) / 2`
+
+2. **Menu State Management:**
+   - Only one menu can be open at a time
+   - Clicking outside doesn't close menu (potential future enhancement)
+   - Menu positioned relative to button with absolute positioning
+
+3. **Status Thresholds:**
+   - Excellent: <50ms latency, <1% loss, >10 Mbps
+   - Good: <100ms latency, <5% loss, >5 Mbps
+   - Fair: <200ms latency, <10% loss
+   - Partial: <50% adapters connected
+   - Poor: everything else
+
+4. **Sparkline Implementation:**
+   - Uses dummy data on initialization for smooth appearance
+   - Updates with real download speed data
+   - 30-point rolling window for history
+   - Chart.js with minimal configuration
+
+---
+
+## Entry: 2025-10-19 - Code Mode - Adapter Card Metrics Text Color Fix
+
+**Agent Mode:** Code (💻)
+
+**Task:** Fix text color readability issue for adapter card metrics on the Home page.
+
+### Files Modified
+
+#### Pages Updated
+- **XNetwork/Components/Pages/Home.razor** (line 70)
+  - **Issue:** Latency "ms" unit text was using `text-slate-400` (muted gray), hard to read against dark background
+  - **Fix:** Changed from `text-slate-400` to `text-white` for the "ms" unit text
+  - **Result:** Metric values now display in bright white text matching the original design
+  - Main metric values (download speed, upload speed, latency number) already using `text-white`
+  - Only the "ms" unit suffix needed color correction
+
+### Changes Summary
+
+**Text Color Update**
+- Changed latency unit display from muted gray to bright white
+- Updated class: `text-xs text-slate-400` → `text-xs text-white`
+- Ensures consistent readability across all metric displays
+- Matches original NewUi.html design intent
+
+### Build Status
+- ✅ Build succeeded with 0 errors
+- ⚠️ 17 warnings (all pre-existing, none critical)
+- No new compilation issues introduced
+
+### Important Notes
+
+1. **User Clarification:**
+   - Problem was NOT font size (already fixed in previous update)
+   - Problem was TEXT COLOR - muted gray vs bright white
+   - Original design uses bright white text throughout metrics
+
+2. **Metric Display Consistency:**
+   - Download speed icon: cyan (text-cyan-400)
+   - Upload speed icon: pink (text-pink-400)
+   - Latency icon: slate-400 (for subtle clock icon)
+   - ALL metric values and units: white (text-white)
+
+3. **User Verification:**
+   - User confirmed comparing current screenshot to original design
+   - Original design shows clearly visible white text for all metrics
+   - Fix brings implementation back to design specification
+
+---
