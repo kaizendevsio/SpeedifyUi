@@ -22,8 +22,8 @@
                         3 => "h-6",  // 100% height
                         _ => "h-2"
                     };
-                    var colorClass = isActive ? GetBarColorClass(statusColor) : "bg-slate-700";
-                    <div class="@heightClass @colorClass w-1.5 rounded-sm"></div>
+                    <div class="@heightClass w-1.5 rounded-sm"
+                         style="background-color: @(isActive ? GetBarColorHex(statusColor) : "#334155")"></div>
                 }
             </div>
             <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
@@ -137,19 +137,18 @@
         };
     }
 
-    private string GetBarColorClass(string color)
+    private string GetBarColorHex(string color)
     {
-        // Tailwind requires full class names for JIT compilation
         return color switch
         {
-            "green-400" => "bg-green-400",
-            "cyan-400" => "bg-cyan-400",
-            "yellow-400" => "bg-yellow-400",
-            "orange-400" => "bg-orange-400",
-            "red-400" => "bg-red-400",
-            "red-500" => "bg-red-500",
-            "slate-400" => "bg-slate-400",
-            _ => "bg-slate-400"
+            "green-400" => "#4ade80",
+            "cyan-400" => "#22d3ee",
+            "yellow-400" => "#facc15",
+            "orange-400" => "#fb923c",
+            "red-400" => "#f87171",
+            "red-500" => "#ef4444",
+            "slate-400" => "#94a3b8",
+            _ => "#334155" // slate-700
         };
     }
 

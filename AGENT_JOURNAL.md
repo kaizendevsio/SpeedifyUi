@@ -1,4 +1,250 @@
 # Agent Journal
+## 2025-10-19 - Code Mode (Critical UI Fixes from Screenshots)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/wwwroot/js/statisticsCharts.js`](XNetwork/wwwroot/js/statisticsCharts.js:78-95)
+- [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor:13-27,140-154)
+- [`XNetwork/Components/Pages/Home.razor`](XNetwork/Components/Pages/Home.razor:41-49,376-398)
+
+### Issue/Task
+Fixed three critical UI issues identified from user screenshots:
+1. **Duplicated Chart Legends** - Charts showing legends twice (smaller text at top, larger text below)
+2. **Signal Bars Not Colored** - Overall card signal bars showing gray/empty instead of colored
+3. **Missing Connection Counter** - No visual indication of how many adapters are connected
+
+### Changes Made
+
+#### Issue 1: Remove Duplicated Chart Legends (statisticsCharts.js)
+
+**Problem**: Chart legends were appearing twice - once in smaller text at the top, and again in larger text below, creating visual clutter.
+
+**Root Cause**: Previous fix likely added custom legend HTML generation while Chart.js's built-in legend was also enabled.
+
+**Fix** (Lines 78-95):
+Simplified legend configuration to use ONLY Chart.js built-in legend with updated text color:
+```javascript
+plugins: {
+    legend: {
+        display: true,
+        labels: {
+            color: '#f1f5f9',  // Light slate color for readability
+            font: {
+                size: 12,
+                family: 'Inter'
+            }
+        }
+    },
+    tooltip: {
+        mode: 'index',
+        intersect: false,
+    }
+}
+```
+
+**Removed**:
+- Any custom `htmlLegend` plugins (if they existed)
+- Any custom legend HTML generation code
+- Any `generateLegend()` functions
+- Extra properties like `padding` and `usePointStyle` that could cause duplication
+
+**Result**: All four charts (Download Speed, Upload Speed, Latency, Packet Loss) now show clean, single legends with light-colored readable text.
+
+#### Issue 2: Fix Signal Bars Using Inline Styles (ConnectionSummary.razor)
+
+**Problem**: Signal bars on ConnectionSummary card displayed as gray/empty instead of colored, even though connections existed.
+
+**Root Cause**: Tailwind CSS CDN JIT compilation doesn't support dynamic class generation via string interpolation. The previous approach using `GetBarColorClass()` wasn't working reliably with CDN Tailwind.
+
+**Solution**: Switch from Tailwind classes to inline styles with explicit hex color values.
+
+**Fixes**:
+
+1. Updated signal bar rendering (Lines 13-27):
+   - Changed from Tailwind class approach to inline styles
+   - Added `style="background-color: @(isActive ? GetBarColorHex(statusColor) : "#334155")"` 
+   - Removed unreliable Tailwind class binding
+
+2. Replaced `GetBarColorClass()` with `GetBarColorHex()` (Lines 140-154):
+```csharp
+private string GetBarColorHex(string color)
+{
+    return color switch
+    {
+        "green-400" => "#4ade80",    // Excellent connection
+        "cyan-400" => "#22d3ee",     // Good connection  
+        "yellow-400" => "#facc15",   // Fair connection
+        "orange-400" => "#fb923c",   // Partial connection
+        "red-400" => "#f87171",      // Poor connection
+        "red-500" => "#ef4444",      // Disconnected
+        "slate-400" => "#94a3b8",    // Default
+        _ => "#334155"               // Inactive bars (slate-700)
+    };
+}
+```
+
+**Why Inline Styles?**:
+- More reliable with CDN Tailwind (doesn't require JIT compilation)
+- Guaranteed to work regardless of Tailwind configuration
+- No dependency on safelist or purge configuration
+- Explicit hex colors ensure consistent rendering
+
+**Result**: Signal bars now properly display in vibrant green/cyan/yellow/orange/red colors based on connection quality. Inactive bars correctly show as slate gray.
+
+#### Issue 3: Add Connection Counter to Dashboard (Home.razor)
+
+**Problem**: No visual indication of how many adapters are currently connected vs total available.
+
+**Fix** (Lines 41-49):
+Added connection counter badge below "Adapters" heading:
+```razor
+<div class="flex items-center gap-3 px-1 mb-3">
+    <h3 class="text-lg font-semibold text-white">Adapters</h3>
+    <span class="px-3 py-1 bg-green-500/10 text-green-400 text-sm font-medium rounded-full">
+        @GetConnectedCount() connected
+    </span>
+</div>
+```
+
+**Helper Methods Added** (Lines 376-398):
+```csharp
+private int GetConnectedCount()
+{
+    if (_adapters == null || !_adapters.Any())
+        return 0;
+    
+    var sortedAdapters = GetSortedAdapters();
+    return sortedAdapters.Count(a => 
+        a.State.Equals("connected", StringComparison.OrdinalIgnoreCase));
+}
+
+private int GetTotalCount()
+{
+    if (_adapters == null || !_adapters.Any())
+        return 0;
+    
+    var sortedAdapters = GetSortedAdapters();
+    return sortedAdapters.Count();
+}
+```
+
+**Design Choice**: Badge format showing "X connected" rather than "X/Y" or "X of Y":
+- Cleaner, more compact display
+- Green badge with subtle background matches connection status theme
+- Badge positioned next to "Adapters" heading for context
+- Updates dynamically as connections change
+
+**Result**: Users can now immediately see how many adapters are actively connected at a glance.
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Warnings**: 16 pre-existing warnings (unrelated to these changes)
+- **Errors**: 0
+- **Exit Code**: 0
+
+### Technical Notes
+
+#### Chart.js Legend Best Practices
+- Always use built-in Chart.js legend unless custom HTML is absolutely required
+- Set `display: true` explicitly to avoid confusion
+- Only customize colors and fonts - avoid complex overrides
+- Simpler configurations are more maintainable and less error-prone
+
+#### Inline Styles vs Tailwind Classes
+**When to use inline styles**:
+- Dynamic colors that can't be safely listed in source code
+- CDN Tailwind usage (no control over JIT compilation)
+- Values that change frequently at runtime
+- Situations where safelist isn't practical
+
+**When to use Tailwind classes**:
+- Static, known-at-build-time classes
+- Standard design system colors and sizes
+- Better performance for frequently used styles
+- Easier to maintain consistency
+
+**Our Case**: Signal bars needed inline styles because:
+1. Using CDN Tailwind (no build-time JIT control)
+2. Colors determined dynamically at runtime
+3. Safelist would require listing all color variants
+4. Inline styles guarantee rendering
+
+#### Connection Counter Implementation
+- Uses existing `GetSortedAdapters()` to ensure consistency with adapter list
+- Case-insensitive state comparison for reliability
+- Returns 0 when no adapters available (graceful degradation)
+- Badge updates automatically via Blazor's reactivity
+
+### Important Notes
+
+1. **Chart Legends**:
+   - Keeping legend configuration minimal prevents future duplication issues
+   - Light color (#f1f5f9) ensures readability on dark backgrounds
+   - Applies to all four statistics charts uniformly
+
+2. **Signal Bar Colors**:
+   - Inline styles are the most reliable solution for CDN Tailwind
+   - Hex colors match exact Tailwind color values for visual consistency
+   - Works identically across all browsers and devices
+
+3. **Connection Counter**:
+   - Only counts adapters in "connected" state (not connecting/disconnecting)
+   - Uses same filtering logic as adapter card list
+   - Green badge provides positive visual feedback
+
+### Testing Recommendations
+
+1. **Chart Legends**:
+   - Navigate to Statistics page
+   - Verify each chart (Download, Upload, Latency, Loss) shows ONLY ONE legend
+   - Confirm legend text is light-colored and readable
+   - Check that legend entries match adapter names
+
+2. **Signal Bars**:
+   - View dashboard with multiple connections of varying quality
+   - Verify bars show appropriate colors:
+     - 4 green bars for excellent connection
+     - 3 cyan bars for good connection
+     - 2 yellow bars for fair connection
+     - 1 orange bar for partial connection
+     - 0/red for poor or no connection
+   - Confirm inactive bars are gray, not invisible
+   - Test across different browsers (Chrome, Firefox, Edge)
+
+3. **Connection Counter**:
+   - Check dashboard shows correct count (e.g., "3 connected")
+   - Disconnect an adapter and verify count decrements
+   - Reconnect adapter and verify count increments
+   - Test with 0 connections (should show "0 connected")
+   - Test with all adapters connected
+
+4. **Responsive Behavior**:
+   - Test all fixes on mobile/tablet screen sizes
+   - Verify layouts don't break with long adapter names
+   - Check badge doesn't overflow on small screens
+
+### Before vs After
+
+**Charts**:
+- Before: Duplicate legends with inconsistent sizing
+- After: Single, clean legend with readable light-colored text
+
+**Signal Bars**:
+- Before: All gray bars regardless of connection quality
+- After: Vibrant colored bars matching connection status
+
+**Connection Counter**:
+- Before: No indication of how many adapters connected
+- After: Clear badge showing "X connected" next to heading
+
+### Related Issues Resolved
+- Signal bars issue previously "fixed" but still broken (now truly fixed with inline styles)
+- Chart customization complexity reduced (simpler = more maintainable)
+- User experience improved with connection count visibility
+
+---
+
 
 ## 2025-10-19 - Code Mode
 

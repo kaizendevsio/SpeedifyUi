@@ -77,15 +77,13 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 },
                 plugins: {
                     legend: {
-                        position: 'top',
+                        display: true,
                         labels: {
-                            color: '#f1f5f9',  // slate-100 for readability on dark background
+                            color: '#f1f5f9',  // Light slate color for readability
                             font: {
                                 size: 12,
                                 family: 'Inter'
-                            },
-                            padding: 10,
-                            usePointStyle: true
+                            }
                         }
                     },
                     tooltip: {

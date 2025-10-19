@@ -40,7 +40,12 @@
 
         <!-- Adapter List -->
         <div class="space-y-3">
-            <h3 class="text-lg font-semibold text-white px-1">Adapters</h3>
+            <div class="flex items-center gap-3 px-1 mb-3">
+                <h3 class="text-lg font-semibold text-white">Adapters</h3>
+                <span class="px-3 py-1 bg-green-500/10 text-green-400 text-sm font-medium rounded-full">
+                    @GetConnectedCount() connected
+                </span>
+            </div>
             
             @foreach (var adapter in GetSortedAdapters())
             {
@@ -371,6 +376,25 @@
     {
         if (!_stats.Any()) return 0;
         return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.SendBps) / (1000 * 1000), 1);
+    }
+
+    private int GetConnectedCount()
+    {
+        if (_adapters == null || !_adapters.Any())
+            return 0;
+        
+        var sortedAdapters = GetSortedAdapters();
+        return sortedAdapters.Count(a =>
+            a.State.Equals("connected", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private int GetTotalCount()
+    {
+        if (_adapters == null || !_adapters.Any())
+            return 0;
+        
+        var sortedAdapters = GetSortedAdapters();
+        return sortedAdapters.Count();
     }
 
     public async ValueTask DisposeAsync()
