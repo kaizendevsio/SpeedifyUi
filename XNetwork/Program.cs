@@ -14,6 +14,11 @@ builder.Services.Configure<NetworkMonitorSettings>(
 builder.Services.AddSingleton<SpeedifyService>();
 builder.Services.AddHostedService<NetworkMonitorService>();
 
+// Add connection health service (both as singleton and hosted service)
+builder.Services.AddSingleton<ConnectionHealthService>();
+builder.Services.AddSingleton<IConnectionHealthService>(sp => sp.GetRequiredService<ConnectionHealthService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ConnectionHealthService>());
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

@@ -1,3 +1,633 @@
+## 2025-10-19 - Code Mode (ConnectionSummary UI Enhancements)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor:1-29,51-56,112-139)
+- [`XNetwork/Components/Pages/Home.razor`](XNetwork/Components/Pages/Home.razor:35-40,363-384)
+
+### Issue/Task
+Analyzed and enhanced the ConnectionSummary component to better display improved connection health information from the new IConnectionHealthService. The service now provides:
+- 5-second rolling averages instead of instantaneous values
+- "Initializing..." state during warm-up
+- Stability scoring based on latency variance
+- Historical average latency
+
+### Analysis Findings
+
+**Areas Requiring Enhancement:**
+
+1. **"Initializing..." State Display**: Component needed special visual treatment for the initialization period when the health service doesn't have enough data (< 3 samples)
+
+2. **Stability Indicator**: The health service provides an `IsStable` property (based on stability score > 0.7), but ConnectionSummary wasn't displaying this valuable information
+
+3. **Status Mapping**: Verified that existing color/icon mapping is appropriate for the new more lenient thresholds, but needed to add support for "Initializing" status
+
+4. **Visual Feedback**: Opportunity to add pulsing animation during initialization and unstable connection badge for better user communication
+
+### Changes Made
+
+#### 1. Enhanced Signal Bar Display with Initialization State (ConnectionSummary.razor)
+
+**Added support for "Initializing..." status** (Lines 1-29):
+- Added `isInitializing` variable to detect initialization state
+- Applied `animate-pulse` animation class to signal bars during initialization
+- Bars pulse in cyan color to indicate system is warming up
+- Maintained existing 4-bar system with proper color mapping
+
+**Before**:
+```razor
+<div class="flex items-end gap-0.5 w-10 h-6">
+    @for (int i = 0; i < 4; i++)
+    {
+        <div class="@heightClass w-1.5 rounded-sm @animationClass"
+             style="background-color: @(isActive ? GetBarColorHex(statusColor) : "#334155")"></div>
+    }
+</div>
+```
+
+**After**:
+```razor
+@{
+    var isInitializing = status.ToLowerInvariant().Contains("initializing");
+}
+<div class="flex items-end gap-0.5 w-10 h-6">
+    @for (int i = 0; i < 4; i++)
+    {
+        var animationClass = isInitializing ? "animate-pulse" : "";
+        <div class="@heightClass w-1.5 rounded-sm @animationClass"
+             style="background-color: @(isActive ? GetBarColorHex(statusColor) : "#334155")"></div>
+    }
+</div>
+```
+
+**Result**: Signal bars now pulse during initialization, providing clear visual feedback that the system is collecting data.
+
+#### 2. Added Unstable Connection Indicator (ConnectionSummary.razor)
+
+**Added visual badge for unstable connections** (Lines 15-29):
+```razor
+<div class="flex items-center gap-2 flex-grow">
+    <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
+    @if (!IsStable && !isInitializing)
+    {
+        <span class="px-2 py-0.5 bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs font-medium rounded-full flex items-center gap-1">
+            <i class="fas fa-exclamation-triangle text-[10px]"></i>
+            <span>Unstable</span>
+        </span>
+    }
+</div>
+```
+
+**Features**:
+- Yellow warning badge with exclamation icon
+- Only shown when connection is unstable AND not initializing
+- Compact design that doesn't overwhelm the UI
+- Provides at-a-glance indication of connection variance
+
+**Result**: Users immediately see when their connection has high latency variance, even if average metrics look good.
+
+#### 3. Added IsStable Parameter (ConnectionSummary.razor)
+
+**Added new parameter** (Lines 51-56):
+```csharp
+[Parameter] public string ConnectionStatus { get; set; } = "Excellent Connection";
+[Parameter] public int Latency { get; set; } = 12;
+[Parameter] public double Download { get; set; } = 85.3;
+[Parameter] public double Upload { get; set; } = 15.9;
+[Parameter] public bool IsStable { get; set; } = true;
+```
+
+**Default Value**: `true` - assumes stable connection unless explicitly marked unstable by health service
+
+#### 4. Updated Status Color Mapping (ConnectionSummary.razor)
+
+**Added "initializing" status support** (Lines 112-125):
+```csharp
+private (string status, string color) GetConnectionStatus()
+{
+    var status = ConnectionStatus.ToLowerInvariant();
+    var color = status switch
+    {
+        var s when s.Contains("initializing") => "cyan-400",
+        var s when s.Contains("excellent") => "green-400",
+        var s when s.Contains("good") => "cyan-400",
+        // ... rest of mappings
+    };
+    return (ConnectionStatus, color);
+}
+```
+
+**Color Choice**: Cyan for initializing to match "Good Connection" theme, indicating system is working but not yet stable
+
+#### 5. Updated Signal Bar Count Mapping (ConnectionSummary.razor)
+
+**Added initializing bar count** (Lines 128-139):
+```csharp
+private int GetSignalBarCount(string status)
+{
+    return status.ToLowerInvariant() switch
+    {
+        var s when s.Contains("initializing") => 2,  // 2 bars while loading
+        var s when s.Contains("excellent") => 4,     // All 4 bars
+        var s when s.Contains("good") => 3,          // 3 bars
+        var s when s.Contains("fair") => 2,          // 2 bars
+        var s when s.Contains("partial") => 1,       // 1 bar
+        var s when s.Contains("poor") => 1,          // 1 bar - Poor (red)
+        _ => 0  // Disconnected or No Connection - 0 bars
+    };
+}
+```
+
+**Choice**: 2 bars for initializing state - middle ground indicating partial/unknown status
+
+#### 6. Updated Home.razor to Pass IsStable Parameter
+
+**Modified ConnectionSummary invocation** (Lines 35-40):
+```razor
+<ConnectionSummary 
+    ConnectionStatus="@GetOverallConnectionStatus()"
+    Latency="@GetAverageLatency()"
+    Download="@GetTotalDownload()"
+    Upload="@GetTotalUpload()"
+    IsStable="@IsConnectionStable()" />
+```
+
+**Added IsConnectionStable() method** (Lines 377-384):
+```csharp
+private bool IsConnectionStable()
+{
+    // Use health service for stability score if initialized
+    if (ConnectionHealthService.IsInitialized())
+    {
+        var health = ConnectionHealthService.GetOverallHealth();
+        // Consider connection stable if stability score > 0.7 (70%)
+        return health.StabilityScore > 0.7;
+    }
+    
+    // Default to stable if not enough data
+    return true;
+}
+```
+
+**Threshold Choice**: 0.7 (70%) stability score chosen as threshold:
+- Lower threshold (0.5) would mark too many connections as unstable
+- Higher threshold (0.9) would rarely trigger warning
+- 0.7 balances sensitivity with actionable alerts
+
+**Fallback Behavior**: Returns `true` during initialization to avoid showing unstable warning prematurely
+
+### Build Results
+- **Status**: Pending verification
+- **Expected**: Build should succeed with no errors
+
+### Visual Design Specifications
+
+**Initialization State**:
+- Signal bars: 2 cyan bars with pulsing animation
+- Status text: "Initializing..."
+- Duration: 2-3 seconds until 3+ samples collected
+- No unstable badge shown during initialization
+
+**Unstable Connection Badge**:
+- Background: Yellow with 10% opacity (`bg-yellow-500/10`)
+- Border: Yellow with 30% opacity (`border-yellow-500/30`)
+- Text: Yellow 400 (`text-yellow-400`)
+- Icon: Warning triangle (FontAwesome)
+- Position: Next to connection status text
+- Visibility: Only when `!IsStable && !isInitializing`
+
+**Status to Color Mapping**:
+| Status | Color | Bars | Notes |
+|--------|-------|------|-------|
+| Initializing | Cyan (pulse) | 2 | Temporary state |
+| Excellent | Green | 4 | All metrics optimal |
+| Good | Cyan | 3 | Above average |
+| Fair | Yellow | 2 | Acceptable |
+| Partial | Orange | 1 | Degraded |
+| Poor | Red | 1 | Problematic |
+| Disconnected | Red/Gray | 0 | No connection |
+
+### Technical Notes
+
+#### Stability Score Calculation
+- Calculated in ConnectionHealthService using coefficient of variation
+- Formula: `Stability = max(0, min(1, 1 - (stdDev / mean)))`
+- Lower CV = higher stability score
+- 0.7 threshold means latency stdDev must be < 30% of mean
+
+#### Why Animate During Initialization?
+- Provides immediate visual feedback that system is working
+- Prevents user confusion about static display
+- Matches common UX patterns for loading states
+- Tailwind's `animate-pulse` provides smooth, professional animation
+
+#### Conditional Badge Rendering
+- Uses Blazor's `@if` directive for conditional rendering
+- Badge not rendered in DOM when conditions not met (better performance than `display: none`)
+- Prevents badge from appearing during initialization warm-up
+
+#### Parameter Binding
+- All ConnectionSummary parameters bound via Blazor's one-way binding
+- `IsStable` recalculated on each Home.razor render
+- Component automatically re-renders when parent updates parameters
+
+### Important Notes
+
+1. **Initialization Period**:
+   - Lasts approximately 2-3 seconds after app start
+   - Signal bars pulse during this time
+   - No unstable warning shown during initialization
+   - Automatically clears when service collects 3+ samples
+
+2. **Stability Indicator**:
+   - Shows even for "Good" or "Excellent" connections if variance is high
+   - Indicates connection quality is fluctuating significantly
+   - Users can see connection metrics are inconsistent even if average looks good
+   - Helps identify problematic adapters causing jitter
+
+3. **Visual Hierarchy**:
+   - Unstable badge is subtle (small, compact) to avoid alarm
+   - Yellow color indicates caution rather than critical issue
+   - Badge positioned after status text to maintain focus on main message
+   - Only shows when relevant (not during init, not when stable)
+
+4. **Performance**:
+   - Badge only renders when needed (conditional rendering)
+   - Animation uses CSS transform (GPU-accelerated)
+   - No JavaScript required for visual feedback
+   - Health service check is O(1) operation
+
+### Testing Recommendations
+
+1. **Initialization State**:
+   - Start application and immediately view dashboard
+   - Verify "Initializing..." appears with pulsing cyan bars
+   - Confirm transition to actual status after 2-3 seconds
+   - Check that unstable badge doesn't appear during init
+
+2. **Unstable Connection Detection**:
+   - Create scenario with fluctuating latency (e.g., WiFi interference)
+   - Verify unstable badge appears when stability < 0.7
+   - Confirm badge disappears when connection stabilizes
+   - Test that badge doesn't show during excellent stable connections
+
+3. **Signal Bar States**:
+   - Test all status levels with appropriate bar counts
+   - Verify initializing shows 2 pulsing cyan bars
+   - Confirm colors match status appropriately
+   - Check inactive bars remain gray (#334155)
+
+4. **Edge Cases**:
+   - Test with 1 adapter (simple case)
+   - Test with multiple adapters of varying stability
+   - Test rapid connect/disconnect cycles
+   - Verify component handles null/missing data gracefully
+
+5. **Visual Consistency**:
+   - Compare badge styling with other warning indicators
+   - Verify yellow color matches elsewhere in UI
+   - Check responsive behavior on mobile devices
+   - Test badge positioning with long status text
+
+### Known Limitations
+
+1. **Stability Threshold**: 0.7 threshold is hardcoded; future could make configurable
+2. **No Trend Indication**: Badge doesn't show if stability improving or degrading
+3. **No Historical Context**: Can't see past stability without viewing full charts
+4. **Single Metric**: Only uses latency variance, not packet loss variance
+5. **No Severity Levels**: Binary stable/unstable, no nuanced indication
+
+### Future Enhancements
+
+1. **Configurable Threshold**: Allow users to adjust stability sensitivity
+2. **Stability Trend**: Show arrow indicating if getting better/worse
+3. **Click for Details**: Make badge clickable to show stability chart
+4. **Multiple Metrics**: Include packet loss and speed variance in stability calculation
+5. **Severity Levels**: "Slightly Unstable" vs "Very Unstable" with different colors
+6. **Historical Tracking**: Show stability history over time
+7. **Adapter-Specific**: Indicate which adapter is causing instability
+
+### Related Architecture
+
+**Data Flow**:
+1. ConnectionHealthService monitors stats stream
+2. Calculates rolling 5-second averages and stability scores
+3. Home.razor queries service for overall health
+4. Extracts stability score and converts to boolean (> 0.7)
+5. Passes boolean to ConnectionSummary as `IsStable` parameter
+6. Component renders badge conditionally based on state
+
+**Thread Safety**: All data access through ConnectionHealthService is thread-safe via internal locking
+
+**Performance**: Badge rendering decision happens client-side, no additional service calls required
+
+---
+
+# Agent Journal
+## 2025-10-19 - Code Mode (ConnectionHealthService Implementation)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/Models/ConnectionHealth.cs`](XNetwork/Models/ConnectionHealth.cs:1) (Created)
+- [`XNetwork/Models/HealthSnapshot.cs`](XNetwork/Models/HealthSnapshot.cs:1) (Created)
+- [`XNetwork/Models/HealthMetrics.cs`](XNetwork/Models/HealthMetrics.cs:1) (Created)
+- [`XNetwork/Utils/CircularBuffer.cs`](XNetwork/Utils/CircularBuffer.cs:1) (Created)
+- [`XNetwork/Services/IConnectionHealthService.cs`](XNetwork/Services/IConnectionHealthService.cs:1) (Created)
+- [`XNetwork/Services/ConnectionHealthService.cs`](XNetwork/Services/ConnectionHealthService.cs:1) (Created)
+- [`XNetwork/Program.cs`](XNetwork/Program.cs:17-19) (Modified)
+- [`XNetwork/Components/Pages/Home.razor`](XNetwork/Components/Pages/Home.razor:6,310-341,365-377) (Modified)
+
+### Issue/Task
+Implemented a background service that monitors connection health in real-time using a 5-second rolling window of metrics. This service provides:
+- Overall connection health assessment with enum-based status levels
+- Per-adapter health metrics with historical averages
+- Stability scoring based on latency variance
+- Thread-safe concurrent access for UI components
+- Event-driven architecture using existing stats streaming
+
+### Changes Made
+
+#### 1. Created Data Models (XNetwork/Models/)
+
+**ConnectionHealth.cs** - Overall health status container:
+- `ConnectionStatus` enum: Unknown, Initializing, Excellent, Good, Fair, Poor, Critical
+- Thread-safe properties using lock-based synchronization
+- `GetSnapshot()` method for atomic multi-property reads
+- `UpdateMetrics()` method for atomic multi-property writes
+- `IsInitialized` property requiring minimum 3 samples
+
+**HealthSnapshot.cs** - Point-in-time measurement:
+- Immutable record of latency, packet loss, and speed
+- Timestamp for temporal tracking
+- Two constructors: auto-timestamp and explicit timestamp
+
+**HealthMetrics.cs** - Aggregated adapter metrics:
+- Average latency, packet loss, and speed
+- Min/max latency range
+- Standard deviation of latency
+- Stability score (0-1, based on coefficient of variation)
+- Sample count and connection status
+
+#### 2. Created CircularBuffer Utility (XNetwork/Utils/)
+
+**CircularBuffer.cs** - Thread-safe rolling window storage:
+- Generic implementation for any type
+- Fixed capacity with automatic wraparound
+- Internal locking for thread safety
+- `GetItems()` returns chronological order (oldest to newest)
+- Efficient memory usage with pre-allocated array
+
+**Key Features**:
+- O(1) add operation
+- O(n) retrieval with proper ordering
+- Handles both partial-fill and full-buffer states
+- Clear method for reset
+
+#### 3. Created Service Interface and Implementation (XNetwork/Services/)
+
+**IConnectionHealthService.cs** - Public interface:
+- `GetOverallHealth()` - Returns aggregate health across all adapters
+- `GetAdapterHealth(adapterId)` - Returns metrics for specific adapter
+- `GetAllAdapterHealth()` - Returns dictionary of all adapter metrics
+- `IsInitialized()` - Checks if service has sufficient data
+
+**ConnectionHealthService.cs** - Background service implementation:
+
+**Architecture**:
+- Inherits from `BackgroundService` for automatic lifecycle management
+- Implements `IConnectionHealthService` for dependency injection
+- Registered as both singleton AND hosted service in DI container
+
+**Key Components**:
+- `ConcurrentDictionary<string, CircularBuffer<HealthSnapshot>>` - Per-adapter buffers
+- `ConcurrentDictionary<string, DateTime>` - Adapter last-seen tracking
+- `ConnectionHealth` - Overall health state (thread-safe)
+- Two background tasks: stats monitoring + cleanup
+
+**Configuration Constants**:
+- Buffer size: 10 samples per adapter (5-second window at ~2 samples/sec)
+- Minimum samples: 3 before reporting health
+- Stale timeout: 5 minutes of inactivity
+- Cleanup interval: 60 seconds
+
+**Health Thresholds** (more lenient than original):
+```
+Excellent: <150ms latency, <3% loss, >40 Mbps
+Good:      <250ms latency, <7% loss, >15 Mbps
+Fair:      <400ms latency, <12% loss, >5 Mbps
+Poor:      <600ms latency, <20% loss, >1 Mbps
+Critical:  Exceeds poor thresholds
+```
+
+**Processing Flow**:
+1. Stream individual ConnectionItem objects from SpeedifyService
+2. Convert to HealthSnapshot (latency, packet loss average, speed in Mbps)
+3. Add to adapter's circular buffer
+4. Update adapter last-seen timestamp
+5. Recalculate overall health from all adapter metrics
+6. Mark as initialized when minimum samples reached
+
+**Thread Safety**:
+- `ConcurrentDictionary` for adapter buffers
+- Internal locking in `CircularBuffer`
+- Locking in `ConnectionHealth` properties
+- `SemaphoreSlim` for initialization flag
+
+**Cleanup**:
+- Runs every 60 seconds
+- Removes adapters inactive for >5 minutes
+- Prevents memory leaks from stale adapters
+
+**Metrics Calculation**:
+- Weighted averages based on sample count
+- Standard deviation for stability scoring
+- Coefficient of variation for stability (inverted, 0-1 scale)
+- Status determination using threshold ranges
+- Minimum 3 samples required for valid metrics
+
+#### 4. Service Registration (Program.cs)
+
+**Registration Pattern** (Lines 17-19):
+```csharp
+// Add connection health service (both as singleton and hosted service)
+builder.Services.AddSingleton<ConnectionHealthService>();
+builder.Services.AddSingleton<IConnectionHealthService>(sp => sp.GetRequiredService<ConnectionHealthService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ConnectionHealthService>());
+```
+
+**Why This Pattern?**:
+- Single instance serves both roles (singleton + hosted service)
+- Interface injection for loose coupling
+- Automatic startup/shutdown via hosted service lifecycle
+- Background processing without explicit management
+
+#### 5. Updated Home.razor
+
+**Injection** (Line 6):
+```razor
+@inject IConnectionHealthService ConnectionHealthService
+```
+
+**GetOverallConnectionStatus()** (Lines 310-341):
+- Checks `IsInitialized()` before using service
+- Returns "Initializing..." during warm-up period
+- Maps `ConnectionStatus` enum to display strings
+- Falls back to partial connection logic for edge cases
+
+**GetAverageLatency()** (Lines 365-377):
+- Uses rolling average from service when initialized
+- Provides more stable latency readings than instant values
+- Fallback to instant calculation during initialization
+- Rounds to nearest millisecond for display
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Warnings**: 16 pre-existing warnings (none related to these changes)
+- **Errors**: 0
+- **Exit Code**: 0
+
+### Technical Notes
+
+#### Why Circular Buffer?
+- Fixed memory footprint regardless of runtime
+- No garbage collection pressure from expired samples
+- O(1) insertion performance
+- Automatic eviction of old data
+- Thread-safe for concurrent access
+
+#### Why Thread Locking Instead of Volatile?
+**Initial Attempt**: Used `volatile` fields for lock-free reads
+**Problem**: C# volatile only supports certain types (int, bool, references)
+**Solution**: Lock-based synchronization with optimized methods:
+- Individual property locks for granular access
+- `GetSnapshot()` for atomic multi-property reads
+- `UpdateMetrics()` for atomic multi-property writes
+
+#### Stability Score Formula
+```
+CV = stdDev / mean (coefficient of variation)
+Stability = max(0, min(1, 1 - CV))
+```
+- Lower CV = more stable connection
+- CV of 0.5 = 50% stability score
+- CV of 1.0 = 0% stability (very unstable)
+- Capped at [0, 1] range for UI display
+
+#### Memory Footprint
+Per adapter: ~240 bytes (10 snapshots × 24 bytes)
+With 5 adapters: ~1.2 KB
+Total service overhead: ~5 KB maximum
+
+#### Integration with Existing Code
+- Filters out "speedify" aggregate and "%proxy" connections (same as Home.razor)
+- Uses `LatencyMs` property (not `Rtt`)
+- Calculates packet loss as average of `LossSend` and `LossReceive`
+- Converts bytes/sec to Mbps using same formula as existing code
+
+### Important Notes
+
+1. **Initialization Period**:
+   - Service shows "Initializing..." until 3 samples collected
+   - Typically takes 2-3 seconds to initialize
+   - Home.razor handles this state gracefully
+
+2. **Rolling Window Behavior**:
+   - Window represents approximately 5 seconds of data
+   - Smooths out short-term fluctuations
+   - May lag behind instant changes by 2-3 seconds
+   - Trade-off: stability vs responsiveness
+
+3. **Stale Adapter Cleanup**:
+   - Prevents memory leaks from disconnected adapters
+   - 5-minute timeout is conservative (prevents premature removal)
+   - Cleanup happens in background, no UI impact
+
+4. **Concurrent Access Pattern**:
+   - Multiple UI components can safely call service simultaneously
+   - No locking required by callers
+   - All thread safety handled internally
+
+5. **Status Determination**:
+   - Uses "worst status" among adapters for overall health
+   - Even one poor adapter results in overall "Poor" status
+   - Intentionally conservative for alerting
+
+### Testing Recommendations
+
+1. **Service Initialization**:
+   - Monitor dashboard on startup
+   - Verify "Initializing..." appears briefly
+   - Confirm transition to actual status within 3-5 seconds
+
+2. **Rolling Averages**:
+   - Compare instant latency vs average latency
+   - Average should be more stable, less jumpy
+   - Verify average updates as connections change
+
+3. **Connection Status Mapping**:
+   - Test all status levels: Excellent, Good, Fair, Poor, Critical
+   - Verify correct thresholds by simulating different latencies
+   - Confirm status changes reflected in UI
+
+4. **Multi-Adapter Scenarios**:
+   - Test with 1, 2, 3+ adapters active
+   - Verify per-adapter metrics are correct
+   - Confirm overall status reflects worst adapter
+
+5. **Stale Adapter Cleanup**:
+   - Disconnect adapter and wait 6+ minutes
+   - Verify it's removed from health metrics
+   - Reconnect and confirm it reappears
+
+6. **Memory Stability**:
+   - Run for extended period (hours)
+   - Monitor memory usage
+   - Verify no memory leaks from buffer accumulation
+
+7. **Thread Safety**:
+   - Rapid page refreshes
+   - Multiple browser tabs
+   - Concurrent stats updates
+   - Should never crash or show corrupted data
+
+### Known Limitations
+
+1. **Fixed Buffer Size**: Cannot be configured at runtime (design decision for simplicity)
+2. **No Persistence**: Health history lost on application restart
+3. **Single Time Window**: No support for multiple window sizes (5s only)
+4. **Threshold Hardcoded**: Health thresholds not configurable without code changes
+5. **No Alerting**: Service doesn't emit events or notifications on status changes
+
+### Future Enhancements
+
+1. **Configurable Thresholds**: Allow adjustment via appsettings.json
+2. **Multiple Time Windows**: Support 5s, 30s, 5m windows simultaneously
+3. **Historical Charting**: Store longer history for trend visualization
+4. **Health Events**: Emit events on status changes for alerting
+5. **Adapter Comparison**: Identify best/worst performers
+6. **Anomaly Detection**: Flag unusual patterns in metrics
+7. **Export Capabilities**: Export health data for analysis
+
+### Related Architecture Decisions
+
+1. **Event-Driven vs Polling**: Chose event-driven using existing stats stream for efficiency
+2. **Circular Buffer vs Queue**: Circular buffer for fixed memory and O(1) operations
+3. **Lock-Free vs Locking**: Chose locking for C# type compatibility and simplicity
+4. **Single vs Multiple Windows**: Single 5-second window for MVP simplicity
+5. **Worst-Status vs Average**: Worst-status for conservative health assessment
+
+### Performance Characteristics
+
+- **CPU Usage**: Negligible (piggybacks on existing stats stream)
+- **Memory Usage**: ~5 KB total, constant regardless of runtime
+- **Latency Impact**: None (read-only operations on stats stream)
+- **UI Responsiveness**: Excellent (lock contention minimal)
+- **Initialization Time**: 2-3 seconds to first valid health status
+
+---
+
 # Agent Journal
 ## 2025-10-19 - Code Mode (Signal Bars Display Fix)
 

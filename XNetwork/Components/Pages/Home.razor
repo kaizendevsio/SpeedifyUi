@@ -1,9 +1,10 @@
 ﻿@page "/"
-@using XNetwork.Models 
+@using XNetwork.Models
 @using XNetwork.Services
 @using XNetwork.Components.Custom
 @inject SpeedifyService SpeedifyService
-@implements IAsyncDisposable 
+@inject IConnectionHealthService ConnectionHealthService
+@implements IAsyncDisposable
 
 <PageTitle>Dashboard - X Network</PageTitle>
 
@@ -32,11 +33,12 @@
     else if (_adapters != null) 
     {
         <!-- Overall Connection Summary -->
-        <ConnectionSummary 
+        <ConnectionSummary
             ConnectionStatus="@GetOverallConnectionStatus()"
             Latency="@GetAverageLatency()"
             Download="@GetTotalDownload()"
-            Upload="@GetTotalUpload()" />
+            Upload="@GetTotalUpload()"
+            IsStable="@IsConnectionStable()" />
 
         <!-- Adapter List -->
         <div class="space-y-3">
@@ -361,9 +363,31 @@
 
     private int GetAverageLatency()
     {
+        // Use health service for rolling average if initialized
+        if (ConnectionHealthService.IsInitialized())
+        {
+            var health = ConnectionHealthService.GetOverallHealth();
+            return (int)Math.Round(health.AverageLatency);
+        }
+        
+        // Fallback to instant calculation if service not ready
         if (!_stats.Any()) return 0;
         var connectedStats = _stats.Where(s => s.Connected == true).ToList();
         return connectedStats.Any() ? (int)connectedStats.Average(s => s.LatencyMs) : 0;
+    }
+
+    private bool IsConnectionStable()
+    {
+        // Use health service for stability score if initialized
+        if (ConnectionHealthService.IsInitialized())
+        {
+            var health = ConnectionHealthService.GetOverallHealth();
+            // Consider connection stable if stability score > 0.7 (70%)
+            return health.StabilityScore > 0.7;
+        }
+        
+        // Default to stable if not enough data
+        return true;
     }
 
     private double GetTotalDownload()

@@ -9,6 +9,7 @@
             @{
                 var (status, statusColor) = GetConnectionStatus();
                 var barCount = GetSignalBarCount(status);
+                var isInitializing = status.ToLowerInvariant().Contains("initializing");
             }
             <div class="flex items-end gap-0.5 w-10 h-6">
                 @for (int i = 0; i < 4; i++)
@@ -22,11 +23,21 @@
                         3 => "h-6",  // 100% height
                         _ => "h-2"
                     };
-                    <div class="@heightClass w-1.5 rounded-sm"
+                    var animationClass = isInitializing ? "animate-pulse" : "";
+                    <div class="@heightClass w-1.5 rounded-sm @animationClass"
                          style="background-color: @(isActive ? GetBarColorHex(statusColor) : "#334155")"></div>
                 }
             </div>
-            <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
+            <div class="flex items-center gap-2 flex-grow">
+                <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
+                @if (!IsStable && !isInitializing)
+                {
+                    <span class="px-2 py-0.5 bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs font-medium rounded-full flex items-center gap-1">
+                        <i class="fas fa-exclamation-triangle text-[10px]"></i>
+                        <span>Unstable</span>
+                    </span>
+                }
+            </div>
         </div>
         <div class="grid grid-cols-3 gap-4 text-sm">
             <div>
@@ -53,6 +64,7 @@
     [Parameter] public int Latency { get; set; } = 12;
     [Parameter] public double Download { get; set; } = 85.3;
     [Parameter] public double Upload { get; set; } = 15.9;
+    [Parameter] public bool IsStable { get; set; } = true;
     
     private IJSObjectReference? _chartModule;
     private bool _chartInitialized = false;
@@ -114,6 +126,7 @@
         var status = ConnectionStatus.ToLowerInvariant();
         var color = status switch
         {
+            var s when s.Contains("initializing") => "cyan-400",
             var s when s.Contains("excellent") => "green-400",
             var s when s.Contains("good") => "cyan-400",
             var s when s.Contains("fair") => "yellow-400",
@@ -129,11 +142,12 @@
     {
         return status.ToLowerInvariant() switch
         {
-            var s when s.Contains("excellent") => 4,  // All 4 bars
-            var s when s.Contains("good") => 3,       // 3 bars
-            var s when s.Contains("fair") => 2,       // 2 bars
-            var s when s.Contains("partial") => 1,    // 1 bar
-            var s when s.Contains("poor") => 1,       // 1 bar - Poor (red)
+            var s when s.Contains("initializing") => 2,  // 2 bars while loading
+            var s when s.Contains("excellent") => 4,     // All 4 bars
+            var s when s.Contains("good") => 3,          // 3 bars
+            var s when s.Contains("fair") => 2,          // 2 bars
+            var s when s.Contains("partial") => 1,       // 1 bar
+            var s when s.Contains("poor") => 1,          // 1 bar - Poor (red)
             _ => 0  // Disconnected or No Connection - 0 bars
         };
     }
