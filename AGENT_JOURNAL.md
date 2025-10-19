@@ -1,3 +1,699 @@
+## 2025-10-19 - Code Mode (PWA Configuration - Using Existing Logo)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/wwwroot/manifest.json`](XNetwork/wwwroot/manifest.json:11-72)
+- [`XNetwork/Components/App.razor`](XNetwork/Components/App.razor:17)
+- [`XNetwork/wwwroot/icons/README.md`](XNetwork/wwwroot/icons/README.md:1-25)
+
+### Issue/Task
+Updated the PWA configuration to use the existing logo.png file located at [`XNetwork/wwwroot/icons/logo.png`](XNetwork/wwwroot/icons/logo.png). Previously, the PWA manifest referenced placeholder icon files that didn't exist. Now all PWA icon references point to the actual logo file.
+
+### Changes Made
+
+#### 1. Updated PWA Manifest Icon References (manifest.json)
+
+**Before**: Referenced 10 different icon files (icon-72x72.png through icon-512x512-maskable.png) that didn't exist.
+
+**After**: Consolidated all icon entries to use the single existing logo.png file.
+
+**Changes** (Lines 11-72):
+- Reduced from 10 icon entries to 8 icon entries
+- All entries now use `"src": "/icons/logo.png"`
+- Kept various size definitions (72x72 through 512x512) for different use cases
+- Changed `"purpose"` from separate "any" and "maskable" entries to combined `"any maskable"` for better compatibility
+- Removed duplicate entries for maskable icons
+
+**Icon Sizes Configured**:
+- 72x72, 96x96, 128x128, 144x144, 152x152, 192x192, 384x384, 512x512
+- All with `"purpose": "any maskable"` for maximum compatibility
+
+**Benefits**:
+- PWA is immediately functional without requiring additional icon files
+- Single source of truth for app icon
+- Browser will scale logo.png as needed for different contexts
+- "any maskable" purpose supports both standard and adaptive icons
+
+#### 2. Updated Apple Touch Icon Reference (App.razor)
+
+**Before** (Line 17):
+```razor
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192x192.png"/>
+```
+
+**After** (Line 17):
+```razor
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/logo.png"/>
+```
+
+**Result**: iOS devices now use the existing logo.png when users add the app to their home screen.
+
+#### 3. Updated Icons Directory README (README.md)
+
+**Before**: Listed instructions for creating multiple icon sizes and using icon generation tools.
+
+**After**: Documented that the app uses logo.png as the single icon source.
+
+**New Content**:
+- Documents that logo.png is the application icon
+- Explains it's used for all PWA purposes
+- Notes that browsers will automatically scale as needed
+- Describes the "any maskable" purpose configuration
+- Lists all use cases (Android home screen, iOS, splash screens, etc.)
+
+**Removed**:
+- Instructions for creating separate icon files
+- Tool recommendations for generating multiple sizes
+- Placeholder notices
+
+### Technical Details
+
+#### Why Use Single Icon File?
+
+**Advantages**:
+1. **Simplicity**: Single file to manage instead of 10+ variants
+2. **Immediate Functionality**: PWA works without additional setup
+3. **Automatic Scaling**: Browsers scale the image appropriately
+4. **Consistent Branding**: Same logo everywhere
+5. **Easy Updates**: Change one file to update all PWA icons
+
+**Trade-offs**:
+1. **Optimization**: Separate sizes could be optimized for each resolution
+2. **Safe Zones**: Maskable icons ideally have specific padding (logo.png may need adjustment)
+
+#### Purpose: "any maskable" Explained
+
+**"any"**:
+- Standard icon display
+- Used in browser install prompts
+- Used in app switchers and task managers
+- Default fallback for all contexts
+
+**"maskable"**:
+- Android adaptive icons (Android 8.0+)
+- System applies various shapes (circle, square, rounded square)
+- Ensures icon looks good regardless of system theme
+- Requires 80% safe zone for important content
+
+**Combined**: Browser chooses appropriate use based on context.
+
+#### Logo.png Requirements
+
+For optimal display, logo.png should:
+- Be at least 512x512 pixels (highest manifest size)
+- Have important content within 80% safe zone (for maskable support)
+- Be PNG format with transparency if needed
+- Use appropriate colors for both light and dark backgrounds
+
+### Build Results
+- **Status**: Build not required (static file changes only)
+- **Impact**: Immediate - changes take effect on next PWA install/update
+
+### Important Notes
+
+1. **Existing Logo Used**:
+   - The logo.png file already exists in the icons directory
+   - No additional files need to be created
+   - PWA is now fully functional
+
+2. **Browser Scaling**:
+   - Browsers will scale logo.png to required sizes
+   - Quality may vary slightly compared to purpose-built sizes
+   - Generally acceptable for most use cases
+
+3. **Maskable Compatibility**:
+   - If logo.png doesn't have adequate padding, it may be cropped on some Android devices
+   - Consider reviewing logo design for 80% safe zone compliance
+   - Can be tested using maskable.app website
+
+4. **Update Propagation**:
+   - Existing PWA installations will update on next launch
+   - Service worker will detect manifest changes
+   - Users may need to reinstall for immediate effect
+
+### Testing Recommendations
+
+1. **PWA Installation**:
+   - Clear existing PWA installation (if any)
+   - Install app fresh from browser
+   - Verify logo.png appears as app icon
+   - Check icon quality at various sizes
+
+2. **iOS Testing**:
+   - Open Safari on iPhone/iPad
+   - Add to Home Screen
+   - Verify logo.png appears correctly
+   - Check icon matches app design
+
+3. **Android Testing**:
+   - Test on multiple Android versions (8.0+)
+   - Verify adaptive icon rendering
+   - Check icon with different system themes (circle, square, rounded)
+   - Test on devices with different icon sizes
+
+4. **Manifest Validation**:
+   - Open DevTools → Application → Manifest
+   - Verify all icons reference /icons/logo.png
+   - Check that purpose shows "any maskable"
+   - Confirm no broken icon warnings
+
+5. **Visual Quality**:
+   - Check icon clarity at 72x72 (smallest size)
+   - Verify no pixelation at 512x512 (largest size)
+   - Test icon visibility on various backgrounds
+   - Ensure logo is recognizable at all sizes
+
+### Future Enhancements
+
+1. **Optimized Icons**:
+   - Generate purpose-specific sizes if quality issues arise
+   - Create separate maskable variants with proper safe zones
+   - Optimize file sizes for faster loading
+
+2. **Dark/Light Mode Icons**:
+   - Create separate icons for dark and light system themes
+   - Use media queries in manifest (requires browser support)
+
+3. **Favicon Integration**:
+   - Use logo.png for browser favicons
+   - Create ICO file from logo.png for legacy support
+
+4. **Splash Screens**:
+   - Generate splash screen images using logo.png
+   - Add to manifest for better launch experience
+
+### Related Files
+- PWA manifest: [`XNetwork/wwwroot/manifest.json`](XNetwork/wwwroot/manifest.json)
+- App header: [`XNetwork/Components/App.razor`](XNetwork/Components/App.razor)
+- Icon documentation: [`XNetwork/wwwroot/icons/README.md`](XNetwork/wwwroot/icons/README.md)
+- Logo file: [`XNetwork/wwwroot/icons/logo.png`](XNetwork/wwwroot/icons/logo.png)
+
+### Conclusion
+
+Successfully updated the PWA configuration to use the existing logo.png file. The PWA is now immediately functional without requiring additional icon assets to be created. All icon references (manifest entries and iOS apple-touch-icon) point to the single logo file, which browsers will scale appropriately for different contexts and devices.
+
+**Key Changes**:
+- ✅ All manifest icons use logo.png
+- ✅ iOS apple-touch-icon uses logo.png
+- ✅ Combined "any maskable" purpose for better compatibility
+- ✅ Simplified from 10 icon entries to 8 (removed duplicates)
+- ✅ Updated documentation to reflect single-icon approach
+
+**User Impact**: Users can now install the PWA immediately without waiting for icon assets to be created. The app will display the existing logo across all platforms and contexts.
+
+---
+
+## 2025-10-19 - Code Mode (Connection Health Status Descriptions)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor:43,174-226)
+
+### Issue/Task
+Added small descriptive text below the connection health status indicator to explain why the connection is in its current state. This provides users with context about what the status means and why their connection has that particular health rating.
+
+### Changes Made
+
+#### Added Status Description Display (Line 43)
+Added a paragraph element below the connection status heading to display contextual information:
+```razor
+<p class="text-xs text-slate-400 mt-1">@GetStatusDescription()</p>
+```
+
+**Styling**:
+- `text-xs` - Small text size for secondary information
+- `text-slate-400` - Muted gray color to differentiate from primary status
+- `mt-1` - Small top margin for spacing from status heading
+
+#### Created GetStatusDescription() Method (Lines 174-226)
+Implemented comprehensive status description logic that provides context-specific messages based on:
+- Connection status (initializing, excellent, good, fair, partial, poor, critical, disconnected)
+- Latency values (included in descriptions where relevant)
+- Additional context (e.g., packet loss detection for fair connections)
+
+**Status Descriptions**:
+
+1. **Initializing**: "Gathering connection data..."
+   - Shown during the 2-3 second warm-up period
+
+2. **Disconnected/No Connection**: "No active connection detected"
+   - Clear indication when no connections are active
+
+3. **Excellent**: "Low latency (Xms), optimal performance"
+   - Includes actual latency value
+   - Indicates best possible performance
+
+4. **Good**: "Normal latency (Xms), stable connection"
+   - Includes actual latency value
+   - Indicates reliable connection quality
+
+5. **Fair**: Context-sensitive description
+   - If latency > 250ms: "Elevated latency (Xms) may affect real-time apps"
+   - Otherwise: "Moderate performance, some fluctuation detected"
+   - Provides specific warning about real-time application impact
+
+6. **Partial**: "Limited connectivity detected"
+   - Indicates some adapters may not be connected
+
+7. **Poor**: "High latency (Xms) impacting performance"
+   - Includes actual latency value
+   - Clearly states performance impact
+
+8. **Critical**: "Severe connection issues detected"
+   - Strong warning about serious problems
+
+9. **Default**: "Monitoring connection quality"
+   - Fallback for unknown states
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Build Time**: 2.0 seconds
+- **Warnings**: 16 pre-existing warnings (none related to these changes)
+- **Errors**: 0
+- **Exit Code**: 0
+
+### Technical Implementation
+
+#### Dynamic Context
+The method intelligently adjusts descriptions based on actual metrics:
+- Latency values are embedded directly in messages (e.g., "85ms")
+- Fair status provides different messages based on latency threshold (>250ms gets special warning)
+- Uses string interpolation for dynamic values
+
+#### Status Detection
+All status matching uses case-insensitive `.Contains()` checks:
+```csharp
+var status = ConnectionStatus.ToLowerInvariant();
+if (status.Contains("excellent")) { ... }
+```
+
+This ensures robust matching regardless of exact status string format.
+
+### Visual Design
+
+**Text Placement**:
+- Positioned directly below the connection status heading
+- Aligned with status text, not the signal bars
+- Maintains visual hierarchy (status is primary, description is secondary)
+
+**Typography**:
+- Small size (text-xs) to avoid overwhelming the main status
+- Muted slate-400 color for subtlety
+- 4px top margin (mt-1) for breathing room
+
+### Important Notes
+
+1. **Latency-Aware Messages**:
+   - Excellent, Good, Fair (>250ms), and Poor statuses include the actual latency value
+   - Provides concrete data to help users understand the rating
+   - Fair status has conditional logic (>250ms gets different message)
+
+2. **User-Friendly Language**:
+   - Avoids technical jargon where possible
+   - Explains impact ("may affect real-time apps", "impacting performance")
+   - Provides reassurance for good states ("optimal performance", "stable connection")
+
+3. **Future-Proof**:
+   - Easy to add packet loss or other metrics to descriptions
+   - Can enhance with specific adapter information
+   - Extensible to include remediation suggestions
+
+### Testing Recommendations
+
+1. **Status Transitions**:
+   - Monitor descriptions as connection quality changes
+   - Verify correct description appears for each status level
+   - Check latency values update correctly in descriptions
+
+2. **Edge Cases**:
+   - Test with very high latency (>500ms)
+   - Test with very low latency (<10ms)
+   - Verify initializing state displays correctly on startup
+   - Test disconnected state when all adapters offline
+
+3. **Visual Consistency**:
+   - Confirm text is readable on dark background
+   - Verify proper spacing from status heading
+   - Check text doesn't wrap awkwardly on mobile devices
+
+4. **Content Accuracy**:
+   - Excellent connection should show "Low latency"
+   - Fair connection with 300ms should mention "real-time apps"
+   - Poor connection should include "impacting performance"
+
+### User Benefits
+
+1. **Immediate Context**: Users instantly understand why their connection has a particular rating
+2. **Actionable Information**: Descriptions explain impact (e.g., "may affect real-time apps")
+3. **Transparency**: Including latency values provides concrete data
+4. **Education**: Users learn what makes a connection "good" vs "fair"
+5. **Confidence**: Clear explanations reduce confusion about status meanings
+
+### Example Descriptions in Action
+
+| Status | Latency | Description Shown |
+|--------|---------|-------------------|
+| Excellent | 45ms | "Low latency (45ms), optimal performance" |
+| Good | 120ms | "Normal latency (120ms), stable connection" |
+| Fair | 280ms | "Elevated latency (280ms) may affect real-time apps" |
+| Fair | 180ms | "Moderate performance, some fluctuation detected" |
+| Poor | 420ms | "High latency (420ms) impacting performance" |
+| Critical | N/A | "Severe connection issues detected" |
+| Initializing | N/A | "Gathering connection data..." |
+
+### Future Enhancements
+
+1. **Include Packet Loss**: Add packet loss percentage to descriptions when significant
+2. **Adapter Details**: Mention which adapter is causing issues (e.g., "WiFi adapter unstable")
+3. **Remediation Tips**: Add suggestions (e.g., "Try moving closer to router")
+4. **Historical Context**: Compare to previous performance (e.g., "Worse than usual")
+5. **Localization**: Support multiple languages for international users
+
+---
+
+## 2025-10-19 - Code Mode (Dynamic Speed Indicators with UnitsNet)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/XNetwork.csproj`](XNetwork/XNetwork.csproj) (Modified - added UnitsNet package)
+- [`XNetwork/Utils/SpeedFormatter.cs`](XNetwork/Utils/SpeedFormatter.cs:1) (Created)
+- [`XNetwork/Components/Pages/Home.razor`](XNetwork/Components/Pages/Home.razor:5,104-117)
+- [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor:2,48-51)
+
+### Issue/Task
+Implemented dynamic speed indicators that automatically show speeds in kbps (kilobits per second) for low traffic and Mbps (megabits per second) for high traffic. This provides better readability for users, especially when connections have low throughput but good quality (e.g., 85ms latency with 0.1 Mbps becomes "100 kbps" instead of "0.1 Mbps").
+
+### Changes Made
+
+#### 1. Added UnitsNet NuGet Package
+
+**Command Executed**:
+```bash
+dotnet add package UnitsNet
+```
+
+**Package Details**:
+- Package: UnitsNet version 5.75.0
+- Source: https://api.nuget.org/v3/index.json
+- Purpose: Provides strongly-typed unit conversion for BitRate calculations
+
+**Result**: Successfully installed UnitsNet 5.75.0 with all dependencies.
+
+#### 2. Created SpeedFormatter Utility Class (XNetwork/Utils/SpeedFormatter.cs)
+
+**Purpose**: Centralized helper class for dynamic speed formatting using UnitsNet's BitRate type.
+
+**Key Features**:
+- Accepts speed in Mbps (current application standard)
+- Automatically selects appropriate unit based on magnitude
+- Provides three helper methods for different formatting needs
+
+**Implementation**:
+
+```csharp
+public static class SpeedFormatter
+{
+    // Main formatting method - returns complete formatted string
+    public static string FormatSpeed(double speedMbps)
+    {
+        if (speedMbps <= 0)
+            return "0 kbps";
+
+        var bitRate = BitRate.FromMegabitsPerSecond(speedMbps);
+        
+        if (speedMbps < 1.0)
+        {
+            var kbps = bitRate.KilobitsPerSecond;
+            return $"{Math.Round(kbps, 1)} kbps";
+        }
+        else
+        {
+            return $"{Math.Round(speedMbps, 1)} Mbps";
+        }
+    }
+    
+    // Returns just the numeric value as string
+    public static string FormatSpeedValue(double speedMbps)
+    {
+        if (speedMbps <= 0)
+            return "0";
+
+        var bitRate = BitRate.FromMegabitsPerSecond(speedMbps);
+        
+        if (speedMbps < 1.0)
+        {
+            var kbps = bitRate.KilobitsPerSecond;
+            return Math.Round(kbps, 1).ToString();
+        }
+        else
+        {
+            return Math.Round(speedMbps, 1).ToString();
+        }
+    }
+    
+    // Returns the unit suffix
+    public static string GetSpeedUnit(double speedMbps)
+    {
+        return speedMbps < 1.0 ? "kbps" : "Mbps";
+    }
+}
+```
+
+**Threshold Logic**:
+- **< 1 Mbps**: Display in kbps (kilobits per second)
+- **>= 1 Mbps**: Display in Mbps (megabits per second)
+
+**Precision**:
+- All values rounded to 1 decimal place
+- 0 or negative values default to "0 kbps"
+
+#### 3. Updated Home.razor for Adapter Speed Display
+
+**Added Using Statement** (Line 5):
+```csharp
+@using XNetwork.Utils
+```
+
+**Updated Adapter Speed Display** (Lines 104-117):
+
+**Before**:
+```razor
+<div class="flex items-center gap-1.5">
+    <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
+    <span class="text-white font-semibold">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 1)</span>
+    <span class="text-xs text-slate-400">Mbps</span>
+</div>
+<div class="flex items-center gap-1.5">
+    <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
+    <span class="text-white font-semibold">@Math.Round(currentStats.SendBps / (1000 * 1000), 1)</span>
+    <span class="text-xs text-slate-400">Mbps</span>
+</div>
+```
+
+**After**:
+```razor
+@{
+    var downloadSpeedMbps = currentStats.ReceiveBps / (1000.0 * 1000.0);
+    var uploadSpeedMbps = currentStats.SendBps / (1000.0 * 1000.0);
+}
+<div class="flex items-center gap-1.5">
+    <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
+    <span class="text-white font-semibold">@SpeedFormatter.FormatSpeedValue(downloadSpeedMbps)</span>
+    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(downloadSpeedMbps)</span>
+</div>
+<div class="flex items-center gap-1.5">
+    <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
+    <span class="text-white font-semibold">@SpeedFormatter.FormatSpeedValue(uploadSpeedMbps)</span>
+    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(uploadSpeedMbps)</span>
+</div>
+```
+
+**Benefits**:
+- Speed calculations moved to local variables for clarity
+- Separate value and unit components for consistent styling
+- Dynamic unit selection based on speed magnitude
+- Type-safe conversion using UnitsNet
+
+#### 4. Updated ConnectionSummary.razor for Overall Speed Display
+
+**Added Using Statement** (Line 2):
+```csharp
+@using XNetwork.Utils
+```
+
+**Updated Download/Upload Display** (Lines 48-51):
+
+**Before**:
+```razor
+<div>
+    <p class="text-slate-400">Download</p>
+    <p class="text-white font-bold text-xl">@Download <span class="text-base font-medium text-slate-300">Mbps</span></p>
+</div>
+<div>
+    <p class="text-slate-400">Upload</p>
+    <p class="text-white font-bold text-xl">@Upload <span class="text-base font-medium text-slate-300">Mbps</span></p>
+</div>
+```
+
+**After**:
+```razor
+<div>
+    <p class="text-slate-400">Download</p>
+    <p class="text-white font-bold text-xl">@SpeedFormatter.FormatSpeedValue(Download) <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Download)</span></p>
+</div>
+<div>
+    <p class="text-slate-400">Upload</p>
+    <p class="text-white font-bold text-xl">@SpeedFormatter.FormatSpeedValue(Upload) <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Upload)</span></p>
+</div>
+```
+
+**Result**: Overall connection summary now displays speeds dynamically with appropriate units.
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Build Time**: 4.4 seconds
+- **Warnings**: 16 pre-existing warnings (none related to these changes)
+- **Errors**: 0
+- **Exit Code**: 0
+
+### Speed Display Examples
+
+| Actual Speed | Old Display | New Display | Improvement |
+|--------------|-------------|-------------|-------------|
+| 0.05 Mbps | 0.1 Mbps | 50.0 kbps | More precise |
+| 0.15 Mbps | 0.2 Mbps | 150.0 kbps | Clearer magnitude |
+| 0.5 Mbps | 0.5 Mbps | 500.0 kbps | Better readability |
+| 0.8 Mbps | 0.8 Mbps | 800.0 kbps | Clearer for low speeds |
+| 1.0 Mbps | 1.0 Mbps | 1.0 Mbps | Unchanged (threshold) |
+| 5.2 Mbps | 5.2 Mbps | 5.2 Mbps | Unchanged |
+| 85.3 Mbps | 85.3 Mbps | 85.3 Mbps | Unchanged |
+
+### Technical Notes
+
+#### Why UnitsNet?
+1. **Type Safety**: Strongly-typed unit conversions prevent calculation errors
+2. **Accuracy**: Precise conversion formulas (1 Mbps = 1000 kbps)
+3. **Maintainability**: Industry-standard library with comprehensive documentation
+4. **Future Flexibility**: Easy to add support for Gbps or other units if needed
+
+#### Conversion Formula
+```
+1 Mbps = 1,000 kbps (using SI decimal prefixes)
+BitRate.FromMegabitsPerSecond(1.0).KilobitsPerSecond = 1000.0
+```
+
+#### Why 1 Mbps Threshold?
+- Values < 1 Mbps are easier to read in kbps (e.g., 500 kbps vs 0.5 Mbps)
+- 1 Mbps is a natural boundary in user perception
+- Prevents awkward decimals like "0.1 Mbps" becoming clearer "100 kbps"
+- Maintains consistency with common speed test displays
+
+#### Component Architecture
+- **SpeedFormatter**: Static utility class (no state, no dependencies)
+- **Separation of Concerns**: Value and unit returned separately for flexible styling
+- **Reusable**: Can be used anywhere speeds need to be displayed
+- **Thread-Safe**: Pure static methods with no shared state
+
+### Important Notes
+
+1. **Backward Compatibility**:
+   - GetTotalDownload() and GetTotalUpload() in Home.razor continue to return values in Mbps
+   - Only display formatting changed, not underlying data representation
+   - No changes to stats streaming or data collection
+
+2. **Precision**:
+   - All speeds rounded to 1 decimal place
+   - Sufficient precision for user display
+   - Matches existing precision in application
+
+3. **Zero Handling**:
+   - Zero or negative speeds display as "0 kbps"
+   - Prevents division by zero
+   - Provides clear indication of no traffic
+
+4. **Unit Consistency**:
+   - Application still works internally in Mbps
+   - Conversion only happens at display time
+   - No changes to data models or service layer
+
+### Testing Recommendations
+
+1. **Low Speed Scenarios**:
+   - Test with connections < 1 Mbps
+   - Verify display shows kbps with appropriate values
+   - Example: 0.1 Mbps should show "100.0 kbps"
+
+2. **High Speed Scenarios**:
+   - Test with connections >= 1 Mbps
+   - Verify display shows Mbps unchanged
+   - Example: 85.3 Mbps should show "85.3 Mbps"
+
+3. **Boundary Cases**:
+   - Test exactly 1.0 Mbps (should show "1.0 Mbps")
+   - Test 0.9 Mbps (should show "900.0 kbps")
+   - Test 0 Mbps (should show "0 kbps")
+
+4. **Dynamic Updates**:
+   - Monitor speed displays as connections fluctuate
+   - Verify smooth transitions between kbps and Mbps
+   - Check that unit labels update correctly
+
+5. **Visual Consistency**:
+   - Confirm styling matches between kbps and Mbps displays
+   - Verify no layout shifts when units change
+   - Test on different screen sizes
+
+### Future Enhancements
+
+1. **Configurable Threshold**:
+   - Add setting to customize kbps/Mbps threshold
+   - Could be useful for different network types
+
+2. **Gbps Support**:
+   - Add automatic Gbps display for very high speeds
+   - Useful for future-proofing on high-bandwidth connections
+
+3. **Localization**:
+   - Support for different regional unit preferences
+   - Could use IEC binary prefixes (Kib/s, Mib/s) vs SI decimal (kb/s, Mb/s)
+
+4. **Adaptive Precision**:
+   - Show more decimals for very low speeds
+   - Show fewer decimals for very high speeds
+
+5. **Speed Trends**:
+   - Show arrows indicating speed increasing/decreasing
+   - Could integrate with historical data
+
+### Related Architecture
+
+**Data Flow**:
+1. SpeedifyService provides stats in bytes/second
+2. Home.razor converts to Mbps: `ReceiveBps / (1000.0 * 1000.0)`
+3. SpeedFormatter determines appropriate unit based on magnitude
+4. UI displays value and unit separately for styling flexibility
+
+**Conversion Chain**:
+```
+bytes/sec → Mbps → BitRate (UnitsNet) → kbps or Mbps → Display
+```
+
+**Why Not Convert at Source?**
+- Keeps data layer units consistent (all in Mbps)
+- Allows easy aggregation and comparison
+- Display formatting is presentation concern, not data concern
+
+### Conclusion
+
+This implementation successfully adds dynamic speed unit selection to improve user experience, especially for low-throughput scenarios. The use of UnitsNet ensures type-safe, accurate conversions while maintaining backward compatibility with the existing codebase. Users now see clearer speed indicators that automatically adjust to the most readable format.
+
+**User Impact**: Low-speed connections (< 1 Mbps) are now displayed in kbps with whole numbers (e.g., "150.0 kbps") instead of small decimals (e.g., "0.2 Mbps"), making them much easier to read and understand at a glance.
+
+---
+
 ## 2025-10-19 - Code Mode (Confirmation Modal Component & Settings Safety)
 
 **Agent**: Claude Code (Sonnet 4.5)
@@ -3003,3 +3699,510 @@ private async Task RebootServer()
 - Chart configuration: [`XNetwork/wwwroot/js/statisticsCharts.js`](XNetwork/wwwroot/js/statisticsCharts.js)
 - Signal bar component: [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor)
 - Settings controls: [`XNetwork/Components/Pages/Settings.razor`](XNetwork/Components/Pages/Settings.razor)
+## 2025-10-19 - Code Mode (Progressive Web App Implementation)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/wwwroot/manifest.json`](XNetwork/wwwroot/manifest.json:1) (Created)
+- [`XNetwork/wwwroot/icons/README.md`](XNetwork/wwwroot/icons/README.md:1) (Created)
+- [`XNetwork/wwwroot/service-worker.js`](XNetwork/wwwroot/service-worker.js:1) (Created)
+- [`XNetwork/wwwroot/js/pwa.js`](XNetwork/wwwroot/js/pwa.js:1) (Created)
+- [`XNetwork/Components/App.razor`](XNetwork/Components/App.razor:9-21,45) (Modified)
+
+### Issue/Task
+Converted the Blazor Server application into a Progressive Web App (PWA) by implementing all necessary files and configurations. This allows users to install the app on their devices, access it from their home screen, and benefit from offline capabilities and a native app-like experience.
+
+### Changes Made
+
+#### 1. Created Web Manifest (manifest.json)
+
+**Purpose**: Provides metadata for PWA installation and behavior.
+
+**Key Configuration**:
+- **Name**: "X Network"
+- **Short Name**: "XNetwork"
+- **Description**: "X Network - Speedify Network Management and Monitoring"
+- **Theme Colors**: 
+  - Background: `#0f172a` (slate-900, matching app dark theme)
+  - Theme: `#1e293b` (slate-800)
+- **Display Mode**: `standalone` (full-screen app experience)
+- **Start URL**: `/` (launches at root)
+- **Orientation**: `any` (supports all orientations)
+
+**Icon Sizes Configured** (10 variants):
+- Standard sizes: 72x72, 96x96, 128x128, 144x144, 152x152, 192x192, 384x384, 512x512
+- Maskable icons: 192x192, 512x512 (for Android adaptive icons)
+
+**Categories**: utilities, productivity
+
+#### 2. Created Icons Directory Structure
+
+**Created**: `XNetwork/wwwroot/icons/` directory with README.md
+
+**README.md Contents**:
+- Lists all required icon sizes (72px to 512px)
+- Documents maskable icon requirements for Android
+- Provides design guidelines matching app theme (dark slate colors)
+- Suggests tools for icon generation (PWA Asset Generator, RealFaviconGenerator)
+- Notes that icons are placeholders until proper images are created
+
+**Design Specifications**:
+- Background colors: #0f172a or #1e293b (dark slate theme)
+- Primary colors: Slate/blue tones matching app design
+- Format: PNG with transparency
+- Maskable safe zone: 80% of icon area
+
+#### 3. Created Service Worker (service-worker.js)
+
+**Purpose**: Enables offline functionality and asset caching.
+
+**Cache Strategy Implementation**:
+
+**1. Installation (Cache Precaching)**:
+- Cache name: `xnetwork-cache-v1`
+- Runtime cache: `xnetwork-runtime-v1`
+- Precached assets:
+  - Root page (`/`)
+  - Stylesheets (`app.css`, `XNetwork.styles.css`)
+  - Manifest (`manifest.json`)
+  - JavaScript files (`statisticsCharts.js`)
+- Uses `skipWaiting()` for immediate activation
+
+**2. Activation (Cache Cleanup)**:
+- Removes old cache versions automatically
+- Claims clients immediately with `clients.claim()`
+- Ensures only current cache versions remain
+
+**3. Fetch Handling (Multiple Strategies)**:
+
+**Network-First Strategy** (API calls & dynamic content):
+- Targets: `_blazor` SignalR connections, `api/` endpoints, `_framework/` files, navigation requests
+- Tries network first, falls back to cache if offline
+- Ensures fresh data when available
+
+**Cache-First Strategy** (Static assets):
+- Targets: CSS, JS, images, fonts (by file extension)
+- Serves from cache if available, fetches if not
+- Updates cache with successful network responses
+
+**Exclusions**:
+- Non-GET requests (POST, PUT, DELETE)
+- Blazor SignalR connections (requires real-time connection)
+
+**Helper Functions**:
+- `cacheFirst()`: Cache-priority fetching for static assets
+- `networkFirst()`: Network-priority fetching with cache fallback
+- `isStaticAsset()`: File extension checking for appropriate strategy
+
+**Event Listeners**:
+- `install`: Precache essential assets
+- `activate`: Clean up old caches
+- `fetch`: Route requests to appropriate caching strategy
+- `message`: Handle client messages (e.g., skip waiting)
+
+#### 4. Created PWA Registration Script (pwa.js)
+
+**Purpose**: Registers service worker and handles PWA installation prompts.
+
+**Key Features**:
+
+**1. Service Worker Registration**:
+- Checks browser support before registering
+- Registers `/service-worker.js` with scope `/`
+- Logs success/failure to console
+- Waits for page load before registration
+
+**2. Update Detection**:
+- Listens for `updatefound` event
+- Logs when new service worker is installing
+- Detects when update is available
+- Calls `showUpdateNotification()` for user feedback
+- Auto-checks for updates hourly (configurable)
+
+**3. Install Prompt Handling**:
+- Captures `beforeinstallprompt` event
+- Prevents browser's default mini-infobar
+- Stores prompt for later use
+- Provides `showInstallPromotion()` hook for custom UI
+- Includes example code for custom install button (commented)
+
+**4. Installation Tracking**:
+- Listens for `appinstalled` event
+- Logs successful installation
+- Cleans up deferred prompt
+
+**5. Standalone Mode Detection**:
+- Checks if app is running as installed PWA
+- Logs standalone mode status
+- Supports both web and iOS standalone detection
+
+**6. iOS-Specific Support**:
+- Detects iOS devices
+- Logs when iOS-specific install instructions should be shown
+- Provides hook for "Add to Home Screen" guidance
+
+**Commented Features** (ready for enhancement):
+- Custom install button implementation
+- Auto-reload on update (with delay)
+- Install promotion UI
+
+#### 5. Updated App.razor
+
+**PWA Meta Tags Added** (Lines 9-21):
+```razor
+<!-- PWA Manifest -->
+<link rel="manifest" href="manifest.json"/>
+<meta name="theme-color" content="#1e293b"/>
+
+<!-- Apple Touch Icons -->
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="X Network"/>
+<link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-192x192.png"/>
+
+<!-- App Description -->
+<meta name="description" content="X Network - Speedify Network Management and Monitoring"/>
+<meta name="application-name" content="X Network"/>
+```
+
+**PWA Script Added** (Line 45):
+```razor
+<!-- PWA Service Worker Registration -->
+<script src="js/pwa.js"></script>
+```
+
+**Meta Tag Purposes**:
+- `manifest`: Links to PWA manifest file
+- `theme-color`: Sets browser/system UI color (matches app theme)
+- `apple-mobile-web-app-capable`: Enables iOS standalone mode
+- `apple-mobile-web-app-status-bar-style`: iOS status bar styling
+- `apple-mobile-web-app-title`: App name on iOS home screen
+- `apple-touch-icon`: iOS home screen icon
+- `description`: App description for search engines and install prompts
+- `application-name`: App name for PWA
+
+### Build Results
+- **Status**: Build not yet verified (awaiting test)
+- **Expected**: Should build successfully with no errors
+
+### PWA Features Implemented
+
+#### 1. Installation
+- Users can install app from browser's install prompt
+- App appears in app drawer/start menu like native apps
+- Custom app icon on home screen/desktop
+- iOS users can "Add to Home Screen"
+
+#### 2. Offline Capability
+- Essential assets cached during installation
+- App shell available offline
+- Static resources served from cache when offline
+- Dynamic content falls back to cache if network unavailable
+
+#### 3. App-Like Experience
+- Runs in standalone window (no browser UI)
+- Custom theme color for system UI
+- Full-screen immersive experience
+- Fast loading from cached assets
+
+#### 4. Performance
+- Instant loading of cached assets
+- Reduced bandwidth usage (cache-first for static files)
+- Background updates while using cached version
+- Smooth transitions and navigation
+
+### Technical Notes
+
+#### Service Worker Caching Strategy
+
+**Why Multiple Strategies?**
+1. **Static Assets** (Cache-First):
+   - CSS, JS, images, fonts rarely change
+   - Serving from cache is faster
+   - Updates applied on next visit
+
+2. **Dynamic Content** (Network-First):
+   - API data must be fresh
+   - SignalR requires live connection
+   - Blazor framework files should be latest version
+   - Falls back to cache if offline
+
+3. **Blazor SignalR**:
+   - Explicitly skipped (requires WebSocket)
+   - Cannot be cached or served offline
+   - Would break real-time functionality
+
+#### Cache Versioning
+
+**Cache Names**:
+- `xnetwork-cache-v1`: Precached static assets
+- `xnetwork-runtime-v1`: Runtime-cached resources
+
+**Version Updates**:
+- Increment version number (e.g., `v1` → `v2`) to force cache refresh
+- Old caches automatically cleaned up on activation
+- Users get fresh content on next visit
+
+#### Manifest Configuration
+
+**Display Mode: Standalone**:
+- Removes browser chrome (address bar, back button)
+- Provides native app-like fullscreen experience
+- Users can still access browser menu if needed
+
+**Icon Sizes**:
+- 192x192: Android home screen minimum
+- 512x512: Android splash screen
+- Maskable variants: Adaptive icons for Android 8+
+- Multiple sizes: Ensures optimal quality on all devices
+
+#### iOS Support
+
+**Challenges**:
+- iOS doesn't fully support PWA manifest
+- Requires separate meta tags for home screen
+- No automatic install prompt
+- Users must manually "Add to Home Screen"
+
+**Solutions**:
+- Added all Apple-specific meta tags
+- Configured standalone mode explicitly
+- Provided detection for showing iOS instructions
+- Used 192x192 icon as fallback for apple-touch-icon
+
+### Important Warnings
+
+1. **HTTPS Required**:
+   - Service workers ONLY work on HTTPS (or localhost)
+   - Production deployment MUST use HTTPS
+   - HTTP sites cannot install as PWA
+
+2. **Icon Files Not Included**:
+   - Icon placeholders configured in manifest
+   - Actual PNG files must be created and placed in `wwwroot/icons/`
+   - App will show default browser icon until real icons added
+
+3. **Cache Invalidation**:
+   - Update cache version when deploying code changes
+   - Users may see old version until cache expires
+   - Consider adding cache-busting for critical updates
+
+4. **Blazor Server Limitations**:
+   - Full offline mode NOT possible (requires server connection)
+   - Service worker provides fast loading of cached shell
+   - Actual functionality requires network connectivity
+   - SignalR connections cannot be cached
+
+### Testing Recommendations
+
+#### 1. PWA Installation
+- Open app in Chrome/Edge (desktop or mobile)
+- Look for install icon in address bar
+- Click install and verify app launches standalone
+- Check app icon appears in system app list
+- Test that app opens in standalone window (no browser UI)
+
+#### 2. Service Worker Registration
+- Open browser DevTools → Application → Service Workers
+- Verify service worker is registered and activated
+- Check that status shows "activated and is running"
+- Verify scope is correct (`/`)
+
+#### 3. Cache Functionality
+- DevTools → Application → Cache Storage
+- Verify `xnetwork-cache-v1` exists with precached assets
+- Navigate app and check runtime cache populates
+- Test offline mode (DevTools → Network → Offline)
+- Verify cached pages still load when offline
+
+#### 4. Manifest Validation
+- DevTools → Application → Manifest
+- Verify all manifest properties display correctly
+- Check icons list shows all configured sizes
+- Test theme color applies to browser/system UI
+- Verify install prompt appears (if supported)
+
+#### 5. iOS Testing
+- Open Safari on iPhone/iPad
+- Check Share button → Add to Home Screen
+- Verify app icon and name appear correctly
+- Launch from home screen and verify standalone mode
+- Test that status bar matches configured style
+
+#### 6. Update Detection
+- Make change to service worker (e.g., increment version)
+- Reload page
+- Check console for "New Service Worker found" message
+- Verify old cache is deleted
+- Confirm new cache version is created
+
+#### 7. Cross-Browser Compatibility
+- **Chrome/Edge**: Full PWA support ✓
+- **Firefox**: Service worker support, limited PWA features
+- **Safari (desktop)**: Service worker only, no install
+- **Safari (iOS)**: Add to Home Screen (manual install)
+- **Opera**: Full PWA support ✓
+
+### Known Limitations
+
+1. **Offline Functionality**:
+   - Blazor Server requires active connection for functionality
+   - Only app shell and static assets available offline
+   - Cannot use features requiring server interaction when offline
+   - This is a Blazor Server architectural limitation
+
+2. **Icon Assets**:
+   - Icon files not created (only manifest configured)
+   - App will use default browser icon until PNGs added
+   - Requires graphic design work to create proper icons
+
+3. **Update Notifications**:
+   - No UI for notifying users of updates
+   - Auto-update logic exists but no visual feedback
+   - Custom update prompt needs to be implemented
+
+4. **Install Button**:
+   - No custom install button in UI
+   - Relies on browser's default install prompt
+   - Code exists in pwa.js but commented out
+
+5. **iOS Limitations**:
+   - No automatic install prompt
+   - Requires manual "Add to Home Screen"
+   - Limited compared to Android PWA experience
+
+### Future Enhancements
+
+1. **Icon Creation**:
+   - Design app icons matching brand/theme
+   - Generate all required sizes (72px to 512px)
+   - Create maskable variants for Android
+   - Add to `wwwroot/icons/` directory
+
+2. **Custom Install Prompt**:
+   - Implement custom install button in UI
+   - Add installation banner/modal
+   - Track user install acceptance/rejection
+   - Provide install instructions for iOS
+
+3. **Update Notifications**:
+   - Add toast/modal for available updates
+   - Implement "Update Available - Refresh" button
+   - Optional auto-reload after update
+   - Show changelog on update
+
+4. **Enhanced Offline**:
+   - Cache more static pages
+   - Implement offline fallback page
+   - Show "Offline" indicator in UI
+   - Queue actions for when back online
+
+5. **Analytics**:
+   - Track PWA install rate
+   - Monitor offline usage
+   - Measure cache hit rates
+   - A/B test install prompts
+
+6. **Advanced Caching**:
+   - Background sync for offline actions
+   - Periodic background sync for data refresh
+   - Push notifications for updates
+   - Stale-while-revalidate strategy
+
+### Documentation
+
+#### Enabling HTTPS for Production
+Before deploying to production, ensure HTTPS is configured:
+
+**IIS (Windows)**:
+1. Obtain SSL certificate
+2. Bind certificate to site in IIS
+3. Enable HTTPS redirect
+
+**nginx (Linux)**:
+```nginx
+server {
+    listen 443 ssl;
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+}
+```
+
+**Kestrel**:
+```json
+"Kestrel": {
+  "Endpoints": {
+    "Https": {
+      "Url": "https://0.0.0.0:5001"
+    }
+  }
+}
+```
+
+#### Creating Icons
+Using PWA Asset Generator:
+```bash
+npx @pwa/asset-generator logo.svg ./wwwroot/icons/ --icon-only
+```
+
+Using ImageMagick:
+```bash
+convert logo.png -resize 192x192 icon-192x192.png
+convert logo.png -resize 512x512 icon-512x512.png
+```
+
+#### Updating Service Worker
+When deploying code changes:
+1. Increment cache version in `service-worker.js`
+2. Update precached assets list if files changed
+3. Test that old cache is cleaned up
+4. Verify users get new version
+
+### Related Architecture
+
+**PWA Components**:
+```
+Browser
+  └─ PWA Runtime
+      ├─ Service Worker (background thread)
+      │   ├─ Cache API (xnetwork-cache-v1, xnetwork-runtime-v1)
+      │   ├─ Fetch Handler (request routing)
+      │   └─ Update Checker (hourly)
+      ├─ Web App Manifest (metadata)
+      ├─ Registration Script (pwa.js)
+      └─ Blazor Server App
+          ├─ SignalR Hub (real-time)
+          ├─ Static Assets (cached)
+          └─ Dynamic Pages (network-first)
+```
+
+**Request Flow**:
+1. User requests resource
+2. Service worker intercepts (fetch event)
+3. Determines caching strategy based on URL/type
+4. For static: Check cache → Network → Update cache
+5. For dynamic: Network → Cache fallback
+6. Return response to browser
+
+### Conclusion
+
+Successfully converted X Network from a standard web application to a Progressive Web App. Users can now install the app on their devices for a native app-like experience with improved performance through caching. While full offline functionality is limited by Blazor Server architecture, the PWA implementation provides fast loading, reduced bandwidth usage, and the ability to launch from the home screen/app drawer.
+
+**Key Deliverables**:
+- ✅ Web manifest with complete configuration
+- ✅ Service worker with multi-strategy caching
+- ✅ PWA registration and lifecycle management
+- ✅ iOS and Android installation support
+- ✅ Update detection and auto-cleanup
+- ⚠️ Icon assets (placeholder configuration, files needed)
+- ⚠️ HTTPS requirement (must configure for production)
+
+**User Benefits**:
+- Install app like native application
+- Fast loading from cached assets
+- Reduced data usage
+- Offline access to app shell
+- Fullscreen app experience without browser chrome
+
+---

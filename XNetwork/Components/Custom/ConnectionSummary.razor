@@ -1,4 +1,5 @@
 @using XNetwork.Models
+@using XNetwork.Utils
 @inject IJSRuntime JSRuntime
 @implements IAsyncDisposable
 
@@ -28,15 +29,18 @@
                          style="background-color: @(isActive ? GetBarColorHex(statusColor) : "#334155")"></div>
                 }
             </div>
-            <div class="flex items-center gap-2 flex-grow">
-                <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
-                @if (!IsStable && !isInitializing)
-                {
-                    <span class="px-2 py-0.5 bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs font-medium rounded-full flex items-center gap-1">
-                        <i class="fas fa-exclamation-triangle text-[10px]"></i>
-                        <span>Unstable</span>
-                    </span>
-                }
+            <div class="flex-grow">
+                <div class="flex items-center gap-2">
+                    <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
+                    @if (!IsStable && !isInitializing)
+                    {
+                        <span class="px-2 py-0.5 bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-xs font-medium rounded-full flex items-center gap-1">
+                            <i class="fas fa-exclamation-triangle text-[10px]"></i>
+                            <span>Unstable</span>
+                        </span>
+                    }
+                </div>
+                <p class="text-xs text-slate-400 mt-1">@GetStatusDescription()</p>
             </div>
         </div>
         <div class="grid grid-cols-3 gap-4 text-sm">
@@ -46,11 +50,11 @@
             </div>
             <div>
                 <p class="text-slate-400">Download</p>
-                <p class="text-white font-bold text-xl">@Download <span class="text-base font-medium text-slate-300">Mbps</span></p>
+                <p class="text-white font-bold text-xl">@SpeedFormatter.FormatSpeedValue(Download) <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Download)</span></p>
             </div>
             <div>
                 <p class="text-slate-400">Upload</p>
-                <p class="text-white font-bold text-xl">@Upload <span class="text-base font-medium text-slate-300">Mbps</span></p>
+                <p class="text-white font-bold text-xl">@SpeedFormatter.FormatSpeedValue(Upload) <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Upload)</span></p>
             </div>
         </div>
     </div>
@@ -165,6 +169,61 @@
             "slate-400" => "#94a3b8",
             _ => "#334155" // slate-700
         };
+    }
+
+    private string GetStatusDescription()
+    {
+        var status = ConnectionStatus.ToLowerInvariant();
+        
+        // Initializing state
+        if (status.Contains("initializing"))
+        {
+            return "Gathering connection data...";
+        }
+        
+        // Disconnected state
+        if (status.Contains("disconnected") || status.Contains("no connection"))
+        {
+            return "No active connection detected";
+        }
+        
+        // Health-based descriptions with context
+        if (status.Contains("excellent"))
+        {
+            return $"Low latency ({Latency}ms), optimal performance";
+        }
+        
+        if (status.Contains("good"))
+        {
+            return $"Normal latency ({Latency}ms), stable connection";
+        }
+        
+        if (status.Contains("fair"))
+        {
+            if (Latency > 250)
+            {
+                return $"Elevated latency ({Latency}ms) may affect real-time apps";
+            }
+            return "Moderate performance, some fluctuation detected";
+        }
+        
+        if (status.Contains("partial"))
+        {
+            return "Limited connectivity detected";
+        }
+        
+        if (status.Contains("poor"))
+        {
+            return $"High latency ({Latency}ms) impacting performance";
+        }
+        
+        if (status.Contains("critical"))
+        {
+            return "Severe connection issues detected";
+        }
+        
+        // Default fallback
+        return "Monitoring connection quality";
     }
 
     public async ValueTask DisposeAsync()

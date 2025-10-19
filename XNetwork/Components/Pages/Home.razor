@@ -2,6 +2,7 @@
 @using XNetwork.Models
 @using XNetwork.Services
 @using XNetwork.Components.Custom
+@using XNetwork.Utils
 @inject SpeedifyService SpeedifyService
 @inject IConnectionHealthService ConnectionHealthService
 @implements IAsyncDisposable
@@ -100,16 +101,19 @@
                     <!-- Row 2: Stats -->
                     @if (!isOffline && currentStats != null)
                     {
+                        var downloadSpeedMbps = currentStats.ReceiveBps / (1000.0 * 1000.0);
+                        var uploadSpeedMbps = currentStats.SendBps / (1000.0 * 1000.0);
+                        
                         <div class="flex items-center gap-4 mt-3 text-sm">
                             <div class="flex items-center gap-1.5">
                                 <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
-                                <span class="text-white font-semibold">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 1)</span>
-                                <span class="text-xs text-slate-400">Mbps</span>
+                                <span class="text-white font-semibold">@SpeedFormatter.FormatSpeedValue(downloadSpeedMbps)</span>
+                                <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(downloadSpeedMbps)</span>
                             </div>
                             <div class="flex items-center gap-1.5">
                                 <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
-                                <span class="text-white font-semibold">@Math.Round(currentStats.SendBps / (1000 * 1000), 1)</span>
-                                <span class="text-xs text-slate-400">Mbps</span>
+                                <span class="text-white font-semibold">@SpeedFormatter.FormatSpeedValue(uploadSpeedMbps)</span>
+                                <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(uploadSpeedMbps)</span>
                             </div>
                             <div class="flex items-center gap-1.5">
                                 <i class="far fa-clock text-slate-400 text-sm"></i>
