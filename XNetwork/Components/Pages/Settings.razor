@@ -66,13 +66,19 @@
                     <button class="w-full text-left flex items-center gap-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold py-3 px-4 rounded-md transition-colors"
                             @onclick="DisconnectAll"
                             disabled="@_isProcessing">
-                        <i class="fas fa-power-off w-5 text-center"></i>
+                        <i class="fas fa-unlink w-5 text-center"></i>
                         <span>Disconnect All Connections</span>
                     </button>
-                    <button class="w-full text-left flex items-center gap-3 bg-slate-700 hover:bg-slate-600 text-white font-semibold py-3 px-4 rounded-md transition-colors"
+                    <button class="w-full text-left flex items-center gap-3 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 font-semibold py-3 px-4 rounded-md transition-colors"
+                            @onclick="ReconnectAll"
+                            disabled="@_isProcessing">
+                        <i class="fas fa-sync w-5 text-center"></i>
+                        <span>Reconnect All Connections</span>
+                    </button>
+                    <button class="w-full text-left flex items-center gap-3 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 font-semibold py-3 px-4 rounded-md transition-colors"
                             @onclick="RestartSpeedify"
                             disabled="@_isProcessing">
-                        <i class="fas fa-redo w-5 text-center"></i>
+                        <i class="fas fa-power-off w-5 text-center"></i>
                         <span>Restart Speedify Service</span>
                     </button>
                 </div>
@@ -195,6 +201,39 @@
         catch (SpeedifyException ex)
         {
             _error = $"Failed to disconnect: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"An unexpected error occurred: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ReconnectAll()
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            // First disconnect
+            await SpeedifyService.StopAsync();
+            Console.WriteLine("Settings: Disconnected all connections, waiting 2 seconds...");
+            await Task.Delay(2000);
+            
+            // Then reconnect
+            await SpeedifyService.StartAsync();
+            Console.WriteLine("Settings: Reconnection initiated.");
+            await Task.Delay(1000);
+        }
+        catch (SpeedifyException ex)
+        {
+            _error = $"Failed to reconnect: {ex.Message}";
         }
         catch (Exception ex)
         {

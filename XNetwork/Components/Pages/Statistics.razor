@@ -54,30 +54,29 @@
         
         <!-- Charts Grid -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <!-- Throughput Chart -->
-            <ChartCard Title="Real-time Throughput (Mbps)" 
-                      ChartId="downloadChart" 
+            <!-- Download Chart -->
+            <ChartCard Title="Download Speed (Mbps)"
+                      ChartId="downloadChart"
                       ShowLegend="true"
-                      LegendItems="@(new List<ChartCard.LegendItem> { 
-                          new() { Label = "Download", Color = "#22d3ee" },
-                          new() { Label = "Upload", Color = "#f472b6" }
-                      })" />
-
-            <!-- Latency Chart -->
-            <ChartCard Title="Latency (ms)" 
-                      ChartId="rttChart" 
-                      ShowLegend="true"
-                      LegendItems="@GetLatencyLegend()" />
+                      LegendItems="@GetAdapterLegend()" />
 
             <!-- Upload Chart -->
-            <ChartCard Title="Upload Speed (Mbps)" 
-                      ChartId="uploadChart" 
-                      ShowLegend="false" />
+            <ChartCard Title="Upload Speed (Mbps)"
+                      ChartId="uploadChart"
+                      ShowLegend="true"
+                      LegendItems="@GetAdapterLegend()" />
+
+            <!-- Latency Chart -->
+            <ChartCard Title="Latency (ms)"
+                      ChartId="rttChart"
+                      ShowLegend="true"
+                      LegendItems="@GetAdapterLegend()" />
 
             <!-- Loss Chart -->
-            <ChartCard Title="Packet Loss (%)" 
-                      ChartId="lossChart" 
-                      ShowLegend="false" />
+            <ChartCard Title="Packet Loss (%)"
+                      ChartId="lossChart"
+                      ShowLegend="true"
+                      LegendItems="@GetAdapterLegend()" />
         </div>
     }
     else if (!_isInitialLoading && !_adapters.Any() && string.IsNullOrEmpty(_errorMessage)) 
@@ -230,22 +229,35 @@
         return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp}" : adapter.Name : adapterId;
     }
 
-    private List<ChartCard.LegendItem> GetLatencyLegend()
+    private List<ChartCard.LegendItem> GetAdapterLegend()
     {
         var legend = new List<ChartCard.LegendItem>();
-        var colors = new[] { "#f59e0b", "#38bdf8", "#22d3ee", "#a855f7" };
+        var colors = new[] { "#22d3ee", "#f472b6", "#f59e0b", "#38bdf8", "#a855f7", "#fb923c" };
         int colorIndex = 0;
         
-        foreach (var adapter in _adapters.Take(4))
+        // Only show connected/active adapters in legend
+        var activeAdapters = GetActiveAdapters();
+        foreach (var adapter in activeAdapters)
         {
-            legend.Add(new ChartCard.LegendItem 
-            { 
-                Label = GetAdapterDisplayName(adapter.AdapterId), 
-                Color = colors[colorIndex++ % colors.Length] 
+            legend.Add(new ChartCard.LegendItem
+            {
+                Label = GetAdapterDisplayName(adapter.AdapterId),
+                Color = colors[colorIndex++ % colors.Length]
             });
         }
         
         return legend;
+    }
+
+    private IEnumerable<Adapter> GetActiveAdapters()
+    {
+        // Filter to only include adapters that are connected, connecting, or standby
+        return _adapters.Where(a =>
+            a.State != null &&
+            (a.State.Equals("connected", StringComparison.OrdinalIgnoreCase) ||
+             a.State.Equals("connecting", StringComparison.OrdinalIgnoreCase) ||
+             a.State.Equals("standby", StringComparison.OrdinalIgnoreCase))
+        );
     }
 
     private async Task InitializeChartsInternal()
@@ -260,8 +272,19 @@
         _chartInitializationErrorMessage = string.Empty;
 
         Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): InitializeChartsInternal attempting...");
-        var adapterIdsForChart = _adapters.Select(a => a.AdapterId).ToArray();
-        var adapterDisplayNamesForChart = _adapters.Select(x => GetAdapterDisplayName(x.AdapterId)).ToArray();
+        
+        // Only include active/connected adapters in charts
+        var activeAdapters = GetActiveAdapters().ToList();
+        if (!activeAdapters.Any())
+        {
+            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): No active adapters found for chart initialization.");
+            _chartInitializationErrorMessage = "No active network connections found.";
+            _chartsSuccessfullyInitialized = false;
+            return;
+        }
+        
+        var adapterIdsForChart = activeAdapters.Select(a => a.AdapterId).ToArray();
+        var adapterDisplayNamesForChart = activeAdapters.Select(x => GetAdapterDisplayName(x.AdapterId)).ToArray();
         var initialTimestamp = DateTime.Now.ToString("HH:mm:ss");
         bool allChartsOk = true;
         List<string> failedCharts = new List<string>();

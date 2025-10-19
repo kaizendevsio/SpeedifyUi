@@ -89,6 +89,9 @@
             _previousDownload = Download;
             await UpdateSparkline();
         }
+        
+        // Force re-render when connection status or stats change
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task UpdateSparkline()

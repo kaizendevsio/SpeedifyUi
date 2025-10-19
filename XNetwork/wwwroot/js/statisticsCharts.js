@@ -42,7 +42,8 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
         data: [],
         borderColor: lineColors[index % lineColors.length],
         backgroundColor: lineColors[index % lineColors.length].replace('1)', '0.1)'),
-        tension: 0.1,
+        tension: 0.4, // Smooth bezier curves
+        cubicInterpolationMode: 'monotone', // Smooth interpolation
         fill: false
     }));
 
@@ -184,7 +185,8 @@ export function initializeDashboardSparkline(chartId) {
                     data: data,
                     borderColor: '#22d3ee', // cyan-400
                     backgroundColor: 'rgba(34, 211, 238, 0.1)',
-                    tension: 0.4,
+                    tension: 0.4, // Smooth bezier curves
+                    cubicInterpolationMode: 'monotone', // Smooth interpolation
                     fill: true,
                     borderWidth: 2,
                     pointRadius: 0,
