@@ -10,7 +10,6 @@ public enum ConnectionStatus
     Excellent,
     Good,
     Fair,
-    Idle,        // Connected with good latency but minimal/no throughput
     Poor,
     Critical
 }
