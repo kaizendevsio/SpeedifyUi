@@ -46,63 +46,71 @@
             {
                 var currentStats = GetStatsForAdapter(adapter.AdapterId);
                 var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
+                var bgClass = GetAdapterBackgroundClass(adapter, currentStats);
                 
-                <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative">
-                    <div class="flex items-center gap-3 text-sm">
-                        <i class="@GetAdapterIcon(adapter.Type) @GetAdapterIconColor(adapter.State, isOffline) text-lg w-5 text-center"></i>
-                        <p class="font-semibold text-white flex-grow min-w-0 truncate">
-                            @GetAdapterDisplayName(adapter.AdapterId)
-                        </p>
-                        
-                        @if (!isOffline && currentStats != null)
-                        {
-                            <div class="ml-auto flex items-center gap-3 sm:gap-4 flex-shrink-0">
-                                <span class="inline-flex items-center gap-1.5">
-                                    <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
-                                    <span class="text-lg font-semibold text-white">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 1)</span>
-                                </span>
-                                <span class="hidden sm:inline-flex items-center gap-1.5">
-                                    <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
-                                    <span class="text-lg font-semibold text-white">@Math.Round(currentStats.SendBps / (1000 * 1000), 1)</span>
-                                </span>
-                                <span class="inline-flex items-center gap-1.5">
-                                    <i class="far fa-clock text-slate-400 text-sm"></i>
-                                    <span class="text-lg font-semibold text-white">@currentStats.LatencyMs<span class="text-xs text-white">ms</span></span>
-                                </span>
-                            </div>
-                        }
-                        
-                        <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full flex-shrink-0 @(isOffline ? "ml-auto" : "")">
-                            @adapter.State
-                        </span>
-                        
-                        @if (!isOffline)
-                        {
-                            <div class="relative">
-                                <button class="bg-slate-700 hover:bg-slate-600 text-gray-300 w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0"
-                                        @onclick="() => ToggleMenu(adapter.AdapterId)">
-                                    <i class="fas fa-ellipsis-v"></i>
-                                </button>
-                                
-                                @if (_openMenuAdapterId == adapter.AdapterId)
-                                {
-                                    <div class="absolute right-0 top-10 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 min-w-[200px]">
-                                        <div class="p-3">
-                                            <label class="text-xs text-slate-400 mb-2 block">Priority</label>
-                                            <select class="w-full bg-slate-900 border border-slate-700 rounded-md py-1.5 px-2 text-xs text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors capitalize"
-                                                    @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value?.ToString())"
-                                                    disabled="@_isProcessingAction">
-                                                @foreach (var p in _prios)
-                                                {
-                                                    <option value="@p" selected="@(adapter.Priority == p)">@p</option>
-                                                }
-                                            </select>
+                <div class="@bgClass border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative">
+                    <!-- Row 1: Header -->
+                    <div class="flex items-center justify-between gap-3 text-sm">
+                        <div class="flex items-center gap-3 flex-grow min-w-0">
+                            <i class="@GetAdapterIcon(adapter.Type) @GetAdapterIconColor(adapter.State, isOffline) text-lg w-5 text-center flex-shrink-0"></i>
+                            <p class="font-semibold text-white truncate">
+                                @GetAdapterDisplayName(adapter.AdapterId)
+                            </p>
+                        </div>
+                        <div class="flex items-center gap-2 flex-shrink-0">
+                            <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full">
+                                @adapter.State
+                            </span>
+                            @if (!isOffline)
+                            {
+                                <div class="relative">
+                                    <button class="bg-slate-700 hover:bg-slate-600 text-gray-300 w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                                            @onclick="() => ToggleMenu(adapter.AdapterId)">
+                                        <i class="fas fa-ellipsis-v"></i>
+                                    </button>
+                                    
+                                    @if (_openMenuAdapterId == adapter.AdapterId)
+                                    {
+                                        <div class="absolute right-0 top-10 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 min-w-[200px]">
+                                            <div class="p-3">
+                                                <label class="text-xs text-slate-400 mb-2 block">Priority</label>
+                                                <select class="w-full bg-slate-900 border border-slate-700 rounded-md py-1.5 px-2 text-xs text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors capitalize"
+                                                        @onchange="(e) => ChangePriority(adapter.AdapterId, e.Value?.ToString())"
+                                                        disabled="@_isProcessingAction">
+                                                    @foreach (var p in _prios)
+                                                    {
+                                                        <option value="@p" selected="@(adapter.Priority == p)">@p</option>
+                                                    }
+                                                </select>
+                                            </div>
                                         </div>
-                                    </div>
-                                }
-                            </div>
-                        }
+                                    }
+                                </div>
+                            }
+                        </div>
                     </div>
+                    
+                    <!-- Row 2: Stats -->
+                    @if (!isOffline && currentStats != null)
+                    {
+                        <div class="flex items-center gap-4 mt-3 text-sm">
+                            <div class="flex items-center gap-1.5">
+                                <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
+                                <span class="text-white font-semibold">@Math.Round(currentStats.ReceiveBps / (1000 * 1000), 1)</span>
+                                <span class="text-xs text-slate-400">Mbps</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
+                                <span class="text-white font-semibold">@Math.Round(currentStats.SendBps / (1000 * 1000), 1)</span>
+                                <span class="text-xs text-slate-400">Mbps</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <i class="far fa-clock text-slate-400 text-sm"></i>
+                                <span class="text-white font-semibold">@currentStats.LatencyMs</span>
+                                <span class="text-xs text-slate-400">ms</span>
+                            </div>
+                        </div>
+                    }
                 </div>
             }
         </div>
@@ -302,17 +310,36 @@
         var avgPacketLoss = connectedStats.Average(s => (s!.LossSend + s.LossReceive) / 2);
         var totalSpeed = connectedStats.Sum(s => s!.ReceiveBps + s.SendBps) / (1000 * 1000); // Mbps
         
-        // Determine status based on performance
-        if (avgLatency < 50 && avgPacketLoss < 1 && totalSpeed > 10)
+        // More lenient thresholds for better UX
+        if (avgLatency < 80 && avgPacketLoss < 2 && totalSpeed > 50)
             return "Excellent Connection";
-        else if (avgLatency < 100 && avgPacketLoss < 5 && totalSpeed > 5)
+        else if (avgLatency < 150 && avgPacketLoss < 5 && totalSpeed > 20)
             return "Good Connection";
-        else if (avgLatency < 200 && avgPacketLoss < 10)
+        else if (avgLatency < 250 && avgPacketLoss < 10 && totalSpeed > 5)
             return "Fair Connection";
         else if (connectedCount < _adapters.Count / 2)
             return "Partial Connection";
         else
             return "Poor Connection";
+    }
+
+    private string GetAdapterBackgroundClass(Adapter adapter, ConnectionItem? currentStats)
+    {
+        // If offline or no stats, use default background
+        var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
+        if (isOffline || currentStats == null) return "bg-slate-800/50";
+        
+        // Calculate quality based on latency and packet loss
+        var avgLoss = (currentStats.LossSend + currentStats.LossReceive) / 2.0;
+        
+        if (currentStats.LatencyMs < 50 && avgLoss < 1)
+            return "bg-green-900/20 border-green-900/30";
+        else if (currentStats.LatencyMs < 100 && avgLoss < 3)
+            return "bg-slate-800/50";
+        else if (currentStats.LatencyMs < 200 && avgLoss < 5)
+            return "bg-yellow-900/20 border-yellow-900/30";
+        else
+            return "bg-red-900/20 border-red-900/30";
     }
 
     private int GetAverageLatency()

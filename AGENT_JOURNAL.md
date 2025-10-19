@@ -337,3 +337,124 @@ This file documents changes made to the project by AI agents, including dates, f
    - Fix brings implementation back to design specification
 
 ---
+
+## Entry: 2025-10-19 - Code Mode - UX Improvements Based on User Feedback
+
+**Agent Mode:** Code (💻)
+
+**Task:** Implement additional UX improvements based on user feedback from screenshot analysis, focusing on speed display, connection status calculation, visual indicators, and adapter card backgrounds.
+
+### Files Modified
+
+#### Pages Updated
+- **XNetwork/Components/Pages/Home.razor**
+  - **Issue 1 - 2-Row Adapter Card Layout:** Restructured adapter cards from single-row to two-row layout
+    - Row 1: Icon, adapter name, status pill, 3-dot menu (header)
+    - Row 2: Download speed (↓ cyan), Upload speed (↑ pink), Latency (⏱ slate) with units
+    - Removed `hidden sm:inline-flex` from upload speed - now always visible on all screen sizes
+    - Added proper spacing with `gap-4` between stat items and `mt-3` margin-top for second row
+    - Added "Mbps" and "ms" unit labels with `text-xs text-slate-400` styling
+  
+  - **Issue 2 - More Lenient Connection Status:** Updated `GetOverallConnectionStatus()` thresholds
+    - OLD Excellent: <50ms, <1% loss, >10 Mbps
+    - NEW Excellent: <80ms, <2% loss, >50 Mbps
+    - OLD Good: <100ms, <5% loss, >5 Mbps
+    - NEW Good: <150ms, <5% loss, >20 Mbps
+    - OLD Fair: <200ms, <10% loss
+    - NEW Fair: <250ms, <10% loss, >5 Mbps
+    - Result: 154ms latency now classified as "Good" instead of "Fair"
+  
+  - **Issue 3 - Dynamic Adapter Background Colors:** Added `GetAdapterBackgroundClass()` method
+    - Calculates quality based on latency and packet loss average
+    - Excellent (<50ms, <1% loss): `bg-green-900/20 border-green-900/30`
+    - Good (<100ms, <3% loss): `bg-slate-800/50` (default)
+    - Fair (<200ms, <5% loss): `bg-yellow-900/20 border-yellow-900/30`
+    - Poor (>200ms or >5% loss): `bg-red-900/20 border-red-900/30`
+    - Offline/no stats: `bg-slate-800/50` (default)
+    - Applied dynamically per adapter card via `@bgClass` variable
+
+#### Components Updated
+- **XNetwork/Components/Custom/ConnectionSummary.razor**
+  - **Issue 4 - Dynamic Signal Bars:** Replaced static signal icon with status-based icons
+    - Changed from hardcoded `fas fa-signal text-green-400` to dynamic methods
+    - Added `GetSignalIcon()` method - returns `fa-signal` for most statuses, `fa-exclamation-triangle` for disconnected
+    - Added `GetSignalColor()` method with color mapping:
+      - Excellent: `text-green-400`
+      - Good: `text-cyan-400`
+      - Fair: `text-yellow-400`
+      - Partial: `text-orange-400`
+      - Poor: `text-red-400`
+      - Disconnected/No Connection: `text-red-500`
+    - Icon size increased to `text-2xl` for better visibility
+    - Signal strength visually indicated through color, not bar count (FontAwesome limitation)
+
+### Changes Summary
+
+**1. Improved Speed Visibility**
+- Both upload AND download speeds now visible on ALL screen sizes
+- No more hiding upload speed on mobile (removed `hidden sm:inline-flex`)
+- Clear 2-row layout separates header from metrics
+- Consistent icon colors: cyan (download), pink (upload), slate (latency)
+
+**2. More Realistic Status Calculations**
+- Thresholds adjusted to be more lenient based on real-world internet performance
+- 154ms latency example: was "Fair", now correctly shows "Good"
+- Better reflects actual user experience vs overly strict metrics
+- Prevents unnecessary concern about connection quality
+
+**3. Visual Quality Indicators**
+- Adapter cards now have color-tinted backgrounds based on performance
+- Green tint: Excellent performance (<50ms, <1% loss)
+- Yellow tint: Fair performance (100-200ms, 3-5% loss)
+- Red tint: Poor performance (>200ms or >5% loss)
+- Subtle backgrounds (opacity 20%) don't overwhelm the UI
+
+**4. Dynamic Connection Status Icon**
+- Signal icon color matches connection quality
+- Green for excellent, cyan for good, yellow for fair, orange for partial, red for poor
+- Visual consistency between status text and icon color
+- Larger icon (text-2xl) for improved visibility
+
+### Build Status
+- ✅ Build succeeded with 0 errors
+- ⚠️ 17 warnings (all pre-existing, none critical)
+- No new compilation issues introduced
+
+### Testing Recommendations
+
+1. Verify adapter cards show both upload and download speeds on mobile and desktop
+2. Test that 2-row layout displays correctly with proper spacing
+3. Confirm connection status shows "Good" for ~150ms latency scenarios
+4. Check adapter background colors change based on performance metrics
+5. Verify signal icon color matches connection status
+6. Test responsive design with various screen sizes
+7. Confirm all changes work with real-time data streaming
+
+### Important Notes
+
+1. **Layout Structure:**
+   - Adapter cards now use two distinct rows with `justify-between` for header
+   - Stats row uses `gap-4` for consistent spacing between metrics
+   - Upload speed no longer hidden on any screen size
+
+2. **Threshold Philosophy:**
+   - New thresholds based on realistic internet performance expectations
+   - Most home connections fall in 50-150ms range (should be "Good")
+   - Only truly problematic connections (>250ms) show as "Poor"
+
+3. **Background Color Approach:**
+   - Uses semi-transparent overlays to avoid harsh color blocks
+   - Borders also tinted to reinforce visual distinction
+   - Default slate background maintained for good performance (most common)
+
+4. **Signal Bar Limitation:**
+   - FontAwesome `fa-signal` icon doesn't support variable bar counts
+   - Used color variations instead to indicate strength levels
+   - Alternative would be custom CSS bars, but icon approach is simpler
+
+5. **ConnectionItem Properties:**
+   - Uses `LatencyMs` property (not `Rtt`) for latency values
+   - Uses `LossSend` and `LossReceive` for packet loss calculations
+   - Average of send/receive loss used for quality determination
+
+---
