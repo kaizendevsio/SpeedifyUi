@@ -41,6 +41,11 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
         public const double FAIR_PACKET_LOSS = 12;
         public const double FAIR_SPEED = 5;
 
+        // Idle detection (good latency but minimal throughput)
+        public const double IDLE_LATENCY = 300;      // Latency must be acceptable
+        public const double IDLE_PACKET_LOSS = 10;   // Packet loss must be acceptable
+        public const double IDLE_SPEED = 0.5;        // Speed below this = idle
+
         // Poor thresholds
         public const double POOR_LATENCY = 600;
         public const double POOR_PACKET_LOSS = 20;
@@ -308,33 +313,42 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
 
     private ConnectionStatus DetermineConnectionStatus(double latency, double packetLoss, double speed)
     {
+        // Idle detection - good latency/packet loss but minimal throughput
+        // This indicates a connected but inactive connection (no data transfer)
+        if (speed < Thresholds.IDLE_SPEED &&
+            latency < Thresholds.IDLE_LATENCY &&
+            packetLoss < Thresholds.IDLE_PACKET_LOSS)
+        {
+            return ConnectionStatus.Idle;
+        }
+
         // Critical conditions (any of these)
-        if (latency > Thresholds.POOR_LATENCY || 
-            packetLoss > Thresholds.POOR_PACKET_LOSS || 
+        if (latency > Thresholds.POOR_LATENCY ||
+            packetLoss > Thresholds.POOR_PACKET_LOSS ||
             speed < Thresholds.POOR_SPEED)
         {
             return ConnectionStatus.Critical;
         }
 
         // Poor conditions
-        if (latency > Thresholds.FAIR_LATENCY || 
-            packetLoss > Thresholds.FAIR_PACKET_LOSS || 
+        if (latency > Thresholds.FAIR_LATENCY ||
+            packetLoss > Thresholds.FAIR_PACKET_LOSS ||
             speed < Thresholds.FAIR_SPEED)
         {
             return ConnectionStatus.Poor;
         }
 
         // Fair conditions
-        if (latency > Thresholds.GOOD_LATENCY || 
-            packetLoss > Thresholds.GOOD_PACKET_LOSS || 
+        if (latency > Thresholds.GOOD_LATENCY ||
+            packetLoss > Thresholds.GOOD_PACKET_LOSS ||
             speed < Thresholds.GOOD_SPEED)
         {
             return ConnectionStatus.Fair;
         }
 
         // Good conditions
-        if (latency > Thresholds.EXCELLENT_LATENCY || 
-            packetLoss > Thresholds.EXCELLENT_PACKET_LOSS || 
+        if (latency > Thresholds.EXCELLENT_LATENCY ||
+            packetLoss > Thresholds.EXCELLENT_PACKET_LOSS ||
             speed < Thresholds.EXCELLENT_SPEED)
         {
             return ConnectionStatus.Good;

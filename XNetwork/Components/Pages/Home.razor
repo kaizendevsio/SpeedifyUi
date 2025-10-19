@@ -316,7 +316,26 @@
         
         if (connectedCount == 0) return "Disconnected";
         
-        // Get stats for connected adapters
+        // Use health service for rolling average-based status when initialized
+        if (ConnectionHealthService.IsInitialized())
+        {
+            var health = ConnectionHealthService.GetOverallHealth();
+            
+            // Map ConnectionStatus enum to user-friendly strings
+            return health.Status switch
+            {
+                ConnectionStatus.Excellent => "Excellent Connection",
+                ConnectionStatus.Good => "Good Connection",
+                ConnectionStatus.Fair => "Fair Connection",
+                ConnectionStatus.Idle => "Idle Connection",
+                ConnectionStatus.Poor => "Poor Connection",
+                ConnectionStatus.Critical => "Critical Connection",
+                ConnectionStatus.Initializing => "Initializing Connection",
+                _ => "Unknown Connection"
+            };
+        }
+        
+        // Fallback to instant calculation if service not ready
         var connectedStats = connectedAdapters
             .Select(a => GetStatsForAdapter(a.AdapterId))
             .Where(s => s != null)

@@ -130,6 +130,7 @@
             var s when s.Contains("excellent") => "green-400",
             var s when s.Contains("good") => "cyan-400",
             var s when s.Contains("fair") => "yellow-400",
+            var s when s.Contains("idle") => "slate-400",        // Gray for idle (connected but no activity)
             var s when s.Contains("partial") => "orange-400",
             var s when s.Contains("poor") => "red-400",
             var s when s.Contains("disconnected") || s.Contains("no connection") => "red-500",
@@ -146,6 +147,7 @@
             var s when s.Contains("excellent") => 4,     // All 4 bars
             var s when s.Contains("good") => 3,          // 3 bars
             var s when s.Contains("fair") => 2,          // 2 bars
+            var s when s.Contains("idle") => 1,          // 1 bar - Idle (gray, not red)
             var s when s.Contains("partial") => 1,       // 1 bar
             var s when s.Contains("poor") => 1,          // 1 bar - Poor (red)
             _ => 0  // Disconnected or No Connection - 0 bars
