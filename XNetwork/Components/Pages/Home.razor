@@ -57,12 +57,20 @@
                         <div class="flex items-center gap-3 flex-grow min-w-0">
                             @if (!isOffline)
                             {
-                                <div class="flex flex-col gap-0.5 w-8 flex-shrink-0">
-                                    @for (int i = 0; i < 5; i++)
+                                <div class="flex items-end gap-0.5 w-10 h-6 flex-shrink-0">
+                                    @for (int i = 0; i < 4; i++)
                                     {
-                                        var barHeight = (i + 1) * 3;
                                         var isActive = i < signalStrength;
-                                        <div style="height: @(barHeight)px" class="@(isActive ? $"bg-{signalColor}" : "bg-slate-700") rounded-sm transition-all"></div>
+                                        var heightClass = i switch
+                                        {
+                                            0 => "h-2",  // 25% height
+                                            1 => "h-3",  // 37.5% height
+                                            2 => "h-4",  // 50% height
+                                            3 => "h-6",  // 100% height
+                                            _ => "h-2"
+                                        };
+                                        var colorClass = isActive ? $"bg-{signalColor}" : "bg-slate-700";
+                                        <div class="@heightClass @colorClass w-1.5 rounded-sm transition-all"></div>
                                     }
                                 </div>
                             }
@@ -217,27 +225,27 @@
 
     private int GetSignalStrength(Adapter adapter, ConnectionItem? currentStats)
     {
-        // Return 1-5 bars based on latency and packet loss
-        if (currentStats == null) return 1;
+        // Return 0-4 bars based on latency and packet loss
+        if (currentStats == null) return 0;
         
         var avgLoss = (currentStats.LossSend + currentStats.LossReceive) / 2.0;
         
-        if (currentStats.LatencyMs < 50 && avgLoss < 1) return 5;  // Excellent
-        if (currentStats.LatencyMs < 100 && avgLoss < 3) return 4; // Good
-        if (currentStats.LatencyMs < 200 && avgLoss < 5) return 3; // Fair
-        if (currentStats.LatencyMs < 300 && avgLoss < 10) return 2; // Poor
-        return 1; // Very poor
+        if (currentStats.LatencyMs < 50 && avgLoss < 1) return 4;   // All 4 bars - Excellent
+        if (currentStats.LatencyMs < 100 && avgLoss < 3) return 3;  // 3 bars - Good
+        if (currentStats.LatencyMs < 200 && avgLoss < 5) return 2;  // 2 bars - Fair
+        if (currentStats.LatencyMs < 300 && avgLoss < 10) return 1; // 1 bar - Poor
+        return 0; // No bars - Very poor/disconnected
     }
 
     private string GetSignalColor(int strength)
     {
         return strength switch
         {
-            5 => "green-400",
-            4 => "cyan-400",
-            3 => "yellow-400",
-            2 => "orange-400",
-            _ => "red-400"
+            4 => "green-400",   // All 4 bars - Excellent
+            3 => "cyan-400",    // 3 bars - Good
+            2 => "yellow-400",  // 2 bars - Fair
+            1 => "orange-400",  // 1 bar - Poor
+            _ => "red-400"      // 0 bars - Very poor
         };
     }
 

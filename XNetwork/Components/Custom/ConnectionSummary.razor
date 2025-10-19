@@ -6,7 +6,26 @@
 <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden">
     <div class="p-4">
         <div class="flex items-center gap-3 mb-3">
-            <i class="@GetSignalIcon() @GetSignalColor() text-2xl"></i>
+            @{
+                var (status, statusColor) = GetConnectionStatus();
+                var barCount = GetSignalBarCount(status);
+            }
+            <div class="flex items-end gap-0.5 w-10 h-6">
+                @for (int i = 0; i < 4; i++)
+                {
+                    var isActive = i < barCount;
+                    var heightClass = i switch
+                    {
+                        0 => "h-2",  // 25% height
+                        1 => "h-3",  // 37.5% height
+                        2 => "h-4",  // 50% height
+                        3 => "h-6",  // 100% height
+                        _ => "h-2"
+                    };
+                    var colorClass = isActive ? $"bg-{statusColor}" : "bg-slate-700";
+                    <div class="@heightClass @colorClass w-1.5 rounded-sm"></div>
+                }
+            </div>
             <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
         </div>
         <div class="grid grid-cols-3 gap-4 text-sm">
@@ -87,33 +106,31 @@
         }
     }
 
-    private string GetSignalIcon()
+    private (string status, string color) GetConnectionStatus()
     {
-        // Determine signal strength icon based on connection status
-        return ConnectionStatus.ToLowerInvariant() switch
+        var status = ConnectionStatus.ToLowerInvariant();
+        var color = status switch
         {
-            var s when s.Contains("excellent") => "fas fa-signal",
-            var s when s.Contains("good") => "fas fa-signal",
-            var s when s.Contains("fair") => "fas fa-signal",
-            var s when s.Contains("partial") => "fas fa-signal",
-            var s when s.Contains("poor") => "fas fa-signal",
-            var s when s.Contains("disconnected") || s.Contains("no connection") => "fas fa-exclamation-triangle",
-            _ => "fas fa-signal"
+            var s when s.Contains("excellent") => "green-400",
+            var s when s.Contains("good") => "cyan-400",
+            var s when s.Contains("fair") => "yellow-400",
+            var s when s.Contains("partial") => "orange-400",
+            var s when s.Contains("poor") => "red-400",
+            var s when s.Contains("disconnected") || s.Contains("no connection") => "red-500",
+            _ => "slate-400"
         };
+        return (ConnectionStatus, color);
     }
 
-    private string GetSignalColor()
+    private int GetSignalBarCount(string status)
     {
-        // Determine signal color and opacity based on connection status
-        return ConnectionStatus.ToLowerInvariant() switch
+        return status.ToLowerInvariant() switch
         {
-            var s when s.Contains("excellent") => "text-green-400",
-            var s when s.Contains("good") => "text-cyan-400",
-            var s when s.Contains("fair") => "text-yellow-400",
-            var s when s.Contains("partial") => "text-orange-400",
-            var s when s.Contains("poor") => "text-red-400",
-            var s when s.Contains("disconnected") || s.Contains("no connection") => "text-red-500",
-            _ => "text-slate-400"
+            var s when s.Contains("excellent") => 4,  // All 4 bars
+            var s when s.Contains("good") => 3,       // 3 bars
+            var s when s.Contains("fair") => 2,       // 2 bars
+            var s when s.Contains("partial") => 1,    // 1 bar
+            _ => 0  // Poor or Disconnected - 0 bars
         };
     }
 
