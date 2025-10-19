@@ -133,7 +133,8 @@
             var s when s.Contains("good") => 3,       // 3 bars
             var s when s.Contains("fair") => 2,       // 2 bars
             var s when s.Contains("partial") => 1,    // 1 bar
-            _ => 0  // Poor or Disconnected - 0 bars
+            var s when s.Contains("poor") => 1,       // 1 bar - Poor (red)
+            _ => 0  // Disconnected or No Connection - 0 bars
         };
     }
 

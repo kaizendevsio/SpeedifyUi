@@ -1,4 +1,265 @@
 # Agent Journal
+## 2025-10-19 - Code Mode (Signal Bars Display Fix)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/Components/Custom/ConnectionSummary.razor`](XNetwork/Components/Custom/ConnectionSummary.razor:128-139)
+
+### Issue/Task
+Fixed signal bars not displaying on the Dashboard's overall connection card. The signal strength indicator showed as empty/gray instead of displaying colored bars representing connection quality.
+
+### Changes Made
+
+#### Signal Bar Count for "Poor Connection" (ConnectionSummary.razor)
+
+**Problem**: When the overall connection status was "Poor Connection", the `GetSignalBarCount()` method returned 0 bars, causing all four bars to display in the inactive gray color (#334155). This made them nearly invisible against the dark slate background, appearing as an empty signal indicator.
+
+**Root Cause**: The switch expression in `GetSignalBarCount()` had a catch-all case that returned 0 bars for both "Poor Connection" and "Disconnected/No Connection", treating them the same.
+
+**Fix** (Lines 128-139):
+Added explicit case for "poor" status to return 1 red bar:
+
+**Before**:
+```csharp
+private int GetSignalBarCount(string status)
+{
+    return status.ToLowerInvariant() switch
+    {
+        var s when s.Contains("excellent") => 4,  // All 4 bars
+        var s when s.Contains("good") => 3,       // 3 bars
+        var s when s.Contains("fair") => 2,       // 2 bars
+        var s when s.Contains("partial") => 1,    // 1 bar
+        _ => 0  // Poor or Disconnected - 0 bars
+    };
+}
+```
+
+**After**:
+```csharp
+private int GetSignalBarCount(string status)
+{
+    return status.ToLowerInvariant() switch
+    {
+        var s when s.Contains("excellent") => 4,  // All 4 bars
+        var s when s.Contains("good") => 3,       // 3 bars
+        var s when s.Contains("fair") => 2,       // 2 bars
+        var s when s.Contains("partial") => 1,    // 1 bar
+        var s when s.Contains("poor") => 1,       // 1 bar - Poor (red)
+        _ => 0  // Disconnected or No Connection - 0 bars
+    };
+}
+```
+
+**Result**: "Poor Connection" status now displays 1 red bar (using the red-400 color #f87171 from `GetBarColorHex()`), making it clearly visible and distinguishable from a disconnected state which shows 0 bars (all gray).
+
+### Signal Bar Color Mapping
+The signal bars now correctly display for all connection states:
+- **Excellent Connection**: 4 green bars (#4ade80)
+- **Good Connection**: 3 cyan bars (#22d3ee)
+- **Fair Connection**: 2 yellow bars (#facc15)
+- **Partial Connection**: 1 orange bar (#fb923c)
+- **Poor Connection**: 1 red bar (#f87171) ← FIXED
+- **Disconnected/No Connection**: 0 bars (all gray #334155)
+
+### Build Results
+- **Status**: Build succeeded ✓
+- **Warnings**: 16 pre-existing warnings (none related to this change)
+- **Errors**: 0
+- **Exit Code**: 0
+
+### Technical Notes
+
+#### Signal Bar Rendering
+- Uses inline styles with hex colors (`GetBarColorHex()`) instead of Tailwind classes
+- This approach is required for CDN Tailwind to work reliably with dynamic colors
+- Inactive bars use slate-700 color (#334155) for subtle visibility
+
+#### Visual Distinction
+- **Poor Connection** (1 red bar) vs **Disconnected** (0 bars) provides clear visual feedback
+- Red color immediately signals poor quality without completely hiding the indicator
+- Maintains consistency with adapter card signal bars on the dashboard
+
+### Important Notes
+
+1. **Color Consistency**: The fix maintains color consistency with the adapter card signal bars in [`Home.razor`](XNetwork/Components/Pages/Home.razor:245-255) which use the same `GetSignalColor()` logic.
+
+2. **Inline Styles Required**: The component uses inline styles with `GetBarColorHex()` rather than Tailwind classes because CDN Tailwind's JIT compiler cannot reliably compile dynamic class strings like `bg-{color}`.
+
+3. **Zero vs One Bar**: The distinction between 0 bars (disconnected) and 1 bar (poor connection) is important:
+   - 0 bars = No active connection at all
+   - 1 red bar = Connection exists but quality is very poor
+
+### Testing Recommendations
+
+1. **Connection Status Verification**:
+   - Test dashboard with adapters in different states
+   - Verify signal bars display correctly for "Poor Connection"
+   - Confirm 1 red bar appears (not empty gray indicator)
+   - Test "Disconnected" shows 0 bars (all gray)
+
+2. **Color Accuracy**:
+   - Verify red color (#f87171) matches other red indicators in UI
+   - Confirm inactive bars remain gray (#334155) and visible
+   - Test color contrast is adequate on dark background
+
+3. **State Transitions**:
+   - Monitor signal bars while connection quality degrades
+   - Verify smooth transitions between states (e.g., Fair → Poor → Disconnected)
+   - Check bars update reactively when connection status changes
+
+4. **Cross-Browser**:
+   - Test in Chrome, Firefox, and Edge
+   - Verify inline styles render consistently
+   - Confirm colors display accurately across browsers
+
+### Related Issues
+- This completes the signal bar fix that was previously attempted with Tailwind classes
+- Earlier attempts used `GetBarColorClass()` which didn't work reliably with CDN Tailwind
+- Current implementation uses `GetBarColorHex()` with inline styles (see journal entry 2025-10-19 Code Mode - Critical UI Fixes)
+
+---
+
+## 2025-10-19 - Code Mode (Duplicate Chart Legends Fix)
+
+**Agent**: Claude Code (Sonnet 4.5)
+
+### Files Modified
+- [`XNetwork/wwwroot/js/statisticsCharts.js`](XNetwork/wwwroot/js/statisticsCharts.js:78-82)
+- [`XNetwork/Components/Custom/ChartCard.razor`](XNetwork/Components/Custom/ChartCard.razor:12)
+
+### Issue/Task
+Fixed duplicate chart legends on the Details & Statistics page. Charts were showing legends twice - one set above the chart (from ChartCard component) and another set below the chart (from Chart.js built-in legend).
+
+### Changes Made
+
+#### 1. Disabled Chart.js Built-in Legend (statisticsCharts.js)
+
+**Problem**: Chart.js was configured to display its own legend (`display: true`), which appeared below each chart in addition to the custom legend rendered by ChartCard.razor above each chart.
+
+**Fix** (Lines 78-82):
+Disabled the Chart.js built-in legend in the chart configuration:
+```javascript
+plugins: {
+    legend: {
+        display: false  // Disabled - using custom legend in ChartCard.razor
+    },
+```
+
+**Before**: 
+```javascript
+legend: {
+    display: true,
+    labels: {
+        color: '#f1f5f9',
+        font: { size: 12, family: 'Inter' }
+    }
+},
+```
+
+**After**:
+```javascript
+legend: {
+    display: false  // Disabled - using custom legend in ChartCard.razor
+},
+```
+
+**Result**: Each chart now displays only ONE legend - the custom legend from ChartCard.razor positioned above the chart.
+
+#### 2. Fixed Legend Text Color to White (ChartCard.razor)
+
+**Problem**: While fixing the duplicate legends, noticed the custom legend text did not have an explicit white color class.
+
+**Fix** (Line 12):
+Added `text-white` class to legend labels:
+```razor
+<span class="text-white">@item.Label</span>
+```
+
+**Before**:
+```razor
+<span>@item.Label</span>
+```
+
+**After**:
+```razor
+<span class="text-white">@item.Label</span>
+```
+
+**Result**: Legend text is now consistently white (#ffffff) for optimal readability on the dark background.
+
+### Build Results
+- **Status**: Not yet verified (pending build)
+- **Expected**: Build should succeed with no errors
+
+### Technical Notes
+
+#### Why Disable Chart.js Legend?
+1. **Custom Legend Already Exists**: ChartCard.razor component already renders a custom legend with proper styling and positioning above each chart
+2. **Cleaner Implementation**: Using only the custom legend provides better control over styling and layout
+3. **Consistency**: All charts now use the same legend implementation and positioning
+4. **Less Code**: Simpler Chart.js configuration without redundant legend styling
+
+#### Legend Architecture
+- **Custom Legend Location**: Above chart in ChartCard.razor (lines 5-16)
+- **Chart.js Legend**: Now disabled to prevent duplication
+- **Styling**: White text with colored dots, positioned in header section of ChartCard
+- **Data Source**: Both legends would show the same adapter information from `GetAdapterLegend()` in Statistics.razor
+
+### Important Notes
+
+1. **Single Source of Truth**: The ChartCard.razor custom legend is now the ONLY legend display
+2. **Positioning**: Custom legend appears in the card header above the chart canvas
+3. **Consistency**: All four charts (Download Speed, Upload Speed, Latency, Packet Loss) use identical legend styling
+4. **Readability**: White text color ensures legends are clearly visible on dark backgrounds
+
+### Testing Recommendations
+
+1. **Visual Verification**:
+   - Navigate to Details & Statistics page (/details)
+   - Verify each chart shows ONLY ONE legend (above the chart)
+   - Confirm NO legend appears below any chart
+   - Check that legend text is white and clearly readable
+
+2. **Legend Content**:
+   - Verify legend shows only active/connected adapters
+   - Confirm legend colors match the chart line colors
+   - Check adapter names display correctly in legend
+
+3. **All Charts**:
+   - Download Speed (Mbps) - check legend above chart
+   - Upload Speed (Mbps) - check legend above chart
+   - Latency (ms) - check legend above chart
+   - Packet Loss (%) - check legend above chart
+
+4. **Cross-Browser**:
+   - Test in Chrome, Firefox, and Edge
+   - Verify consistent legend behavior across browsers
+
+### Before vs After
+
+**Before**:
+- Two sets of legends per chart
+- One small legend above chart (custom)
+- One larger legend below chart (Chart.js)
+- Visual clutter and inconsistent sizing
+- Unclear text color
+
+**After**:
+- Single clean legend above each chart
+- Consistent white text color
+- Professional appearance
+- No visual duplication
+- Clear and readable
+
+### Related Issues
+- Previous attempts to fix legend styling (see 2025-10-19 entries) were addressing Chart.js legend colors
+- This fix properly resolves the root cause by disabling the duplicate Chart.js legend entirely
+- Custom legend in ChartCard.razor was already implemented correctly
+
+---
+
+# Agent Journal
 ## 2025-10-19 - Code Mode (Critical UI Fixes from Screenshots)
 
 **Agent**: Claude Code (Sonnet 4.5)

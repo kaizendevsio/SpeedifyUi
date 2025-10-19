@@ -77,14 +77,7 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 },
                 plugins: {
                     legend: {
-                        display: true,
-                        labels: {
-                            color: '#f1f5f9',  // Light slate color for readability
-                            font: {
-                                size: 12,
-                                family: 'Inter'
-                            }
-                        }
+                        display: false  // Disabled - using custom legend in ChartCard.razor
                     },
                     tooltip: {
                         mode: 'index',
