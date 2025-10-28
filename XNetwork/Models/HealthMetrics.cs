@@ -36,6 +36,18 @@ public class HealthMetrics
     public double LatencyStdDev { get; init; }
 
     /// <summary>
+    /// Jitter (latency variation) in milliseconds
+    /// Equivalent to LatencyStdDev for ping-based measurements
+    /// </summary>
+    public double Jitter { get; init; }
+
+    /// <summary>
+    /// Success rate as a percentage (0-100)
+    /// Percentage of successful pings in the measurement window
+    /// </summary>
+    public double SuccessRate { get; init; }
+
+    /// <summary>
     /// Stability score (0-1, higher is more stable)
     /// Based on coefficient of variation
     /// </summary>
@@ -63,7 +75,9 @@ public class HealthMetrics
         double latencyStdDev,
         double stabilityScore,
         int sampleCount,
-        ConnectionStatus status)
+        ConnectionStatus status,
+        double jitter = 0,
+        double successRate = 100)
     {
         AverageLatency = averageLatency;
         AveragePacketLoss = averagePacketLoss;
@@ -71,6 +85,8 @@ public class HealthMetrics
         MinLatency = minLatency;
         MaxLatency = maxLatency;
         LatencyStdDev = latencyStdDev;
+        Jitter = jitter > 0 ? jitter : latencyStdDev; // Use jitter if provided, otherwise use latencyStdDev
+        SuccessRate = successRate;
         StabilityScore = stabilityScore;
         SampleCount = sampleCount;
         Status = status;
