@@ -191,20 +191,22 @@ public class SpeedifyService
         return Task.Run(() => RunTerminatingCommand($"adapter priority {id} {priority}"), cancellationToken);
     }
 
-    public Task RestartAsync(CancellationToken cancellationToken = default)
+    public async Task ReconnectAsync(CancellationToken cancellationToken = default)
     {
-        return Task.Run(() => RunTerminatingCommand("restart"), cancellationToken);
+        // Execute disconnect, wait briefly, then connect
+        await Task.Run(() => RunTerminatingCommand("disconnect"), cancellationToken).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+        await Task.Run(() => RunTerminatingCommand("connect"), cancellationToken).ConfigureAwait(false);
     }
 
     public Task StopAsync(CancellationToken cancellationToken = default)
     {
-        return Task.Run(() => RunTerminatingCommand("stop"), cancellationToken);
+        return Task.Run(() => RunTerminatingCommand("disconnect"), cancellationToken);
     }
 
-    // 'start' might daemonize; ensure RunTerminatingCommand handles this or use a fire-and-forget approach
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
-        return Task.Run(() => RunTerminatingCommand("start"), cancellationToken);
+        return Task.Run(() => RunTerminatingCommand("connect"), cancellationToken);
     }
 
 

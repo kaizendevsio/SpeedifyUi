@@ -27,7 +27,7 @@ else
     <div class="flex flex-wrap gap-3">
         <ActionButton Text="Stop Tunnel"     Css="bg-red-600"    OnClick="@(()=>Do(()=>SpeedifyService.StopAsync()))" />
         <ActionButton Text="Start Tunnel"    Css="bg-blue-600"   OnClick="@(()=>Do(()=>SpeedifyService.StartAsync()))" />
-        <ActionButton Text="Restart Tunnel"  Css="bg-amber-500"  OnClick="@(()=>Do(()=>SpeedifyService.RestartAsync()))" />
+        <ActionButton Text="Restart Tunnel"  Css="bg-amber-500"  OnClick="@(()=>Do(()=>SpeedifyService.ReconnectAsync()))" />
         <ActionButton Text="Set Redundant"   Css="bg-gray-800"   OnClick="@(()=>Do(()=>SpeedifyService.SetModeAsync("redundant")))" />
         <ActionButton Text="Set Speed Mode"  Css="bg-gray-800"   OnClick="@(()=>Do(()=>SpeedifyService.SetModeAsync("speed")))" />
     </div>

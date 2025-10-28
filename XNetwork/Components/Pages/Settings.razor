@@ -503,14 +503,8 @@
 
         try
         {
-            // First disconnect
-            await SpeedifyService.StopAsync();
-            Console.WriteLine("Settings: Disconnected all connections, waiting 2 seconds...");
-            await Task.Delay(2000);
-            
-            // Then reconnect
-            await SpeedifyService.StartAsync();
-            Console.WriteLine("Settings: Reconnection initiated.");
+            await SpeedifyService.ReconnectAsync();
+            Console.WriteLine("Settings: Reconnection completed.");
             await Task.Delay(1000);
         }
         catch (SpeedifyException ex)
@@ -536,16 +530,58 @@
 
         try
         {
-            await SpeedifyService.RestartAsync();
-            await Task.Delay(2000);
-        }
-        catch (SpeedifyException ex)
-        {
-            _error = $"Failed to restart service: {ex.Message}";
+            Console.WriteLine("Settings: Restarting Speedify service/daemon...");
+            
+            var startInfo = new System.Diagnostics.ProcessStartInfo();
+            
+            if (OperatingSystem.IsWindows())
+            {
+                // Windows: Restart the Speedify service
+                startInfo.FileName = "net";
+                startInfo.Arguments = "stop \"Speedify Service\" && net start \"Speedify Service\"";
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+                startInfo.RedirectStandardOutput = true;
+                startInfo.RedirectStandardError = true;
+            }
+            else if (OperatingSystem.IsLinux())
+            {
+                // Linux: Restart Speedify using systemctl or service command
+                startInfo.FileName = "/bin/bash";
+                startInfo.Arguments = "-c \"sudo systemctl restart speedify || sudo service speedify restart\"";
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+                startInfo.RedirectStandardOutput = true;
+                startInfo.RedirectStandardError = true;
+            }
+            else
+            {
+                throw new PlatformNotSupportedException("Speedify service restart is only supported on Windows and Linux.");
+            }
+
+            using var process = System.Diagnostics.Process.Start(startInfo);
+            if (process != null)
+            {
+                await process.WaitForExitAsync();
+                
+                var output = await process.StandardOutput.ReadToEndAsync();
+                var error = await process.StandardError.ReadToEndAsync();
+                
+                if (process.ExitCode != 0)
+                {
+                    throw new Exception($"Service restart failed with exit code {process.ExitCode}. Error: {error}");
+                }
+                
+                Console.WriteLine($"Settings: Speedify service restart completed. Output: {output}");
+            }
+            
+            // Wait for service to be ready
+            await Task.Delay(3000);
         }
         catch (Exception ex)
         {
-            _error = $"An unexpected error occurred: {ex.Message}";
+            _error = $"Failed to restart service: {ex.Message}";
+            Console.WriteLine($"Settings: Error restarting Speedify service: {ex.Message}");
         }
         finally
         {
