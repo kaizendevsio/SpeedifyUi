@@ -213,9 +213,124 @@ public class SpeedifyService
         return Task.Run(() => RunTerminatingCommand($"mode {mode}"), cancellationToken);
     }
 
-    public async Task<Settings> GetSettingsAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> SetEncryptionAsync(bool enabled, CancellationToken cancellationToken = default)
     {
-        throw new AbandonedMutexException();
+        try
+        {
+            var command = enabled ? "encryption on" : "encryption off";
+            await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting encryption: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error setting encryption: {ex.Message}");
+            return false;
+        }
+    }
+
+    public async Task<bool> SetHeaderCompressionAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var command = enabled ? "headercompression on" : "headercompression off";
+            await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting header compression: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error setting header compression: {ex.Message}");
+            return false;
+        }
+    }
+
+    public async Task<bool> SetPacketAggregationAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var command = enabled ? "packetaggr on" : "packetaggr off";
+            await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting packet aggregation: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error setting packet aggregation: {ex.Message}");
+            return false;
+        }
+    }
+
+    public async Task<bool> SetJumboPacketsAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var command = enabled ? "jumbo on" : "jumbo off";
+            await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting jumbo packets: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error setting jumbo packets: {ex.Message}");
+            return false;
+        }
+    }
+
+    public async Task<ServerInfo?> GetCurrentServerAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand("show currentserver"), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Deserialize<ServerInfo>(jsonOutput, _jsonOptions);
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting current server: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error getting current server: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<SpeedifySettings?> GetSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand("show settings"), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Deserialize<SpeedifySettings>(jsonOutput, _jsonOptions);
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting settings: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error getting settings: {ex.Message}");
+            return null;
+        }
     }
 
     public async IAsyncEnumerable<ConnectionItem> GetStatsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -273,6 +388,72 @@ public class SpeedifyService
                     }
                 }
             }
+        }
+    }
+
+    public async Task<SpeedTestResult?> RunSpeedTestAsync(string? adapterId = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var command = string.IsNullOrEmpty(adapterId) ? "speedtest" : $"speedtest {adapterId}";
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand(command), cancellationToken)
+                .ConfigureAwait(false);
+            
+            var results = JsonSerializer.Deserialize<List<SpeedTestResult>>(jsonOutput, _jsonOptions);
+            return results?.FirstOrDefault();
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error running speed test: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error running speed test: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<SpeedTestResult?> RunStreamTestAsync(string? adapterId = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var command = string.IsNullOrEmpty(adapterId) ? "streamtest" : $"streamtest {adapterId}";
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand(command), cancellationToken)
+                .ConfigureAwait(false);
+            
+            var results = JsonSerializer.Deserialize<List<SpeedTestResult>>(jsonOutput, _jsonOptions);
+            return results?.FirstOrDefault();
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error running stream test: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error running stream test: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<List<SpeedTestResult>?> GetSpeedTestHistoryAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand("show speedtest"), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Deserialize<List<SpeedTestResult>>(jsonOutput, _jsonOptions);
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting speed test history: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error getting speed test history: {ex.Message}");
+            return null;
         }
     }
 

@@ -59,7 +59,41 @@
                 </div>
             </div>
 
-            <!-- Section 2: Connection Controls -->
+            <!-- Section 2: Connection Settings -->
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Settings</h3>
+                <div class="space-y-4">
+                    <!-- Encryption Toggle -->
+                    <ToggleSwitch
+                        Id="encryption-enabled"
+                        Label="Enable VPN tunnel encryption"
+                        IsEnabled="_connectionSettings.Encrypted"
+                        OnToggle="HandleEncryptionToggle" />
+
+                    <!-- Header Compression Toggle -->
+                    <ToggleSwitch
+                        Id="header-compression"
+                        Label="Compress packet headers to reduce bandwidth"
+                        IsEnabled="_connectionSettings.HeaderCompression"
+                        OnToggle="HandleHeaderCompressionToggle" />
+
+                    <!-- Packet Aggregation Toggle -->
+                    <ToggleSwitch
+                        Id="packet-aggregation"
+                        Label="Combine small packets for better efficiency"
+                        IsEnabled="_connectionSettings.PacketAggregation"
+                        OnToggle="HandlePacketAggregationToggle" />
+
+                    <!-- Jumbo Packets Toggle -->
+                    <ToggleSwitch
+                        Id="jumbo-packets"
+                        Label="Allow larger MTU packets for better throughput"
+                        IsEnabled="_connectionSettings.JumboPackets"
+                        OnToggle="HandleJumboPacketsToggle" />
+                </div>
+            </div>
+
+            <!-- Section 3: Connection Controls -->
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
                 <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Controls</h3>
                 <div class="space-y-3">
@@ -149,6 +183,7 @@
 @code {
     private NetworkMonitorSettings _monitorSettings = new();
     private string _whitelistedLinksInput = "";
+    private SpeedifySettings _connectionSettings = new();
     private string? _error;
     private bool _isLoading = true;
     private bool _isProcessing = false;
@@ -180,6 +215,13 @@
 
             // Convert whitelisted links to comma-separated string
             _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks);
+
+            // Load connection settings from Speedify
+            var speedifySettings = await SpeedifyService.GetSettingsAsync();
+            if (speedifySettings != null)
+            {
+                _connectionSettings = speedifySettings;
+            }
         }
         catch (Exception ex)
         {
@@ -196,6 +238,130 @@
     {
         _monitorSettings.Enabled = enabled;
         await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleEncryptionToggle(bool enabled)
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetEncryptionAsync(enabled);
+            if (success)
+            {
+                _connectionSettings.Encrypted = enabled;
+                Console.WriteLine($"Settings: Encryption set to {enabled}");
+            }
+            else
+            {
+                _error = "Failed to update encryption setting";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error updating encryption: {ex.Message}";
+            Console.WriteLine($"Settings: Error updating encryption: {ex.Message}");
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleHeaderCompressionToggle(bool enabled)
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetHeaderCompressionAsync(enabled);
+            if (success)
+            {
+                _connectionSettings.HeaderCompression = enabled;
+                Console.WriteLine($"Settings: Header compression set to {enabled}");
+            }
+            else
+            {
+                _error = "Failed to update header compression setting";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error updating header compression: {ex.Message}";
+            Console.WriteLine($"Settings: Error updating header compression: {ex.Message}");
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandlePacketAggregationToggle(bool enabled)
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetPacketAggregationAsync(enabled);
+            if (success)
+            {
+                _connectionSettings.PacketAggregation = enabled;
+                Console.WriteLine($"Settings: Packet aggregation set to {enabled}");
+            }
+            else
+            {
+                _error = "Failed to update packet aggregation setting";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error updating packet aggregation: {ex.Message}";
+            Console.WriteLine($"Settings: Error updating packet aggregation: {ex.Message}");
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleJumboPacketsToggle(bool enabled)
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetJumboPacketsAsync(enabled);
+            if (success)
+            {
+                _connectionSettings.JumboPackets = enabled;
+                Console.WriteLine($"Settings: Jumbo packets set to {enabled}");
+            }
+            else
+            {
+                _error = "Failed to update jumbo packets setting";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error updating jumbo packets: {ex.Message}";
+            Console.WriteLine($"Settings: Error updating jumbo packets: {ex.Message}");
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task SaveSettings()

@@ -17,9 +17,11 @@ else
 {
     <div class="bg-white shadow rounded p-4 mb-6">
         <h3 class="font-semibold mb-2">Current Settings</h3>
-        <p class="text-sm">Mode: <span class="font-medium">@settings.Mode</span></p>
-        <p class="text-sm">Auto-start: @Bool(settings.AutoStart)</p>
+        <p class="text-sm">Mode: <span class="font-medium">@settings.BondingMode</span></p>
         <p class="text-sm">Encrypted: @Bool(settings.Encrypted)</p>
+        <p class="text-sm">Header Compression: @Bool(settings.HeaderCompression)</p>
+        <p class="text-sm">Packet Aggregation: @Bool(settings.PacketAggregation)</p>
+        <p class="text-sm">Jumbo Packets: @Bool(settings.JumboPackets)</p>
     </div>
 
     <div class="flex flex-wrap gap-3">
@@ -32,7 +34,7 @@ else
 }
 
 @code{
-    XNetwork.Services.Settings? settings;
+    XNetwork.Models.SpeedifySettings? settings;
     string? error;
 
     string Bool(bool v)=>v?"✔":"✖";
