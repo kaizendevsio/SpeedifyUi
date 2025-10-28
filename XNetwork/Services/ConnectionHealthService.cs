@@ -182,12 +182,20 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
     {
         try
         {
-            var reply = await _ping.SendPingAsync(
-                PING_TARGET,
-                PING_TIMEOUT_MS,
-                buffer: new byte[32], // Standard 32-byte buffer
-                options: new PingOptions(ttl: 128, dontFragment: true)
-            );
+            PingReply reply;
+            
+            // Linux doesn't support custom ping parameters (uses /bin/ping utility)
+            if (OperatingSystem.IsLinux())
+            {
+                reply = await _ping.SendPingAsync(PING_TARGET, PING_TIMEOUT_MS);
+            }
+            else
+            {
+                // Windows supports custom buffer and options
+                var buffer = new byte[32];
+                var options = new PingOptions(ttl: 128, dontFragment: true);
+                reply = await _ping.SendPingAsync(PING_TARGET, PING_TIMEOUT_MS, buffer, options);
+            }
 
             if (reply.Status == IPStatus.Success)
             {
