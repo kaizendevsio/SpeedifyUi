@@ -175,7 +175,7 @@ public class NetworkMonitorService : BackgroundService
             
             if (process.ExitCode != 0)
             {
-                _logger.LogError("Command failed with exit code {ExitCode}: {Error}", 
+                _logger.LogError("Command failed with exit code {ExitCode}: {Error}",
                     process.ExitCode, error);
                 return false;
             }
@@ -190,6 +190,136 @@ public class NetworkMonitorService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error running command: {Command}", command);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Set a specific adapter as the primary default route for bypass mode.
+    /// This makes the specified adapter the preferred route when Speedify is disconnected.
+    /// </summary>
+    /// <param name="adapterId">The adapter ID (interface name) to use for routing</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>True if successful, false otherwise</returns>
+    public async Task<bool> SetPrimaryRouteAsync(string adapterId, CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            _logger.LogWarning("SetPrimaryRouteAsync is only supported on Linux");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(adapterId))
+        {
+            _logger.LogError("Adapter ID cannot be null or empty");
+            return false;
+        }
+
+        try
+        {
+            _logger.LogInformation("Setting primary route for adapter {AdapterId}", adapterId);
+
+            // Get the gateway for the specified interface
+            var getGatewayCommand = $"sudo ip route show dev {adapterId} | grep default | awk '{{print $3}}'";
+            var processInfo = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                Arguments = $"-c \"{getGatewayCommand}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var getProcess = new Process { StartInfo = processInfo };
+            getProcess.Start();
+            
+            var gateway = (await getProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            var getError = await getProcess.StandardError.ReadToEndAsync(cancellationToken);
+            
+            await getProcess.WaitForExitAsync(cancellationToken);
+
+            // If no gateway found for this interface, try getting it from the routing table
+            if (string.IsNullOrWhiteSpace(gateway))
+            {
+                var altCommand = $"sudo ip route | grep 'dev {adapterId}' | grep -v 'linkdown' | head -n1 | awk '{{print $3}}'";
+                processInfo.Arguments = $"-c \"{altCommand}\"";
+                
+                using var altProcess = new Process { StartInfo = processInfo };
+                altProcess.Start();
+                
+                gateway = (await altProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+                await altProcess.WaitForExitAsync(cancellationToken);
+            }
+
+            if (string.IsNullOrWhiteSpace(gateway))
+            {
+                _logger.LogError("Could not determine gateway for adapter {AdapterId}", adapterId);
+                return false;
+            }
+
+            _logger.LogDebug("Gateway for {AdapterId}: {Gateway}", adapterId, gateway);
+
+            // Remove any existing low-metric default routes
+            var removeCommand = $"sudo ip route del default metric 50 2>/dev/null || true";
+            await RunCommand(removeCommand, cancellationToken);
+
+            // Add new default route with low metric (high priority) for the specified adapter
+            var addCommand = $"sudo ip route add default via {gateway} dev {adapterId} metric 50";
+            var success = await RunCommand(addCommand, cancellationToken);
+
+            if (success)
+            {
+                _logger.LogInformation("Successfully set primary route for adapter {AdapterId} via gateway {Gateway}",
+                    adapterId, gateway);
+            }
+            else
+            {
+                _logger.LogError("Failed to set primary route for adapter {AdapterId}", adapterId);
+            }
+
+            return success;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error setting primary route for adapter {AdapterId}", adapterId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Restore default OS routing by removing manual route priorities.
+    /// This allows the system's network manager to handle routing automatically.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>True if successful, false otherwise</returns>
+    public async Task<bool> RestoreDefaultRoutingAsync(CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            _logger.LogWarning("RestoreDefaultRoutingAsync is only supported on Linux");
+            return false;
+        }
+
+        try
+        {
+            _logger.LogInformation("Restoring default routing");
+
+            // Remove any manually-added low-metric default routes
+            var removeCommand = $"sudo ip route del default metric 50 2>/dev/null || true";
+            await RunCommand(removeCommand, cancellationToken);
+
+            // Optionally restart NetworkManager to fully restore automatic routing
+            // This is commented out as it's more disruptive, but can be uncommented if needed
+            // var restartCommand = "sudo systemctl restart NetworkManager 2>/dev/null || sudo service network-manager restart 2>/dev/null || true";
+            // await RunCommand(restartCommand, cancellationToken);
+
+            _logger.LogInformation("Default routing restored");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error restoring default routing");
             return false;
         }
     }

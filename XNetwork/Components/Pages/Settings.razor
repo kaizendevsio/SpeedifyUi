@@ -3,6 +3,7 @@
 @using XNetwork.Models
 @using XNetwork.Components.Custom
 @inject SpeedifyService SpeedifyService
+@inject NetworkMonitorService NetworkMonitorService
 @inject IConfiguration Configuration
 
 <PageTitle>Settings - X Network</PageTitle>
@@ -123,6 +124,34 @@
                         IsEnabled="_bypassModeEnabled"
                         OnToggle="HandleBypassModeToggle" />
                     <p class="text-xs text-slate-400 mt-1">When enabled, Speedify disconnects and you use networks directly without VPN.</p>
+                    
+                    @if (_bypassModeEnabled && OperatingSystem.IsLinux())
+                    {
+                        <div class="mt-4 pl-4 border-l-2 border-blue-500">
+                            <label for="bypass-adapter" class="block mb-2 font-medium text-white">Network Adapter:</label>
+                            <select id="bypass-adapter"
+                                    @bind="_selectedBypassAdapter"
+                                    @bind:after="OnBypassAdapterChanged"
+                                    disabled="@_isProcessing"
+                                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                <option value="">Automatic (OS Default)</option>
+                                @foreach (var adapter in _adapters)
+                                {
+                                    <option value="@adapter.AdapterId">@adapter.Name - @adapter.Type</option>
+                                }
+                            </select>
+                            <p class="text-xs text-slate-400 mt-1">Select which adapter to route traffic through when Speedify is disconnected.</p>
+                        </div>
+                    }
+                    else if (_bypassModeEnabled && !OperatingSystem.IsLinux())
+                    {
+                        <div class="mt-4 pl-4 border-l-2 border-yellow-500">
+                            <p class="text-xs text-yellow-400">
+                                <i class="fas fa-info-circle mr-1"></i>
+                                Network adapter selection is only available on Linux.
+                            </p>
+                        </div>
+                    }
                 </div>
             </div>
 
@@ -226,6 +255,8 @@
 
     // Bypass mode state
     private bool _bypassModeEnabled = false;
+    private string _selectedBypassAdapter = "";
+    private List<Adapter> _adapters = new();
 
     // Modal visibility state
     private bool _showDisconnectModal = false;
@@ -254,6 +285,18 @@
 
             // Convert whitelisted links to comma-separated string
             _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks);
+
+            // Load adapters for bypass mode dropdown
+            try
+            {
+                var adapters = await SpeedifyService.GetAdaptersAsync();
+                _adapters = adapters.ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Settings: Error loading adapters: {ex.Message}");
+                _adapters = new List<Adapter>();
+            }
 
             // Load connection settings from Speedify
             var speedifySettings = await SpeedifyService.GetSettingsAsync();
@@ -479,7 +522,14 @@
             }
             else
             {
-                // Bypass mode OFF = Connect Speedify
+                // Bypass mode OFF = Restore default routing and reconnect Speedify
+                if (OperatingSystem.IsLinux())
+                {
+                    await NetworkMonitorService.RestoreDefaultRoutingAsync();
+                    Console.WriteLine("Settings: Default routing restored");
+                }
+                
+                _selectedBypassAdapter = "";
                 await SpeedifyService.StartAsync();
                 _bypassModeEnabled = false;
                 Console.WriteLine("Settings: Speedify connected (bypass mode disabled)");
@@ -498,6 +548,58 @@
             _error = $"An unexpected error occurred: {ex.Message}";
             // Revert state
             _bypassModeEnabled = !enabled;
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task OnBypassAdapterChanged()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return; // Adapter selection only works on Linux
+        }
+
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            if (string.IsNullOrEmpty(_selectedBypassAdapter))
+            {
+                // Automatic mode - restore default routing
+                var success = await NetworkMonitorService.RestoreDefaultRoutingAsync();
+                if (success)
+                {
+                    Console.WriteLine("Settings: Restored automatic routing");
+                }
+                else
+                {
+                    _error = "Failed to restore automatic routing";
+                }
+            }
+            else
+            {
+                // Set specific adapter as primary route
+                var success = await NetworkMonitorService.SetPrimaryRouteAsync(_selectedBypassAdapter);
+                if (success)
+                {
+                    Console.WriteLine($"Settings: Set {_selectedBypassAdapter} as primary route");
+                }
+                else
+                {
+                    _error = $"Failed to set {_selectedBypassAdapter} as primary route. Check that the adapter is active and has a valid gateway.";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error changing network adapter: {ex.Message}";
+            Console.WriteLine($"Settings: Error changing bypass adapter: {ex.Message}");
         }
         finally
         {
