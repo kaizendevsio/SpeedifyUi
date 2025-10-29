@@ -295,6 +295,32 @@ public class SpeedifyService
         }
     }
 
+    public async Task<SpeedifySettings?> SetBondingModeAsync(string mode, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Validate mode
+            if (mode != "speed" && mode != "redundant" && mode != "streaming")
+            {
+                throw new ArgumentException($"Invalid bonding mode: {mode}. Valid modes are: speed, redundant, streaming");
+            }
+            
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand($"mode {mode}"), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Deserialize<SpeedifySettings>(jsonOutput, _jsonOptions);
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting bonding mode: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error setting bonding mode: {ex.Message}");
+            return null;
+        }
+    }
+
     public async Task<ServerInfo?> GetCurrentServerAsync(CancellationToken cancellationToken = default)
     {
         try

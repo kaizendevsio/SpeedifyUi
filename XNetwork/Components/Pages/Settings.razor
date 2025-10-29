@@ -93,7 +93,40 @@
                 </div>
             </div>
 
-            <!-- Section 3: Connection Controls -->
+            <!-- Section 3: Bonding Mode -->
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Bonding Mode</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label for="bonding-mode" class="block mb-2 font-medium text-white">Connection Mode</label>
+                        <select id="bonding-mode"
+                                @bind="_selectedBondingMode"
+                                @bind:after="HandleBondingModeChange"
+                                disabled="@_isProcessing"
+                                class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                            <option value="speed">Speed Mode - Maximum speed using all connections</option>
+                            <option value="redundant">Redundant Mode - Maximum reliability with duplicate packets</option>
+                            <option value="streaming">Streaming Mode - Optimized for live streaming</option>
+                        </select>
+                        <p class="text-xs text-slate-400 mt-1">Choose how Speedify uses multiple connections.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 4: Bypass Mode -->
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
+                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Bypass Mode</h3>
+                <div class="space-y-4">
+                    <ToggleSwitch
+                        Id="bypass-mode"
+                        Label="Direct Network Access (Disconnect Speedify)"
+                        IsEnabled="_bypassModeEnabled"
+                        OnToggle="HandleBypassModeToggle" />
+                    <p class="text-xs text-slate-400 mt-1">When enabled, Speedify disconnects and you use networks directly without VPN.</p>
+                </div>
+            </div>
+
+            <!-- Section 5: Connection Controls -->
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
                 <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Controls</h3>
                 <div class="space-y-3">
@@ -188,6 +221,12 @@
     private bool _isLoading = true;
     private bool _isProcessing = false;
 
+    // Bonding mode state
+    private string _selectedBondingMode = "speed";
+
+    // Bypass mode state
+    private bool _bypassModeEnabled = false;
+
     // Modal visibility state
     private bool _showDisconnectModal = false;
     private bool _showReconnectModal = false;
@@ -221,6 +260,30 @@
             if (speedifySettings != null)
             {
                 _connectionSettings = speedifySettings;
+                _selectedBondingMode = speedifySettings.BondingMode ?? "speed";
+            }
+
+            // Check if Speedify is connected for bypass mode state
+            try
+            {
+                var state = await Task.Run(() =>
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "speedify_cli",
+                        Arguments = "state",
+                        RedirectStandardOutput = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    })?.StandardOutput.ReadToEnd() ?? "{}")
+                    .ConfigureAwait(false);
+                
+                // Bypass mode is enabled when state is NOT "CONNECTED"
+                _bypassModeEnabled = !state.Contains("\"CONNECTED\"");
+            }
+            catch
+            {
+                // Default to false if we can't determine state
+                _bypassModeEnabled = false;
             }
         }
         catch (Exception ex)
@@ -356,6 +419,85 @@
         {
             _error = $"Error updating jumbo packets: {ex.Message}";
             Console.WriteLine($"Settings: Error updating jumbo packets: {ex.Message}");
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleBondingModeChange()
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var updatedSettings = await SpeedifyService.SetBondingModeAsync(_selectedBondingMode);
+            if (updatedSettings != null)
+            {
+                _connectionSettings.BondingMode = updatedSettings.BondingMode;
+                Console.WriteLine($"Settings: Bonding mode set to {_selectedBondingMode}");
+            }
+            else
+            {
+                _error = "Failed to update bonding mode";
+                // Revert to previous value
+                _selectedBondingMode = _connectionSettings.BondingMode ?? "speed";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error updating bonding mode: {ex.Message}";
+            Console.WriteLine($"Settings: Error updating bonding mode: {ex.Message}");
+            // Revert to previous value
+            _selectedBondingMode = _connectionSettings.BondingMode ?? "speed";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleBypassModeToggle(bool enabled)
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            if (enabled)
+            {
+                // Bypass mode ON = Disconnect Speedify
+                await SpeedifyService.StopAsync();
+                _bypassModeEnabled = true;
+                Console.WriteLine("Settings: Speedify disconnected (bypass mode enabled)");
+            }
+            else
+            {
+                // Bypass mode OFF = Connect Speedify
+                await SpeedifyService.StartAsync();
+                _bypassModeEnabled = false;
+                Console.WriteLine("Settings: Speedify connected (bypass mode disabled)");
+            }
+            
+            await Task.Delay(1000); // Give time for state to update
+        }
+        catch (SpeedifyException ex)
+        {
+            _error = $"Failed to toggle bypass mode: {ex.Message}";
+            // Revert state
+            _bypassModeEnabled = !enabled;
+        }
+        catch (Exception ex)
+        {
+            _error = $"An unexpected error occurred: {ex.Message}";
+            // Revert state
+            _bypassModeEnabled = !enabled;
         }
         finally
         {
