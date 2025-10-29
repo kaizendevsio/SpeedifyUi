@@ -546,10 +546,10 @@
             }
             else if (OperatingSystem.IsLinux())
             {
-                // Linux: Restart Speedify using systemctl or service command (without sudo)
-                // The application must be run with sufficient permissions
+                // Linux: Restart Speedify using systemctl or service command with sudo
+                // Requires passwordless sudo configuration (see LINUX_SETUP.md)
                 startInfo.FileName = "/bin/bash";
-                startInfo.Arguments = "-c \"systemctl restart speedify 2>/dev/null || service speedify restart\"";
+                startInfo.Arguments = "-c \"sudo systemctl restart speedify 2>/dev/null || sudo service speedify restart\"";
                 startInfo.UseShellExecute = false;
                 startInfo.CreateNoWindow = true;
                 startInfo.RedirectStandardOutput = true;
@@ -579,13 +579,16 @@
                     if (permissionError && OperatingSystem.IsLinux())
                     {
                         throw new Exception(
-                            $"Permission denied. The application does not have sufficient permissions to restart the Speedify service.\n\n" +
-                            $"To fix this issue, you have two options:\n\n" +
-                            $"Option 1 (Recommended): Configure passwordless sudo for specific commands\n" +
-                            $"  • See LINUX_SETUP.md in the project root for detailed instructions\n" +
-                            $"  • This allows the app to restart services without entering a password\n\n" +
-                            $"Option 2: Run the application as root (less secure)\n" +
-                            $"  • sudo dotnet run --project XNetwork\n\n" +
+                            $"Permission denied. Passwordless sudo is not configured correctly.\n\n" +
+                            $"To fix this issue:\n\n" +
+                            $"1. Verify passwordless sudo configuration:\n" +
+                            $"   • Run: sudo -l\n" +
+                            $"   • Should show: (ALL) NOPASSWD: /bin/systemctl restart speedify\n" +
+                            $"   • See LINUX_SETUP.md for complete setup instructions\n\n" +
+                            $"2. If not configured, set up passwordless sudo:\n" +
+                            $"   • sudo visudo -f /etc/sudoers.d/xnetwork-web\n" +
+                            $"   • Add required NOPASSWD entries (see LINUX_SETUP.md)\n\n" +
+                            $"3. Ensure you're running as the configured user\n\n" +
                             $"Exit code: {process.ExitCode}\n" +
                             $"Error details: {error}");
                     }
@@ -630,9 +633,10 @@
             }
             else if (OperatingSystem.IsLinux())
             {
-                // Linux: Reboot without sudo (application must have sufficient permissions)
-                startInfo.FileName = "/sbin/reboot";
-                startInfo.Arguments = "";
+                // Linux: Reboot using sudo
+                // Requires passwordless sudo configuration (see LINUX_SETUP.md)
+                startInfo.FileName = "/usr/bin/sudo";
+                startInfo.Arguments = "/sbin/reboot";
             }
             else
             {
@@ -663,13 +667,16 @@
                     if (permissionError && OperatingSystem.IsLinux())
                     {
                         throw new Exception(
-                            $"Permission denied. The application does not have sufficient permissions to reboot the server.\n\n" +
-                            $"To fix this issue, you have two options:\n\n" +
-                            $"Option 1 (Recommended): Configure passwordless sudo for specific commands\n" +
-                            $"  • See LINUX_SETUP.md in the project root for detailed instructions\n" +
-                            $"  • This allows the app to reboot the server without entering a password\n\n" +
-                            $"Option 2: Run the application as root (less secure)\n" +
-                            $"  • sudo dotnet run --project XNetwork\n\n" +
+                            $"Permission denied. Passwordless sudo is not configured correctly.\n\n" +
+                            $"To fix this issue:\n\n" +
+                            $"1. Verify passwordless sudo configuration:\n" +
+                            $"   • Run: sudo -l\n" +
+                            $"   • Should show: (ALL) NOPASSWD: /sbin/reboot\n" +
+                            $"   • See LINUX_SETUP.md for complete setup instructions\n\n" +
+                            $"2. If not configured, set up passwordless sudo:\n" +
+                            $"   • sudo visudo -f /etc/sudoers.d/xnetwork-web\n" +
+                            $"   • Add required NOPASSWD entries (see LINUX_SETUP.md)\n\n" +
+                            $"3. Ensure you're running as the configured user\n\n" +
                             $"Exit code: {process.ExitCode}\n" +
                             $"Error details: {error}");
                     }
