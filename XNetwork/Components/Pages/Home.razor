@@ -154,10 +154,10 @@
                                 <a href="http://@gateway"
                                    target="_blank"
                                    rel="noopener noreferrer"
-                                   class="w-11 h-11 flex items-center justify-center rounded-lg bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 hover:text-white transition-colors border border-slate-600/50 hover:border-slate-500"
+                                   class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 hover:text-white transition-colors border border-slate-600/50 hover:border-slate-500"
                                    title="Open Router Admin (@gateway)"
                                    @onclick:stopPropagation="true">
-                                    <i class="fas fa-cog text-lg"></i>
+                                    <span class="text-base">↗</span>
                                 </a>
                             }
                             <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full">
@@ -211,19 +211,15 @@
     private bool _isProcessingAction = false;
     private bool _serverInfoLoading = true;
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    protected override async Task OnInitializedAsync()
     {
-        Console.WriteLine("Home: OnAfterRenderAsync");
-        await base.OnAfterRenderAsync(firstRender);
-
-        if (firstRender)
-        {
-            _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
-            _serverInfoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadServerInfoAsync), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
-            await InvokeAsync(LoadAdaptersAndSettingsAsync);
-            await InvokeAsync(LoadServerInfoAsync);
-            await StreamSpeedifyDataAsync();
-        }
+        await base.OnInitializedAsync();
+        
+        _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+        _serverInfoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadServerInfoAsync), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        await LoadAdaptersAndSettingsAsync();
+        await LoadServerInfoAsync();
+        await StreamSpeedifyDataAsync();
     }
 
     private string GetAdapterDisplayName(string adapterId)
@@ -234,45 +230,29 @@
 
     private async Task LoadAdaptersAndSettingsAsync()
     {
-        Console.WriteLine("Home: LoadAdaptersAndSettingsAsync - START");
         _adapters = await SpeedifyService.GetAdaptersAsync();
-        Console.WriteLine($"Home: Loaded {_adapters?.Count ?? 0} adapters");
         
         // Load gateway IPs for all adapters (Linux only)
         if (OperatingSystem.IsLinux() && _adapters != null)
         {
-            Console.WriteLine($"Home: Running on Linux, loading gateways for {_adapters.Count} adapters");
             foreach (var adapter in _adapters)
             {
-                Console.WriteLine($"Home: Checking gateway for adapter {adapter.AdapterId} ({adapter.Name})");
                 if (!_gatewayCache.ContainsKey(adapter.AdapterId))
                 {
                     try
                     {
                         var gateway = await NetworkMonitorService.GetGatewayAsync(adapter.AdapterId);
                         _gatewayCache[adapter.AdapterId] = gateway;
-                        Console.WriteLine($"Home: Gateway for {adapter.AdapterId}: {gateway ?? "null"}");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Home: Error getting gateway for {adapter.AdapterId}: {ex.Message}");
                         _gatewayCache[adapter.AdapterId] = null;
                     }
                 }
-                else
-                {
-                    Console.WriteLine($"Home: Gateway for {adapter.AdapterId} already cached: {_gatewayCache[adapter.AdapterId] ?? "null"}");
-                }
             }
-            Console.WriteLine($"Home: Total gateways in cache: {_gatewayCache.Count}");
-        }
-        else
-        {
-            Console.WriteLine($"Home: Not loading gateways - IsLinux: {OperatingSystem.IsLinux()}, Adapters: {_adapters?.Count ?? 0}");
         }
         
         await InvokeAsync(StateHasChanged);
-        Console.WriteLine("Home: LoadAdaptersAndSettingsAsync - COMPLETE");
     }
     
     private async Task LoadServerInfoAsync()
@@ -285,16 +265,14 @@
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Home: Error loading server info: {ex.Message}");
             _serverInfoLoading = false;
         }
     }
     
     private async Task StreamSpeedifyDataAsync()
     {
-        if (_isProcessingAction && _initialLoadComplete) return; 
+        if (_isProcessingAction && _initialLoadComplete) return;
 
-        Console.WriteLine("Home: StreamDataAsync called");
         _statsCts = new CancellationTokenSource();
         try
         {
@@ -304,22 +282,20 @@
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
                 
-                await InvokeAsync(StateHasChanged); 
+                await InvokeAsync(StateHasChanged);
             }
         }
         catch (SpeedifyException ex)
         {
             _error = ex.Message;
-            Console.WriteLine($"Home: SpeedifyException: {ex.Message}");
         }
         catch (Exception ex)
         {
             _error = $"An unexpected error occurred: {ex.Message}";
-            Console.WriteLine($"Home: Generic Exception: {ex.Message}");
         }
         finally
         {
-            if (!_initialLoadComplete) _initialLoadComplete = true; 
+            if (!_initialLoadComplete) _initialLoadComplete = true;
         }
     }
 
@@ -332,19 +308,18 @@
     {
         if (string.IsNullOrEmpty(newPriority) || _isProcessingAction) return;
         _isProcessingAction = true;
-        await InvokeAsync(StateHasChanged); 
+        await InvokeAsync(StateHasChanged);
 
         try
         {
-            Console.WriteLine($"Home: Changing priority for {adapterId} to {newPriority}");
             await SpeedifyService.SetPriorityAsync(adapterId, newPriority);
-            await StreamSpeedifyDataAsync(); 
+            await StreamSpeedifyDataAsync();
         }
         catch (SpeedifyException ex) { _error = ex.Message; }
         finally
         {
             _isProcessingAction = false;
-            await InvokeAsync(StateHasChanged); 
+            await InvokeAsync(StateHasChanged);
         }
     }
 
@@ -392,8 +367,6 @@
 
     private void OnAdapterClick(Adapter adapter)
     {
-        // For now, just log the click - can be expanded later to show details modal
-        Console.WriteLine($"Adapter clicked: {adapter.Name}");
         // Future: Open priority modal or navigate to adapter details
     }
 
@@ -618,7 +591,5 @@
         {
             await _serverInfoRefreshTimer.DisposeAsync();
         }
-        
-        Console.WriteLine("Home: Disposed");
     }
 }
