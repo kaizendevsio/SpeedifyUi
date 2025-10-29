@@ -546,9 +546,10 @@
             }
             else if (OperatingSystem.IsLinux())
             {
-                // Linux: Restart Speedify using systemctl or service command
+                // Linux: Restart Speedify using systemctl or service command (without sudo)
+                // The application must be run with sufficient permissions
                 startInfo.FileName = "/bin/bash";
-                startInfo.Arguments = "-c \"sudo systemctl restart speedify || sudo service speedify restart\"";
+                startInfo.Arguments = "-c \"systemctl restart speedify 2>/dev/null || service speedify restart\"";
                 startInfo.UseShellExecute = false;
                 startInfo.CreateNoWindow = true;
                 startInfo.RedirectStandardOutput = true;
@@ -569,6 +570,26 @@
                 
                 if (process.ExitCode != 0)
                 {
+                    // Provide helpful error message with setup instructions
+                    var permissionError = error.Contains("Permission denied") ||
+                                        error.Contains("Access denied") ||
+                                        error.Contains("must be root") ||
+                                        error.Contains("not permitted");
+                    
+                    if (permissionError && OperatingSystem.IsLinux())
+                    {
+                        throw new Exception(
+                            $"Permission denied. The application does not have sufficient permissions to restart the Speedify service.\n\n" +
+                            $"To fix this issue, you have two options:\n\n" +
+                            $"Option 1 (Recommended): Configure passwordless sudo for specific commands\n" +
+                            $"  • See LINUX_SETUP.md in the project root for detailed instructions\n" +
+                            $"  • This allows the app to restart services without entering a password\n\n" +
+                            $"Option 2: Run the application as root (less secure)\n" +
+                            $"  • sudo dotnet run --project XNetwork\n\n" +
+                            $"Exit code: {process.ExitCode}\n" +
+                            $"Error details: {error}");
+                    }
+                    
                     throw new Exception($"Service restart failed with exit code {process.ExitCode}. Error: {error}");
                 }
                 
@@ -609,8 +630,9 @@
             }
             else if (OperatingSystem.IsLinux())
             {
-                startInfo.FileName = "/bin/bash";
-                startInfo.Arguments = "-c \"sudo reboot\"";
+                // Linux: Reboot without sudo (application must have sufficient permissions)
+                startInfo.FileName = "/sbin/reboot";
+                startInfo.Arguments = "";
             }
             else
             {
@@ -626,7 +648,36 @@
             if (process != null)
             {
                 await process.WaitForExitAsync();
-                Console.WriteLine("Settings: Server reboot command executed.");
+                
+                var output = await process.StandardOutput.ReadToEndAsync();
+                var error = await process.StandardError.ReadToEndAsync();
+                
+                if (process.ExitCode != 0)
+                {
+                    // Provide helpful error message with setup instructions
+                    var permissionError = error.Contains("Permission denied") ||
+                                        error.Contains("Access denied") ||
+                                        error.Contains("must be root") ||
+                                        error.Contains("not permitted");
+                    
+                    if (permissionError && OperatingSystem.IsLinux())
+                    {
+                        throw new Exception(
+                            $"Permission denied. The application does not have sufficient permissions to reboot the server.\n\n" +
+                            $"To fix this issue, you have two options:\n\n" +
+                            $"Option 1 (Recommended): Configure passwordless sudo for specific commands\n" +
+                            $"  • See LINUX_SETUP.md in the project root for detailed instructions\n" +
+                            $"  • This allows the app to reboot the server without entering a password\n\n" +
+                            $"Option 2: Run the application as root (less secure)\n" +
+                            $"  • sudo dotnet run --project XNetwork\n\n" +
+                            $"Exit code: {process.ExitCode}\n" +
+                            $"Error details: {error}");
+                    }
+                    
+                    throw new Exception($"Reboot command failed with exit code {process.ExitCode}. Error: {error}");
+                }
+                
+                Console.WriteLine("Settings: Server reboot command executed successfully.");
             }
             
             await Task.Delay(1000);
