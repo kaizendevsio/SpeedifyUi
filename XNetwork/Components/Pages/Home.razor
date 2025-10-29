@@ -105,34 +105,36 @@
             {
                 var currentStats = GetStatsForAdapter(adapter.AdapterId);
                 var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
+                var isConnecting = adapter.State.ToLowerInvariant() == "connecting";
                 var bgClass = GetAdapterBackgroundClass(adapter, currentStats);
                 var signalStrength = !isOffline ? GetSignalStrength(adapter, currentStats) : 0;
-                var signalColor = !isOffline ? GetSignalColor(signalStrength) : "slate-700";
+                var signalColor = !isOffline ? GetSignalColor(adapter.State, signalStrength) : "slate-700";
                 
                 <div class="@bgClass border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative cursor-pointer hover:bg-slate-700/30 transition-colors"
                      @onclick="() => OnAdapterClick(adapter)">
                     <!-- Row 1: Header -->
                     <div class="flex items-center justify-between gap-3 text-sm">
-                        <div class="flex items-center gap-3 flex-grow min-w-0">
-                            @if (!isOffline)
-                            {
-                                <div class="flex items-end gap-0.5 w-10 h-6 flex-shrink-0">
-                                    @for (int i = 0; i < 4; i++)
+                    <div class="flex items-center gap-3 flex-grow min-w-0">
+                        @if (!isOffline)
+                        {
+                            <div class="flex items-end gap-0.5 w-10 h-6 flex-shrink-0">
+                                @for (int i = 0; i < 4; i++)
+                                {
+                                    var isActive = isConnecting ? (i < 2) : (i < signalStrength);
+                                    var heightClass = i switch
                                     {
-                                        var isActive = i < signalStrength;
-                                        var heightClass = i switch
-                                        {
-                                            0 => "h-2",  // 25% height
-                                            1 => "h-3",  // 37.5% height
-                                            2 => "h-4",  // 50% height
-                                            3 => "h-6",  // 100% height
-                                            _ => "h-2"
-                                        };
-                                        var colorClass = isActive ? $"bg-{signalColor}" : "bg-slate-700";
-                                        <div class="@heightClass @colorClass w-1.5 rounded-sm transition-all"></div>
-                                    }
-                                </div>
-                            }
+                                        0 => "h-2",  // 25% height
+                                        1 => "h-3",  // 37.5% height
+                                        2 => "h-4",  // 50% height
+                                        3 => "h-6",  // 100% height
+                                        _ => "h-2"
+                                    };
+                                    var animationClass = isConnecting && isActive ? "animate-pulse" : "";
+                                    var colorClass = isActive ? $"bg-{signalColor}" : "bg-slate-700";
+                                    <div class="@heightClass @colorClass @animationClass w-1.5 rounded-sm transition-all"></div>
+                                }
+                            </div>
+                        }
                             else
                             {
                                 <i class="fas fa-signal-slash text-red-400 text-lg w-8 text-center flex-shrink-0"></i>
@@ -319,8 +321,12 @@
         return 0; // No bars - Very poor/disconnected
     }
 
-    private string GetSignalColor(int strength)
+    private string GetSignalColor(string state, int strength)
     {
+        // Show yellow for connecting state
+        if (state.ToLowerInvariant() == "connecting")
+            return "yellow-400";
+            
         return strength switch
         {
             4 => "green-400",   // All 4 bars - Excellent
