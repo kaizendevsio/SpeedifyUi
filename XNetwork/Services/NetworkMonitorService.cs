@@ -195,6 +195,68 @@ public class NetworkMonitorService : BackgroundService
     }
 
     /// <summary>
+    /// Get the gateway IP address for a specific network adapter.
+    /// </summary>
+    /// <param name="adapterId">The adapter ID (interface name)</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The gateway IP address, or null if not found</returns>
+    public async Task<string?> GetGatewayAsync(string adapterId, CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            _logger.LogWarning("GetGatewayAsync is only supported on Linux");
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(adapterId))
+        {
+            _logger.LogError("Adapter ID cannot be null or empty");
+            return null;
+        }
+
+        try
+        {
+            // Get the gateway for the specified interface
+            var getGatewayCommand = $"sudo ip route show dev {adapterId} | grep default | awk '{{print $3}}'";
+            var processInfo = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                Arguments = $"-c \"{getGatewayCommand}\"",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var getProcess = new Process { StartInfo = processInfo };
+            getProcess.Start();
+            
+            var gateway = (await getProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            await getProcess.WaitForExitAsync(cancellationToken);
+
+            // If no gateway found for this interface, try getting it from the routing table
+            if (string.IsNullOrWhiteSpace(gateway))
+            {
+                var altCommand = $"sudo ip route | grep 'dev {adapterId}' | grep -v 'linkdown' | head -n1 | awk '{{print $3}}'";
+                processInfo.Arguments = $"-c \"{altCommand}\"";
+                
+                using var altProcess = new Process { StartInfo = processInfo };
+                altProcess.Start();
+                
+                gateway = (await altProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+                await altProcess.WaitForExitAsync(cancellationToken);
+            }
+
+            return string.IsNullOrWhiteSpace(gateway) ? null : gateway;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting gateway for adapter {AdapterId}", adapterId);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Set a specific adapter as the primary default route for bypass mode.
     /// This makes the specified adapter the preferred route when Speedify is disconnected.
     /// </summary>
