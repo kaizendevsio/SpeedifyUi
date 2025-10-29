@@ -12,7 +12,8 @@ builder.Services.AddRazorComponents()
 builder.Services.Configure<NetworkMonitorSettings>(
     builder.Configuration.GetSection("NetworkMonitor"));
 builder.Services.AddSingleton<SpeedifyService>();
-builder.Services.AddHostedService<NetworkMonitorService>();
+builder.Services.AddSingleton<NetworkMonitorService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<NetworkMonitorService>());
 
 // Add connection health service (both as singleton and hosted service)
 builder.Services.AddSingleton<ConnectionHealthService>();
