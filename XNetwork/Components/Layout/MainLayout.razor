@@ -34,12 +34,6 @@
                 <i class="fas fa-cog w-6 text-center text-lg"></i>
                 <span class="font-medium">Settings</span>
             </NavLink>
-            <NavLink href="/ai-chat" 
-                     class="flex items-center gap-3 p-3 rounded-lg transition-colors duration-200 text-gray-400 hover:bg-slate-800 hover:text-white" 
-                     ActiveClass="text-white bg-slate-800">
-                <i class="fas fa-robot w-6 text-center text-lg"></i>
-                <span class="font-medium">AI Assistant</span>
-            </NavLink>
         </nav>
     </aside>
 
@@ -55,7 +49,7 @@
 </div>
 
 <!-- BOTTOM NAVIGATION (Mobile) -->
-<nav class="md:hidden fixed bottom-0 left-0 right-0 bg-slate-950 border-t border-slate-800 grid grid-cols-5 gap-1 p-1 z-50">
+<nav class="md:hidden fixed bottom-0 left-0 right-0 bg-slate-950 border-t border-slate-800 grid grid-cols-4 gap-1 p-1 z-50">
     <NavLink href="/" Match="NavLinkMatch.All" 
              class="flex flex-col items-center justify-center w-full p-2 rounded-lg text-gray-400" 
              ActiveClass="text-blue-500 bg-slate-800">
@@ -79,12 +73,6 @@
              ActiveClass="text-blue-500 bg-slate-800">
         <i class="fas fa-cog text-xl mb-1"></i>
         <span class="text-xs font-medium">Settings</span>
-    </NavLink>
-    <NavLink href="/ai-chat" 
-             class="flex flex-col items-center justify-center w-full p-2 rounded-lg text-gray-400" 
-             ActiveClass="text-blue-500 bg-slate-800">
-        <i class="fas fa-robot text-xl mb-1"></i>
-        <span class="text-xs font-medium">AI Chat</span>
     </NavLink>
 </nav>
 

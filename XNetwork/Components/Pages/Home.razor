@@ -68,8 +68,7 @@
                     <div class="flex-grow min-w-0">
                         <div class="flex items-center gap-2 mb-1">
                             <h3 class="text-base font-semibold text-white truncate">@_serverInfo.FriendlyName</h3>
-                            <span class="px-2 py-0.5 text-xs font-medium rounded-full flex-shrink-0"
-                                  style="background-color: rgba(var(--tw-color-@GetServerTypeColor().Replace("-400", "")), 0.1); color: var(--tw-color-@GetServerTypeColor());">
+                            <span class="px-2 py-0.5 text-xs font-medium rounded-full flex-shrink-0 @GetServerBadgeClass()">
                                 @GetServerConnectionType()
                             </span>
                         </div>
@@ -531,6 +530,15 @@
         if (_serverInfo.IsPrivate) return "purple-400";
         if (_serverInfo.IsPremium) return "yellow-400";
         return "cyan-400";
+    }
+    
+    private string GetServerBadgeClass()
+    {
+        if (_serverInfo == null) return "bg-slate-700 text-slate-300";
+        
+        if (_serverInfo.IsPrivate) return "bg-purple-500/20 text-purple-300 border border-purple-500/30";
+        if (_serverInfo.IsPremium) return "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30";
+        return "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30";
     }
 
     public async ValueTask DisposeAsync()

@@ -1,4 +1,4 @@
-﻿@page "/details"
+@page "/statistics"
 @inject XNetwork.Services.SpeedifyService SpeedifyService
 @inject IJSRuntime JSRuntime
 @using System.Collections
@@ -6,13 +6,13 @@
 @using XNetwork.Components.Custom
 @implements IAsyncDisposable
 
-<PageTitle>Details & Statistics - X Network</PageTitle>
+<PageTitle>Network Statistics - X Network</PageTitle>
 
 <div class="p-4 md:p-6">
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6">
         <div>
-            <h2 class="text-3xl font-bold text-white mb-1">Details & Statistics</h2>
-            <p class="text-slate-400">Real-time network performance visualization.</p>
+            <h2 class="text-3xl font-bold text-white mb-1">Network Statistics</h2>
+            <p class="text-slate-400">Real-time adapter performance visualization.</p>
         </div>
         <div class="mt-4 sm:mt-0">
             <select class="bg-slate-800 border border-slate-700 rounded-md py-2 px-3 text-sm text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-auto">
