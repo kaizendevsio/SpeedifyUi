@@ -234,19 +234,24 @@
 
     private async Task LoadAdaptersAndSettingsAsync()
     {
+        Console.WriteLine("Home: LoadAdaptersAndSettingsAsync - START");
         _adapters = await SpeedifyService.GetAdaptersAsync();
+        Console.WriteLine($"Home: Loaded {_adapters?.Count ?? 0} adapters");
         
         // Load gateway IPs for all adapters (Linux only)
         if (OperatingSystem.IsLinux() && _adapters != null)
         {
+            Console.WriteLine($"Home: Running on Linux, loading gateways for {_adapters.Count} adapters");
             foreach (var adapter in _adapters)
             {
+                Console.WriteLine($"Home: Checking gateway for adapter {adapter.AdapterId} ({adapter.Name})");
                 if (!_gatewayCache.ContainsKey(adapter.AdapterId))
                 {
                     try
                     {
                         var gateway = await NetworkMonitorService.GetGatewayAsync(adapter.AdapterId);
                         _gatewayCache[adapter.AdapterId] = gateway;
+                        Console.WriteLine($"Home: Gateway for {adapter.AdapterId}: {gateway ?? "null"}");
                     }
                     catch (Exception ex)
                     {
@@ -254,10 +259,20 @@
                         _gatewayCache[adapter.AdapterId] = null;
                     }
                 }
+                else
+                {
+                    Console.WriteLine($"Home: Gateway for {adapter.AdapterId} already cached: {_gatewayCache[adapter.AdapterId] ?? "null"}");
+                }
             }
+            Console.WriteLine($"Home: Total gateways in cache: {_gatewayCache.Count}");
+        }
+        else
+        {
+            Console.WriteLine($"Home: Not loading gateways - IsLinux: {OperatingSystem.IsLinux()}, Adapters: {_adapters?.Count ?? 0}");
         }
         
         await InvokeAsync(StateHasChanged);
+        Console.WriteLine("Home: LoadAdaptersAndSettingsAsync - COMPLETE");
     }
     
     private async Task LoadServerInfoAsync()

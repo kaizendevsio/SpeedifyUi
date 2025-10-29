@@ -216,8 +216,10 @@ public class NetworkMonitorService : BackgroundService
 
         try
         {
-            // Get the gateway for the specified interface
-            var getGatewayCommand = $"sudo ip route show dev {adapterId} | grep default | awk '{{print $3}}'";
+            _logger.LogDebug("Getting gateway for adapter {AdapterId}", adapterId);
+            
+            // Get the gateway for the specified interface - try without sudo first
+            var getGatewayCommand = $"ip route show dev {adapterId} | grep default | awk '{{print $3}}'";
             var processInfo = new ProcessStartInfo
             {
                 FileName = "/bin/bash",
@@ -232,12 +234,19 @@ public class NetworkMonitorService : BackgroundService
             getProcess.Start();
             
             var gateway = (await getProcess.StandardOutput.ReadToEndAsync(cancellationToken)).Trim();
+            var stderr = await getProcess.StandardError.ReadToEndAsync(cancellationToken);
             await getProcess.WaitForExitAsync(cancellationToken);
+
+            if (!string.IsNullOrWhiteSpace(stderr))
+            {
+                _logger.LogDebug("Gateway lookup stderr for {AdapterId}: {Error}", adapterId, stderr);
+            }
 
             // If no gateway found for this interface, try getting it from the routing table
             if (string.IsNullOrWhiteSpace(gateway))
             {
-                var altCommand = $"sudo ip route | grep 'dev {adapterId}' | grep -v 'linkdown' | head -n1 | awk '{{print $3}}'";
+                _logger.LogDebug("No default gateway found, trying alternative route lookup for {AdapterId}", adapterId);
+                var altCommand = $"ip route | grep 'dev {adapterId}' | grep -v 'linkdown' | head -n1 | awk '{{print $3}}'";
                 processInfo.Arguments = $"-c \"{altCommand}\"";
                 
                 using var altProcess = new Process { StartInfo = processInfo };
@@ -247,7 +256,14 @@ public class NetworkMonitorService : BackgroundService
                 await altProcess.WaitForExitAsync(cancellationToken);
             }
 
-            return string.IsNullOrWhiteSpace(gateway) ? null : gateway;
+            if (string.IsNullOrWhiteSpace(gateway))
+            {
+                _logger.LogDebug("No gateway found for adapter {AdapterId}", adapterId);
+                return null;
+            }
+
+            _logger.LogInformation("Found gateway {Gateway} for adapter {AdapterId}", gateway, adapterId);
+            return gateway;
         }
         catch (Exception ex)
         {
