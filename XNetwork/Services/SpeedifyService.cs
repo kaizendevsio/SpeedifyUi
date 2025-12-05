@@ -485,5 +485,124 @@ public class SpeedifyService
         }
     }
 
+    /// <summary>
+    /// Sets whether Speedify will obtain a default route to the Internet over the VPN adapter.
+    /// When enabled (on), traffic goes through VPN. When disabled (off), traffic bypasses VPN.
+    /// </summary>
+    public async Task<bool> SetRouteDefaultAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var command = enabled ? "route default on" : "route default off";
+            await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
+            Console.WriteLine($"SpeedifyService: Route default set to {(enabled ? "on" : "off")}");
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting route default: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error setting route default: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Applies bypass mode by disconnecting Speedify and optionally setting adapter priorities.
+    /// </summary>
+    /// <param name="selectedAdapterId">The adapter ID to use directly, or empty for automatic/OS default</param>
+    /// <param name="allAdapters">List of all available adapters to configure priorities</param>
+    public async Task<bool> ApplyBypassModeAsync(string? selectedAdapterId, IEnumerable<Adapter>? allAdapters, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            Console.WriteLine($"SpeedifyService: Applying bypass mode with adapter: {selectedAdapterId ?? "automatic"}");
+            
+            // Step 1: Disconnect from Speedify
+            await StopAsync(cancellationToken).ConfigureAwait(false);
+            await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+            
+            // Step 2: Disable VPN default route
+            await SetRouteDefaultAsync(false, cancellationToken).ConfigureAwait(false);
+            
+            // Step 3: If a specific adapter is selected, configure adapter priorities
+            if (!string.IsNullOrEmpty(selectedAdapterId) && allAdapters != null)
+            {
+                foreach (var adapter in allAdapters)
+                {
+                    if (adapter.AdapterId == selectedAdapterId)
+                    {
+                        // Set selected adapter to "always" priority
+                        await SetPriorityAsync(adapter.AdapterId, "always", cancellationToken).ConfigureAwait(false);
+                        Console.WriteLine($"SpeedifyService: Set adapter {adapter.AdapterId} to 'always' priority");
+                    }
+                    else
+                    {
+                        // Set other adapters to "never" to prevent them from being used
+                        await SetPriorityAsync(adapter.AdapterId, "never", cancellationToken).ConfigureAwait(false);
+                        Console.WriteLine($"SpeedifyService: Set adapter {adapter.AdapterId} to 'never' priority");
+                    }
+                }
+            }
+            
+            Console.WriteLine("SpeedifyService: Bypass mode applied successfully");
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error applying bypass mode: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error applying bypass mode: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Disables bypass mode by restoring default routing and reconnecting Speedify.
+    /// </summary>
+    /// <param name="allAdapters">List of all available adapters to reset priorities</param>
+    public async Task<bool> DisableBypassModeAsync(IEnumerable<Adapter>? allAdapters, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            Console.WriteLine("SpeedifyService: Disabling bypass mode");
+            
+            // Step 1: Reset all adapter priorities to automatic
+            if (allAdapters != null)
+            {
+                foreach (var adapter in allAdapters)
+                {
+                    await SetPriorityAsync(adapter.AdapterId, "automatic", cancellationToken).ConfigureAwait(false);
+                    Console.WriteLine($"SpeedifyService: Reset adapter {adapter.AdapterId} to 'automatic' priority");
+                }
+            }
+            
+            // Step 2: Enable VPN default route
+            await SetRouteDefaultAsync(true, cancellationToken).ConfigureAwait(false);
+            
+            // Step 3: Reconnect to Speedify
+            await StartAsync(cancellationToken).ConfigureAwait(false);
+            
+            Console.WriteLine("SpeedifyService: Bypass mode disabled, Speedify connected");
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error disabling bypass mode: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error disabling bypass mode: {ex.Message}");
+            return false;
+        }
+    }
+
     static T Json<T>(string s) => JsonSerializer.Deserialize<T>(s, _jsonOptions)!;
 }

@@ -115,15 +115,23 @@
             </div>
 
             <!-- Section 4: Bypass Mode -->
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Bypass Mode</h3>
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg @(_bypassModeChanged ? "ring-2 ring-yellow-500/50" : "")">
+                <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
+                    <h3 class="text-xl font-semibold text-white">Bypass Mode</h3>
+                    @if (_bypassModeChanged)
+                    {
+                        <span class="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-full">
+                            <i class="fas fa-exclamation-circle mr-1"></i>Unsaved Changes
+                        </span>
+                    }
+                </div>
                 <div class="space-y-4">
                     <ToggleSwitch
                         Id="bypass-mode"
                         Label="Direct Network Access (Disconnect Speedify)"
                         IsEnabled="_bypassModeEnabled"
                         OnToggle="HandleBypassModeToggle" />
-                    <p class="text-xs text-slate-400 mt-1">When enabled, Speedify disconnects and you use networks directly without VPN.</p>
+                    <p class="text-xs text-slate-400 mt-1">When enabled, Speedify disconnects and you use networks directly without VPN. Click "Save Changes" to apply.</p>
                     
                     @if (_bypassModeEnabled && OperatingSystem.IsLinux())
                     {
@@ -187,8 +195,15 @@
             </div>
 
             <!-- Save Button -->
-            <div class="flex justify-end pt-2">
-                <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg"
+            <div class="flex items-center justify-end gap-4 pt-2">
+                @if (_bypassModeChanged)
+                {
+                    <span class="text-sm text-yellow-400">
+                        <i class="fas fa-info-circle mr-1"></i>
+                        Bypass mode changes require saving
+                    </span>
+                }
+                <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg @(_bypassModeChanged ? "ring-2 ring-yellow-500 animate-pulse" : "")"
                         @onclick="SaveSettings"
                         disabled="@_isProcessing">
                     @if (_isProcessing)
@@ -253,10 +268,13 @@
     // Bonding mode state
     private string _selectedBondingMode = "speed";
 
-    // Bypass mode state
-    private bool _bypassModeEnabled = false;
-    private string _selectedBypassAdapter = "";
+    // Bypass mode state - separate pending and applied states
+    private bool _bypassModeEnabled = false;           // Current UI state (pending)
+    private bool _appliedBypassModeEnabled = false;    // Actually applied state
+    private string _selectedBypassAdapter = "";         // Current UI state (pending)
+    private string _appliedBypassAdapter = "";          // Actually applied state
     private List<Adapter> _adapters = new();
+    private bool _bypassModeChanged = false;            // Track if bypass settings have changed
 
     // Modal visibility state
     private bool _showDisconnectModal = false;
@@ -321,12 +339,18 @@
                     .ConfigureAwait(false);
                 
                 // Bypass mode is enabled when state is NOT "CONNECTED"
-                _bypassModeEnabled = !state.Contains("\"CONNECTED\"");
+                var isConnected = state.Contains("\"CONNECTED\"");
+                _bypassModeEnabled = !isConnected;
+                _appliedBypassModeEnabled = _bypassModeEnabled;
+                _appliedBypassAdapter = _selectedBypassAdapter;
+                _bypassModeChanged = false;
             }
             catch
             {
                 // Default to false if we can't determine state
                 _bypassModeEnabled = false;
+                _appliedBypassModeEnabled = false;
+                _bypassModeChanged = false;
             }
         }
         catch (Exception ex)
@@ -507,105 +531,32 @@
 
     private async Task HandleBypassModeToggle(bool enabled)
     {
-        _isProcessing = true;
-        _error = null;
+        // Only update the pending state - changes will be applied on Save
+        _bypassModeEnabled = enabled;
+        
+        // If disabling bypass mode, reset the adapter selection
+        if (!enabled)
+        {
+            _selectedBypassAdapter = "";
+        }
+        
+        // Mark bypass settings as changed
+        _bypassModeChanged = (_bypassModeEnabled != _appliedBypassModeEnabled) ||
+                             (_selectedBypassAdapter != _appliedBypassAdapter);
+        
+        Console.WriteLine($"Settings: Bypass mode toggle changed to {enabled} (pending, not yet applied)");
         await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            if (enabled)
-            {
-                // Bypass mode ON = Disconnect Speedify
-                await SpeedifyService.StopAsync();
-                _bypassModeEnabled = true;
-                Console.WriteLine("Settings: Speedify disconnected (bypass mode enabled)");
-            }
-            else
-            {
-                // Bypass mode OFF = Restore default routing and reconnect Speedify
-                if (OperatingSystem.IsLinux())
-                {
-                    await NetworkMonitorService.RestoreDefaultRoutingAsync();
-                    Console.WriteLine("Settings: Default routing restored");
-                }
-                
-                _selectedBypassAdapter = "";
-                await SpeedifyService.StartAsync();
-                _bypassModeEnabled = false;
-                Console.WriteLine("Settings: Speedify connected (bypass mode disabled)");
-            }
-            
-            await Task.Delay(1000); // Give time for state to update
-        }
-        catch (SpeedifyException ex)
-        {
-            _error = $"Failed to toggle bypass mode: {ex.Message}";
-            // Revert state
-            _bypassModeEnabled = !enabled;
-        }
-        catch (Exception ex)
-        {
-            _error = $"An unexpected error occurred: {ex.Message}";
-            // Revert state
-            _bypassModeEnabled = !enabled;
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
     }
 
     private async Task OnBypassAdapterChanged()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            return; // Adapter selection only works on Linux
-        }
-
-        _isProcessing = true;
-        _error = null;
+        // Only update the pending state - changes will be applied on Save
+        // Mark bypass settings as changed
+        _bypassModeChanged = (_bypassModeEnabled != _appliedBypassModeEnabled) ||
+                             (_selectedBypassAdapter != _appliedBypassAdapter);
+        
+        Console.WriteLine($"Settings: Bypass adapter changed to {_selectedBypassAdapter} (pending, not yet applied)");
         await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            if (string.IsNullOrEmpty(_selectedBypassAdapter))
-            {
-                // Automatic mode - restore default routing
-                var success = await NetworkMonitorService.RestoreDefaultRoutingAsync();
-                if (success)
-                {
-                    Console.WriteLine("Settings: Restored automatic routing");
-                }
-                else
-                {
-                    _error = "Failed to restore automatic routing";
-                }
-            }
-            else
-            {
-                // Set specific adapter as primary route
-                var success = await NetworkMonitorService.SetPrimaryRouteAsync(_selectedBypassAdapter);
-                if (success)
-                {
-                    Console.WriteLine($"Settings: Set {_selectedBypassAdapter} as primary route");
-                }
-                else
-                {
-                    _error = $"Failed to set {_selectedBypassAdapter} as primary route. Check that the adapter is active and has a valid gateway.";
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _error = $"Error changing network adapter: {ex.Message}";
-            Console.WriteLine($"Settings: Error changing bypass adapter: {ex.Message}");
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
     }
 
     private async Task SaveSettings()
@@ -624,6 +575,73 @@
                 .ToList();
 
             _monitorSettings.WhitelistedLinks = links;
+
+            // Apply bypass mode changes if they've been modified
+            if (_bypassModeChanged)
+            {
+                Console.WriteLine($"Settings: Applying bypass mode changes - Enabled: {_bypassModeEnabled}, Adapter: {_selectedBypassAdapter}");
+                
+                if (_bypassModeEnabled)
+                {
+                    // Enable bypass mode
+                    var success = await SpeedifyService.ApplyBypassModeAsync(
+                        string.IsNullOrEmpty(_selectedBypassAdapter) ? null : _selectedBypassAdapter,
+                        _adapters);
+                    
+                    if (success)
+                    {
+                        // Also apply OS-level routing on Linux if a specific adapter is selected
+                        if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(_selectedBypassAdapter))
+                        {
+                            var routeSuccess = await NetworkMonitorService.SetPrimaryRouteAsync(_selectedBypassAdapter);
+                            if (!routeSuccess)
+                            {
+                                Console.WriteLine($"Settings: Warning - Could not set OS-level primary route for {_selectedBypassAdapter}");
+                            }
+                        }
+                        
+                        _appliedBypassModeEnabled = _bypassModeEnabled;
+                        _appliedBypassAdapter = _selectedBypassAdapter;
+                        _bypassModeChanged = false;
+                        Console.WriteLine("Settings: Bypass mode enabled successfully");
+                    }
+                    else
+                    {
+                        _error = "Failed to enable bypass mode";
+                        // Revert UI state
+                        _bypassModeEnabled = _appliedBypassModeEnabled;
+                        _selectedBypassAdapter = _appliedBypassAdapter;
+                    }
+                }
+                else
+                {
+                    // Disable bypass mode
+                    if (OperatingSystem.IsLinux())
+                    {
+                        await NetworkMonitorService.RestoreDefaultRoutingAsync();
+                    }
+                    
+                    var success = await SpeedifyService.DisableBypassModeAsync(_adapters);
+                    
+                    if (success)
+                    {
+                        _appliedBypassModeEnabled = _bypassModeEnabled;
+                        _appliedBypassAdapter = _selectedBypassAdapter;
+                        _bypassModeChanged = false;
+                        Console.WriteLine("Settings: Bypass mode disabled successfully");
+                    }
+                    else
+                    {
+                        _error = "Failed to disable bypass mode";
+                        // Revert UI state
+                        _bypassModeEnabled = _appliedBypassModeEnabled;
+                        _selectedBypassAdapter = _appliedBypassAdapter;
+                    }
+                }
+                
+                // Wait for state to stabilize
+                await Task.Delay(1000);
+            }
 
             // TODO: Save settings to configuration file
             // This would require writing to appsettings.json or a separate settings file
