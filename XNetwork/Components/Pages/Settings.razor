@@ -1143,13 +1143,15 @@
 
         try
         {
+            // Load app-specific monitor settings from configuration
             var monitorSection = Configuration.GetSection("NetworkMonitor");
             if (monitorSection.Exists())
             {
                 _monitorSettings = monitorSection.Get<NetworkMonitorSettings>() ?? new NetworkMonitorSettings();
             }
-            _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks);
+            _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks ?? new List<string>());
 
+            // Fetch all settings in parallel for efficiency
             var settingsTask = SpeedifyService.GetSettingsAsync();
             var privacyTask = SpeedifyService.GetPrivacySettingsAsync();
             var bypassTask = SpeedifyService.GetStreamingBypassSettingsAsync();
@@ -1160,6 +1162,7 @@
 
             await Task.WhenAll(settingsTask, privacyTask, bypassTask, streamingTask, transportTask, connectMethodTask, fixedDelayTask);
 
+            // Load connection settings (bonding mode, encryption, etc.)
             var speedifySettings = await settingsTask;
             if (speedifySettings != null)
             {
@@ -1167,29 +1170,99 @@
                 _selectedBondingMode = speedifySettings.BondingMode ?? "speed";
             }
 
+            // Load privacy settings (DNS, leak protection)
             var privacy = await privacyTask;
-            if (privacy != null) _privacySettings = privacy;
+            if (privacy != null)
+            {
+                _privacySettings = privacy;
+                // Ensure lists are not null
+                _privacySettings.DnsAddresses ??= new List<string>();
+            }
 
+            // Load streaming bypass settings
             var bypass = await bypassTask;
-            if (bypass != null) _bypassSettings = bypass;
+            if (bypass != null)
+            {
+                _bypassSettings = bypass;
+                // Ensure all lists are not null
+                _bypassSettings.Domains ??= new List<string>();
+                _bypassSettings.Ipv4 ??= new List<string>();
+                _bypassSettings.Ipv6 ??= new List<string>();
+                _bypassSettings.Ports ??= new List<PortRule>();
+                _bypassSettings.Services ??= new List<ServiceBypass>();
+                
+                // Determine if bypass is enabled based on whether any rules exist or services are enabled
+                _bypassEnabled = _bypassSettings.DomainWatchlistEnabled ||
+                                 _bypassSettings.Domains.Any() ||
+                                 _bypassSettings.Ipv4.Any() ||
+                                 _bypassSettings.Ipv6.Any() ||
+                                 _bypassSettings.Ports.Any() ||
+                                 _bypassSettings.Services.Any(s => s.Enabled);
+            }
 
+            // Load streaming mode settings (high-priority traffic)
             var streaming = await streamingTask;
-            if (streaming != null) _streamingSettings = streaming;
+            if (streaming != null)
+            {
+                _streamingSettings = streaming;
+                // Ensure all lists are not null
+                _streamingSettings.Domains ??= new List<string>();
+                _streamingSettings.Ipv4 ??= new List<string>();
+                _streamingSettings.Ipv6 ??= new List<string>();
+                _streamingSettings.Ports ??= new List<PortRule>();
+            }
 
+            // Load transport settings (transport mode, retry intervals)
             var transport = await transportTask;
-            if (transport != null) _transportSettings = transport;
+            if (transport != null)
+            {
+                _transportSettings = transport;
+                // Normalize transport mode to lowercase for dropdown matching
+                if (!string.IsNullOrEmpty(_transportSettings.TransportMode))
+                {
+                    _transportSettings.TransportMode = _transportSettings.TransportMode.ToLowerInvariant();
+                }
+                else
+                {
+                    _transportSettings.TransportMode = "auto";
+                }
+            }
 
+            // Load connect method settings (server selection)
             var connectMethod = await connectMethodTask;
-            if (connectMethod != null) _connectMethod = connectMethod;
+            if (connectMethod != null)
+            {
+                _connectMethod = connectMethod;
+                // Normalize method to lowercase for dropdown matching
+                if (!string.IsNullOrEmpty(_connectMethod.Method))
+                {
+                    _connectMethod.Method = _connectMethod.Method.ToLowerInvariant();
+                }
+                else
+                {
+                    _connectMethod.Method = "closest";
+                }
+            }
 
+            // Load fixed delay settings
             var fixedDelay = await fixedDelayTask;
-            if (fixedDelay != null) _fixedDelaySettings = fixedDelay;
+            if (fixedDelay != null)
+            {
+                _fixedDelaySettings = fixedDelay;
+                // Ensure all lists are not null
+                _fixedDelaySettings.Domains ??= new List<string>();
+                _fixedDelaySettings.Ips ??= new List<string>();
+                _fixedDelaySettings.Ports ??= new List<PortRule>();
+            }
             
             // Initialize enabled services set from loaded bypass settings
             _enabledServices.Clear();
-            foreach (var service in _bypassSettings.Services.Where(s => s.Enabled))
+            if (_bypassSettings.Services != null)
             {
-                _enabledServices.Add(service.Name.ToLowerInvariant());
+                foreach (var service in _bypassSettings.Services.Where(s => s.Enabled))
+                {
+                    _enabledServices.Add(service.Name.ToLowerInvariant());
+                }
             }
         }
         catch (Exception ex)
