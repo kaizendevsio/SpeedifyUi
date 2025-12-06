@@ -10,13 +10,26 @@
 
 <div class="p-4 md:p-6">
     <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
-    <p class="text-slate-400 mb-6">Configure application and monitor behavior.</p>
+    <p class="text-slate-400 mb-6">Configure Speedify and application behavior.</p>
 
     @if (!string.IsNullOrEmpty(_error))
     {
         <div class="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
             <strong class="font-bold">Error!</strong>
             <span class="block sm:inline">@_error</span>
+            <button class="absolute top-0 right-0 px-4 py-3" @onclick="() => _error = null">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(_successMessage))
+    {
+        <div class="bg-green-500/10 border border-green-500/50 text-green-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
+            <span class="block sm:inline">@_successMessage</span>
+            <button class="absolute top-0 right-0 px-4 py-3" @onclick="() => _successMessage = null">
+                <i class="fas fa-times"></i>
+            </button>
         </div>
     }
 
@@ -26,44 +39,23 @@
     }
     else
     {
-        <div class="space-y-6 max-w-2xl">
-            <!-- Section 1: Network Monitor -->
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Network Monitor</h3>
-                <div class="space-y-4">
-                    <!-- Enable/Disable Toggle -->
-                    <ToggleSwitch 
-                        Id="monitor-enabled"
-                        Label="Enable Background Monitoring"
-                        IsEnabled="_monitorSettings.Enabled"
-                        OnToggle="HandleMonitorToggle" />
-
-                    <!-- Whitelisted Adapters -->
+        <div class="space-y-2 max-w-3xl">
+            <!-- Section 1: Connection Settings -->
+            <Accordion Title="Connection Settings" IsExpanded="_connectionExpanded" OnToggle="(e) => _connectionExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <!-- Bonding Mode -->
                     <div>
-                        <label for="whitelisted-links" class="block mb-2 font-medium text-white">Whitelisted Adapters</label>
-                        <input type="text" 
-                               id="whitelisted-links" 
-                               @bind="_whitelistedLinksInput" 
-                               class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
-                        <p class="text-xs text-slate-400 mt-1">Comma-separated list of adapter IDs to monitor.</p>
+                        <label class="block mb-2 font-medium text-white">Bonding Mode</label>
+                        <select @bind="_selectedBondingMode"
+                                @bind:after="HandleBondingModeChange"
+                                disabled="@_isProcessing"
+                                class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors disabled:opacity-50">
+                            <option value="speed">Speed Mode - Maximum speed using all connections</option>
+                            <option value="redundant">Redundant Mode - Maximum reliability with duplicate packets</option>
+                            <option value="streaming">Streaming Mode - Optimized for live streaming</option>
+                        </select>
                     </div>
 
-                    <!-- Timeout -->
-                    <div>
-                        <label for="down-timeout" class="block mb-2 font-medium text-white">Restart Timeout (seconds)</label>
-                        <input type="number" 
-                               id="down-timeout" 
-                               @bind="_monitorSettings.DownTimeoutSeconds" 
-                               class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors">
-                        <p class="text-xs text-slate-400 mt-1">Time to wait before restarting a failed adapter.</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Section 2: Connection Settings -->
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Settings</h3>
-                <div class="space-y-4">
                     <!-- Encryption Toggle -->
                     <ToggleSwitch
                         Id="encryption-enabled"
@@ -91,82 +83,522 @@
                         Label="Allow larger MTU packets for better throughput"
                         IsEnabled="_connectionSettings.JumboPackets"
                         OnToggle="HandleJumboPacketsToggle" />
-                </div>
-            </div>
 
-            <!-- Section 3: Bonding Mode -->
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Bonding Mode</h3>
-                <div class="space-y-4">
+                    <!-- Overflow Threshold -->
+                    <NumberInput
+                        Label="Overflow Threshold"
+                        Value="_connectionSettings.OverflowThreshold"
+                        OnChange="HandleOverflowChange"
+                        Min="0"
+                        Step="0.1"
+                        Unit="Mbps"
+                        HelpText="Speed after which Secondary connections are not used" />
+                </div>
+            </Accordion>
+
+            <!-- Section 2: Transport Protocol -->
+            <Accordion Title="Transport Protocol" IsExpanded="_transportExpanded" OnToggle="(e) => _transportExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <SelectDropdown
+                        Label="Transport Mode"
+                        Options="_transportModeOptions"
+                        SelectedValue="_transportSettings.TransportMode"
+                        OnChange="HandleTransportModeChange"
+                        HelpText="Protocol used for VPN tunnel communication" />
+
+                    <NumberInput
+                        Label="Transport Retry"
+                        Value="_transportSettings.TransportRetrySeconds"
+                        OnChange="HandleTransportRetryChange"
+                        Min="1"
+                        Max="300"
+                        Unit="seconds"
+                        HelpText="Time to wait before retrying transport connection" />
+
+                    <NumberInput
+                        Label="Connect Retry"
+                        Value="_transportSettings.ConnectRetrySeconds"
+                        OnChange="HandleConnectRetryChange"
+                        Min="1"
+                        Max="300"
+                        Unit="seconds"
+                        HelpText="Time to wait before retrying server connection" />
+                </div>
+            </Accordion>
+
+            <!-- Section 3: Privacy & DNS -->
+            <Accordion Title="Privacy & DNS" IsExpanded="_privacyExpanded" OnToggle="(e) => _privacyExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <!-- DNS Servers -->
+                    <EditableList
+                        Label="Custom DNS Servers"
+                        Items="_privacySettings.DnsAddresses"
+                        OnAdd="HandleAddDns"
+                        OnRemove="HandleRemoveDns"
+                        Placeholder="Enter DNS server IP..."
+                        ValidationRegex="^(\d{1,3}\.){3}\d{1,3}$"
+                        ValidationErrorMessage="Invalid IP address format"
+                        EmptyMessage="Using system default DNS" />
+
+                    @if (OperatingSystem.IsWindows())
+                    {
+                        <ToggleSwitch
+                            Id="dns-leak"
+                            Label="DNS Leak Protection"
+                            IsEnabled="_privacySettings.DnsLeak"
+                            OnToggle="HandleDnsLeakToggle" />
+
+                        <ToggleSwitch
+                            Id="ip-leak"
+                            Label="IP Leak Protection"
+                            IsEnabled="_privacySettings.IpLeak"
+                            OnToggle="HandleIpLeakToggle" />
+
+                        <ToggleSwitch
+                            Id="kill-switch"
+                            Label="Kill Switch (block internet if VPN disconnects)"
+                            IsEnabled="_privacySettings.KillSwitch"
+                            OnToggle="HandleKillSwitchToggle" />
+                    }
+
+                    <ToggleSwitch
+                        Id="disable-doh"
+                        Label="Request browsers to disable DNS-over-HTTPS"
+                        IsEnabled="_privacySettings.RequestToDisableDoH"
+                        OnToggle="HandleDisableDoHToggle" />
+                </div>
+            </Accordion>
+
+            <!-- Section 4: Streaming Bypass -->
+            <Accordion Title="Streaming Bypass" IsExpanded="_bypassExpanded" OnToggle="(e) => _bypassExpanded = e" BadgeText="@GetBypassBadge()">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400 mb-4">
+                        Configure traffic that should bypass the VPN tunnel and use your direct internet connection.
+                    </p>
+
+                    <!-- Master Toggle -->
+                    <div class="bg-slate-800/50 p-4 rounded-lg border border-slate-700">
+                        <ToggleSwitch
+                            Id="bypass-enabled"
+                            Label="Enable Streaming Bypass"
+                            IsEnabled="_bypassEnabled"
+                            OnToggle="HandleBypassEnabledToggle" />
+                        <p class="text-xs text-slate-500 mt-1 ml-12">Master toggle to enable/disable all bypass rules</p>
+                    </div>
+
+                    <!-- Domain Watchlist Toggle -->
+                    <ToggleSwitch
+                        Id="domain-watchlist"
+                        Label="Enable Domain Watchlist"
+                        IsEnabled="_bypassSettings.DomainWatchlistEnabled"
+                        OnToggle="HandleDomainWatchlistToggle" />
+
+                    <EditableList
+                        Label="Bypass Domains"
+                        Items="_bypassSettings.Domains"
+                        OnAdd="HandleAddBypassDomain"
+                        OnRemove="HandleRemoveBypassDomain"
+                        Placeholder="Enter domain (e.g., netflix.com)..."
+                        ValidationRegex="^[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.[a-zA-Z]{2,}$"
+                        ValidationErrorMessage="Invalid domain format"
+                        EmptyMessage="No bypass domains configured" />
+
+                    <EditableList
+                        Label="Bypass IPv4 Addresses"
+                        Items="_bypassSettings.Ipv4"
+                        OnAdd="HandleAddBypassIpv4"
+                        OnRemove="HandleRemoveBypassIpv4"
+                        Placeholder="Enter IPv4 address or CIDR (e.g., 192.168.1.0/24)..."
+                        ValidationRegex="^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\/\d{1,2})?$"
+                        ValidationErrorMessage="Invalid IPv4 format (e.g., 192.168.1.1 or 10.0.0.0/8)"
+                        EmptyMessage="No IPv4 addresses configured" />
+
+                    <EditableList
+                        Label="Bypass IPv6 Addresses"
+                        Items="_bypassSettings.Ipv6"
+                        OnAdd="HandleAddBypassIpv6"
+                        OnRemove="HandleRemoveBypassIpv6"
+                        Placeholder="Enter IPv6 address (e.g., 2001:db8::1)..."
+                        ValidationRegex="^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(\/\d{1,3})?$"
+                        ValidationErrorMessage="Invalid IPv6 format"
+                        EmptyMessage="No IPv6 addresses configured" />
+
                     <div>
-                        <label for="bonding-mode" class="block mb-2 font-medium text-white">Connection Mode</label>
-                        <select id="bonding-mode"
-                                @bind="_selectedBondingMode"
-                                @bind:after="HandleBondingModeChange"
-                                disabled="@_isProcessing"
-                                class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                            <option value="speed">Speed Mode - Maximum speed using all connections</option>
-                            <option value="redundant">Redundant Mode - Maximum reliability with duplicate packets</option>
-                            <option value="streaming">Streaming Mode - Optimized for live streaming</option>
-                        </select>
-                        <p class="text-xs text-slate-400 mt-1">Choose how Speedify uses multiple connections.</p>
+                        <label class="block mb-2 font-medium text-white">Bypass Ports</label>
+                        @if (_bypassSettings.Ports.Any())
+                        {
+                            <div class="space-y-2 mb-2">
+                                @foreach (var (port, index) in _bypassSettings.Ports.Select((p, i) => (p, i)))
+                                {
+                                    <PortRuleEditor Rule="port" OnRemove="() => HandleRemoveBypassPort(index)" OnChange="(r) => HandleBypassPortChange(index, r)" />
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <p class="text-sm text-slate-500 italic mb-2">No port rules configured</p>
+                        }
+                        <button class="text-cyan-400 text-sm hover:text-cyan-300" @onclick="HandleAddBypassPort">
+                            <i class="fas fa-plus mr-1"></i> Add Port Rule
+                        </button>
+                    </div>
+
+                    <!-- Service Bypass Presets -->
+                    <div class="mt-6">
+                        <label class="block mb-3 font-medium text-white">
+                            <i class="fas fa-tv mr-2 text-cyan-400"></i>
+                            Service Bypass Presets
+                        </label>
+                        <p class="text-xs text-slate-400 mb-3">Enable bypass for popular streaming and gaming services</p>
+                        
+                        <!-- Streaming Services -->
+                        <div class="mb-4">
+                            <h4 class="text-sm font-medium text-slate-300 mb-2">
+                                <i class="fas fa-play-circle mr-1"></i> Streaming Services
+                            </h4>
+                            <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                @foreach (var service in _streamingServicePresets)
+                                {
+                                    <div class="bg-slate-800/50 rounded-md p-2">
+                                        <ToggleSwitch
+                                            Id="@($"preset-{service.Key}")"
+                                            Label="@service.Value"
+                                            IsEnabled="IsServiceEnabled(service.Key)"
+                                            OnToggle="(e) => HandlePresetServiceToggle(service.Key, e)" />
+                                    </div>
+                                }
+                            </div>
+                        </div>
+
+                        <!-- Gaming Services -->
+                        <div>
+                            <h4 class="text-sm font-medium text-slate-300 mb-2">
+                                <i class="fas fa-gamepad mr-1"></i> Gaming Services
+                            </h4>
+                            <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                @foreach (var service in _gamingServicePresets)
+                                {
+                                    <div class="bg-slate-800/50 rounded-md p-2">
+                                        <ToggleSwitch
+                                            Id="@($"preset-{service.Key}")"
+                                            Label="@service.Value"
+                                            IsEnabled="IsServiceEnabled(service.Key)"
+                                            OnToggle="(e) => HandlePresetServiceToggle(service.Key, e)" />
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Custom Services from API -->
+                    @if (_bypassSettings.Services.Any(s => !_allPresetServices.ContainsKey(s.Name.ToLowerInvariant())))
+                    {
+                        <div class="mt-4">
+                            <h4 class="text-sm font-medium text-slate-300 mb-2">
+                                <i class="fas fa-cogs mr-1"></i> Other Services
+                            </h4>
+                            <div class="space-y-2">
+                                @foreach (var service in _bypassSettings.Services.Where(s => !_allPresetServices.ContainsKey(s.Name.ToLowerInvariant())))
+                                {
+                                    <ToggleSwitch
+                                        Id="@($"service-{service.Name}")"
+                                        Label="@service.Name"
+                                        IsEnabled="service.Enabled"
+                                        OnToggle="(e) => HandleServiceBypassToggle(service.Name, e)" />
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            </Accordion>
+
+            <!-- Section 5: Streaming Mode Rules -->
+            <Accordion Title="Streaming Mode Rules" IsExpanded="_streamingExpanded" OnToggle="(e) => _streamingExpanded = e" BadgeText="@GetStreamingBadge()">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400 mb-4">
+                        Configure high-priority traffic rules when in Streaming bonding mode. These rules determine which traffic receives priority treatment for low-latency streaming.
+                    </p>
+
+                    <EditableList
+                        Label="High-Priority Domains"
+                        Items="_streamingSettings.Domains"
+                        OnAdd="HandleAddStreamingDomain"
+                        OnRemove="HandleRemoveStreamingDomain"
+                        Placeholder="Enter domain (e.g., twitch.tv)..."
+                        ValidationRegex="^[a-zA-Z0-9][a-zA-Z0-9\-\.]*\.[a-zA-Z]{2,}$"
+                        ValidationErrorMessage="Invalid domain format"
+                        EmptyMessage="No streaming domains configured" />
+
+                    <EditableList
+                        Label="High-Priority IPv4 Addresses"
+                        Items="_streamingSettings.Ipv4"
+                        OnAdd="HandleAddStreamingIpv4"
+                        OnRemove="HandleRemoveStreamingIpv4"
+                        Placeholder="Enter IPv4 address or CIDR..."
+                        ValidationRegex="^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\/\d{1,2})?$"
+                        ValidationErrorMessage="Invalid IPv4 format"
+                        EmptyMessage="No IPv4 addresses configured" />
+
+                    <EditableList
+                        Label="High-Priority IPv6 Addresses"
+                        Items="_streamingSettings.Ipv6"
+                        OnAdd="HandleAddStreamingIpv6"
+                        OnRemove="HandleRemoveStreamingIpv6"
+                        Placeholder="Enter IPv6 address..."
+                        ValidationRegex="^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(\/\d{1,3})?$"
+                        ValidationErrorMessage="Invalid IPv6 format"
+                        EmptyMessage="No IPv6 addresses configured" />
+
+                    <div>
+                        <label class="block mb-2 font-medium text-white">High-Priority Ports</label>
+                        @if (_streamingSettings.Ports.Any())
+                        {
+                            <div class="space-y-2 mb-2">
+                                @foreach (var (port, index) in _streamingSettings.Ports.Select((p, i) => (p, i)))
+                                {
+                                    <PortRuleEditor Rule="port" OnRemove="() => HandleRemoveStreamingPort(index)" OnChange="(r) => HandleStreamingPortChange(index, r)" />
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <p class="text-sm text-slate-500 italic mb-2">No port rules configured</p>
+                        }
+                        <button class="text-cyan-400 text-sm hover:text-cyan-300" @onclick="HandleAddStreamingPort">
+                            <i class="fas fa-plus mr-1"></i> Add Port Rule
+                        </button>
                     </div>
                 </div>
-            </div>
+            </Accordion>
 
-            <!-- Section 4: Bypass Mode -->
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg @(_bypassModeChanged ? "ring-2 ring-yellow-500/50" : "")">
-                <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
-                    <h3 class="text-xl font-semibold text-white">Bypass Mode</h3>
-                    @if (_bypassModeChanged)
+            <!-- Section 6: Connection Method -->
+            <Accordion Title="Server Selection" IsExpanded="_connectMethodExpanded" OnToggle="(e) => _connectMethodExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <SelectDropdown
+                        Label="Connection Method"
+                        Options="_connectMethodOptions"
+                        SelectedValue="_connectMethod.Method"
+                        OnChange="HandleConnectMethodChange"
+                        HelpText="How Speedify selects which server to connect to" />
+
+                    @if (_connectMethod.Method == "country" || !string.IsNullOrEmpty(_connectMethod.Country))
                     {
-                        <span class="text-xs bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-full">
-                            <i class="fas fa-exclamation-circle mr-1"></i>Unsaved Changes
-                        </span>
+                        <div>
+                            <label class="block mb-2 font-medium text-white">Country</label>
+                            <input type="text" 
+                                   @bind="_connectMethod.Country"
+                                   placeholder="Country code (e.g., US)"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        </div>
+
+                        <div>
+                            <label class="block mb-2 font-medium text-white">City (optional)</label>
+                            <input type="text" 
+                                   @bind="_connectMethod.City"
+                                   placeholder="City name"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        </div>
                     }
-                </div>
-                <div class="space-y-4">
+
                     <ToggleSwitch
-                        Id="bypass-mode"
-                        Label="Direct Network Access (Disconnect Speedify)"
-                        IsEnabled="_bypassModeEnabled"
-                        OnToggle="HandleBypassModeToggle" />
-                    <p class="text-xs text-slate-400 mt-1">When enabled, Speedify disconnects and you use networks directly without VPN. Click "Save Changes" to apply.</p>
-                    
-                    @if (_bypassModeEnabled && OperatingSystem.IsLinux())
-                    {
-                        <div class="mt-4 pl-4 border-l-2 border-blue-500">
-                            <label for="bypass-adapter" class="block mb-2 font-medium text-white">Network Adapter:</label>
-                            <select id="bypass-adapter"
-                                    @bind="_selectedBypassAdapter"
-                                    @bind:after="OnBypassAdapterChanged"
-                                    disabled="@_isProcessing"
-                                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                                <option value="">Automatic (OS Default)</option>
-                                @foreach (var adapter in _adapters)
-                                {
-                                    <option value="@adapter.AdapterId">@adapter.Name - @adapter.Type</option>
-                                }
-                            </select>
-                            <p class="text-xs text-slate-400 mt-1">Select which adapter to route traffic through when Speedify is disconnected.</p>
-                        </div>
-                    }
-                    else if (_bypassModeEnabled && !OperatingSystem.IsLinux())
-                    {
-                        <div class="mt-4 pl-4 border-l-2 border-yellow-500">
-                            <p class="text-xs text-yellow-400">
-                                <i class="fas fa-info-circle mr-1"></i>
-                                Network adapter selection is only available on Linux.
-                            </p>
-                        </div>
-                    }
+                        Id="startup-connect"
+                        Label="Auto-connect on startup"
+                        IsEnabled="_startupConnect"
+                        OnToggle="HandleStartupConnectToggle" />
                 </div>
-            </div>
+            </Accordion>
 
-            <!-- Section 5: Connection Controls -->
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-5 shadow-lg">
-                <h3 class="text-xl font-semibold text-white mb-4 border-b border-slate-700 pb-3">Connection Controls</h3>
-                <div class="space-y-3">
+            <!-- Section 7: Advanced Settings -->
+            <Accordion Title="Advanced Settings" IsExpanded="_advancedExpanded" OnToggle="(e) => _advancedExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <NumberInput
+                        Label="Max Redundant Connections"
+                        Value="_maxRedundant"
+                        OnChange="HandleMaxRedundantChange"
+                        Min="0"
+                        Max="10"
+                        HelpText="Maximum connections used for redundancy (0 = disabled)" />
+
+                    <NumberInput
+                        Label="Priority Overflow"
+                        Value="_priorityOverflow"
+                        OnChange="HandlePriorityOverflowChange"
+                        Min="0"
+                        Step="0.1"
+                        Unit="Mbps"
+                        HelpText="Threshold for priority traffic overflow" />
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <NumberInput
+                            Label="Target Upload Connections"
+                            Value="_targetUpload"
+                            OnChange="HandleTargetUploadChange"
+                            Min="1"
+                            Max="10" />
+
+                        <NumberInput
+                            Label="Target Download Connections"
+                            Value="_targetDownload"
+                            OnChange="HandleTargetDownloadChange"
+                            Min="1"
+                            Max="10" />
+                    </div>
+                </div>
+            </Accordion>
+
+            <!-- Section 8: Fixed Delay -->
+            <Accordion Title="Fixed Delay" IsExpanded="_fixedDelayExpanded" OnToggle="(e) => _fixedDelayExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400 mb-4">
+                        Add fixed latency to specific traffic for consistent timing.
+                    </p>
+
+                    <NumberInput
+                        Label="Delay Amount"
+                        Value="_fixedDelaySettings.DelayMs"
+                        OnChange="HandleFixedDelayChange"
+                        Min="0"
+                        Max="5000"
+                        Unit="ms"
+                        HelpText="Delay in milliseconds to apply to matched traffic" />
+
+                    <EditableList
+                        Label="Apply to Domains"
+                        Items="_fixedDelaySettings.Domains"
+                        OnAdd="HandleAddFixedDelayDomain"
+                        OnRemove="HandleRemoveFixedDelayDomain"
+                        Placeholder="Enter domain..."
+                        EmptyMessage="No domains configured" />
+
+                    <EditableList
+                        Label="Apply to IPs"
+                        Items="_fixedDelaySettings.Ips"
+                        OnAdd="HandleAddFixedDelayIp"
+                        OnRemove="HandleRemoveFixedDelayIp"
+                        Placeholder="Enter IP address..."
+                        EmptyMessage="No IPs configured" />
+                </div>
+            </Accordion>
+
+            <!-- Section 9: Port Forwarding -->
+            <Accordion Title="Port Forwarding" IsExpanded="_portForwardingExpanded" OnToggle="(e) => _portForwardingExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400 mb-4">
+                        Configure ports to forward through the VPN for hosting services. Requires private server connection.
+                    </p>
+
+                    @if (_forwardedPorts.Any())
+                    {
+                        <div class="space-y-2">
+                            @foreach (var (port, index) in _forwardedPorts.Select((p, i) => (p, i)))
+                            {
+                                <div class="flex items-center gap-2 bg-slate-900 p-2 rounded-md">
+                                    <span class="text-white flex-1">@port.Port/@port.Protocol</span>
+                                    <button class="text-red-400 hover:text-red-300" @onclick="() => HandleRemoveForwardedPort(index)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-sm text-slate-500 italic">No ports forwarded</p>
+                    }
+
+                    <div class="flex gap-2">
+                        <input type="number" 
+                               @bind="_newForwardedPort"
+                               placeholder="Port"
+                               min="1"
+                               max="65535"
+                               class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        <select @bind="_newForwardedProtocol" class="bg-slate-900 border border-slate-700 rounded-md p-2 text-white">
+                            <option value="tcp">TCP</option>
+                            <option value="udp">UDP</option>
+                        </select>
+                        <button class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded-md" @onclick="HandleAddForwardedPort">
+                            Add
+                        </button>
+                    </div>
+                </div>
+            </Accordion>
+
+            <!-- Section 10: Downstream Subnets -->
+            <Accordion Title="Downstream Subnets" IsExpanded="_subnetsExpanded" OnToggle="(e) => _subnetsExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400 mb-4">
+                        Configure downstream networks to route through the VPN (enterprise feature).
+                    </p>
+
+                    @if (_downstreamSubnets.Any())
+                    {
+                        <div class="space-y-2">
+                            @foreach (var (subnet, index) in _downstreamSubnets.Select((s, i) => (s, i)))
+                            {
+                                <div class="flex items-center gap-2 bg-slate-900 p-2 rounded-md">
+                                    <span class="text-white flex-1">@subnet.Address/@subnet.PrefixLength</span>
+                                    <button class="text-red-400 hover:text-red-300" @onclick="() => HandleRemoveSubnet(index)">
+                                        <i class="fas fa-times"></i>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-sm text-slate-500 italic">No downstream subnets configured</p>
+                    }
+
+                    <div class="flex gap-2">
+                        <input type="text" 
+                               @bind="_newSubnetAddress"
+                               placeholder="Network address (e.g., 192.168.1.0)"
+                               class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        <input type="number" 
+                               @bind="_newSubnetPrefix"
+                               placeholder="Prefix"
+                               min="1"
+                               max="32"
+                               class="w-20 bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        <button class="bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded-md" @onclick="HandleAddSubnet">
+                            Add
+                        </button>
+                    </div>
+                </div>
+            </Accordion>
+
+            <!-- Section 11: Network Monitor (App-specific) -->
+            <Accordion Title="Network Monitor" IsExpanded="_monitorExpanded" OnToggle="(e) => _monitorExpanded = e">
+                <div class="space-y-4 pt-4">
+                    <ToggleSwitch 
+                        Id="monitor-enabled"
+                        Label="Enable Background Monitoring"
+                        IsEnabled="_monitorSettings.Enabled"
+                        OnToggle="HandleMonitorToggle" />
+
+                    <div>
+                        <label class="block mb-2 font-medium text-white">Whitelisted Adapters</label>
+                        <input type="text" 
+                               @bind="_whitelistedLinksInput" 
+                               class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white">
+                        <p class="text-xs text-slate-400 mt-1">Comma-separated list of adapter IDs to monitor.</p>
+                    </div>
+
+                    <NumberInput
+                        Label="Restart Timeout"
+                        Value="_monitorSettings.DownTimeoutSeconds"
+                        OnChange="(v) => _monitorSettings.DownTimeoutSeconds = (int)v"
+                        Min="5"
+                        Max="300"
+                        Unit="seconds"
+                        HelpText="Time to wait before restarting a failed adapter" />
+                </div>
+            </Accordion>
+
+            <!-- Section 12: System Controls -->
+            <Accordion Title="System Controls" IsExpanded="_controlsExpanded" OnToggle="(e) => _controlsExpanded = e">
+                <div class="space-y-3 pt-4">
                     <button class="w-full text-left flex items-center gap-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold py-3 px-4 rounded-md transition-colors"
                             @onclick="ShowDisconnectModal"
                             disabled="@_isProcessing">
@@ -192,18 +624,326 @@
                         <span>Reboot Server</span>
                     </button>
                 </div>
-            </div>
+            </Accordion>
+
+            <!-- Section 13: Adapter Settings -->
+            <Accordion Title="Adapter Settings" IsExpanded="_adapterSettingsExpanded" OnToggle="(e) => _adapterSettingsExpanded = e" BadgeText="@GetAdaptersBadge()">
+                <div class="space-y-4 pt-4">
+                    <div class="flex justify-between items-center mb-4">
+                        <p class="text-sm text-slate-400">
+                            Configure individual network adapter settings including priority, encryption, data limits, and rate limits.
+                        </p>
+                        <button class="text-cyan-400 text-sm hover:text-cyan-300 flex items-center gap-1"
+                                @onclick="RefreshAdapters"
+                                disabled="@_isLoadingAdapters">
+                            <i class="fas fa-sync @(_isLoadingAdapters ? "fa-spin" : "")"></i>
+                            <span>Refresh</span>
+                        </button>
+                    </div>
+
+                    @if (_isLoadingAdapters)
+                    {
+                        <Preloader Message="Loading adapters..." ContainerClass="py-6" />
+                    }
+                    else if (_adaptersExtended == null || !_adaptersExtended.Any())
+                    {
+                        <div class="text-center py-6 text-slate-500">
+                            <i class="fas fa-network-wired text-3xl mb-2"></i>
+                            <p>No adapters found</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="space-y-4">
+                            @foreach (var adapter in _adaptersExtended)
+                            {
+                                <div class="bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
+                                    <!-- Adapter Header -->
+                                    <div class="p-4 bg-slate-800/80 border-b border-slate-700 cursor-pointer flex items-center justify-between"
+                                         @onclick="() => ToggleAdapterExpanded(adapter.AdapterId)">
+                                        <div class="flex items-center gap-3">
+                                            <i class="fas @GetAdapterIcon(adapter.Type) text-cyan-400"></i>
+                                            <div>
+                                                <div class="font-medium text-white">@(string.IsNullOrEmpty(adapter.Name) ? adapter.AdapterId : adapter.Name)</div>
+                                                @if (!string.IsNullOrEmpty(adapter.Isp))
+                                                {
+                                                    <div class="text-xs text-slate-400">@adapter.Isp</div>
+                                                }
+                                            </div>
+                                        </div>
+                                        <div class="flex items-center gap-2">
+                                            @if (_adapterPendingChanges.ContainsKey(adapter.AdapterId) && _adapterPendingChanges[adapter.AdapterId])
+                                            {
+                                                <span class="px-2 py-0.5 rounded text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">Unsaved</span>
+                                            }
+                                            <span class="px-2 py-0.5 rounded text-xs @GetPriorityBadgeClass(adapter.Priority)">@adapter.Priority</span>
+                                            <span class="px-2 py-0.5 rounded text-xs @GetStateBadgeClass(adapter.State)">@adapter.State</span>
+                                            <i class="fas @(_expandedAdapters.Contains(adapter.AdapterId) ? "fa-chevron-up" : "fa-chevron-down") text-slate-400"></i>
+                                        </div>
+                                    </div>
+
+                                    <!-- Adapter Details (Expandable) -->
+                                    @if (_expandedAdapters.Contains(adapter.AdapterId))
+                                    {
+                                        <div class="p-4 space-y-6">
+                                            <!-- Basic Info Section -->
+                                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                                <div>
+                                                    <label class="text-xs text-slate-500 block mb-1">Adapter ID</label>
+                                                    <div class="flex items-center gap-2">
+                                                        <code class="text-sm text-slate-300 bg-slate-900 px-2 py-1 rounded truncate max-w-[200px]" title="@adapter.AdapterId">@TruncateAdapterId(adapter.AdapterId)</code>
+                                                        <button class="text-slate-400 hover:text-cyan-400 text-sm" @onclick="() => CopyToClipboard(adapter.AdapterId)" title="Copy ID">
+                                                            <i class="fas fa-copy"></i>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <label class="text-xs text-slate-500 block mb-1">Type</label>
+                                                    <span class="text-sm text-slate-300">@adapter.Type</span>
+                                                </div>
+                                            </div>
+
+                                            <!-- Priority Setting -->
+                                            <div class="border-t border-slate-700 pt-4">
+                                                <SelectDropdown
+                                                    Label="Priority"
+                                                    Options="_adapterPriorityOptions"
+                                                    SelectedValue="@adapter.Priority"
+                                                    OnChange="(value) => HandleAdapterPriorityChange(adapter.AdapterId, value)"
+                                                    HelpText="How this adapter is used for bonding" />
+                                            </div>
+
+                                            <!-- Encryption Toggle -->
+                                            <div class="border-t border-slate-700 pt-4">
+                                                <ToggleSwitch
+                                                    Id="@($"adapter-encryption-{adapter.AdapterId}")"
+                                                    Label="Encryption Enabled"
+                                                    IsEnabled="@adapter.EncryptionEnabled"
+                                                    OnToggle="(enabled) => HandleAdapterEncryptionToggle(adapter.AdapterId, enabled)" />
+                                                <p class="text-xs text-slate-500 mt-1 ml-0">Per-adapter encryption for this connection</p>
+                                            </div>
+
+                                            <!-- Data Limits Section -->
+                                            <div class="border-t border-slate-700 pt-4">
+                                                <h4 class="text-sm font-medium text-white mb-3 flex items-center gap-2">
+                                                    <i class="fas fa-database text-cyan-400"></i>
+                                                    Data Limits
+                                                </h4>
+                                                <div class="space-y-4 pl-4">
+                                                    <!-- Daily Limit -->
+                                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+                                                        <div>
+                                                            <label class="text-xs text-slate-400 block mb-1">Daily Limit</label>
+                                                            <div class="flex items-center gap-2">
+                                                                <input type="number"
+                                                                       class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
+                                                                       value="@GetDataLimitDisplayValue(adapter.DataUsage.UsageDailyLimit)"
+                                                                       disabled="@IsDataLimitUnlimited(adapter.DataUsage.UsageDailyLimit)"
+                                                                       @onchange="(e) => HandleAdapterDailyLimitChange(adapter.AdapterId, e)" />
+                                                                <select class="bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm w-20"
+                                                                        value="@GetAdapterDataLimitUnit(adapter.AdapterId, "daily")"
+                                                                        @onchange="(e) => HandleAdapterDailyLimitUnitChange(adapter.AdapterId, e)">
+                                                                    <option value="MB">MB</option>
+                                                                    <option value="GB">GB</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div class="flex items-center gap-2">
+                                                            <input type="checkbox"
+                                                                   id="@($"daily-unlimited-{adapter.AdapterId}")"
+                                                                   checked="@IsDataLimitUnlimited(adapter.DataUsage.UsageDailyLimit)"
+                                                                   @onchange="(e) => HandleAdapterDailyUnlimitedToggle(adapter.AdapterId, e)"
+                                                                   class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-600" />
+                                                            <label for="@($"daily-unlimited-{adapter.AdapterId}")" class="text-sm text-slate-300">Unlimited</label>
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- Monthly Limit -->
+                                                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                                                        <div>
+                                                            <label class="text-xs text-slate-400 block mb-1">Monthly Limit</label>
+                                                            <div class="flex items-center gap-2">
+                                                                <input type="number"
+                                                                       class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
+                                                                       value="@GetDataLimitDisplayValue(adapter.DataUsage.UsageMonthlyLimit)"
+                                                                       disabled="@IsDataLimitUnlimited(adapter.DataUsage.UsageMonthlyLimit)"
+                                                                       @onchange="(e) => HandleAdapterMonthlyLimitChange(adapter.AdapterId, e)" />
+                                                                <select class="bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm w-20"
+                                                                        value="@GetAdapterDataLimitUnit(adapter.AdapterId, "monthly")"
+                                                                        @onchange="(e) => HandleAdapterMonthlyLimitUnitChange(adapter.AdapterId, e)">
+                                                                    <option value="MB">MB</option>
+                                                                    <option value="GB">GB</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <label class="text-xs text-slate-400 block mb-1">Reset Day</label>
+                                                            <select class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
+                                                                    value="@adapter.DataUsage.UsageMonthlyResetDay"
+                                                                    @onchange="(e) => HandleAdapterMonthlyResetDayChange(adapter.AdapterId, e)">
+                                                                @for (int day = 1; day <= 28; day++)
+                                                                {
+                                                                    <option value="@day">Day @day</option>
+                                                                }
+                                                            </select>
+                                                        </div>
+                                                        <div class="flex items-center gap-2">
+                                                            <input type="checkbox"
+                                                                   id="@($"monthly-unlimited-{adapter.AdapterId}")"
+                                                                   checked="@IsDataLimitUnlimited(adapter.DataUsage.UsageMonthlyLimit)"
+                                                                   @onchange="(e) => HandleAdapterMonthlyUnlimitedToggle(adapter.AdapterId, e)"
+                                                                   class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-600" />
+                                                            <label for="@($"monthly-unlimited-{adapter.AdapterId}")" class="text-sm text-slate-300">Unlimited</label>
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- Over-limit Rate Limit -->
+                                                    <div>
+                                                        <label class="text-xs text-slate-400 block mb-1">Over-limit Rate Limit (bps)</label>
+                                                        <div class="flex items-center gap-2">
+                                                            <input type="number"
+                                                                   class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm max-w-[200px]"
+                                                                   value="@adapter.DataUsage.OverlimitRatelimit"
+                                                                   @onchange="(e) => HandleAdapterOverlimitRateChange(adapter.AdapterId, e)"
+                                                                   min="0" />
+                                                            <span class="text-xs text-slate-500">(0 = block when over limit)</span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Rate Limits Section -->
+                                            <div class="border-t border-slate-700 pt-4">
+                                                <h4 class="text-sm font-medium text-white mb-3 flex items-center gap-2">
+                                                    <i class="fas fa-tachometer-alt text-cyan-400"></i>
+                                                    Rate Limits
+                                                </h4>
+                                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pl-4">
+                                                    <div>
+                                                        <label class="text-xs text-slate-400 block mb-1">Download Limit (bps)</label>
+                                                        <div class="flex items-center gap-2">
+                                                            <input type="number"
+                                                                   class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
+                                                                   value="@adapter.RateLimit.DownloadBitsPerSecond"
+                                                                   disabled="@(adapter.RateLimit.DownloadBitsPerSecond == 0)"
+                                                                   @onchange="(e) => HandleAdapterDownloadRateLimitChange(adapter.AdapterId, e)"
+                                                                   min="0" />
+                                                            <div class="flex items-center gap-1">
+                                                                <input type="checkbox"
+                                                                       id="@($"dl-unlimited-{adapter.AdapterId}")"
+                                                                       checked="@(adapter.RateLimit.DownloadBitsPerSecond == 0)"
+                                                                       @onchange="(e) => HandleAdapterDownloadUnlimitedToggle(adapter.AdapterId, e)"
+                                                                       class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-600" />
+                                                                <label for="@($"dl-unlimited-{adapter.AdapterId}")" class="text-xs text-slate-300">∞</label>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label class="text-xs text-slate-400 block mb-1">Upload Limit (bps)</label>
+                                                        <div class="flex items-center gap-2">
+                                                            <input type="number"
+                                                                   class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
+                                                                   value="@adapter.RateLimit.UploadBitsPerSecond"
+                                                                   disabled="@(adapter.RateLimit.UploadBitsPerSecond == 0)"
+                                                                   @onchange="(e) => HandleAdapterUploadRateLimitChange(adapter.AdapterId, e)"
+                                                                   min="0" />
+                                                            <div class="flex items-center gap-1">
+                                                                <input type="checkbox"
+                                                                       id="@($"ul-unlimited-{adapter.AdapterId}")"
+                                                                       checked="@(adapter.RateLimit.UploadBitsPerSecond == 0)"
+                                                                       @onchange="(e) => HandleAdapterUploadUnlimitedToggle(adapter.AdapterId, e)"
+                                                                       class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-600" />
+                                                                <label for="@($"ul-unlimited-{adapter.AdapterId}")" class="text-xs text-slate-300">∞</label>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Directional Mode Section -->
+                                            <div class="border-t border-slate-700 pt-4">
+                                                <h4 class="text-sm font-medium text-white mb-3 flex items-center gap-2">
+                                                    <i class="fas fa-exchange-alt text-cyan-400"></i>
+                                                    Directional Mode
+                                                </h4>
+                                                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pl-4">
+                                                    <SelectDropdown
+                                                        Label="Upload Mode"
+                                                        Options="_directionalModeOptions"
+                                                        SelectedValue="@adapter.DirectionalSettings.Upload"
+                                                        OnChange="(value) => HandleAdapterUploadModeChange(adapter.AdapterId, value)"
+                                                        HelpText="How this adapter handles uploads" />
+                                                    <SelectDropdown
+                                                        Label="Download Mode"
+                                                        Options="_directionalModeOptions"
+                                                        SelectedValue="@adapter.DirectionalSettings.Download"
+                                                        OnChange="(value) => HandleAdapterDownloadModeChange(adapter.AdapterId, value)"
+                                                        HelpText="How this adapter handles downloads" />
+                                                </div>
+                                            </div>
+
+                                            <!-- Usage Stats -->
+                                            <div class="border-t border-slate-700 pt-4">
+                                                <h4 class="text-sm font-medium text-white mb-3 flex items-center gap-2">
+                                                    <i class="fas fa-chart-bar text-cyan-400"></i>
+                                                    Current Usage
+                                                </h4>
+                                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 pl-4">
+                                                    <div class="bg-slate-900 rounded-md p-3">
+                                                        <div class="text-xs text-slate-500">Daily Usage</div>
+                                                        <div class="text-lg font-semibold text-white">@FormatBytes(adapter.DataUsage.UsageDaily)</div>
+                                                    </div>
+                                                    <div class="bg-slate-900 rounded-md p-3">
+                                                        <div class="text-xs text-slate-500">Daily Boost</div>
+                                                        <div class="text-lg font-semibold text-white">@FormatBytes(adapter.DataUsage.UsageDailyBoost)</div>
+                                                    </div>
+                                                    <div class="bg-slate-900 rounded-md p-3">
+                                                        <div class="text-xs text-slate-500">Monthly Usage</div>
+                                                        <div class="text-lg font-semibold text-white">@FormatBytes(adapter.DataUsage.UsageMonthly)</div>
+                                                    </div>
+                                                    <div class="bg-slate-900 rounded-md p-3">
+                                                        <div class="text-xs text-slate-500">Working Priority</div>
+                                                        <div class="text-lg font-semibold text-white">@adapter.WorkingPriority</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Actions -->
+                                            <div class="border-t border-slate-700 pt-4 flex flex-wrap gap-2">
+                                                <button class="flex items-center gap-2 bg-red-600/20 hover:bg-red-600/30 text-red-400 px-3 py-2 rounded-md text-sm transition-colors"
+                                                        @onclick="() => HandleResetAdapterUsage(adapter.AdapterId)"
+                                                        disabled="@_isProcessing">
+                                                    <i class="fas fa-undo"></i>
+                                                    Reset Usage
+                                                </button>
+                                                <button class="flex items-center gap-2 bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-400 px-3 py-2 rounded-md text-sm transition-colors"
+                                                        @onclick="() => RefreshSingleAdapter(adapter.AdapterId)"
+                                                        disabled="@_isProcessing">
+                                                    <i class="fas fa-sync"></i>
+                                                    Refresh
+                                                </button>
+                                                @if (_adapterPendingChanges.ContainsKey(adapter.AdapterId) && _adapterPendingChanges[adapter.AdapterId])
+                                                {
+                                                    <button class="flex items-center gap-2 bg-green-600/20 hover:bg-green-600/30 text-green-400 px-3 py-2 rounded-md text-sm transition-colors"
+                                                            @onclick="() => ApplyAdapterChanges(adapter.AdapterId)"
+                                                            disabled="@_isProcessing">
+                                                        <i class="fas fa-check"></i>
+                                                        Apply Changes
+                                                    </button>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </Accordion>
 
             <!-- Save Button -->
-            <div class="flex items-center justify-end gap-4 pt-2">
-                @if (_bypassModeChanged)
-                {
-                    <span class="text-sm text-yellow-400">
-                        <i class="fas fa-info-circle mr-1"></i>
-                        Bypass mode changes require saving
-                    </span>
-                }
-                <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg @(_bypassModeChanged ? "ring-2 ring-yellow-500 animate-pulse" : "")"
+            <div class="flex items-center justify-end gap-4 pt-4">
+                <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg"
                         @onclick="SaveSettings"
                         disabled="@_isProcessing">
                     @if (_isProcessing)
@@ -261,30 +1001,139 @@
     private NetworkMonitorSettings _monitorSettings = new();
     private string _whitelistedLinksInput = "";
     private SpeedifySettings _connectionSettings = new();
+    private PrivacySettings _privacySettings = new();
+    private StreamingBypassSettings _bypassSettings = new();
+    private StreamingSettings _streamingSettings = new();
+    private TransportSettings _transportSettings = new();
+    private ConnectMethod _connectMethod = new();
+    private FixedDelaySettings _fixedDelaySettings = new();
+    private List<ForwardedPort> _forwardedPorts = new();
+    private List<DownstreamSubnet> _downstreamSubnets = new();
+    
     private string? _error;
+    private string? _successMessage;
     private bool _isLoading = true;
     private bool _isProcessing = false;
-
-    // Bonding mode state
     private string _selectedBondingMode = "speed";
+    private bool _startupConnect = false;
+    private int _maxRedundant = 0;
+    private double _priorityOverflow = 0;
+    private int _targetUpload = 1;
+    private int _targetDownload = 1;
+    private int _newForwardedPort = 0;
+    private string _newForwardedProtocol = "tcp";
+    private string _newSubnetAddress = "";
+    private int _newSubnetPrefix = 24;
+    
+    // Streaming bypass state
+    private bool _bypassEnabled = false;
+    private bool _hasUnsavedBypassChanges = false;
+    private bool _hasUnsavedStreamingChanges = false;
+    
+    // Service preset dictionaries
+    private readonly Dictionary<string, string> _streamingServicePresets = new()
+    {
+        { "netflix", "Netflix" },
+        { "hulu", "Hulu" },
+        { "disney", "Disney+" },
+        { "amazon", "Amazon Prime Video" },
+        { "youtube", "YouTube" },
+        { "twitch", "Twitch" },
+        { "spotify", "Spotify" },
+        { "appletv", "Apple TV+" },
+        { "hbomax", "HBO Max" },
+        { "peacock", "Peacock" },
+        { "paramount", "Paramount+" },
+        { "crunchyroll", "Crunchyroll" }
+    };
+    
+    private readonly Dictionary<string, string> _gamingServicePresets = new()
+    {
+        { "steam", "Steam" },
+        { "leagueoflegends", "League of Legends" },
+        { "valorant", "Valorant" },
+        { "fortnite", "Fortnite" },
+        { "xbox", "Xbox Live" },
+        { "playstation", "PlayStation Network" },
+        { "epicgames", "Epic Games" },
+        { "battlenet", "Battle.net" },
+        { "riotgames", "Riot Games" },
+        { "ea", "EA / Origin" }
+    };
+    
+    private Dictionary<string, string> _allPresetServices => _streamingServicePresets
+        .Concat(_gamingServicePresets)
+        .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+    
+    // Track enabled services
+    private HashSet<string> _enabledServices = new(StringComparer.OrdinalIgnoreCase);
 
-    // Bypass mode state - separate pending and applied states
-    private bool _bypassModeEnabled = false;           // Current UI state (pending)
-    private bool _appliedBypassModeEnabled = false;    // Actually applied state
-    private string _selectedBypassAdapter = "";         // Current UI state (pending)
-    private string _appliedBypassAdapter = "";          // Actually applied state
-    private List<Adapter> _adapters = new();
-    private bool _bypassModeChanged = false;            // Track if bypass settings have changed
+    private bool _connectionExpanded = true;
+    private bool _transportExpanded = false;
+    private bool _privacyExpanded = false;
+    private bool _bypassExpanded = false;
+    private bool _streamingExpanded = false;
+    private bool _connectMethodExpanded = false;
+    private bool _advancedExpanded = false;
+    private bool _fixedDelayExpanded = false;
+    private bool _portForwardingExpanded = false;
+    private bool _subnetsExpanded = false;
+    private bool _monitorExpanded = false;
+    private bool _controlsExpanded = false;
+    private bool _adapterSettingsExpanded = false;
 
-    // Modal visibility state
+    // Adapter settings state
+    private List<AdapterExtended>? _adaptersExtended;
+    private bool _isLoadingAdapters = false;
+    private HashSet<string> _expandedAdapters = new();
+    private Dictionary<string, bool> _adapterPendingChanges = new();
+    private Dictionary<string, string> _adapterDailyLimitUnits = new();
+    private Dictionary<string, string> _adapterMonthlyLimitUnits = new();
+    private Dictionary<string, AdapterExtended> _adapterLocalState = new();
+
     private bool _showDisconnectModal = false;
     private bool _showReconnectModal = false;
     private bool _showRestartModal = false;
     private bool _showRebootModal = false;
 
+    private List<SelectOption> _transportModeOptions = new()
+    {
+        new() { Value = "auto", Label = "Auto - Automatically select best protocol" },
+        new() { Value = "tcp", Label = "TCP - Reliable, firewall-friendly" },
+        new() { Value = "tcp-multi", Label = "TCP Multi - Multiple TCP connections" },
+        new() { Value = "udp", Label = "UDP - Lower latency" },
+        new() { Value = "https", Label = "HTTPS - Maximum compatibility" }
+    };
+
+    private List<SelectOption> _connectMethodOptions = new()
+    {
+        new() { Value = "closest", Label = "Closest - Nearest server by latency" },
+        new() { Value = "public", Label = "Public - Public IP server" },
+        new() { Value = "private", Label = "Private - Dedicated server" },
+        new() { Value = "p2p", Label = "P2P - Peer-to-peer optimized" },
+        new() { Value = "country", Label = "Country - Specific country/city" }
+    };
+
+    private List<SelectOption> _adapterPriorityOptions = new()
+    {
+        new() { Value = "automatic", Label = "Automatic - Let Speedify decide" },
+        new() { Value = "always", Label = "Always - Always use this adapter" },
+        new() { Value = "secondary", Label = "Secondary - Use only when needed" },
+        new() { Value = "backup", Label = "Backup - Use only if primary fails" },
+        new() { Value = "never", Label = "Never - Don't use this adapter" }
+    };
+
+    private List<SelectOption> _directionalModeOptions = new()
+    {
+        new() { Value = "on", Label = "On - Use for this direction" },
+        new() { Value = "backup_off", Label = "Backup Off - Not used in backup" },
+        new() { Value = "strict_off", Label = "Strict Off - Never use for this direction" }
+    };
+
     protected override async Task OnInitializedAsync()
     {
         await LoadSettings();
+        await LoadAdaptersExtended();
     }
 
     private async Task LoadSettings()
@@ -294,74 +1143,93 @@
 
         try
         {
-            // Load network monitor settings from configuration
             var monitorSection = Configuration.GetSection("NetworkMonitor");
             if (monitorSection.Exists())
             {
                 _monitorSettings = monitorSection.Get<NetworkMonitorSettings>() ?? new NetworkMonitorSettings();
             }
-
-            // Convert whitelisted links to comma-separated string
             _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks);
 
-            // Load adapters for bypass mode dropdown
-            try
-            {
-                var adapters = await SpeedifyService.GetAdaptersAsync();
-                _adapters = adapters.ToList();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Settings: Error loading adapters: {ex.Message}");
-                _adapters = new List<Adapter>();
-            }
+            var settingsTask = SpeedifyService.GetSettingsAsync();
+            var privacyTask = SpeedifyService.GetPrivacySettingsAsync();
+            var bypassTask = SpeedifyService.GetStreamingBypassSettingsAsync();
+            var streamingTask = SpeedifyService.GetStreamingSettingsAsync();
+            var transportTask = SpeedifyService.GetTransportSettingsAsync();
+            var connectMethodTask = SpeedifyService.GetConnectMethodAsync();
+            var fixedDelayTask = SpeedifyService.GetFixedDelaySettingsAsync();
 
-            // Load connection settings from Speedify
-            var speedifySettings = await SpeedifyService.GetSettingsAsync();
+            await Task.WhenAll(settingsTask, privacyTask, bypassTask, streamingTask, transportTask, connectMethodTask, fixedDelayTask);
+
+            var speedifySettings = await settingsTask;
             if (speedifySettings != null)
             {
                 _connectionSettings = speedifySettings;
                 _selectedBondingMode = speedifySettings.BondingMode ?? "speed";
             }
 
-            // Check if Speedify is connected for bypass mode state
-            try
+            var privacy = await privacyTask;
+            if (privacy != null) _privacySettings = privacy;
+
+            var bypass = await bypassTask;
+            if (bypass != null) _bypassSettings = bypass;
+
+            var streaming = await streamingTask;
+            if (streaming != null) _streamingSettings = streaming;
+
+            var transport = await transportTask;
+            if (transport != null) _transportSettings = transport;
+
+            var connectMethod = await connectMethodTask;
+            if (connectMethod != null) _connectMethod = connectMethod;
+
+            var fixedDelay = await fixedDelayTask;
+            if (fixedDelay != null) _fixedDelaySettings = fixedDelay;
+            
+            // Initialize enabled services set from loaded bypass settings
+            _enabledServices.Clear();
+            foreach (var service in _bypassSettings.Services.Where(s => s.Enabled))
             {
-                var state = await Task.Run(() =>
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = "speedify_cli",
-                        Arguments = "state",
-                        RedirectStandardOutput = true,
-                        UseShellExecute = false,
-                        CreateNoWindow = true
-                    })?.StandardOutput.ReadToEnd() ?? "{}")
-                    .ConfigureAwait(false);
-                
-                // Bypass mode is enabled when state is NOT "CONNECTED"
-                var isConnected = state.Contains("\"CONNECTED\"");
-                _bypassModeEnabled = !isConnected;
-                _appliedBypassModeEnabled = _bypassModeEnabled;
-                _appliedBypassAdapter = _selectedBypassAdapter;
-                _bypassModeChanged = false;
-            }
-            catch
-            {
-                // Default to false if we can't determine state
-                _bypassModeEnabled = false;
-                _appliedBypassModeEnabled = false;
-                _bypassModeChanged = false;
+                _enabledServices.Add(service.Name.ToLowerInvariant());
             }
         }
         catch (Exception ex)
         {
             _error = $"Failed to load settings: {ex.Message}";
-            Console.WriteLine($"Settings: Error loading settings: {ex.Message}");
         }
         finally
         {
             _isLoading = false;
         }
+    }
+
+    private string? GetBypassBadge()
+    {
+        var count = _bypassSettings.Domains.Count + _bypassSettings.Ipv4.Count +
+                    _bypassSettings.Ipv6.Count + _bypassSettings.Ports.Count +
+                    _enabledServices.Count;
+        
+        if (_hasUnsavedBypassChanges)
+        {
+            return count > 0 ? $"{count} ⚠️" : "⚠️";
+        }
+        return count > 0 ? count.ToString() : null;
+    }
+
+    private string? GetStreamingBadge()
+    {
+        var count = _streamingSettings.Domains.Count + _streamingSettings.Ipv4.Count +
+                    _streamingSettings.Ipv6.Count + _streamingSettings.Ports.Count;
+        
+        if (_hasUnsavedStreamingChanges)
+        {
+            return count > 0 ? $"{count} ⚠️" : "⚠️";
+        }
+        return count > 0 ? count.ToString() : null;
+    }
+    
+    private bool IsServiceEnabled(string serviceKey)
+    {
+        return _enabledServices.Contains(serviceKey.ToLowerInvariant());
     }
 
     private async Task HandleMonitorToggle(bool enabled)
@@ -373,16 +1241,817 @@
     private async Task HandleEncryptionToggle(bool enabled)
     {
         _isProcessing = true;
-        _error = null;
         await InvokeAsync(StateHasChanged);
-
         try
         {
             var success = await SpeedifyService.SetEncryptionAsync(enabled);
+            if (success) _connectionSettings.Encrypted = enabled;
+            else _error = "Failed to update encryption setting";
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleHeaderCompressionToggle(bool enabled)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var success = await SpeedifyService.SetHeaderCompressionAsync(enabled);
+            if (success) _connectionSettings.HeaderCompression = enabled;
+            else _error = "Failed to update header compression";
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandlePacketAggregationToggle(bool enabled)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var success = await SpeedifyService.SetPacketAggregationAsync(enabled);
+            if (success) _connectionSettings.PacketAggregation = enabled;
+            else _error = "Failed to update packet aggregation";
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleJumboPacketsToggle(bool enabled)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var success = await SpeedifyService.SetJumboPacketsAsync(enabled);
+            if (success) _connectionSettings.JumboPackets = enabled;
+            else _error = "Failed to update jumbo packets";
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleBondingModeChange()
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var result = await SpeedifyService.SetBondingModeAsync(_selectedBondingMode);
+            if (result != null) _connectionSettings.BondingMode = result.BondingMode;
+            else { _error = "Failed to update bonding mode"; _selectedBondingMode = _connectionSettings.BondingMode ?? "speed"; }
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; _selectedBondingMode = _connectionSettings.BondingMode ?? "speed"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleOverflowChange(double value)
+    {
+        try { await SpeedifyService.SetOverflowThresholdAsync(value); _connectionSettings.OverflowThreshold = value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleTransportModeChange(string mode)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var success = await SpeedifyService.SetTransportModeAsync(mode);
+            if (success) _transportSettings.TransportMode = mode;
+            else _error = "Failed to update transport mode";
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleTransportRetryChange(double value)
+    {
+        try { var success = await SpeedifyService.SetTransportRetryAsync((int)value); if (success) _transportSettings.TransportRetrySeconds = (int)value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleConnectRetryChange(double value)
+    {
+        try { var success = await SpeedifyService.SetConnectRetryAsync((int)value); if (success) _transportSettings.ConnectRetrySeconds = (int)value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddDns(string dns)
+    {
+        try { _privacySettings.DnsAddresses.Add(dns); await SpeedifyService.SetDnsServersAsync(_privacySettings.DnsAddresses); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveDns(int index)
+    {
+        try { _privacySettings.DnsAddresses.RemoveAt(index); await SpeedifyService.SetDnsServersAsync(_privacySettings.DnsAddresses); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleDnsLeakToggle(bool enabled)
+    {
+        try { await SpeedifyService.SetDnsLeakProtectionAsync(enabled); _privacySettings.DnsLeak = enabled; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleIpLeakToggle(bool enabled)
+    {
+        try { await SpeedifyService.SetIpLeakProtectionAsync(enabled); _privacySettings.IpLeak = enabled; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleKillSwitchToggle(bool enabled)
+    {
+        try { await SpeedifyService.SetKillSwitchAsync(enabled); _privacySettings.KillSwitch = enabled; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleDisableDoHToggle(bool enabled)
+    {
+        try { await SpeedifyService.SetDisableDoHRequestAsync(enabled); _privacySettings.RequestToDisableDoH = enabled; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleBypassEnabledToggle(bool enabled)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var success = await SpeedifyService.SetStreamingBypassEnabledAsync(enabled);
             if (success)
             {
-                _connectionSettings.Encrypted = enabled;
-                Console.WriteLine($"Settings: Encryption set to {enabled}");
+                _bypassEnabled = enabled;
+                _successMessage = enabled ? "Streaming bypass enabled" : "Streaming bypass disabled";
+            }
+            else
+            {
+                _error = "Failed to update bypass enabled state";
+            }
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+    
+    private async Task HandleDomainWatchlistToggle(bool enabled)
+    {
+        _bypassSettings.DomainWatchlistEnabled = enabled;
+        _hasUnsavedBypassChanges = true;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAddBypassDomain(string domain)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingBypassDomainsAsync("add", new List<string> { domain });
+            _bypassSettings.Domains.Add(domain);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveBypassDomain(int index)
+    {
+        try
+        {
+            var domain = _bypassSettings.Domains[index];
+            await SpeedifyService.SetStreamingBypassDomainsAsync("rem", new List<string> { domain });
+            _bypassSettings.Domains.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddBypassIpv4(string ip)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingBypassIpv4Async("add", new List<string> { ip });
+            _bypassSettings.Ipv4.Add(ip);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveBypassIpv4(int index)
+    {
+        try
+        {
+            var ip = _bypassSettings.Ipv4[index];
+            await SpeedifyService.SetStreamingBypassIpv4Async("rem", new List<string> { ip });
+            _bypassSettings.Ipv4.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddBypassIpv6(string ip)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingBypassIpv6Async("add", new List<string> { ip });
+            _bypassSettings.Ipv6.Add(ip);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveBypassIpv6(int index)
+    {
+        try
+        {
+            var ip = _bypassSettings.Ipv6[index];
+            await SpeedifyService.SetStreamingBypassIpv6Async("rem", new List<string> { ip });
+            _bypassSettings.Ipv6.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private void HandleAddBypassPort()
+    {
+        _bypassSettings.Ports.Add(new PortRule { Port = 80, Protocol = "tcp" });
+        _hasUnsavedBypassChanges = true;
+        StateHasChanged();
+    }
+    
+    private void HandleBypassPortChange(int index, PortRule rule)
+    {
+        if (index >= 0 && index < _bypassSettings.Ports.Count)
+        {
+            _bypassSettings.Ports[index] = rule;
+            _hasUnsavedBypassChanges = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleRemoveBypassPort(int index)
+    {
+        try
+        {
+            var port = _bypassSettings.Ports[index];
+            await SpeedifyService.SetStreamingBypassPortsAsync("rem", new List<PortRule> { port });
+            _bypassSettings.Ports.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleServiceBypassToggle(string serviceName, bool enabled)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingBypassServiceAsync(serviceName, enabled);
+            var service = _bypassSettings.Services.FirstOrDefault(s => s.Name == serviceName);
+            if (service != null)
+            {
+                service.Enabled = enabled;
+            }
+            
+            if (enabled)
+            {
+                _enabledServices.Add(serviceName.ToLowerInvariant());
+            }
+            else
+            {
+                _enabledServices.Remove(serviceName.ToLowerInvariant());
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+    
+    private async Task HandlePresetServiceToggle(string serviceKey, bool enabled)
+    {
+        try
+        {
+            _isProcessing = true;
+            await InvokeAsync(StateHasChanged);
+            
+            var success = await SpeedifyService.SetStreamingBypassServiceAsync(serviceKey, enabled);
+            if (success)
+            {
+                if (enabled)
+                {
+                    _enabledServices.Add(serviceKey.ToLowerInvariant());
+                }
+                else
+                {
+                    _enabledServices.Remove(serviceKey.ToLowerInvariant());
+                }
+                
+                // Also update the services list if present
+                var existingService = _bypassSettings.Services.FirstOrDefault(s =>
+                    s.Name.Equals(serviceKey, StringComparison.OrdinalIgnoreCase));
+                if (existingService != null)
+                {
+                    existingService.Enabled = enabled;
+                }
+                else
+                {
+                    _bypassSettings.Services.Add(new ServiceBypass { Name = serviceKey, Enabled = enabled });
+                }
+            }
+            else
+            {
+                _error = $"Failed to {(enabled ? "enable" : "disable")} {_allPresetServices.GetValueOrDefault(serviceKey, serviceKey)}";
+            }
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleAddStreamingDomain(string domain)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingDomainsAsync("add", new List<string> { domain });
+            _streamingSettings.Domains.Add(domain);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveStreamingDomain(int index)
+    {
+        try
+        {
+            var domain = _streamingSettings.Domains[index];
+            await SpeedifyService.SetStreamingDomainsAsync("rem", new List<string> { domain });
+            _streamingSettings.Domains.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddStreamingIpv4(string ip)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingIpv4Async("add", new List<string> { ip });
+            _streamingSettings.Ipv4.Add(ip);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveStreamingIpv4(int index)
+    {
+        try
+        {
+            var ip = _streamingSettings.Ipv4[index];
+            await SpeedifyService.SetStreamingIpv4Async("rem", new List<string> { ip });
+            _streamingSettings.Ipv4.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+    
+    private async Task HandleAddStreamingIpv6(string ip)
+    {
+        try
+        {
+            await SpeedifyService.SetStreamingIpv6Async("add", new List<string> { ip });
+            _streamingSettings.Ipv6.Add(ip);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveStreamingIpv6(int index)
+    {
+        try
+        {
+            var ip = _streamingSettings.Ipv6[index];
+            await SpeedifyService.SetStreamingIpv6Async("rem", new List<string> { ip });
+            _streamingSettings.Ipv6.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private void HandleAddStreamingPort()
+    {
+        _streamingSettings.Ports.Add(new PortRule { Port = 80, Protocol = "tcp" });
+        _hasUnsavedStreamingChanges = true;
+        StateHasChanged();
+    }
+    
+    private void HandleStreamingPortChange(int index, PortRule rule)
+    {
+        if (index >= 0 && index < _streamingSettings.Ports.Count)
+        {
+            _streamingSettings.Ports[index] = rule;
+            _hasUnsavedStreamingChanges = true;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleRemoveStreamingPort(int index)
+    {
+        try
+        {
+            var port = _streamingSettings.Ports[index];
+            await SpeedifyService.SetStreamingPortsAsync("rem", new List<PortRule> { port });
+            _streamingSettings.Ports.RemoveAt(index);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleConnectMethodChange(string method)
+    {
+        try { await SpeedifyService.SetConnectMethodAsync(method, _connectMethod.Country, _connectMethod.City, _connectMethod.Num > 0 ? _connectMethod.Num : null); _connectMethod.Method = method; await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleStartupConnectToggle(bool enabled)
+    {
+        try { await SpeedifyService.SetStartupConnectAsync(enabled); _startupConnect = enabled; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleMaxRedundantChange(double value)
+    {
+        try { await SpeedifyService.SetMaxRedundantAsync((int)value); _maxRedundant = (int)value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandlePriorityOverflowChange(double value)
+    {
+        try { await SpeedifyService.SetPriorityOverflowAsync(value); _priorityOverflow = value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleTargetUploadChange(double value)
+    {
+        try { await SpeedifyService.SetTargetConnectionsAsync((int)value, _targetDownload); _targetUpload = (int)value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleTargetDownloadChange(double value)
+    {
+        try { await SpeedifyService.SetTargetConnectionsAsync(_targetUpload, (int)value); _targetDownload = (int)value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleFixedDelayChange(double value)
+    {
+        try { await SpeedifyService.SetFixedDelayAsync((int)value); _fixedDelaySettings.DelayMs = (int)value; }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddFixedDelayDomain(string domain)
+    {
+        try { await SpeedifyService.SetFixedDelayDomainsAsync("add", new List<string> { domain }); _fixedDelaySettings.Domains.Add(domain); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveFixedDelayDomain(int index)
+    {
+        try { var domain = _fixedDelaySettings.Domains[index]; await SpeedifyService.SetFixedDelayDomainsAsync("rem", new List<string> { domain }); _fixedDelaySettings.Domains.RemoveAt(index); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddFixedDelayIp(string ip)
+    {
+        try { await SpeedifyService.SetFixedDelayIpsAsync("add", new List<string> { ip }); _fixedDelaySettings.Ips.Add(ip); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveFixedDelayIp(int index)
+    {
+        try { var ip = _fixedDelaySettings.Ips[index]; await SpeedifyService.SetFixedDelayIpsAsync("rem", new List<string> { ip }); _fixedDelaySettings.Ips.RemoveAt(index); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddForwardedPort()
+    {
+        if (_newForwardedPort <= 0 || _newForwardedPort > 65535) return;
+        try { _forwardedPorts.Add(new ForwardedPort { Port = _newForwardedPort, Protocol = _newForwardedProtocol }); await SpeedifyService.SetForwardedPortsAsync(_forwardedPorts); _newForwardedPort = 0; await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveForwardedPort(int index)
+    {
+        try { _forwardedPorts.RemoveAt(index); await SpeedifyService.SetForwardedPortsAsync(_forwardedPorts); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleAddSubnet()
+    {
+        if (string.IsNullOrWhiteSpace(_newSubnetAddress) || _newSubnetPrefix <= 0) return;
+        try { _downstreamSubnets.Add(new DownstreamSubnet { Address = _newSubnetAddress, PrefixLength = _newSubnetPrefix }); await SpeedifyService.SetDownstreamSubnetsAsync(_downstreamSubnets); _newSubnetAddress = ""; _newSubnetPrefix = 24; await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task HandleRemoveSubnet(int index)
+    {
+        try { _downstreamSubnets.RemoveAt(index); await SpeedifyService.SetDownstreamSubnetsAsync(_downstreamSubnets); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+    }
+
+    private async Task SaveSettings()
+    {
+        _isProcessing = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+        
+        var errors = new List<string>();
+        var successCount = 0;
+        
+        try
+        {
+            // Save network monitor settings
+            var links = _whitelistedLinksInput.Split(',').Select(s => s.Trim()).Where(s => !string.IsNullOrEmpty(s)).ToList();
+            _monitorSettings.WhitelistedLinks = links;
+            successCount++;
+            
+            // Save pending bypass port changes
+            if (_hasUnsavedBypassChanges && _bypassSettings.Ports.Any())
+            {
+                try
+                {
+                    // Use "set" action to replace all ports with current list
+                    var success = await SpeedifyService.SetStreamingBypassPortsAsync("set", _bypassSettings.Ports);
+                    if (success)
+                    {
+                        successCount++;
+                    }
+                    else
+                    {
+                        errors.Add("Failed to save bypass ports");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"Bypass ports: {ex.Message}");
+                }
+            }
+            
+            // Save pending streaming port changes
+            if (_hasUnsavedStreamingChanges && _streamingSettings.Ports.Any())
+            {
+                try
+                {
+                    var success = await SpeedifyService.SetStreamingPortsAsync("set", _streamingSettings.Ports);
+                    if (success)
+                    {
+                        successCount++;
+                    }
+                    else
+                    {
+                        errors.Add("Failed to save streaming ports");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"Streaming ports: {ex.Message}");
+                }
+            }
+            
+            // Clear unsaved changes flags
+            _hasUnsavedBypassChanges = false;
+            _hasUnsavedStreamingChanges = false;
+            
+            if (errors.Any())
+            {
+                _error = $"Some settings failed to save: {string.Join("; ", errors)}";
+            }
+            else
+            {
+                _successMessage = $"Settings saved successfully";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to save: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ShowDisconnectModal() => _showDisconnectModal = true;
+    private void ShowReconnectModal() => _showReconnectModal = true;
+    private void ShowRestartModal() => _showRestartModal = true;
+    private void ShowRebootModal() => _showRebootModal = true;
+
+    private async Task HandleDisconnectConfirm(bool confirmed) { _showDisconnectModal = false; if (confirmed) await DisconnectAll(); }
+    private async Task HandleReconnectConfirm(bool confirmed) { _showReconnectModal = false; if (confirmed) await ReconnectAll(); }
+    private async Task HandleRestartConfirm(bool confirmed) { _showRestartModal = false; if (confirmed) await RestartSpeedify(); }
+    private async Task HandleRebootConfirm(bool confirmed) { _showRebootModal = false; if (confirmed) await RebootServer(); }
+
+    #region Adapter Settings Methods
+
+    private async Task LoadAdaptersExtended()
+    {
+        _isLoadingAdapters = true;
+        await InvokeAsync(StateHasChanged);
+        
+        try
+        {
+            _adaptersExtended = await SpeedifyService.GetAdaptersExtendedAsync();
+            
+            // Initialize local state for each adapter
+            if (_adaptersExtended != null)
+            {
+                foreach (var adapter in _adaptersExtended)
+                {
+                    _adapterLocalState[adapter.AdapterId] = adapter;
+                    _adapterDailyLimitUnits[adapter.AdapterId] = "GB";
+                    _adapterMonthlyLimitUnits[adapter.AdapterId] = "GB";
+                    _adapterPendingChanges[adapter.AdapterId] = false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading adapters: {ex.Message}");
+        }
+        finally
+        {
+            _isLoadingAdapters = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshAdapters()
+    {
+        await LoadAdaptersExtended();
+    }
+
+    private async Task RefreshSingleAdapter(string adapterId)
+    {
+        await LoadAdaptersExtended();
+    }
+
+    private string? GetAdaptersBadge()
+    {
+        if (_adaptersExtended == null || !_adaptersExtended.Any()) return null;
+        var pendingCount = _adapterPendingChanges.Count(kvp => kvp.Value);
+        if (pendingCount > 0) return $"{_adaptersExtended.Count} ⚠️";
+        return _adaptersExtended.Count.ToString();
+    }
+
+    private void ToggleAdapterExpanded(string adapterId)
+    {
+        if (_expandedAdapters.Contains(adapterId))
+        {
+            _expandedAdapters.Remove(adapterId);
+        }
+        else
+        {
+            _expandedAdapters.Add(adapterId);
+        }
+        StateHasChanged();
+    }
+
+    private string GetAdapterIcon(string type)
+    {
+        return type?.ToLowerInvariant() switch
+        {
+            "ethernet" => "fa-ethernet",
+            "wi-fi" or "wifi" => "fa-wifi",
+            "cellular" => "fa-signal",
+            "usb" => "fa-usb",
+            _ => "fa-network-wired"
+        };
+    }
+
+    private string GetPriorityBadgeClass(string priority)
+    {
+        return priority?.ToLowerInvariant() switch
+        {
+            "always" => "bg-green-500/20 text-green-400 border border-green-500/30",
+            "secondary" => "bg-blue-500/20 text-blue-400 border border-blue-500/30",
+            "backup" => "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30",
+            "never" => "bg-red-500/20 text-red-400 border border-red-500/30",
+            _ => "bg-slate-500/20 text-slate-400 border border-slate-500/30" // automatic
+        };
+    }
+
+    private string GetStateBadgeClass(string state)
+    {
+        return state?.ToLowerInvariant() switch
+        {
+            "connected" => "bg-green-500/20 text-green-400 border border-green-500/30",
+            "disconnected" => "bg-red-500/20 text-red-400 border border-red-500/30",
+            "connecting" => "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30",
+            _ => "bg-slate-500/20 text-slate-400 border border-slate-500/30"
+        };
+    }
+
+    private string TruncateAdapterId(string adapterId)
+    {
+        if (string.IsNullOrEmpty(adapterId)) return "";
+        return adapterId.Length > 16 ? adapterId.Substring(0, 16) + "..." : adapterId;
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        // This would require JS interop in a real implementation
+        _successMessage = "Adapter ID copied to clipboard";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private bool IsDataLimitUnlimited(long limit) => limit == 0;
+
+    private string GetDataLimitDisplayValue(long bytes)
+    {
+        if (bytes == 0) return "0";
+        // Convert to GB by default
+        return (bytes / (1024.0 * 1024.0 * 1024.0)).ToString("F2");
+    }
+
+    private string GetAdapterDataLimitUnit(string adapterId, string limitType)
+    {
+        if (limitType == "daily")
+        {
+            return _adapterDailyLimitUnits.GetValueOrDefault(adapterId, "GB");
+        }
+        return _adapterMonthlyLimitUnits.GetValueOrDefault(adapterId, "GB");
+    }
+
+    private void HandleAdapterDailyLimitUnitChange(string adapterId, ChangeEventArgs e)
+    {
+        var unit = e.Value?.ToString() ?? "GB";
+        _adapterDailyLimitUnits[adapterId] = unit;
+        MarkAdapterChanged(adapterId);
+    }
+
+    private void HandleAdapterMonthlyLimitUnitChange(string adapterId, ChangeEventArgs e)
+    {
+        var unit = e.Value?.ToString() ?? "GB";
+        _adapterMonthlyLimitUnits[adapterId] = unit;
+        MarkAdapterChanged(adapterId);
+    }
+
+    private void MarkAdapterChanged(string adapterId)
+    {
+        _adapterPendingChanges[adapterId] = true;
+        StateHasChanged();
+    }
+
+    private async Task HandleAdapterPriorityChange(string adapterId, string priority)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        
+        try
+        {
+            await SpeedifyService.SetPriorityAsync(adapterId, priority);
+            
+            // Update local state
+            if (_adaptersExtended != null)
+            {
+                var adapter = _adaptersExtended.FirstOrDefault(a => a.AdapterId == adapterId);
+                if (adapter != null)
+                {
+                    adapter.Priority = priority;
+                }
+            }
+            
+            _successMessage = $"Priority updated to {priority}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to update priority: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterEncryptionToggle(string adapterId, bool enabled)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        
+        try
+        {
+            var success = await SpeedifyService.SetAdapterEncryptionAsync(adapterId, enabled);
+            if (success)
+            {
+                if (_adaptersExtended != null)
+                {
+                    var adapter = _adaptersExtended.FirstOrDefault(a => a.AdapterId == adapterId);
+                    if (adapter != null)
+                    {
+                        adapter.EncryptionEnabled = enabled;
+                    }
+                }
+                _successMessage = $"Encryption {(enabled ? "enabled" : "disabled")}";
             }
             else
             {
@@ -391,8 +2060,7 @@
         }
         catch (Exception ex)
         {
-            _error = $"Error updating encryption: {ex.Message}";
-            Console.WriteLine($"Settings: Error updating encryption: {ex.Message}");
+            _error = $"Failed to update encryption: {ex.Message}";
         }
         finally
         {
@@ -401,261 +2069,300 @@
         }
     }
 
-    private async Task HandleHeaderCompressionToggle(bool enabled)
+    private async Task HandleAdapterDailyLimitChange(string adapterId, ChangeEventArgs e)
     {
-        _isProcessing = true;
-        _error = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
+        if (double.TryParse(e.Value?.ToString(), out var value))
         {
-            var success = await SpeedifyService.SetHeaderCompressionAsync(enabled);
-            if (success)
-            {
-                _connectionSettings.HeaderCompression = enabled;
-                Console.WriteLine($"Settings: Header compression set to {enabled}");
-            }
-            else
-            {
-                _error = "Failed to update header compression setting";
-            }
-        }
-        catch (Exception ex)
-        {
-            _error = $"Error updating header compression: {ex.Message}";
-            Console.WriteLine($"Settings: Error updating header compression: {ex.Message}");
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private async Task HandlePacketAggregationToggle(bool enabled)
-    {
-        _isProcessing = true;
-        _error = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            var success = await SpeedifyService.SetPacketAggregationAsync(enabled);
-            if (success)
-            {
-                _connectionSettings.PacketAggregation = enabled;
-                Console.WriteLine($"Settings: Packet aggregation set to {enabled}");
-            }
-            else
-            {
-                _error = "Failed to update packet aggregation setting";
-            }
-        }
-        catch (Exception ex)
-        {
-            _error = $"Error updating packet aggregation: {ex.Message}";
-            Console.WriteLine($"Settings: Error updating packet aggregation: {ex.Message}");
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private async Task HandleJumboPacketsToggle(bool enabled)
-    {
-        _isProcessing = true;
-        _error = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            var success = await SpeedifyService.SetJumboPacketsAsync(enabled);
-            if (success)
-            {
-                _connectionSettings.JumboPackets = enabled;
-                Console.WriteLine($"Settings: Jumbo packets set to {enabled}");
-            }
-            else
-            {
-                _error = "Failed to update jumbo packets setting";
-            }
-        }
-        catch (Exception ex)
-        {
-            _error = $"Error updating jumbo packets: {ex.Message}";
-            Console.WriteLine($"Settings: Error updating jumbo packets: {ex.Message}");
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private async Task HandleBondingModeChange()
-    {
-        _isProcessing = true;
-        _error = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            var updatedSettings = await SpeedifyService.SetBondingModeAsync(_selectedBondingMode);
-            if (updatedSettings != null)
-            {
-                _connectionSettings.BondingMode = updatedSettings.BondingMode;
-                Console.WriteLine($"Settings: Bonding mode set to {_selectedBondingMode}");
-            }
-            else
-            {
-                _error = "Failed to update bonding mode";
-                // Revert to previous value
-                _selectedBondingMode = _connectionSettings.BondingMode ?? "speed";
-            }
-        }
-        catch (Exception ex)
-        {
-            _error = $"Error updating bonding mode: {ex.Message}";
-            Console.WriteLine($"Settings: Error updating bonding mode: {ex.Message}");
-            // Revert to previous value
-            _selectedBondingMode = _connectionSettings.BondingMode ?? "speed";
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private async Task HandleBypassModeToggle(bool enabled)
-    {
-        // Only update the pending state - changes will be applied on Save
-        _bypassModeEnabled = enabled;
-        
-        // If disabling bypass mode, reset the adapter selection
-        if (!enabled)
-        {
-            _selectedBypassAdapter = "";
-        }
-        
-        // Mark bypass settings as changed
-        _bypassModeChanged = (_bypassModeEnabled != _appliedBypassModeEnabled) ||
-                             (_selectedBypassAdapter != _appliedBypassAdapter);
-        
-        Console.WriteLine($"Settings: Bypass mode toggle changed to {enabled} (pending, not yet applied)");
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task OnBypassAdapterChanged()
-    {
-        // Only update the pending state - changes will be applied on Save
-        // Mark bypass settings as changed
-        _bypassModeChanged = (_bypassModeEnabled != _appliedBypassModeEnabled) ||
-                             (_selectedBypassAdapter != _appliedBypassAdapter);
-        
-        Console.WriteLine($"Settings: Bypass adapter changed to {_selectedBypassAdapter} (pending, not yet applied)");
-        await InvokeAsync(StateHasChanged);
-    }
-
-    private async Task SaveSettings()
-    {
-        _isProcessing = true;
-        _error = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            // Parse whitelisted links from input
-            var links = _whitelistedLinksInput
-                .Split(',')
-                .Select(s => s.Trim())
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToList();
-
-            _monitorSettings.WhitelistedLinks = links;
-
-            // Apply bypass mode changes if they've been modified
-            if (_bypassModeChanged)
-            {
-                Console.WriteLine($"Settings: Applying bypass mode changes - Enabled: {_bypassModeEnabled}, Adapter: {_selectedBypassAdapter}");
-                
-                if (_bypassModeEnabled)
-                {
-                    // Enable bypass mode
-                    var success = await SpeedifyService.ApplyBypassModeAsync(
-                        string.IsNullOrEmpty(_selectedBypassAdapter) ? null : _selectedBypassAdapter,
-                        _adapters);
-                    
-                    if (success)
-                    {
-                        // Also apply OS-level routing on Linux if a specific adapter is selected
-                        if (OperatingSystem.IsLinux() && !string.IsNullOrEmpty(_selectedBypassAdapter))
-                        {
-                            var routeSuccess = await NetworkMonitorService.SetPrimaryRouteAsync(_selectedBypassAdapter);
-                            if (!routeSuccess)
-                            {
-                                Console.WriteLine($"Settings: Warning - Could not set OS-level primary route for {_selectedBypassAdapter}");
-                            }
-                        }
-                        
-                        _appliedBypassModeEnabled = _bypassModeEnabled;
-                        _appliedBypassAdapter = _selectedBypassAdapter;
-                        _bypassModeChanged = false;
-                        Console.WriteLine("Settings: Bypass mode enabled successfully");
-                    }
-                    else
-                    {
-                        _error = "Failed to enable bypass mode";
-                        // Revert UI state
-                        _bypassModeEnabled = _appliedBypassModeEnabled;
-                        _selectedBypassAdapter = _appliedBypassAdapter;
-                    }
-                }
-                else
-                {
-                    // Disable bypass mode
-                    if (OperatingSystem.IsLinux())
-                    {
-                        await NetworkMonitorService.RestoreDefaultRoutingAsync();
-                    }
-                    
-                    var success = await SpeedifyService.DisableBypassModeAsync(_adapters);
-                    
-                    if (success)
-                    {
-                        _appliedBypassModeEnabled = _bypassModeEnabled;
-                        _appliedBypassAdapter = _selectedBypassAdapter;
-                        _bypassModeChanged = false;
-                        Console.WriteLine("Settings: Bypass mode disabled successfully");
-                    }
-                    else
-                    {
-                        _error = "Failed to disable bypass mode";
-                        // Revert UI state
-                        _bypassModeEnabled = _appliedBypassModeEnabled;
-                        _selectedBypassAdapter = _appliedBypassAdapter;
-                    }
-                }
-                
-                // Wait for state to stabilize
-                await Task.Delay(1000);
-            }
-
-            // TODO: Save settings to configuration file
-            // This would require writing to appsettings.json or a separate settings file
-            // For now, settings are only saved in memory during the session
-
-            Console.WriteLine($"Settings: Saved - Enabled: {_monitorSettings.Enabled}, Timeout: {_monitorSettings.DownTimeoutSeconds}, Links: {string.Join(", ", _monitorSettings.WhitelistedLinks)}");
+            var unit = _adapterDailyLimitUnits.GetValueOrDefault(adapterId, "GB");
+            var multiplier = unit == "GB" ? 1024L * 1024L * 1024L : 1024L * 1024L;
+            var bytes = (long)(value * multiplier);
             
-            // Show success message briefly
-            await Task.Delay(500);
+            try
+            {
+                var success = await SpeedifyService.SetAdapterDailyLimitAsync(adapterId, bytes);
+                if (success && _adaptersExtended != null)
+                {
+                    var adapter = _adaptersExtended.FirstOrDefault(a => a.AdapterId == adapterId);
+                    if (adapter != null)
+                    {
+                        adapter.DataUsage.UsageDailyLimit = bytes;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _error = $"Failed to update daily limit: {ex.Message}";
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterDailyUnlimitedToggle(string adapterId, ChangeEventArgs e)
+    {
+        var unlimited = e.Value is bool b && b;
+        try
+        {
+            var success = await SpeedifyService.SetAdapterDailyLimitAsync(adapterId, unlimited ? null : 1024L * 1024L * 1024L);
+            if (success && _adaptersExtended != null)
+            {
+                var adapter = _adaptersExtended.FirstOrDefault(a => a.AdapterId == adapterId);
+                if (adapter != null)
+                {
+                    adapter.DataUsage.UsageDailyLimit = unlimited ? 0 : 1024L * 1024L * 1024L;
+                }
+            }
         }
         catch (Exception ex)
         {
-            _error = $"Failed to save settings: {ex.Message}";
-            Console.WriteLine($"Settings: Error saving settings: {ex.Message}");
+            _error = $"Failed to update daily limit: {ex.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAdapterMonthlyLimitChange(string adapterId, ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out var value))
+        {
+            var unit = _adapterMonthlyLimitUnits.GetValueOrDefault(adapterId, "GB");
+            var multiplier = unit == "GB" ? 1024L * 1024L * 1024L : 1024L * 1024L;
+            var bytes = (long)(value * multiplier);
+            
+            var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+            var resetDay = adapter?.DataUsage.UsageMonthlyResetDay ?? 1;
+            
+            try
+            {
+                var success = await SpeedifyService.SetAdapterMonthlyLimitAsync(adapterId, bytes, resetDay);
+                if (success && adapter != null)
+                {
+                    adapter.DataUsage.UsageMonthlyLimit = bytes;
+                }
+            }
+            catch (Exception ex)
+            {
+                _error = $"Failed to update monthly limit: {ex.Message}";
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterMonthlyUnlimitedToggle(string adapterId, ChangeEventArgs e)
+    {
+        var unlimited = e.Value is bool b && b;
+        var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+        var resetDay = adapter?.DataUsage.UsageMonthlyResetDay ?? 1;
+        
+        try
+        {
+            var success = await SpeedifyService.SetAdapterMonthlyLimitAsync(adapterId, unlimited ? null : 1024L * 1024L * 1024L, resetDay);
+            if (success && adapter != null)
+            {
+                adapter.DataUsage.UsageMonthlyLimit = unlimited ? 0 : 1024L * 1024L * 1024L;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to update monthly limit: {ex.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAdapterMonthlyResetDayChange(string adapterId, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var day))
+        {
+            var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+            var limit = adapter?.DataUsage.UsageMonthlyLimit ?? 0;
+            
+            try
+            {
+                var success = await SpeedifyService.SetAdapterMonthlyLimitAsync(adapterId, limit == 0 ? null : limit, day);
+                if (success && adapter != null)
+                {
+                    adapter.DataUsage.UsageMonthlyResetDay = day;
+                }
+            }
+            catch (Exception ex)
+            {
+                _error = $"Failed to update reset day: {ex.Message}";
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterOverlimitRateChange(string adapterId, ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var bps))
+        {
+            try
+            {
+                var success = await SpeedifyService.SetAdapterOverlimitRateAsync(adapterId, bps);
+                if (success && _adaptersExtended != null)
+                {
+                    var adapter = _adaptersExtended.FirstOrDefault(a => a.AdapterId == adapterId);
+                    if (adapter != null)
+                    {
+                        adapter.DataUsage.OverlimitRatelimit = bps;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _error = $"Failed to update overlimit rate: {ex.Message}";
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterDownloadRateLimitChange(string adapterId, ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var bps))
+        {
+            var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+            var uploadBps = adapter?.RateLimit.UploadBitsPerSecond ?? 0;
+            
+            try
+            {
+                var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, bps == 0 ? null : bps, uploadBps == 0 ? null : uploadBps);
+                if (success && adapter != null)
+                {
+                    adapter.RateLimit.DownloadBitsPerSecond = bps;
+                }
+            }
+            catch (Exception ex)
+            {
+                _error = $"Failed to update download rate limit: {ex.Message}";
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterDownloadUnlimitedToggle(string adapterId, ChangeEventArgs e)
+    {
+        var unlimited = e.Value is bool b && b;
+        var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+        var uploadBps = adapter?.RateLimit.UploadBitsPerSecond ?? 0;
+        
+        try
+        {
+            var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, unlimited ? null : 10000000, uploadBps == 0 ? null : uploadBps);
+            if (success && adapter != null)
+            {
+                adapter.RateLimit.DownloadBitsPerSecond = unlimited ? 0 : 10000000;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to update download rate limit: {ex.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAdapterUploadRateLimitChange(string adapterId, ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var bps))
+        {
+            var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+            var downloadBps = adapter?.RateLimit.DownloadBitsPerSecond ?? 0;
+            
+            try
+            {
+                var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, downloadBps == 0 ? null : downloadBps, bps == 0 ? null : bps);
+                if (success && adapter != null)
+                {
+                    adapter.RateLimit.UploadBitsPerSecond = bps;
+                }
+            }
+            catch (Exception ex)
+            {
+                _error = $"Failed to update upload rate limit: {ex.Message}";
+            }
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAdapterUploadUnlimitedToggle(string adapterId, ChangeEventArgs e)
+    {
+        var unlimited = e.Value is bool b && b;
+        var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+        var downloadBps = adapter?.RateLimit.DownloadBitsPerSecond ?? 0;
+        
+        try
+        {
+            var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, downloadBps == 0 ? null : downloadBps, unlimited ? null : 10000000);
+            if (success && adapter != null)
+            {
+                adapter.RateLimit.UploadBitsPerSecond = unlimited ? 0 : 10000000;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to update upload rate limit: {ex.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAdapterUploadModeChange(string adapterId, string mode)
+    {
+        var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+        var downloadMode = adapter?.DirectionalSettings.Download ?? "on";
+        
+        try
+        {
+            var success = await SpeedifyService.SetAdapterDirectionalModeAsync(adapterId, mode, downloadMode);
+            if (success && adapter != null)
+            {
+                adapter.DirectionalSettings.Upload = mode;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to update upload mode: {ex.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAdapterDownloadModeChange(string adapterId, string mode)
+    {
+        var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
+        var uploadMode = adapter?.DirectionalSettings.Upload ?? "on";
+        
+        try
+        {
+            var success = await SpeedifyService.SetAdapterDirectionalModeAsync(adapterId, uploadMode, mode);
+            if (success && adapter != null)
+            {
+                adapter.DirectionalSettings.Download = mode;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to update download mode: {ex.Message}";
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleResetAdapterUsage(string adapterId)
+    {
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+        
+        try
+        {
+            var success = await SpeedifyService.ResetAdapterUsageAsync(adapterId);
+            if (success)
+            {
+                _successMessage = "Usage statistics reset";
+                await RefreshSingleAdapter(adapterId);
+            }
+            else
+            {
+                _error = "Failed to reset usage";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to reset usage: {ex.Message}";
         }
         finally
         {
@@ -664,97 +2371,41 @@
         }
     }
 
-    // Modal show methods
-    private void ShowDisconnectModal()
+    private async Task ApplyAdapterChanges(string adapterId)
     {
-        _showDisconnectModal = true;
-    }
-
-    private void ShowReconnectModal()
-    {
-        _showReconnectModal = true;
-    }
-
-    private void ShowRestartModal()
-    {
-        _showRestartModal = true;
-    }
-
-    private void ShowRebootModal()
-    {
-        _showRebootModal = true;
-    }
-
-    // Modal confirmation handlers
-    private async Task HandleDisconnectConfirm(bool confirmed)
-    {
-        _showDisconnectModal = false;
+        _adapterPendingChanges[adapterId] = false;
+        _successMessage = "Changes applied";
         await InvokeAsync(StateHasChanged);
-
-        if (confirmed)
-        {
-            await DisconnectAll();
-        }
     }
 
-    private async Task HandleReconnectConfirm(bool confirmed)
+    private string FormatBytes(long bytes)
     {
-        _showReconnectModal = false;
-        await InvokeAsync(StateHasChanged);
-
-        if (confirmed)
+        if (bytes == 0) return "0 B";
+        
+        string[] suffixes = { "B", "KB", "MB", "GB", "TB" };
+        int suffixIndex = 0;
+        double size = bytes;
+        
+        while (size >= 1024 && suffixIndex < suffixes.Length - 1)
         {
-            await ReconnectAll();
+            size /= 1024;
+            suffixIndex++;
         }
+        
+        return $"{size:F2} {suffixes[suffixIndex]}";
     }
 
-    private async Task HandleRestartConfirm(bool confirmed)
-    {
-        _showRestartModal = false;
-        await InvokeAsync(StateHasChanged);
+    #endregion
 
-        if (confirmed)
-        {
-            await RestartSpeedify();
-        }
-    }
-
-    private async Task HandleRebootConfirm(bool confirmed)
-    {
-        _showRebootModal = false;
-        await InvokeAsync(StateHasChanged);
-
-        if (confirmed)
-        {
-            await RebootServer();
-        }
-    }
-
-    // Actual action methods
     private async Task DisconnectAll()
     {
         _isProcessing = true;
         _error = null;
         await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            await SpeedifyService.StopAsync();
-            await Task.Delay(1000);
-        }
-        catch (SpeedifyException ex)
-        {
-            _error = $"Failed to disconnect: {ex.Message}";
-        }
-        catch (Exception ex)
-        {
-            _error = $"An unexpected error occurred: {ex.Message}";
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        try { await SpeedifyService.StopAsync(); await Task.Delay(1000); }
+        catch (SpeedifyException ex) { _error = $"Failed to disconnect: {ex.Message}"; }
+        catch (Exception ex) { _error = $"Unexpected error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
     }
 
     private async Task ReconnectAll()
@@ -762,26 +2413,10 @@
         _isProcessing = true;
         _error = null;
         await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            await SpeedifyService.ReconnectAsync();
-            Console.WriteLine("Settings: Reconnection completed.");
-            await Task.Delay(1000);
-        }
-        catch (SpeedifyException ex)
-        {
-            _error = $"Failed to reconnect: {ex.Message}";
-        }
-        catch (Exception ex)
-        {
-            _error = $"An unexpected error occurred: {ex.Message}";
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        try { await SpeedifyService.ReconnectAsync(); await Task.Delay(1000); }
+        catch (SpeedifyException ex) { _error = $"Failed to reconnect: {ex.Message}"; }
+        catch (Exception ex) { _error = $"Unexpected error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
     }
 
     private async Task RestartSpeedify()
@@ -789,16 +2424,11 @@
         _isProcessing = true;
         _error = null;
         await InvokeAsync(StateHasChanged);
-
         try
         {
-            Console.WriteLine("Settings: Restarting Speedify service/daemon...");
-            
             var startInfo = new System.Diagnostics.ProcessStartInfo();
-            
             if (OperatingSystem.IsWindows())
             {
-                // Windows: Restart the Speedify service
                 startInfo.FileName = "net";
                 startInfo.Arguments = "stop \"Speedify Service\" && net start \"Speedify Service\"";
                 startInfo.UseShellExecute = false;
@@ -808,8 +2438,6 @@
             }
             else if (OperatingSystem.IsLinux())
             {
-                // Linux: Restart Speedify using systemctl or service command with sudo
-                // Requires passwordless sudo configuration (see LINUX_SETUP.md)
                 startInfo.FileName = "/bin/bash";
                 startInfo.Arguments = "-c \"sudo systemctl restart speedify 2>/dev/null || sudo service speedify restart\"";
                 startInfo.UseShellExecute = false;
@@ -817,63 +2445,22 @@
                 startInfo.RedirectStandardOutput = true;
                 startInfo.RedirectStandardError = true;
             }
-            else
-            {
-                throw new PlatformNotSupportedException("Speedify service restart is only supported on Windows and Linux.");
-            }
+            else { throw new PlatformNotSupportedException("Service restart only supported on Windows and Linux."); }
 
             using var process = System.Diagnostics.Process.Start(startInfo);
             if (process != null)
             {
                 await process.WaitForExitAsync();
-                
-                var output = await process.StandardOutput.ReadToEndAsync();
-                var error = await process.StandardError.ReadToEndAsync();
-                
                 if (process.ExitCode != 0)
                 {
-                    // Provide helpful error message with setup instructions
-                    var permissionError = error.Contains("Permission denied") ||
-                                        error.Contains("Access denied") ||
-                                        error.Contains("must be root") ||
-                                        error.Contains("not permitted");
-                    
-                    if (permissionError && OperatingSystem.IsLinux())
-                    {
-                        throw new Exception(
-                            $"Permission denied. Passwordless sudo is not configured correctly.\n\n" +
-                            $"To fix this issue:\n\n" +
-                            $"1. Verify passwordless sudo configuration:\n" +
-                            $"   • Run: sudo -l\n" +
-                            $"   • Should show: (ALL) NOPASSWD: /bin/systemctl restart speedify\n" +
-                            $"   • See LINUX_SETUP.md for complete setup instructions\n\n" +
-                            $"2. If not configured, set up passwordless sudo:\n" +
-                            $"   • sudo visudo -f /etc/sudoers.d/xnetwork-web\n" +
-                            $"   • Add required NOPASSWD entries (see LINUX_SETUP.md)\n\n" +
-                            $"3. Ensure you're running as the configured user\n\n" +
-                            $"Exit code: {process.ExitCode}\n" +
-                            $"Error details: {error}");
-                    }
-                    
-                    throw new Exception($"Service restart failed with exit code {process.ExitCode}. Error: {error}");
+                    var error = await process.StandardError.ReadToEndAsync();
+                    throw new Exception($"Exit code {process.ExitCode}: {error}");
                 }
-                
-                Console.WriteLine($"Settings: Speedify service restart completed. Output: {output}");
             }
-            
-            // Wait for service to be ready
             await Task.Delay(3000);
         }
-        catch (Exception ex)
-        {
-            _error = $"Failed to restart service: {ex.Message}";
-            Console.WriteLine($"Settings: Error restarting Speedify service: {ex.Message}");
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        catch (Exception ex) { _error = $"Failed to restart: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
     }
 
     private async Task RebootServer()
@@ -881,30 +2468,20 @@
         _isProcessing = true;
         _error = null;
         await InvokeAsync(StateHasChanged);
-
         try
         {
-            Console.WriteLine("Settings: Initiating server reboot...");
-            
             var startInfo = new System.Diagnostics.ProcessStartInfo();
-            
             if (OperatingSystem.IsWindows())
             {
                 startInfo.FileName = "shutdown";
-                startInfo.Arguments = "/r /t 5"; // Reboot in 5 seconds
+                startInfo.Arguments = "/r /t 5";
             }
             else if (OperatingSystem.IsLinux())
             {
-                // Linux: Reboot using sudo
-                // Requires passwordless sudo configuration (see LINUX_SETUP.md)
                 startInfo.FileName = "/usr/bin/sudo";
                 startInfo.Arguments = "/sbin/reboot";
             }
-            else
-            {
-                throw new PlatformNotSupportedException("Server reboot is only supported on Windows and Linux.");
-            }
-            
+            else { throw new PlatformNotSupportedException("Server reboot only supported on Windows and Linux."); }
             startInfo.RedirectStandardOutput = true;
             startInfo.RedirectStandardError = true;
             startInfo.UseShellExecute = false;
@@ -914,52 +2491,15 @@
             if (process != null)
             {
                 await process.WaitForExitAsync();
-                
-                var output = await process.StandardOutput.ReadToEndAsync();
-                var error = await process.StandardError.ReadToEndAsync();
-                
                 if (process.ExitCode != 0)
                 {
-                    // Provide helpful error message with setup instructions
-                    var permissionError = error.Contains("Permission denied") ||
-                                        error.Contains("Access denied") ||
-                                        error.Contains("must be root") ||
-                                        error.Contains("not permitted");
-                    
-                    if (permissionError && OperatingSystem.IsLinux())
-                    {
-                        throw new Exception(
-                            $"Permission denied. Passwordless sudo is not configured correctly.\n\n" +
-                            $"To fix this issue:\n\n" +
-                            $"1. Verify passwordless sudo configuration:\n" +
-                            $"   • Run: sudo -l\n" +
-                            $"   • Should show: (ALL) NOPASSWD: /sbin/reboot\n" +
-                            $"   • See LINUX_SETUP.md for complete setup instructions\n\n" +
-                            $"2. If not configured, set up passwordless sudo:\n" +
-                            $"   • sudo visudo -f /etc/sudoers.d/xnetwork-web\n" +
-                            $"   • Add required NOPASSWD entries (see LINUX_SETUP.md)\n\n" +
-                            $"3. Ensure you're running as the configured user\n\n" +
-                            $"Exit code: {process.ExitCode}\n" +
-                            $"Error details: {error}");
-                    }
-                    
-                    throw new Exception($"Reboot command failed with exit code {process.ExitCode}. Error: {error}");
+                    var error = await process.StandardError.ReadToEndAsync();
+                    throw new Exception($"Exit code {process.ExitCode}: {error}");
                 }
-                
-                Console.WriteLine("Settings: Server reboot command executed successfully.");
             }
-            
             await Task.Delay(1000);
         }
-        catch (Exception ex)
-        {
-            _error = $"Failed to reboot server: {ex.Message}";
-            Console.WriteLine($"Settings: Error rebooting server: {ex.Message}");
-        }
-        finally
-        {
-            _isProcessing = false;
-            await InvokeAsync(StateHasChanged);
-        }
+        catch (Exception ex) { _error = $"Failed to reboot: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
     }
 }

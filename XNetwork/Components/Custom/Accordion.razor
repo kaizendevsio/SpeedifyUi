@@ -1,0 +1,74 @@
+@* 
+Accordion Component - Collapsible section container
+Provides expandable/collapsible accordion behavior with smooth animations.
+*@
+
+<div class="accordion-item @(IsExpanded ? "accordion-expanded" : "")">
+    <button type="button" 
+            class="accordion-header" 
+            @onclick="HandleToggle"
+            aria-expanded="@IsExpanded">
+        <div class="accordion-title-container">
+            <span class="accordion-title">@Title</span>
+            @if (!string.IsNullOrEmpty(BadgeText))
+            {
+                <span class="accordion-badge">@BadgeText</span>
+            }
+        </div>
+        <svg class="accordion-icon @(IsExpanded ? "accordion-icon-rotated" : "")" 
+             xmlns="http://www.w3.org/2000/svg" 
+             width="20" 
+             height="20" 
+             viewBox="0 0 24 24" 
+             fill="none" 
+             stroke="currentColor" 
+             stroke-width="2" 
+             stroke-linecap="round" 
+             stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+    </button>
+    <div class="accordion-content @(IsExpanded ? "accordion-content-expanded" : "")">
+        <div class="accordion-content-inner">
+            @ChildContent
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>
+    /// The title displayed in the accordion header.
+    /// </summary>
+    [Parameter]
+    public string Title { get; set; } = "";
+
+    /// <summary>
+    /// Whether the accordion is currently expanded.
+    /// </summary>
+    [Parameter]
+    public bool IsExpanded { get; set; }
+
+    /// <summary>
+    /// Callback when the accordion is toggled.
+    /// </summary>
+    [Parameter]
+    public EventCallback<bool> OnToggle { get; set; }
+
+    /// <summary>
+    /// Optional badge text (e.g., "unsaved", "modified").
+    /// </summary>
+    [Parameter]
+    public string? BadgeText { get; set; }
+
+    /// <summary>
+    /// The content to display inside the accordion.
+    /// </summary>
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    private async Task HandleToggle()
+    {
+        IsExpanded = !IsExpanded;
+        await OnToggle.InvokeAsync(IsExpanded);
+    }
+}

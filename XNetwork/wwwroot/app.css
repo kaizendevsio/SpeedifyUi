@@ -65,3 +65,524 @@ h1:focus {
 .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
     text-align: start;
 }
+
+/* ========================================
+   SETTINGS COMPONENTS - Dark Theme Styles
+   ======================================== */
+
+/* ----------------------------------------
+   Accordion Component
+   ---------------------------------------- */
+.accordion-item {
+    background-color: #1e293b; /* slate-800 */
+    border: 1px solid #334155; /* slate-700 */
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+    overflow: hidden;
+    transition: all 0.2s ease-in-out;
+}
+
+.accordion-item:hover {
+    border-color: #475569; /* slate-600 */
+}
+
+.accordion-expanded {
+    border-color: #0891b2; /* cyan-600 */
+}
+
+.accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    padding: 1rem 1.25rem;
+    background-color: transparent;
+    border: none;
+    color: #f1f5f9; /* slate-100 */
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.accordion-header:hover {
+    background-color: #334155; /* slate-700 */
+}
+
+.accordion-title-container {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.accordion-title {
+    font-weight: 600;
+}
+
+.accordion-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    background-color: #0891b2; /* cyan-600 */
+    color: white;
+    border-radius: 9999px;
+}
+
+.accordion-icon {
+    color: #94a3b8; /* slate-400 */
+    transition: transform 0.3s ease;
+    flex-shrink: 0;
+}
+
+.accordion-icon-rotated {
+    transform: rotate(180deg);
+}
+
+.accordion-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out, opacity 0.2s ease-out;
+    opacity: 0;
+}
+
+.accordion-content-expanded {
+    max-height: 2000px; /* Large enough to accommodate content */
+    opacity: 1;
+    transition: max-height 0.5s ease-in, opacity 0.2s ease-in;
+}
+
+.accordion-content-inner {
+    padding: 0 1.25rem 1.25rem 1.25rem;
+    border-top: 1px solid #334155; /* slate-700 */
+}
+
+/* ----------------------------------------
+   EditableList Component
+   ---------------------------------------- */
+.editable-list {
+    margin-bottom: 1rem;
+}
+
+.editable-list-label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #e2e8f0; /* slate-200 */
+    margin-bottom: 0.5rem;
+}
+
+.editable-list-items {
+    background-color: #0f172a; /* slate-900 */
+    border: 1px solid #334155; /* slate-700 */
+    border-radius: 0.375rem;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-bottom: 0.75rem;
+}
+
+.editable-list-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.625rem 0.75rem;
+    border-bottom: 1px solid #334155; /* slate-700 */
+    transition: background-color 0.15s ease;
+}
+
+.editable-list-item:last-child {
+    border-bottom: none;
+}
+
+.editable-list-item:hover {
+    background-color: #1e293b; /* slate-800 */
+}
+
+.editable-list-item-text {
+    color: #f1f5f9; /* slate-100 */
+    font-size: 0.875rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 0.5rem;
+}
+
+.editable-list-remove-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.25rem;
+    background-color: transparent;
+    border: none;
+    color: #64748b; /* slate-500 */
+    cursor: pointer;
+    border-radius: 0.25rem;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.editable-list-remove-btn:hover {
+    color: #ef4444; /* red-500 */
+    background-color: rgba(239, 68, 68, 0.1);
+}
+
+.editable-list-empty {
+    padding: 1rem;
+    text-align: center;
+    color: #64748b; /* slate-500 */
+    font-size: 0.875rem;
+    font-style: italic;
+}
+
+.editable-list-add {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.editable-list-input {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    background-color: #0f172a; /* slate-900 */
+    border: 1px solid #334155; /* slate-700 */
+    border-radius: 0.375rem;
+    color: #f1f5f9; /* slate-100 */
+    font-size: 0.875rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.editable-list-input:focus {
+    outline: none;
+    border-color: #0891b2; /* cyan-600 */
+    box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.2);
+}
+
+.editable-list-input::placeholder {
+    color: #64748b; /* slate-500 */
+}
+
+.editable-list-input-error {
+    border-color: #ef4444; /* red-500 */
+}
+
+.editable-list-add-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 1rem;
+    background-color: #0891b2; /* cyan-600 */
+    border: none;
+    border-radius: 0.375rem;
+    color: white;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.editable-list-add-btn:hover:not(:disabled) {
+    background-color: #0e7490; /* cyan-700 */
+}
+
+.editable-list-add-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.editable-list-error {
+    margin-top: 0.375rem;
+    color: #ef4444; /* red-500 */
+    font-size: 0.75rem;
+}
+
+/* ----------------------------------------
+   PortRuleEditor Component
+   ---------------------------------------- */
+.port-rule-editor {
+    padding: 0.75rem;
+    background-color: #0f172a; /* slate-900 */
+    border: 1px solid #334155; /* slate-700 */
+    border-radius: 0.375rem;
+    margin-bottom: 0.75rem;
+}
+
+.port-rule-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: flex-end;
+}
+
+.port-rule-field {
+    display: flex;
+    flex-direction: column;
+    min-width: 100px;
+    flex: 1;
+}
+
+.port-rule-range {
+    flex: 1.5;
+}
+
+.port-rule-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: #94a3b8; /* slate-400 */
+    margin-bottom: 0.375rem;
+}
+
+.port-rule-input {
+    padding: 0.5rem 0.625rem;
+    background-color: #1e293b; /* slate-800 */
+    border: 1px solid #475569; /* slate-600 */
+    border-radius: 0.375rem;
+    color: #f1f5f9; /* slate-100 */
+    font-size: 0.875rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.port-rule-input:focus {
+    outline: none;
+    border-color: #0891b2; /* cyan-600 */
+    box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.2);
+}
+
+.port-rule-input::placeholder {
+    color: #64748b; /* slate-500 */
+}
+
+.port-rule-select {
+    padding: 0.5rem 2rem 0.5rem 0.625rem;
+    background-color: #1e293b; /* slate-800 */
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%2394a3b8' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1.25rem;
+    border: 1px solid #475569; /* slate-600 */
+    border-radius: 0.375rem;
+    color: #f1f5f9; /* slate-100 */
+    font-size: 0.875rem;
+    cursor: pointer;
+    appearance: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.port-rule-select:focus {
+    outline: none;
+    border-color: #0891b2; /* cyan-600 */
+    box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.2);
+}
+
+.port-rule-remove-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem;
+    background-color: transparent;
+    border: 1px solid #475569; /* slate-600 */
+    border-radius: 0.375rem;
+    color: #64748b; /* slate-500 */
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.port-rule-remove-btn:hover {
+    color: #ef4444; /* red-500 */
+    background-color: rgba(239, 68, 68, 0.1);
+    border-color: #ef4444;
+}
+
+.port-rule-error {
+    margin-top: 0.5rem;
+    color: #ef4444; /* red-500 */
+    font-size: 0.75rem;
+}
+
+/* ----------------------------------------
+   SelectDropdown Component
+   ---------------------------------------- */
+.select-dropdown {
+    margin-bottom: 1rem;
+}
+
+.select-dropdown-disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.select-dropdown-label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #e2e8f0; /* slate-200 */
+    margin-bottom: 0.5rem;
+}
+
+.select-dropdown-wrapper {
+    position: relative;
+}
+
+.select-dropdown-control {
+    width: 100%;
+    padding: 0.625rem 2.5rem 0.625rem 0.875rem;
+    background-color: #0f172a; /* slate-900 */
+    border: 1px solid #334155; /* slate-700 */
+    border-radius: 0.375rem;
+    color: #f1f5f9; /* slate-100 */
+    font-size: 0.875rem;
+    cursor: pointer;
+    appearance: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.select-dropdown-control:focus {
+    outline: none;
+    border-color: #0891b2; /* cyan-600 */
+    box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.2);
+}
+
+.select-dropdown-control:disabled {
+    cursor: not-allowed;
+}
+
+.select-dropdown-control option {
+    background-color: #1e293b; /* slate-800 */
+    color: #f1f5f9; /* slate-100 */
+}
+
+.select-dropdown-icon {
+    position: absolute;
+    right: 0.75rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94a3b8; /* slate-400 */
+    pointer-events: none;
+}
+
+.select-dropdown-help {
+    margin-top: 0.375rem;
+    color: #64748b; /* slate-500 */
+    font-size: 0.75rem;
+}
+
+/* ----------------------------------------
+   NumberInput Component
+   ---------------------------------------- */
+.number-input {
+    margin-bottom: 1rem;
+}
+
+.number-input-disabled {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.number-input-label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #e2e8f0; /* slate-200 */
+    margin-bottom: 0.5rem;
+}
+
+.number-input-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.number-input-control {
+    flex: 1;
+    padding: 0.625rem 0.875rem;
+    background-color: #0f172a; /* slate-900 */
+    border: 1px solid #334155; /* slate-700 */
+    border-radius: 0.375rem;
+    color: #f1f5f9; /* slate-100 */
+    font-size: 0.875rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.number-input-control:focus {
+    outline: none;
+    border-color: #0891b2; /* cyan-600 */
+    box-shadow: 0 0 0 2px rgba(8, 145, 178, 0.2);
+}
+
+.number-input-control:disabled {
+    cursor: not-allowed;
+}
+
+.number-input-control::placeholder {
+    color: #64748b; /* slate-500 */
+}
+
+/* Hide spinner buttons for number input */
+.number-input-control::-webkit-inner-spin-button,
+.number-input-control::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.number-input-control[type=number] {
+    -moz-appearance: textfield;
+}
+
+.number-input-error {
+    border-color: #ef4444 !important; /* red-500 */
+}
+
+.number-input-unit {
+    color: #94a3b8; /* slate-400 */
+    font-size: 0.875rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.number-input-help {
+    margin-top: 0.375rem;
+    color: #64748b; /* slate-500 */
+    font-size: 0.75rem;
+}
+
+.number-input-validation-error {
+    margin-top: 0.375rem;
+    color: #ef4444; /* red-500 */
+    font-size: 0.75rem;
+}
+
+/* ----------------------------------------
+   Mobile Responsive Styles
+   ---------------------------------------- */
+@media (max-width: 640px) {
+    /* Accordion */
+    .accordion-header {
+        padding: 0.875rem 1rem;
+    }
+    
+    .accordion-content-inner {
+        padding: 0 1rem 1rem 1rem;
+    }
+    
+    /* EditableList */
+    .editable-list-add {
+        flex-direction: column;
+    }
+    
+    .editable-list-add-btn {
+        justify-content: center;
+    }
+    
+    /* PortRuleEditor */
+    .port-rule-fields {
+        flex-direction: column;
+    }
+    
+    .port-rule-field {
+        width: 100%;
+    }
+    
+    .port-rule-remove-btn {
+        align-self: flex-end;
+        margin-top: 0.5rem;
+    }
+}

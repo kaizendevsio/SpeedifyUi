@@ -1,0 +1,104 @@
+@*
+SelectDropdown Component - Styled dropdown selector
+Consistent styled dropdown for selecting from options
+*@
+
+@using XNetwork.Models
+
+<div class="select-dropdown @(Disabled ? "select-dropdown-disabled" : "")">
+    @if (!string.IsNullOrEmpty(Label))
+    {
+        <label class="select-dropdown-label" for="@Id">@Label</label>
+    }
+    
+    <div class="select-dropdown-wrapper">
+        <select id="@Id"
+                class="select-dropdown-control"
+                value="@SelectedValue"
+                @onchange="HandleChange"
+                disabled="@Disabled">
+            @if (!string.IsNullOrEmpty(Placeholder))
+            {
+                <option value="" disabled selected="@(string.IsNullOrEmpty(SelectedValue))">@Placeholder</option>
+            }
+            @foreach (var option in Options)
+            {
+                <option value="@option.Value" selected="@(option.Value == SelectedValue)">@option.Label</option>
+            }
+        </select>
+        <svg class="select-dropdown-icon" 
+             xmlns="http://www.w3.org/2000/svg" 
+             width="16" 
+             height="16" 
+             viewBox="0 0 24 24" 
+             fill="none" 
+             stroke="currentColor" 
+             stroke-width="2" 
+             stroke-linecap="round" 
+             stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+        </svg>
+    </div>
+    
+    @if (!string.IsNullOrEmpty(HelpText))
+    {
+        <div class="select-dropdown-help">@HelpText</div>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// Unique identifier for the select element.
+    /// </summary>
+    [Parameter]
+    public string Id { get; set; } = Guid.NewGuid().ToString();
+
+    /// <summary>
+    /// List of options to display.
+    /// </summary>
+    [Parameter]
+    public List<SelectOption> Options { get; set; } = new();
+
+    /// <summary>
+    /// Currently selected value.
+    /// </summary>
+    [Parameter]
+    public string? SelectedValue { get; set; }
+
+    /// <summary>
+    /// Callback when selection changes.
+    /// </summary>
+    [Parameter]
+    public EventCallback<string> OnChange { get; set; }
+
+    /// <summary>
+    /// Label text displayed above the dropdown.
+    /// </summary>
+    [Parameter]
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// Placeholder text when no option is selected.
+    /// </summary>
+    [Parameter]
+    public string? Placeholder { get; set; }
+
+    /// <summary>
+    /// Help text displayed below the dropdown.
+    /// </summary>
+    [Parameter]
+    public string? HelpText { get; set; }
+
+    /// <summary>
+    /// Whether the dropdown is disabled.
+    /// </summary>
+    [Parameter]
+    public bool Disabled { get; set; }
+
+    private async Task HandleChange(ChangeEventArgs e)
+    {
+        var value = e.Value?.ToString() ?? "";
+        SelectedValue = value;
+        await OnChange.InvokeAsync(value);
+    }
+}

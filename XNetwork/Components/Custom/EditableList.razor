@@ -1,0 +1,184 @@
+@*
+EditableList Component - List with add/remove functionality
+For managing lists of strings (domains, IPs, etc.)
+*@
+
+<div class="editable-list">
+    @if (!string.IsNullOrEmpty(Label))
+    {
+        <label class="editable-list-label">@Label</label>
+    }
+    
+    <div class="editable-list-items">
+        @if (Items != null && Items.Any())
+        {
+            @foreach (var (item, index) in Items.Select((item, index) => (item, index)))
+            {
+                <div class="editable-list-item">
+                    <span class="editable-list-item-text" title="@item">@item</span>
+                    <button type="button" 
+                            class="editable-list-remove-btn" 
+                            @onclick="() => HandleRemove(index)"
+                            aria-label="Remove @item">
+                        <svg xmlns="http://www.w3.org/2000/svg" 
+                             width="16" 
+                             height="16" 
+                             viewBox="0 0 24 24" 
+                             fill="none" 
+                             stroke="currentColor" 
+                             stroke-width="2" 
+                             stroke-linecap="round" 
+                             stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
+            }
+        }
+        else
+        {
+            <div class="editable-list-empty">@EmptyMessage</div>
+        }
+    </div>
+    
+    <div class="editable-list-add">
+        <input type="text" 
+               class="editable-list-input @(HasValidationError ? "editable-list-input-error" : "")"
+               placeholder="@Placeholder"
+               @bind="NewItemValue"
+               @bind:event="oninput"
+               @onkeydown="HandleKeyDown" />
+        <button type="button" 
+                class="editable-list-add-btn"
+                @onclick="HandleAdd"
+                disabled="@string.IsNullOrWhiteSpace(NewItemValue)">
+            <svg xmlns="http://www.w3.org/2000/svg" 
+                 width="16" 
+                 height="16" 
+                 viewBox="0 0 24 24" 
+                 fill="none" 
+                 stroke="currentColor" 
+                 stroke-width="2" 
+                 stroke-linecap="round" 
+                 stroke-linejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Add
+        </button>
+    </div>
+    
+    @if (HasValidationError)
+    {
+        <div class="editable-list-error">@ValidationMessage</div>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// The list of items to display and manage.
+    /// </summary>
+    [Parameter]
+    public List<string>? Items { get; set; }
+
+    /// <summary>
+    /// Callback when an item is added.
+    /// </summary>
+    [Parameter]
+    public EventCallback<string> OnAdd { get; set; }
+
+    /// <summary>
+    /// Callback when an item is removed (passes the index).
+    /// </summary>
+    [Parameter]
+    public EventCallback<int> OnRemove { get; set; }
+
+    /// <summary>
+    /// Placeholder text for the input field.
+    /// </summary>
+    [Parameter]
+    public string Placeholder { get; set; } = "Add new item...";
+
+    /// <summary>
+    /// Optional label for the list.
+    /// </summary>
+    [Parameter]
+    public string? Label { get; set; }
+
+    /// <summary>
+    /// Optional regex pattern for validation.
+    /// </summary>
+    [Parameter]
+    public string? ValidationRegex { get; set; }
+
+    /// <summary>
+    /// Message to show when list is empty.
+    /// </summary>
+    [Parameter]
+    public string EmptyMessage { get; set; } = "No items added";
+
+    /// <summary>
+    /// Custom validation message.
+    /// </summary>
+    [Parameter]
+    public string ValidationErrorMessage { get; set; } = "Invalid format";
+
+    private string NewItemValue { get; set; } = "";
+    private bool HasValidationError { get; set; }
+    private string ValidationMessage { get; set; } = "";
+
+    private async Task HandleAdd()
+    {
+        if (string.IsNullOrWhiteSpace(NewItemValue))
+            return;
+
+        var trimmedValue = NewItemValue.Trim();
+
+        // Validate against regex if provided
+        if (!string.IsNullOrEmpty(ValidationRegex))
+        {
+            try
+            {
+                var regex = new System.Text.RegularExpressions.Regex(ValidationRegex);
+                if (!regex.IsMatch(trimmedValue))
+                {
+                    HasValidationError = true;
+                    ValidationMessage = ValidationErrorMessage;
+                    return;
+                }
+            }
+            catch
+            {
+                // If regex is invalid, skip validation
+            }
+        }
+
+        // Check for duplicates
+        if (Items?.Contains(trimmedValue, StringComparer.OrdinalIgnoreCase) == true)
+        {
+            HasValidationError = true;
+            ValidationMessage = "Item already exists";
+            return;
+        }
+
+        HasValidationError = false;
+        ValidationMessage = "";
+        
+        await OnAdd.InvokeAsync(trimmedValue);
+        NewItemValue = "";
+    }
+
+    private async Task HandleRemove(int index)
+    {
+        await OnRemove.InvokeAsync(index);
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await HandleAdd();
+        }
+    }
+}

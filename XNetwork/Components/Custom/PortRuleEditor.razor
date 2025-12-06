@@ -1,0 +1,166 @@
+@*
+PortRuleEditor Component - Editor for port rules
+For editing port/port-range with protocol selection
+*@
+
+@using XNetwork.Models
+
+<div class="port-rule-editor">
+    <div class="port-rule-fields">
+        <div class="port-rule-field">
+            <label class="port-rule-label">Port</label>
+            <input type="number" 
+                   class="port-rule-input"
+                   min="1"
+                   max="65535"
+                   value="@Rule?.Port"
+                   @onchange="HandlePortChange"
+                   placeholder="Port" />
+        </div>
+        
+        <div class="port-rule-field port-rule-range">
+            <label class="port-rule-label">Range End (Optional)</label>
+            <input type="number" 
+                   class="port-rule-input"
+                   min="1"
+                   max="65535"
+                   value="@Rule?.PortRangeEnd"
+                   @onchange="HandlePortRangeEndChange"
+                   placeholder="Range end" />
+        </div>
+        
+        <div class="port-rule-field">
+            <label class="port-rule-label">Protocol</label>
+            <select class="port-rule-select" 
+                    value="@Rule?.Protocol" 
+                    @onchange="HandleProtocolChange">
+                <option value="tcp">TCP</option>
+                <option value="udp">UDP</option>
+            </select>
+        </div>
+        
+        @if (ShowRemoveButton)
+        {
+            <button type="button" 
+                    class="port-rule-remove-btn"
+                    @onclick="HandleRemove"
+                    aria-label="Remove port rule">
+                <svg xmlns="http://www.w3.org/2000/svg" 
+                     width="16" 
+                     height="16" 
+                     viewBox="0 0 24 24" 
+                     fill="none" 
+                     stroke="currentColor" 
+                     stroke-width="2" 
+                     stroke-linecap="round" 
+                     stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        }
+    </div>
+    
+    @if (!string.IsNullOrEmpty(ValidationMessage))
+    {
+        <div class="port-rule-error">@ValidationMessage</div>
+    }
+</div>
+
+@code {
+    /// <summary>
+    /// The port rule to edit.
+    /// </summary>
+    [Parameter]
+    public PortRule? Rule { get; set; }
+
+    /// <summary>
+    /// Callback when the rule changes.
+    /// </summary>
+    [Parameter]
+    public EventCallback<PortRule> OnChange { get; set; }
+
+    /// <summary>
+    /// Callback when the remove button is clicked.
+    /// </summary>
+    [Parameter]
+    public EventCallback OnRemove { get; set; }
+
+    /// <summary>
+    /// Whether to show the remove button.
+    /// </summary>
+    [Parameter]
+    public bool ShowRemoveButton { get; set; } = true;
+
+    private string ValidationMessage { get; set; } = "";
+
+    private async Task HandlePortChange(ChangeEventArgs e)
+    {
+        if (Rule == null) return;
+        
+        if (int.TryParse(e.Value?.ToString(), out var port) && port >= 1 && port <= 65535)
+        {
+            Rule.Port = port;
+            ValidateRule();
+            await OnChange.InvokeAsync(Rule);
+        }
+    }
+
+    private async Task HandlePortRangeEndChange(ChangeEventArgs e)
+    {
+        if (Rule == null) return;
+        
+        var value = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            Rule.PortRangeEnd = null;
+        }
+        else if (int.TryParse(value, out var portEnd) && portEnd >= 1 && portEnd <= 65535)
+        {
+            Rule.PortRangeEnd = portEnd;
+        }
+        
+        ValidateRule();
+        await OnChange.InvokeAsync(Rule);
+    }
+
+    private async Task HandleProtocolChange(ChangeEventArgs e)
+    {
+        if (Rule == null) return;
+        
+        Rule.Protocol = e.Value?.ToString() ?? "tcp";
+        await OnChange.InvokeAsync(Rule);
+    }
+
+    private async Task HandleRemove()
+    {
+        await OnRemove.InvokeAsync();
+    }
+
+    private void ValidateRule()
+    {
+        ValidationMessage = "";
+        
+        if (Rule == null) return;
+        
+        if (Rule.Port < 1 || Rule.Port > 65535)
+        {
+            ValidationMessage = "Port must be between 1 and 65535";
+            return;
+        }
+        
+        if (Rule.PortRangeEnd.HasValue)
+        {
+            if (Rule.PortRangeEnd < 1 || Rule.PortRangeEnd > 65535)
+            {
+                ValidationMessage = "Port range end must be between 1 and 65535";
+                return;
+            }
+            
+            if (Rule.PortRangeEnd <= Rule.Port)
+            {
+                ValidationMessage = "Port range end must be greater than start port";
+            }
+        }
+    }
+}
