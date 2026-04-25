@@ -2502,8 +2502,9 @@
             var startInfo = new System.Diagnostics.ProcessStartInfo();
             if (OperatingSystem.IsWindows())
             {
-                startInfo.FileName = "net";
-                startInfo.Arguments = "stop \"Speedify Service\" && net start \"Speedify Service\"";
+                startInfo.FileName = "cmd.exe";
+                startInfo.ArgumentList.Add("/c");
+                startInfo.ArgumentList.Add("net stop \"Speedify Service\" && net start \"Speedify Service\"");
                 startInfo.UseShellExecute = false;
                 startInfo.CreateNoWindow = true;
                 startInfo.RedirectStandardOutput = true;

@@ -275,7 +275,7 @@
 @code {
     // Traffic charts state
     private List<ConnectionItem> _stats = new();
-    private IReadOnlyList<Adapter> _adapters;
+    private IReadOnlyList<Adapter> _adapters = Array.Empty<Adapter>();
     private CancellationTokenSource? _statsCts;
 
     private bool _isInitialLoading = true;
@@ -290,6 +290,8 @@
     private bool _readyForChartInitializationStep = false;
     private Timer? _chartUpdateTimer;
     private Timer? _autoRefreshTimer;
+    private readonly object _chartDataLock = new();
+    private int _chartPushInProgress;
     
     // Uptime chart state
     private ConnectionHealth _overallHealth = new();
@@ -320,7 +322,7 @@
         Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData");
         try
         {
-            _adapters = await SpeedifyService.GetAdaptersAsync();
+            _adapters = await SpeedifyService.GetAdaptersAsync() ?? Array.Empty<Adapter>();
             Console.WriteLine(!_adapters.Any()
                 ? $"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - No adapters found."
                 : $"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Loaded {_adapters.Count} adapters.");
@@ -607,7 +609,7 @@
         try
         {
             _chartUpdateTimer?.Dispose();
-            _chartUpdateTimer = new Timer(PushBatchedChartDataToJs, null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.1));
+            _chartUpdateTimer = new Timer(_ => _ = InvokeAsync(PushBatchedChartDataToJsAsync), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.1));
 
             await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
             {
@@ -622,10 +624,17 @@
                 else _stats.Add(statEntry);
 
                 string adapterDisplayName = GetAdapterDisplayName(statEntry.AdapterId);
-                _batchedChartData["downloadChart"][adapterDisplayName] = Math.Round(statEntry.ReceiveBps / (1000 * 1000), 2);
-                _batchedChartData["uploadChart"][adapterDisplayName] = Math.Round(statEntry.SendBps / (1000 * 1000), 2);
-                _batchedChartData["rttChart"][adapterDisplayName] = statEntry.LatencyMs;
-                _batchedChartData["lossChart"][adapterDisplayName] = Math.Round(statEntry.LossReceive + statEntry.LossSend, 2);
+                var downloadMbps = Math.Round(statEntry.ReceiveBps * 8.0 / 1_000_000.0, 2);
+                var uploadMbps = Math.Round(statEntry.SendBps * 8.0 / 1_000_000.0, 2);
+                var lossPercent = Math.Round(statEntry.LossReceive + statEntry.LossSend, 2);
+
+                lock (_chartDataLock)
+                {
+                    _batchedChartData["downloadChart"][adapterDisplayName] = downloadMbps;
+                    _batchedChartData["uploadChart"][adapterDisplayName] = uploadMbps;
+                    _batchedChartData["rttChart"][adapterDisplayName] = statEntry.LatencyMs;
+                    _batchedChartData["lossChart"][adapterDisplayName] = lossPercent;
+                }
                 
                 await InvokeAsync(StateHasChanged); 
             }
@@ -649,26 +658,38 @@
         }
     }
     
-    private async void PushBatchedChartDataToJs(object? state)
+    private async Task PushBatchedChartDataToJsAsync()
     {
         if (!_chartsSuccessfullyInitialized || _chartModule == null || !_isStreaming || (_statsCts?.IsCancellationRequested ?? true)) return;
+        if (Interlocked.Exchange(ref _chartPushInProgress, 1) == 1) return;
+
         string currentTime = DateTime.Now.ToString("HH:mm:ss");
         try
         {
-            var dlData = new Dictionary<string, double>(_batchedChartData["downloadChart"]);
-            var ulData = new Dictionary<string, double>(_batchedChartData["uploadChart"]);
-            var rttData = new Dictionary<string, double>(_batchedChartData["rttChart"]);
-            var lossData = new Dictionary<string, double>(_batchedChartData["lossChart"]);
+            Dictionary<string, double> dlData;
+            Dictionary<string, double> ulData;
+            Dictionary<string, double> rttData;
+            Dictionary<string, double> lossData;
+
+            lock (_chartDataLock)
+            {
+                dlData = new Dictionary<string, double>(_batchedChartData["downloadChart"]);
+                ulData = new Dictionary<string, double>(_batchedChartData["uploadChart"]);
+                rttData = new Dictionary<string, double>(_batchedChartData["rttChart"]);
+                lossData = new Dictionary<string, double>(_batchedChartData["lossChart"]);
+
+                _batchedChartData["downloadChart"].Clear();
+                _batchedChartData["uploadChart"].Clear();
+                _batchedChartData["rttChart"].Clear();
+                _batchedChartData["lossChart"].Clear();
+            }
+
+            if (!dlData.Any() && !ulData.Any() && !rttData.Any() && !lossData.Any()) return;
 
             if (dlData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "downloadChart", currentTime, dlData);
             if (ulData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", currentTime, ulData);
             if (rttData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "rttChart", currentTime, rttData);
             if (lossData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "lossChart", currentTime, lossData);
-
-            if (dlData.Any()) _batchedChartData["downloadChart"].Clear();
-            if (ulData.Any()) _batchedChartData["uploadChart"].Clear();
-            if (rttData.Any()) _batchedChartData["rttChart"].Clear();
-            if (lossData.Any()) _batchedChartData["lossChart"].Clear();
         }
         catch (JSDisconnectedException ex) {
             Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): JSDisconnectedException in PushBatchedChartDataToJs: {ex.Message}. Stopping stream.");
@@ -678,6 +699,10 @@
              Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): ObjectDisposedException in PushBatchedChartDataToJs (likely _chartModule): {ode.Message}.");
         }
         catch (Exception ex) { Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Error in PushBatchedChartDataToJs: {ex.Message}"); }
+        finally
+        {
+            Interlocked.Exchange(ref _chartPushInProgress, 0);
+        }
     }
 
     private void StopStreamingStatsInternal(bool triggerStateHasChanged = true)
@@ -803,6 +828,11 @@
         
         // Dispose health update timer
         _healthUpdateTimer?.Dispose();
+
+        if (_autoRefreshTimer != null)
+        {
+            await _autoRefreshTimer.DisposeAsync();
+        }
         
         // Dispose streaming
         StopStreamingStatsInternal(false);

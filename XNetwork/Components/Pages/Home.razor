@@ -169,8 +169,8 @@
                     <!-- Row 2: Stats -->
                     @if (!isOffline && currentStats != null)
                     {
-                        var downloadSpeedMbps = currentStats.ReceiveBps / (1000.0 * 1000.0);
-                        var uploadSpeedMbps = currentStats.SendBps / (1000.0 * 1000.0);
+                        var downloadSpeedMbps = currentStats.ReceiveBps * 8.0 / 1_000_000.0;
+                        var uploadSpeedMbps = currentStats.SendBps * 8.0 / 1_000_000.0;
                         
                         <div class="flex items-center gap-4 mt-3 text-sm">
                             <div class="flex items-center gap-1.5">
@@ -224,7 +224,7 @@
 
     private string GetAdapterDisplayName(string adapterId)
     {
-        var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
+        var adapter = _adapters?.FirstOrDefault(a => a.AdapterId == adapterId);
         return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name : adapterId;
     }
 
@@ -244,7 +244,7 @@
                         var gateway = await NetworkMonitorService.GetGatewayAsync(adapter.AdapterId);
                         _gatewayCache[adapter.AdapterId] = gateway;
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
                         _gatewayCache[adapter.AdapterId] = null;
                     }
@@ -263,7 +263,7 @@
             _serverInfoLoading = false;
             await InvokeAsync(StateHasChanged);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             _serverInfoLoading = false;
         }
@@ -313,7 +313,7 @@
         try
         {
             await SpeedifyService.SetPriorityAsync(adapterId, newPriority);
-            await StreamSpeedifyDataAsync();
+            await LoadAdaptersAndSettingsAsync();
         }
         catch (SpeedifyException ex) { _error = ex.Message; }
         finally
@@ -452,7 +452,7 @@
         // Calculate quality metrics
         var avgLatency = connectedStats.Average(s => s!.LatencyMs);
         var avgPacketLoss = connectedStats.Average(s => (s!.LossSend + s.LossReceive) / 2);
-        var totalSpeed = connectedStats.Sum(s => s!.ReceiveBps + s.SendBps) / (1000 * 1000); // Mbps
+        var totalSpeed = connectedStats.Sum(s => s!.ReceiveBps + s.SendBps) * 8.0 / 1_000_000.0; // Mbps
         
         // Speedify-optimized thresholds (bonded connection adds latency overhead)
         if (avgLatency < 100 && avgPacketLoss < 2 && totalSpeed > 50)
@@ -518,13 +518,13 @@
     private double GetTotalDownload()
     {
         if (!_stats.Any()) return 0;
-        return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.ReceiveBps) / (1000 * 1000), 1);
+        return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.ReceiveBps) * 8.0 / 1_000_000.0, 1);
     }
 
     private double GetTotalUpload()
     {
         if (!_stats.Any()) return 0;
-        return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.SendBps) / (1000 * 1000), 1);
+        return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.SendBps) * 8.0 / 1_000_000.0, 1);
     }
 
     private int GetConnectedCount()

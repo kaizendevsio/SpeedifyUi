@@ -484,13 +484,13 @@
 
     private string FormatSpeed(double bytesPerSecond)
     {
-        var mbps = bytesPerSecond / (1000.0 * 1000.0);
+        var mbps = bytesPerSecond * 8.0 / 1_000_000.0;
         return SpeedFormatter.FormatSpeed(mbps);
     }
 
     private string GetSpeedColorClass(double bytesPerSecond)
     {
-        var mbps = bytesPerSecond / (1000.0 * 1000.0);
+        var mbps = bytesPerSecond * 8.0 / 1_000_000.0;
         if (mbps >= 100) return "text-green-400";
         if (mbps >= 50) return "text-cyan-400";
         if (mbps >= 10) return "text-yellow-400";

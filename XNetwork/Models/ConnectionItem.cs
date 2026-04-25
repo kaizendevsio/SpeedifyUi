@@ -17,14 +17,14 @@ public class ConnectionItem
     ///     Logical adapter name (e.g. <c>eth0</c>, <c>wlan0</c>, <c>cell0</c>).
     /// </summary>
     [JsonPropertyName("adapterID")]
-    public string AdapterId { get; set; }
+    public string AdapterId { get; set; } = string.Empty;
 
     /// <summary>
     ///     Unique identifier for the live Speedify connection (<c>adapterID%protocol</c>).
     ///     Handy for filtering or correlating with other API calls.
     /// </summary>
     [JsonPropertyName("connectionID")]
-    public string ConnectionId { get; set; }
+    public string ConnectionId { get; set; } = string.Empty;
 
     // ───────────────────────────── State Flags ─────────────────────────────
 

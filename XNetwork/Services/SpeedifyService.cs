@@ -137,7 +137,7 @@ public class SpeedifyService
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         StringBuilder jsonBuffer = new StringBuilder();
-        string line;
+        string? line;
         // ReadLineAsync can return null if the stream ends.
         while ((line = await streamReader.ReadLineAsync().WaitAsync(cancellationToken).ConfigureAwait(false)) != null)
         {
@@ -183,7 +183,7 @@ public class SpeedifyService
         // Task.Run to offload the synchronous RunTerminatingCommand from a potentially UI thread
         var jsonOutput = await Task.Run(() => RunTerminatingCommand("show adapters"), cancellationToken)
             .ConfigureAwait(false);
-        return JsonSerializer.Deserialize<List<Adapter>>(jsonOutput, _jsonOptions);
+        return JsonSerializer.Deserialize<List<Adapter>>(jsonOutput, _jsonOptions) ?? new List<Adapter>();
     }
 
     public Task SetPriorityAsync(string id, string priority, CancellationToken cancellationToken = default)
@@ -368,7 +368,7 @@ public class SpeedifyService
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(jsonDocString)) continue;
 
-            List<JsonElement> parsedEvent = null;
+            List<JsonElement>? parsedEvent = null;
             try
             {
                 parsedEvent = JsonSerializer.Deserialize<List<JsonElement>>(jsonDocString, _jsonOptions);
@@ -384,13 +384,13 @@ public class SpeedifyService
                 continue; // Not the expected structure
             }
 
-            string eventType = parsedEvent[0].GetString();
+            string? eventType = parsedEvent[0].GetString();
             if (eventType != "connection_stats")
             {
                 continue; // We are only interested in connection_stats for now
             }
 
-            ConnectionStatsPayload payload = null;
+            ConnectionStatsPayload? payload = null;
             try
             {
                 payload = parsedEvent[1].Deserialize<ConnectionStatsPayload>(_jsonOptions);
@@ -406,9 +406,9 @@ public class SpeedifyService
                 foreach (var conn in payload.Connections)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (conn.AdapterId != null &&
+                    if (!string.IsNullOrEmpty(conn.AdapterId) &&
                         conn.AdapterId != "speedify" && // Filter out aggregate
-                        conn.ConnectionId != null &&
+                        !string.IsNullOrEmpty(conn.ConnectionId) &&
                         !conn.ConnectionId.EndsWith("%proxy")) // Filter out proxy connections
                     {
                         // This yield is now outside a try-catch that would violate CS1626/CS1627
