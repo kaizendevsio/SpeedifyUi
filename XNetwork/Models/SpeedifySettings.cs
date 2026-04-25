@@ -31,6 +31,36 @@ public class SpeedifySettings
     [JsonPropertyName("overflowThreshold")]
     public double OverflowThreshold { get; set; }
 
+    [JsonPropertyName("priorityOverflowThreshold")]
+    public double PriorityOverflowThreshold { get; set; }
+
+    [JsonPropertyName("maxRedundant")]
+    public int MaxRedundant { get; set; }
+
+    [JsonPropertyName("startupConnect")]
+    public bool StartupConnect { get; set; }
+
+    [JsonPropertyName("targetNumberOfConnections")]
+    public TargetNumberOfConnections TargetNumberOfConnections { get; set; } = new();
+
+    [JsonPropertyName("fixedDelay")]
+    public int FixedDelay { get; set; }
+
+    [JsonPropertyName("forwardedPorts")]
+    public List<ForwardedPort> ForwardedPorts { get; set; } = new();
+
+    [JsonPropertyName("downstreamSubnets")]
+    public List<DownstreamSubnet> DownstreamSubnets { get; set; } = new();
+
     [JsonPropertyName("perConnectionEncryptionEnabled")]
     public bool PerConnectionEncryptionEnabled { get; set; }
+}
+
+public class TargetNumberOfConnections
+{
+    [JsonPropertyName("upload")]
+    public int Upload { get; set; }
+
+    [JsonPropertyName("download")]
+    public int Download { get; set; }
 }

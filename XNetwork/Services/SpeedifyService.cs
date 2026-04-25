@@ -797,7 +797,7 @@ public class SpeedifyService
     {
         try
         {
-            var command = $"streamingbypass service {serviceName} {(enabled ? "on" : "off")}";
+            var command = $"streamingbypass service {QuoteCliArgument(serviceName)} {(enabled ? "on" : "off")}";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -823,7 +823,7 @@ public class SpeedifyService
     {
         try
         {
-            var command = enabled ? "streamingbypass enable" : "streamingbypass disable";
+            var command = enabled ? "streamingbypass service enable" : "streamingbypass service disable";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1004,8 +1004,8 @@ public class SpeedifyService
             return new TransportSettings
             {
                 TransportMode = root.TryGetProperty("transportMode", out var tm) ? tm.GetString() ?? "auto" : "auto",
-                TransportRetrySeconds = root.TryGetProperty("transportRetrySeconds", out var tr) ? tr.GetInt32() : 30,
-                ConnectRetrySeconds = root.TryGetProperty("connectRetrySeconds", out var cr) ? cr.GetInt32() : 30
+                TransportRetrySeconds = GetInt32Setting(root, "maximumTransportRetry", "transportRetrySeconds"),
+                ConnectRetrySeconds = GetInt32Setting(root, "maximumConnectRetry", "connectRetrySeconds")
             };
         }
         catch (SpeedifyException ex)
@@ -1705,9 +1705,9 @@ public class SpeedifyService
     {
         try
         {
-            if (resetDay < 1 || resetDay > 31)
+            if (resetDay < 0 || resetDay > 31)
             {
-                throw new ArgumentException("Reset day must be between 1 and 31");
+                throw new ArgumentException("Reset day must be between 0 and 31");
             }
 
             var limitArg = bytesLimit.HasValue ? bytesLimit.Value.ToString() : "unlimited";
@@ -2239,6 +2239,31 @@ public class SpeedifyService
         return port.PortRangeEnd.HasValue
             ? $"{port.Port}-{port.PortRangeEnd.Value}/{port.Protocol}"
             : $"{port.Port}/{port.Protocol}";
+    }
+
+    private static int GetInt32Setting(JsonElement root, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (root.TryGetProperty(propertyName, out var property) && property.TryGetInt32(out var value))
+            {
+                return value;
+            }
+        }
+
+        return 0;
+    }
+
+    private static string QuoteCliArgument(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return "\"\"";
+        }
+
+        return value.Any(char.IsWhiteSpace) || value.Contains('"')
+            ? $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
+            : value;
     }
 
     #endregion

@@ -579,14 +579,14 @@
                             Label="Target Upload Connections"
                             Value="_targetUpload"
                             OnChange="HandleTargetUploadChange"
-                            Min="1"
+                            Min="0"
                             Max="10" />
 
                         <NumberInput
                             Label="Target Download Connections"
                             Value="_targetDownload"
                             OnChange="HandleTargetDownloadChange"
-                            Min="1"
+                            Min="0"
                             Max="10" />
                     </div>
                 </div>
@@ -927,6 +927,7 @@
                                                             <select class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
                                                                     value="@adapter.DataUsage.UsageMonthlyResetDay"
                                                                     @onchange="(e) => HandleAdapterMonthlyResetDayChange(adapter.AdapterId, e)">
+                                                                <option value="0">Last 30 days</option>
                                                                 @for (int day = 1; day <= 28; day++)
                                                                 {
                                                                     <option value="@day">Day @day</option>
@@ -1327,6 +1328,14 @@
             {
                 _connectionSettings = speedifySettings;
                 _selectedBondingMode = speedifySettings.BondingMode ?? "speed";
+                _startupConnect = speedifySettings.StartupConnect;
+                _maxRedundant = speedifySettings.MaxRedundant;
+                _priorityOverflow = speedifySettings.PriorityOverflowThreshold;
+                _targetUpload = speedifySettings.TargetNumberOfConnections.Upload;
+                _targetDownload = speedifySettings.TargetNumberOfConnections.Download;
+                _fixedDelaySettings.DelayMs = speedifySettings.FixedDelay;
+                _forwardedPorts = speedifySettings.ForwardedPorts ?? new List<ForwardedPort>();
+                _downstreamSubnets = speedifySettings.DownstreamSubnets ?? new List<DownstreamSubnet>();
             }
 
             // Load privacy settings (DNS, leak protection)
@@ -1350,13 +1359,7 @@
                 _bypassSettings.Ports ??= new List<PortRule>();
                 _bypassSettings.Services ??= new List<ServiceBypass>();
 
-                // Determine if bypass is enabled based on whether any rules exist or services are enabled
-                _bypassEnabled = _bypassSettings.DomainWatchlistEnabled ||
-                                 _bypassSettings.Domains.Any() ||
-                                 _bypassSettings.Ipv4.Any() ||
-                                 _bypassSettings.Ipv6.Any() ||
-                                 _bypassSettings.Ports.Any() ||
-                                 _bypassSettings.Services.Any(s => s.Enabled);
+                _bypassEnabled = _bypassSettings.DomainWatchlistEnabled;
             }
 
             // Load streaming mode settings (high-priority traffic)
@@ -1625,7 +1628,13 @@
 
     private bool IsServiceEnabled(string serviceKey)
     {
-        return _enabledServices.Contains(serviceKey.ToLowerInvariant());
+        return _enabledServices.Contains(serviceKey) ||
+               (_allPresetServices.TryGetValue(serviceKey, out var serviceName) && _enabledServices.Contains(serviceName));
+    }
+
+    private string GetServiceCommandName(string serviceKey)
+    {
+        return _allPresetServices.GetValueOrDefault(serviceKey, serviceKey);
     }
 
     private async Task HandleMonitorToggle(bool enabled)
@@ -1782,6 +1791,7 @@
             if (success)
             {
                 _bypassEnabled = enabled;
+                _bypassSettings.DomainWatchlistEnabled = enabled;
                 _successMessage = enabled ? "Streaming bypass enabled" : "Streaming bypass disabled";
             }
             else
@@ -1795,9 +1805,24 @@
 
     private async Task HandleDomainWatchlistToggle(bool enabled)
     {
-        _bypassSettings.DomainWatchlistEnabled = enabled;
-        _hasUnsavedBypassChanges = true;
+        _isProcessing = true;
         await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetStreamingBypassEnabledAsync(enabled);
+            if (success)
+            {
+                _bypassSettings.DomainWatchlistEnabled = enabled;
+                _bypassEnabled = enabled;
+            }
+            else
+            {
+                _error = "Failed to update domain watchlist";
+            }
+        }
+        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
     }
 
     private async Task HandleAddBypassDomain(string domain)
@@ -1929,28 +1954,31 @@
             _isProcessing = true;
             await InvokeAsync(StateHasChanged);
 
-            var success = await SpeedifyService.SetStreamingBypassServiceAsync(serviceKey, enabled);
+            var serviceName = GetServiceCommandName(serviceKey);
+            var success = await SpeedifyService.SetStreamingBypassServiceAsync(serviceName, enabled);
             if (success)
             {
                 if (enabled)
                 {
-                    _enabledServices.Add(serviceKey.ToLowerInvariant());
+                    _enabledServices.Add(serviceName);
                 }
                 else
                 {
-                    _enabledServices.Remove(serviceKey.ToLowerInvariant());
+                    _enabledServices.Remove(serviceKey);
+                    _enabledServices.Remove(serviceName);
                 }
 
                 // Also update the services list if present
                 var existingService = _bypassSettings.Services.FirstOrDefault(s =>
-                    s.Name.Equals(serviceKey, StringComparison.OrdinalIgnoreCase));
+                    s.Name.Equals(serviceKey, StringComparison.OrdinalIgnoreCase) ||
+                    s.Name.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
                 if (existingService != null)
                 {
                     existingService.Enabled = enabled;
                 }
                 else
                 {
-                    _bypassSettings.Services.Add(new ServiceBypass { Name = serviceKey, Enabled = enabled });
+                    _bypassSettings.Services.Add(new ServiceBypass { Name = serviceName, Enabled = enabled });
                 }
             }
             else
@@ -2098,31 +2126,31 @@
 
     private async Task HandleFixedDelayChange(double value)
     {
-        try { await SpeedifyService.SetFixedDelayAsync((int)value); _fixedDelaySettings.DelayMs = (int)value; }
+        try { var success = await SpeedifyService.SetFixedDelayAsync((int)value); if (success) _fixedDelaySettings.DelayMs = (int)value; else _error = "Failed to update fixed delay"; }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
 
     private async Task HandleAddFixedDelayDomain(string domain)
     {
-        try { await SpeedifyService.SetFixedDelayDomainsAsync("add", new List<string> { domain }); _fixedDelaySettings.Domains.Add(domain); await InvokeAsync(StateHasChanged); }
+        try { var success = await SpeedifyService.SetFixedDelayDomainsAsync("add", new List<string> { domain }); if (success) _fixedDelaySettings.Domains.Add(domain); else _error = "Fixed-delay domains are not supported by this Speedify CLI"; await InvokeAsync(StateHasChanged); }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
 
     private async Task HandleRemoveFixedDelayDomain(int index)
     {
-        try { var domain = _fixedDelaySettings.Domains[index]; await SpeedifyService.SetFixedDelayDomainsAsync("rem", new List<string> { domain }); _fixedDelaySettings.Domains.RemoveAt(index); await InvokeAsync(StateHasChanged); }
+        try { var domain = _fixedDelaySettings.Domains[index]; var success = await SpeedifyService.SetFixedDelayDomainsAsync("rem", new List<string> { domain }); if (success) _fixedDelaySettings.Domains.RemoveAt(index); else _error = "Fixed-delay domains are not supported by this Speedify CLI"; await InvokeAsync(StateHasChanged); }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
 
     private async Task HandleAddFixedDelayIp(string ip)
     {
-        try { await SpeedifyService.SetFixedDelayIpsAsync("add", new List<string> { ip }); _fixedDelaySettings.Ips.Add(ip); await InvokeAsync(StateHasChanged); }
+        try { var success = await SpeedifyService.SetFixedDelayIpsAsync("add", new List<string> { ip }); if (success) _fixedDelaySettings.Ips.Add(ip); else _error = "Fixed-delay IP rules are not supported by this Speedify CLI"; await InvokeAsync(StateHasChanged); }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
 
     private async Task HandleRemoveFixedDelayIp(int index)
     {
-        try { var ip = _fixedDelaySettings.Ips[index]; await SpeedifyService.SetFixedDelayIpsAsync("rem", new List<string> { ip }); _fixedDelaySettings.Ips.RemoveAt(index); await InvokeAsync(StateHasChanged); }
+        try { var ip = _fixedDelaySettings.Ips[index]; var success = await SpeedifyService.SetFixedDelayIpsAsync("rem", new List<string> { ip }); if (success) _fixedDelaySettings.Ips.RemoveAt(index); else _error = "Fixed-delay IP rules are not supported by this Speedify CLI"; await InvokeAsync(StateHasChanged); }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
 
