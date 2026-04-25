@@ -250,7 +250,7 @@
                             Service Bypass Presets
                         </label>
                         <p class="text-xs text-slate-400 mb-3">Enable bypass for popular streaming and gaming services</p>
-                        
+
                         <!-- Streaming Services -->
                         <div class="mb-4">
                             <h4 class="text-sm font-medium text-slate-300 mb-2">
@@ -312,7 +312,153 @@
                 </div>
             </Accordion>
 
-            <!-- Section 5: Streaming Mode Rules -->
+            <!-- Section 5: OS Routing Priority (Linux-specific) -->
+            @if (OperatingSystem.IsLinux())
+            {
+                <Accordion Title="OS Routing Priority" IsExpanded="_routingPriorityExpanded" OnToggle="(e) => _routingPriorityExpanded = e" BadgeText="@GetRoutingPriorityBadge()">
+                    <div class="space-y-4 pt-4">
+                        <p class="text-sm text-slate-400 mb-4">
+                            <i class="fas fa-info-circle mr-1"></i>
+                            Configure which network adapter the OS prefers for bypassed traffic (traffic not going through Speedify).
+                            Lower metric values = higher priority.
+                        </p>
+
+                        <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 mb-4">
+                            <p class="text-xs text-yellow-400">
+                                <i class="fas fa-exclamation-triangle mr-1"></i>
+                                <strong>Note:</strong> This requires sudo privileges. Changes affect OS-level routing and only apply to bypassed traffic.
+                            </p>
+                        </div>
+
+                        <div class="flex justify-between items-center mb-4">
+                            <div class="flex items-center gap-4">
+                                <ToggleSwitch
+                                    Id="routing-priority-enabled"
+                                    Label="Enable OS Routing Priority"
+                                    IsEnabled="_routingPriorityConfig.Enabled"
+                                    OnToggle="HandleRoutingPriorityEnabledToggle" />
+                            </div>
+                            <button class="text-cyan-400 text-sm hover:text-cyan-300 flex items-center gap-1"
+                                    @onclick="RefreshSystemAdapters"
+                                    disabled="@_isLoadingSystemAdapters">
+                                <i class="fas fa-sync @(_isLoadingSystemAdapters ? "fa-spin" : "")"></i>
+                                <span>Refresh</span>
+                            </button>
+                        </div>
+
+                        @if (_isLoadingSystemAdapters)
+                        {
+                            <Preloader Message="Loading system adapters..." ContainerClass="py-6" />
+                        }
+                        else if (_systemAdapters == null || !_systemAdapters.Any())
+                        {
+                            <div class="text-center py-6 text-slate-500">
+                                <i class="fas fa-network-wired text-3xl mb-2"></i>
+                                <p>No network adapters found with default routes</p>
+                                <p class="text-xs mt-1">Click Refresh to scan for adapters</p>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="space-y-3">
+                                @foreach (var adapter in _systemAdapters.OrderBy(a => a.Metric == 0 ? 9999 : a.Metric))
+                                {
+                                    <div class="bg-slate-800/50 rounded-lg border border-slate-700 p-4">
+                                        <div class="flex items-center justify-between mb-3">
+                                            <div class="flex items-center gap-3">
+                                                <i class="fas fa-ethernet text-cyan-400"></i>
+                                                <div>
+                                                    <div class="font-medium text-white">@adapter.InterfaceName</div>
+                                                    @if (!string.IsNullOrEmpty(adapter.IpAddress))
+                                                    {
+                                                        <div class="text-xs text-slate-400">IP: @adapter.IpAddress</div>
+                                                    }
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center gap-2">
+                                                <span class="px-2 py-0.5 rounded text-xs @(adapter.IsUp ? "bg-green-500/20 text-green-400 border border-green-500/30" : "bg-red-500/20 text-red-400 border border-red-500/30")">
+                                                    @(adapter.IsUp ? "UP" : "DOWN")
+                                                </span>
+                                                @if (adapter.Metric > 0)
+                                                {
+                                                    <span class="px-2 py-0.5 rounded text-xs bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                                                        Metric: @adapter.CurrentSystemMetric
+                                                    </span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="px-2 py-0.5 rounded text-xs bg-slate-500/20 text-slate-400 border border-slate-500/30">
+                                                        No Route
+                                                    </span>
+                                                }
+                                            </div>
+                                        </div>
+
+                                        @if (!string.IsNullOrEmpty(adapter.Gateway))
+                                        {
+                                            <div class="text-xs text-slate-400 mb-3">
+                                                <i class="fas fa-route mr-1"></i> Gateway: @adapter.Gateway
+                                            </div>
+                                        }
+
+                                        <div class="flex items-center gap-4">
+                                            <div class="flex-1">
+                                                <label class="text-xs text-slate-400 block mb-1">Set Metric (1-9999, lower = higher priority)</label>
+                                                <div class="flex items-center gap-2">
+                                                    <input type="number"
+                                                           class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm max-w-[120px]"
+                                                           value="@adapter.Metric"
+                                                           min="1"
+                                                           max="9999"
+                                                           disabled="@(string.IsNullOrEmpty(adapter.Gateway) || !_routingPriorityConfig.Enabled)"
+                                                           @onchange="(e) => HandleAdapterMetricValueChange(adapter.InterfaceName, e)" />
+                                                    <button class="bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-400 px-3 py-2 rounded-md text-sm transition-colors disabled:opacity-50"
+                                                            @onclick="() => ApplyAdapterMetric(adapter)"
+                                                            disabled="@(_isProcessing || string.IsNullOrEmpty(adapter.Gateway) || !_routingPriorityConfig.Enabled || adapter.Metric == adapter.CurrentSystemMetric)">
+                                                        <i class="fas fa-check mr-1"></i> Apply
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div class="flex items-center gap-1">
+                                                <button class="text-slate-400 hover:text-cyan-400 p-2 disabled:opacity-50"
+                                                        title="Move Up (Lower Metric)"
+                                                        @onclick="() => MoveAdapterPriorityUp(adapter)"
+                                                        disabled="@(_isProcessing || string.IsNullOrEmpty(adapter.Gateway) || !_routingPriorityConfig.Enabled || adapter.Metric <= 1)">
+                                                    <i class="fas fa-arrow-up"></i>
+                                                </button>
+                                                <button class="text-slate-400 hover:text-cyan-400 p-2 disabled:opacity-50"
+                                                        title="Move Down (Higher Metric)"
+                                                        @onclick="() => MoveAdapterPriorityDown(adapter)"
+                                                        disabled="@(_isProcessing || string.IsNullOrEmpty(adapter.Gateway) || !_routingPriorityConfig.Enabled || adapter.Metric >= 9999)">
+                                                    <i class="fas fa-arrow-down"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        @if (adapter.Metric != adapter.CurrentSystemMetric && adapter.Metric > 0)
+                                        {
+                                            <div class="text-xs text-yellow-400 mt-2">
+                                                <i class="fas fa-exclamation-circle mr-1"></i>
+                                                Pending change: @adapter.CurrentSystemMetric → @adapter.Metric
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+
+                            <div class="mt-4 flex justify-end gap-2">
+                                <ToggleSwitch
+                                    Id="routing-apply-startup"
+                                    Label="Apply on Startup"
+                                    IsEnabled="_routingPriorityConfig.ApplyOnStartup"
+                                    OnToggle="HandleRoutingApplyOnStartupToggle" />
+                            </div>
+                        }
+                    </div>
+                </Accordion>
+            }
+
+            <!-- Section 6: Streaming Mode Rules -->
             <Accordion Title="Streaming Mode Rules" IsExpanded="_streamingExpanded" OnToggle="(e) => _streamingExpanded = e" BadgeText="@GetStreamingBadge()">
                 <div class="space-y-4 pt-4">
                     <p class="text-sm text-slate-400 mb-4">
@@ -371,7 +517,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 6: Connection Method -->
+            <!-- Section 7: Connection Method -->
             <Accordion Title="Server Selection" IsExpanded="_connectMethodExpanded" OnToggle="(e) => _connectMethodExpanded = e">
                 <div class="space-y-4 pt-4">
                     <SelectDropdown
@@ -385,7 +531,7 @@
                     {
                         <div>
                             <label class="block mb-2 font-medium text-white">Country</label>
-                            <input type="text" 
+                            <input type="text"
                                    @bind="_connectMethod.Country"
                                    placeholder="Country code (e.g., US)"
                                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
@@ -393,7 +539,7 @@
 
                         <div>
                             <label class="block mb-2 font-medium text-white">City (optional)</label>
-                            <input type="text" 
+                            <input type="text"
                                    @bind="_connectMethod.City"
                                    placeholder="City name"
                                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
@@ -408,7 +554,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 7: Advanced Settings -->
+            <!-- Section 8: Advanced Settings -->
             <Accordion Title="Advanced Settings" IsExpanded="_advancedExpanded" OnToggle="(e) => _advancedExpanded = e">
                 <div class="space-y-4 pt-4">
                     <NumberInput
@@ -446,7 +592,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 8: Fixed Delay -->
+            <!-- Section 9: Fixed Delay -->
             <Accordion Title="Fixed Delay" IsExpanded="_fixedDelayExpanded" OnToggle="(e) => _fixedDelayExpanded = e">
                 <div class="space-y-4 pt-4">
                     <p class="text-sm text-slate-400 mb-4">
@@ -480,7 +626,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 9: Port Forwarding -->
+            <!-- Section 10: Port Forwarding -->
             <Accordion Title="Port Forwarding" IsExpanded="_portForwardingExpanded" OnToggle="(e) => _portForwardingExpanded = e">
                 <div class="space-y-4 pt-4">
                     <p class="text-sm text-slate-400 mb-4">
@@ -507,7 +653,7 @@
                     }
 
                     <div class="flex gap-2">
-                        <input type="number" 
+                        <input type="number"
                                @bind="_newForwardedPort"
                                placeholder="Port"
                                min="1"
@@ -524,7 +670,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 10: Downstream Subnets -->
+            <!-- Section 11: Downstream Subnets -->
             <Accordion Title="Downstream Subnets" IsExpanded="_subnetsExpanded" OnToggle="(e) => _subnetsExpanded = e">
                 <div class="space-y-4 pt-4">
                     <p class="text-sm text-slate-400 mb-4">
@@ -551,11 +697,11 @@
                     }
 
                     <div class="flex gap-2">
-                        <input type="text" 
+                        <input type="text"
                                @bind="_newSubnetAddress"
                                placeholder="Network address (e.g., 192.168.1.0)"
                                class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
-                        <input type="number" 
+                        <input type="number"
                                @bind="_newSubnetPrefix"
                                placeholder="Prefix"
                                min="1"
@@ -568,10 +714,10 @@
                 </div>
             </Accordion>
 
-            <!-- Section 11: Network Monitor (App-specific) -->
+            <!-- Section 12: Network Monitor (App-specific) -->
             <Accordion Title="Network Monitor" IsExpanded="_monitorExpanded" OnToggle="(e) => _monitorExpanded = e">
                 <div class="space-y-4 pt-4">
-                    <ToggleSwitch 
+                    <ToggleSwitch
                         Id="monitor-enabled"
                         Label="Enable Background Monitoring"
                         IsEnabled="_monitorSettings.Enabled"
@@ -579,8 +725,8 @@
 
                     <div>
                         <label class="block mb-2 font-medium text-white">Whitelisted Adapters</label>
-                        <input type="text" 
-                               @bind="_whitelistedLinksInput" 
+                        <input type="text"
+                               @bind="_whitelistedLinksInput"
                                class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white">
                         <p class="text-xs text-slate-400 mt-1">Comma-separated list of adapter IDs to monitor.</p>
                     </div>
@@ -596,7 +742,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 12: System Controls -->
+            <!-- Section 13: System Controls -->
             <Accordion Title="System Controls" IsExpanded="_controlsExpanded" OnToggle="(e) => _controlsExpanded = e">
                 <div class="space-y-3 pt-4">
                     <button class="w-full text-left flex items-center gap-3 bg-red-600/20 hover:bg-red-600/30 text-red-400 font-semibold py-3 px-4 rounded-md transition-colors"
@@ -626,7 +772,7 @@
                 </div>
             </Accordion>
 
-            <!-- Section 13: Adapter Settings -->
+            <!-- Section 14: Adapter Settings -->
             <Accordion Title="Adapter Settings" IsExpanded="_adapterSettingsExpanded" OnToggle="(e) => _adapterSettingsExpanded = e" BadgeText="@GetAdaptersBadge()">
                 <div class="space-y-4 pt-4">
                     <div class="flex justify-between items-center mb-4">
@@ -1009,7 +1155,7 @@
     private FixedDelaySettings _fixedDelaySettings = new();
     private List<ForwardedPort> _forwardedPorts = new();
     private List<DownstreamSubnet> _downstreamSubnets = new();
-    
+
     private string? _error;
     private string? _successMessage;
     private bool _isLoading = true;
@@ -1024,12 +1170,12 @@
     private string _newForwardedProtocol = "tcp";
     private string _newSubnetAddress = "";
     private int _newSubnetPrefix = 24;
-    
+
     // Streaming bypass state
     private bool _bypassEnabled = false;
     private bool _hasUnsavedBypassChanges = false;
     private bool _hasUnsavedStreamingChanges = false;
-    
+
     // Service preset dictionaries
     private readonly Dictionary<string, string> _streamingServicePresets = new()
     {
@@ -1046,7 +1192,7 @@
         { "paramount", "Paramount+" },
         { "crunchyroll", "Crunchyroll" }
     };
-    
+
     private readonly Dictionary<string, string> _gamingServicePresets = new()
     {
         { "steam", "Steam" },
@@ -1060,11 +1206,11 @@
         { "riotgames", "Riot Games" },
         { "ea", "EA / Origin" }
     };
-    
+
     private Dictionary<string, string> _allPresetServices => _streamingServicePresets
         .Concat(_gamingServicePresets)
         .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-    
+
     // Track enabled services
     private HashSet<string> _enabledServices = new(StringComparer.OrdinalIgnoreCase);
 
@@ -1081,6 +1227,12 @@
     private bool _monitorExpanded = false;
     private bool _controlsExpanded = false;
     private bool _adapterSettingsExpanded = false;
+    private bool _routingPriorityExpanded = false;
+
+    // OS Routing Priority state
+    private AdapterRoutingPriorityConfig _routingPriorityConfig = new();
+    private List<AdapterRoutingPriority>? _systemAdapters;
+    private bool _isLoadingSystemAdapters = false;
 
     // Adapter settings state
     private List<AdapterExtended>? _adaptersExtended;
@@ -1134,6 +1286,13 @@
     {
         await LoadSettings();
         await LoadAdaptersExtended();
+
+        // Load OS routing priority settings (Linux only)
+        if (OperatingSystem.IsLinux())
+        {
+            await LoadRoutingPrioritySettings();
+            await LoadSystemAdapters();
+        }
     }
 
     private async Task LoadSettings()
@@ -1190,7 +1349,7 @@
                 _bypassSettings.Ipv6 ??= new List<string>();
                 _bypassSettings.Ports ??= new List<PortRule>();
                 _bypassSettings.Services ??= new List<ServiceBypass>();
-                
+
                 // Determine if bypass is enabled based on whether any rules exist or services are enabled
                 _bypassEnabled = _bypassSettings.DomainWatchlistEnabled ||
                                  _bypassSettings.Domains.Any() ||
@@ -1254,7 +1413,7 @@
                 _fixedDelaySettings.Ips ??= new List<string>();
                 _fixedDelaySettings.Ports ??= new List<PortRule>();
             }
-            
+
             // Initialize enabled services set from loaded bypass settings
             _enabledServices.Clear();
             if (_bypassSettings.Services != null)
@@ -1275,12 +1434,176 @@
         }
     }
 
+    #region OS Routing Priority Methods
+
+    private async Task LoadRoutingPrioritySettings()
+    {
+        try
+        {
+            var section = Configuration.GetSection("AdapterRoutingPriority");
+            if (section.Exists())
+            {
+                _routingPriorityConfig = section.Get<AdapterRoutingPriorityConfig>() ?? new AdapterRoutingPriorityConfig();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading routing priority settings: {ex.Message}");
+        }
+    }
+
+    private async Task LoadSystemAdapters()
+    {
+        _isLoadingSystemAdapters = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _systemAdapters = await SpeedifyService.GetSystemNetworkAdaptersAsync();
+
+            // Apply saved metrics from config
+            if (_systemAdapters != null && _routingPriorityConfig.AdapterMetrics.Any())
+            {
+                foreach (var adapter in _systemAdapters)
+                {
+                    var savedMetric = _routingPriorityConfig.AdapterMetrics
+                        .FirstOrDefault(m => m.InterfaceName == adapter.InterfaceName);
+                    if (savedMetric != null)
+                    {
+                        adapter.Metric = savedMetric.Metric;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load system adapters: {ex.Message}";
+        }
+        finally
+        {
+            _isLoadingSystemAdapters = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshSystemAdapters()
+    {
+        await LoadSystemAdapters();
+    }
+
+    private string? GetRoutingPriorityBadge()
+    {
+        if (_systemAdapters == null || !_systemAdapters.Any()) return null;
+        var withRoutes = _systemAdapters.Count(a => a.Metric > 0);
+        return withRoutes > 0 ? withRoutes.ToString() : null;
+    }
+
+    private async Task HandleRoutingPriorityEnabledToggle(bool enabled)
+    {
+        _routingPriorityConfig.Enabled = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleRoutingApplyOnStartupToggle(bool enabled)
+    {
+        _routingPriorityConfig.ApplyOnStartup = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleAdapterMetricValueChange(string interfaceName, ChangeEventArgs e)
+    {
+        if (_systemAdapters == null) return;
+
+        var adapter = _systemAdapters.FirstOrDefault(a => a.InterfaceName == interfaceName);
+        if (adapter != null && int.TryParse(e.Value?.ToString(), out var metric))
+        {
+            adapter.Metric = Math.Clamp(metric, 1, 9999);
+            StateHasChanged();
+        }
+    }
+
+    private async Task ApplyAdapterMetric(AdapterRoutingPriority adapter)
+    {
+        if (string.IsNullOrEmpty(adapter.Gateway))
+        {
+            _error = "Cannot set metric: no gateway found for this adapter";
+            return;
+        }
+
+        _isProcessing = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetAdapterMetricAsync(
+                adapter.InterfaceName,
+                adapter.Metric,
+                adapter.Gateway);
+
+            if (success)
+            {
+                adapter.CurrentSystemMetric = adapter.Metric;
+
+                // Update saved config
+                var existing = _routingPriorityConfig.AdapterMetrics
+                    .FirstOrDefault(m => m.InterfaceName == adapter.InterfaceName);
+                if (existing != null)
+                {
+                    existing.Metric = adapter.Metric;
+                }
+                else
+                {
+                    _routingPriorityConfig.AdapterMetrics.Add(new AdapterMetricSetting
+                    {
+                        InterfaceName = adapter.InterfaceName,
+                        Metric = adapter.Metric
+                    });
+                }
+
+                _successMessage = $"Metric {adapter.Metric} applied to {adapter.InterfaceName}";
+            }
+            else
+            {
+                _error = $"Failed to set metric for {adapter.InterfaceName}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error setting metric: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task MoveAdapterPriorityUp(AdapterRoutingPriority adapter)
+    {
+        if (adapter.Metric <= 1) return;
+
+        // Decrease metric by 10 (or to 1 if would go below)
+        adapter.Metric = Math.Max(1, adapter.Metric - 10);
+        await ApplyAdapterMetric(adapter);
+    }
+
+    private async Task MoveAdapterPriorityDown(AdapterRoutingPriority adapter)
+    {
+        if (adapter.Metric >= 9999) return;
+
+        // Increase metric by 10 (or to 9999 if would exceed)
+        adapter.Metric = Math.Min(9999, adapter.Metric + 10);
+        await ApplyAdapterMetric(adapter);
+    }
+
+    #endregion
+
     private string? GetBypassBadge()
     {
         var count = _bypassSettings.Domains.Count + _bypassSettings.Ipv4.Count +
                     _bypassSettings.Ipv6.Count + _bypassSettings.Ports.Count +
                     _enabledServices.Count;
-        
+
         if (_hasUnsavedBypassChanges)
         {
             return count > 0 ? $"{count} ⚠️" : "⚠️";
@@ -1292,14 +1615,14 @@
     {
         var count = _streamingSettings.Domains.Count + _streamingSettings.Ipv4.Count +
                     _streamingSettings.Ipv6.Count + _streamingSettings.Ports.Count;
-        
+
         if (_hasUnsavedStreamingChanges)
         {
             return count > 0 ? $"{count} ⚠️" : "⚠️";
         }
         return count > 0 ? count.ToString() : null;
     }
-    
+
     private bool IsServiceEnabled(string serviceKey)
     {
         return _enabledServices.Contains(serviceKey.ToLowerInvariant());
@@ -1469,7 +1792,7 @@
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
         finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
     }
-    
+
     private async Task HandleDomainWatchlistToggle(bool enabled)
     {
         _bypassSettings.DomainWatchlistEnabled = enabled;
@@ -1552,7 +1875,7 @@
         _hasUnsavedBypassChanges = true;
         StateHasChanged();
     }
-    
+
     private void HandleBypassPortChange(int index, PortRule rule)
     {
         if (index >= 0 && index < _bypassSettings.Ports.Count)
@@ -1585,7 +1908,7 @@
             {
                 service.Enabled = enabled;
             }
-            
+
             if (enabled)
             {
                 _enabledServices.Add(serviceName.ToLowerInvariant());
@@ -1598,14 +1921,14 @@
         }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
-    
+
     private async Task HandlePresetServiceToggle(string serviceKey, bool enabled)
     {
         try
         {
             _isProcessing = true;
             await InvokeAsync(StateHasChanged);
-            
+
             var success = await SpeedifyService.SetStreamingBypassServiceAsync(serviceKey, enabled);
             if (success)
             {
@@ -1617,7 +1940,7 @@
                 {
                     _enabledServices.Remove(serviceKey.ToLowerInvariant());
                 }
-                
+
                 // Also update the services list if present
                 var existingService = _bypassSettings.Services.FirstOrDefault(s =>
                     s.Name.Equals(serviceKey, StringComparison.OrdinalIgnoreCase));
@@ -1684,7 +2007,7 @@
         }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
     }
-    
+
     private async Task HandleAddStreamingIpv6(string ip)
     {
         try
@@ -1714,7 +2037,7 @@
         _hasUnsavedStreamingChanges = true;
         StateHasChanged();
     }
-    
+
     private void HandleStreamingPortChange(int index, PortRule rule)
     {
         if (index >= 0 && index < _streamingSettings.Ports.Count)
@@ -1835,17 +2158,17 @@
         _error = null;
         _successMessage = null;
         await InvokeAsync(StateHasChanged);
-        
+
         var errors = new List<string>();
         var successCount = 0;
-        
+
         try
         {
             // Save network monitor settings
             var links = _whitelistedLinksInput.Split(',').Select(s => s.Trim()).Where(s => !string.IsNullOrEmpty(s)).ToList();
             _monitorSettings.WhitelistedLinks = links;
             successCount++;
-            
+
             // Save pending bypass port changes
             if (_hasUnsavedBypassChanges && _bypassSettings.Ports.Any())
             {
@@ -1867,7 +2190,7 @@
                     errors.Add($"Bypass ports: {ex.Message}");
                 }
             }
-            
+
             // Save pending streaming port changes
             if (_hasUnsavedStreamingChanges && _streamingSettings.Ports.Any())
             {
@@ -1888,11 +2211,11 @@
                     errors.Add($"Streaming ports: {ex.Message}");
                 }
             }
-            
+
             // Clear unsaved changes flags
             _hasUnsavedBypassChanges = false;
             _hasUnsavedStreamingChanges = false;
-            
+
             if (errors.Any())
             {
                 _error = $"Some settings failed to save: {string.Join("; ", errors)}";
@@ -1929,11 +2252,11 @@
     {
         _isLoadingAdapters = true;
         await InvokeAsync(StateHasChanged);
-        
+
         try
         {
             _adaptersExtended = await SpeedifyService.GetAdaptersExtendedAsync();
-            
+
             // Initialize local state for each adapter
             if (_adaptersExtended != null)
             {
@@ -2078,11 +2401,11 @@
     {
         _isProcessing = true;
         await InvokeAsync(StateHasChanged);
-        
+
         try
         {
             await SpeedifyService.SetPriorityAsync(adapterId, priority);
-            
+
             // Update local state
             if (_adaptersExtended != null)
             {
@@ -2092,7 +2415,7 @@
                     adapter.Priority = priority;
                 }
             }
-            
+
             _successMessage = $"Priority updated to {priority}";
         }
         catch (Exception ex)
@@ -2110,7 +2433,7 @@
     {
         _isProcessing = true;
         await InvokeAsync(StateHasChanged);
-        
+
         try
         {
             var success = await SpeedifyService.SetAdapterEncryptionAsync(adapterId, enabled);
@@ -2149,7 +2472,7 @@
             var unit = _adapterDailyLimitUnits.GetValueOrDefault(adapterId, "GB");
             var multiplier = unit == "GB" ? 1024L * 1024L * 1024L : 1024L * 1024L;
             var bytes = (long)(value * multiplier);
-            
+
             try
             {
                 var success = await SpeedifyService.SetAdapterDailyLimitAsync(adapterId, bytes);
@@ -2199,10 +2522,10 @@
             var unit = _adapterMonthlyLimitUnits.GetValueOrDefault(adapterId, "GB");
             var multiplier = unit == "GB" ? 1024L * 1024L * 1024L : 1024L * 1024L;
             var bytes = (long)(value * multiplier);
-            
+
             var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
             var resetDay = adapter?.DataUsage.UsageMonthlyResetDay ?? 1;
-            
+
             try
             {
                 var success = await SpeedifyService.SetAdapterMonthlyLimitAsync(adapterId, bytes, resetDay);
@@ -2224,7 +2547,7 @@
         var unlimited = e.Value is bool b && b;
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
         var resetDay = adapter?.DataUsage.UsageMonthlyResetDay ?? 1;
-        
+
         try
         {
             var success = await SpeedifyService.SetAdapterMonthlyLimitAsync(adapterId, unlimited ? null : 1024L * 1024L * 1024L, resetDay);
@@ -2246,7 +2569,7 @@
         {
             var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
             var limit = adapter?.DataUsage.UsageMonthlyLimit ?? 0;
-            
+
             try
             {
                 var success = await SpeedifyService.SetAdapterMonthlyLimitAsync(adapterId, limit == 0 ? null : limit, day);
@@ -2293,7 +2616,7 @@
         {
             var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
             var uploadBps = adapter?.RateLimit.UploadBitsPerSecond ?? 0;
-            
+
             try
             {
                 var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, bps == 0 ? null : bps, uploadBps == 0 ? null : uploadBps);
@@ -2315,7 +2638,7 @@
         var unlimited = e.Value is bool b && b;
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
         var uploadBps = adapter?.RateLimit.UploadBitsPerSecond ?? 0;
-        
+
         try
         {
             var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, unlimited ? null : 10000000, uploadBps == 0 ? null : uploadBps);
@@ -2337,7 +2660,7 @@
         {
             var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
             var downloadBps = adapter?.RateLimit.DownloadBitsPerSecond ?? 0;
-            
+
             try
             {
                 var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, downloadBps == 0 ? null : downloadBps, bps == 0 ? null : bps);
@@ -2359,7 +2682,7 @@
         var unlimited = e.Value is bool b && b;
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
         var downloadBps = adapter?.RateLimit.DownloadBitsPerSecond ?? 0;
-        
+
         try
         {
             var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, downloadBps == 0 ? null : downloadBps, unlimited ? null : 10000000);
@@ -2379,7 +2702,7 @@
     {
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
         var downloadMode = adapter?.DirectionalSettings.Download ?? "on";
-        
+
         try
         {
             var success = await SpeedifyService.SetAdapterDirectionalModeAsync(adapterId, mode, downloadMode);
@@ -2399,7 +2722,7 @@
     {
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
         var uploadMode = adapter?.DirectionalSettings.Upload ?? "on";
-        
+
         try
         {
             var success = await SpeedifyService.SetAdapterDirectionalModeAsync(adapterId, uploadMode, mode);
@@ -2419,7 +2742,7 @@
     {
         _isProcessing = true;
         await InvokeAsync(StateHasChanged);
-        
+
         try
         {
             var success = await SpeedifyService.ResetAdapterUsageAsync(adapterId);
@@ -2454,17 +2777,17 @@
     private string FormatBytes(long bytes)
     {
         if (bytes == 0) return "0 B";
-        
+
         string[] suffixes = { "B", "KB", "MB", "GB", "TB" };
         int suffixIndex = 0;
         double size = bytes;
-        
+
         while (size >= 1024 && suffixIndex < suffixes.Length - 1)
         {
             size /= 1024;
             suffixIndex++;
         }
-        
+
         return $"{size:F2} {suffixes[suffixIndex]}";
     }
 
