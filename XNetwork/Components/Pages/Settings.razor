@@ -110,7 +110,7 @@
                         Label="Transport Retry"
                         Value="_transportSettings.TransportRetrySeconds"
                         OnChange="HandleTransportRetryChange"
-                        Min="1"
+                        Min="0"
                         Max="300"
                         Unit="seconds"
                         HelpText="Time to wait before retrying transport connection" />
@@ -119,7 +119,7 @@
                         Label="Connect Retry"
                         Value="_transportSettings.ConnectRetrySeconds"
                         OnChange="HandleConnectRetryChange"
-                        Min="1"
+                        Min="0"
                         Max="300"
                         Unit="seconds"
                         HelpText="Time to wait before retrying server connection" />
@@ -1379,15 +1379,10 @@
             if (transport != null)
             {
                 _transportSettings = transport;
-                // Normalize transport mode to lowercase for dropdown matching
-                if (!string.IsNullOrEmpty(_transportSettings.TransportMode))
-                {
-                    _transportSettings.TransportMode = _transportSettings.TransportMode.ToLowerInvariant();
-                }
-                else
-                {
-                    _transportSettings.TransportMode = "auto";
-                }
+                _transportSettings.TransportMode = NormalizeSelectValue(
+                    _transportSettings.TransportMode,
+                    _transportModeOptions,
+                    "auto");
             }
 
             // Load connect method settings (server selection)
@@ -1395,15 +1390,7 @@
             if (connectMethod != null)
             {
                 _connectMethod = connectMethod;
-                // Normalize method to lowercase for dropdown matching
-                if (!string.IsNullOrEmpty(_connectMethod.Method))
-                {
-                    _connectMethod.Method = _connectMethod.Method.ToLowerInvariant();
-                }
-                else
-                {
-                    _connectMethod.Method = "closest";
-                }
+                _connectMethod.Method = NormalizeSelectValue(_connectMethod.Method, _connectMethodOptions, "closest");
             }
 
             // Load fixed delay settings
@@ -1435,6 +1422,18 @@
         {
             _isLoading = false;
         }
+    }
+
+    private static string NormalizeSelectValue(string? value, IEnumerable<SelectOption> options, string fallback)
+    {
+        var selectedValue = value?.Trim();
+        if (string.IsNullOrEmpty(selectedValue))
+        {
+            return fallback;
+        }
+
+        return options.FirstOrDefault(option =>
+            string.Equals(option.Value, selectedValue, StringComparison.OrdinalIgnoreCase))?.Value ?? selectedValue;
     }
 
     #region OS Routing Priority Methods
@@ -2290,6 +2289,11 @@
             {
                 foreach (var adapter in _adaptersExtended)
                 {
+                    adapter.Priority = NormalizeSelectValue(adapter.Priority, _adapterPriorityOptions, "automatic");
+                    adapter.DirectionalSettings ??= new AdapterDirectionalSettings();
+                    adapter.DirectionalSettings.Upload = NormalizeSelectValue(adapter.DirectionalSettings.Upload, _directionalModeOptions, "on");
+                    adapter.DirectionalSettings.Download = NormalizeSelectValue(adapter.DirectionalSettings.Download, _directionalModeOptions, "on");
+
                     _adapterLocalState[adapter.AdapterId] = adapter;
                     _adapterDailyLimitUnits[adapter.AdapterId] = "GB";
                     _adapterMonthlyLimitUnits[adapter.AdapterId] = "GB";

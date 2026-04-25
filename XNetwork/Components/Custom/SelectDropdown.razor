@@ -5,6 +5,11 @@ Consistent styled dropdown for selecting from options
 
 @using XNetwork.Models
 
+@{
+    var effectiveSelectedValue = GetEffectiveSelectedValue();
+    var unmatchedSelectedValue = GetUnmatchedSelectedValue();
+}
+
 <div class="select-dropdown @(Disabled ? "select-dropdown-disabled" : "")">
     @if (!string.IsNullOrEmpty(Label))
     {
@@ -14,16 +19,20 @@ Consistent styled dropdown for selecting from options
     <div class="select-dropdown-wrapper">
         <select id="@Id"
                 class="select-dropdown-control"
-                value="@SelectedValue"
+                value="@effectiveSelectedValue"
                 @onchange="HandleChange"
                 disabled="@Disabled">
             @if (!string.IsNullOrEmpty(Placeholder))
             {
-                <option value="" disabled selected="@(string.IsNullOrEmpty(SelectedValue))">@Placeholder</option>
+                <option value="" disabled>@Placeholder</option>
+            }
+            @if (!string.IsNullOrEmpty(unmatchedSelectedValue))
+            {
+                <option value="@unmatchedSelectedValue">@unmatchedSelectedValue</option>
             }
             @foreach (var option in Options)
             {
-                <option value="@option.Value" selected="@(option.Value == SelectedValue)">@option.Label</option>
+                <option value="@option.Value">@option.Label</option>
             }
         </select>
         <svg class="select-dropdown-icon" 
@@ -97,8 +106,33 @@ Consistent styled dropdown for selecting from options
 
     private async Task HandleChange(ChangeEventArgs e)
     {
-        var value = e.Value?.ToString() ?? "";
+        var value = e.Value?.ToString()?.Trim() ?? "";
         SelectedValue = value;
         await OnChange.InvokeAsync(value);
+    }
+
+    private string GetEffectiveSelectedValue()
+    {
+        var selectedValue = SelectedValue?.Trim();
+        if (string.IsNullOrEmpty(selectedValue))
+        {
+            return string.Empty;
+        }
+
+        return Options.FirstOrDefault(option =>
+            string.Equals(option.Value, selectedValue, StringComparison.OrdinalIgnoreCase))?.Value ?? selectedValue;
+    }
+
+    private string? GetUnmatchedSelectedValue()
+    {
+        var selectedValue = SelectedValue?.Trim();
+        if (string.IsNullOrEmpty(selectedValue))
+        {
+            return null;
+        }
+
+        return Options.Any(option => string.Equals(option.Value, selectedValue, StringComparison.OrdinalIgnoreCase))
+            ? null
+            : selectedValue;
     }
 }
