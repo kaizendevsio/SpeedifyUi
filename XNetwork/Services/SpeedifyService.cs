@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -17,7 +17,7 @@ public record Settings(
     string? CurrentServerCountry,
     string? CurrentServerCity
     // Add other fields from 'status -j' as needed, like public IP of the VPN
-    // string? PublicIpAddress 
+    // string? PublicIpAddress
 );
 
 public class SpeedifyException(string message) : Exception(message);
@@ -304,7 +304,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException($"Invalid bonding mode: {mode}. Valid modes are: speed, redundant, streaming");
             }
-            
+
             var jsonOutput = await Task.Run(() => RunTerminatingCommand($"mode {mode}"), cancellationToken)
                 .ConfigureAwait(false);
             return JsonSerializer.Deserialize<SpeedifySettings>(jsonOutput, _jsonOptions);
@@ -426,7 +426,7 @@ public class SpeedifyService
             var command = string.IsNullOrEmpty(adapterId) ? "speedtest" : $"speedtest {adapterId}";
             var jsonOutput = await Task.Run(() => RunTerminatingCommand(command), cancellationToken)
                 .ConfigureAwait(false);
-            
+
             var results = JsonSerializer.Deserialize<List<SpeedTestResult>>(jsonOutput, _jsonOptions);
             return results?.FirstOrDefault();
         }
@@ -449,7 +449,7 @@ public class SpeedifyService
             var command = string.IsNullOrEmpty(adapterId) ? "streamtest" : $"streamtest {adapterId}";
             var jsonOutput = await Task.Run(() => RunTerminatingCommand(command), cancellationToken)
                 .ConfigureAwait(false);
-            
+
             var results = JsonSerializer.Deserialize<List<SpeedTestResult>>(jsonOutput, _jsonOptions);
             return results?.FirstOrDefault();
         }
@@ -1000,7 +1000,7 @@ public class SpeedifyService
             // Parse the relevant fields
             using var doc = JsonDocument.Parse(jsonOutput);
             var root = doc.RootElement;
-            
+
             return new TransportSettings
             {
                 TransportMode = root.TryGetProperty("transportMode", out var tm) ? tm.GetString() ?? "auto" : "auto",
@@ -1035,7 +1035,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException($"Invalid transport mode: {mode}. Valid modes are: {string.Join(", ", validModes)}");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"transport {mode}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1065,7 +1065,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Transport retry seconds cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"transportretry {seconds}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1095,7 +1095,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Connect retry seconds cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"connectretry {seconds}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1154,14 +1154,14 @@ public class SpeedifyService
         try
         {
             var args = new List<string> { "connectmethod", method };
-            
+
             if (!string.IsNullOrEmpty(country))
                 args.Add(country);
             if (!string.IsNullOrEmpty(city))
                 args.Add(city);
             if (num.HasValue)
                 args.Add(num.Value.ToString());
-            
+
             await Task.Run(() => RunTerminatingCommand(string.Join(" ", args)), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1221,7 +1221,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Max redundant connections cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"maxredundant {connections}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1251,7 +1251,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Overflow threshold cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"overflow {mbps}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1281,7 +1281,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Priority overflow cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"priorityoverflow {mbps}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1312,7 +1312,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Target connections cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"targetconnections {uploadConnections} {downloadConnections}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1481,7 +1481,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Fixed delay cannot be negative");
             }
-            
+
             await Task.Run(() => RunTerminatingCommand($"fixeddelay {delayMs}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
@@ -1709,7 +1709,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Reset day must be between 1 and 31");
             }
-            
+
             var limitArg = bytesLimit.HasValue ? bytesLimit.Value.ToString() : "unlimited";
             var command = $"adapter datalimit monthly {adapterId} {limitArg} {resetDay}";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
@@ -1742,7 +1742,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Additional bytes cannot be negative");
             }
-            
+
             var command = $"adapter datalimit dailyboost {adapterId} {additionalBytes}";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
             return true;
@@ -1774,7 +1774,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException("Rate limit cannot be negative");
             }
-            
+
             var command = $"adapter overlimitratelimit {adapterId} {bitsPerSecond}";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
             return true;
@@ -1868,7 +1868,7 @@ public class SpeedifyService
             {
                 throw new ArgumentException($"Invalid download mode: {downloadMode}. Valid modes are: {string.Join(", ", validModes)}");
             }
-            
+
             var command = $"adapter directionalmode {adapterId} {uploadMode} {downloadMode}";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
             return true;
@@ -1883,6 +1883,332 @@ public class SpeedifyService
             Console.WriteLine($"SpeedifyService: Unexpected error setting adapter directional mode: {ex.Message}");
             return false;
         }
+    }
+
+    #endregion
+
+    #region OS Routing Methods (Linux-specific)
+
+    /// <summary>
+    /// Gets system network adapters with their routing information.
+    /// Linux-specific: parses output from 'ip route' and 'ip addr' commands.
+    /// </summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>List of adapter routing priority information.</returns>
+    public async Task<List<AdapterRoutingPriority>> GetSystemNetworkAdaptersAsync(CancellationToken cancellationToken = default)
+    {
+        var adapters = new List<AdapterRoutingPriority>();
+
+        if (!OperatingSystem.IsLinux())
+        {
+            Console.WriteLine("SpeedifyService: GetSystemNetworkAdaptersAsync is only supported on Linux");
+            return adapters;
+        }
+
+        try
+        {
+            // Get routing table to find default routes and their metrics
+            var routeOutput = await RunLinuxCommandAsync("ip route show", cancellationToken).ConfigureAwait(false);
+            var defaultRoutes = ParseDefaultRoutes(routeOutput);
+
+            // Get interface information (IP addresses and state)
+            var addrOutput = await RunLinuxCommandAsync("ip -o addr show", cancellationToken).ConfigureAwait(false);
+            var interfaceInfo = ParseInterfaceInfo(addrOutput);
+
+            // Get link state information
+            var linkOutput = await RunLinuxCommandAsync("ip -o link show", cancellationToken).ConfigureAwait(false);
+            var linkStates = ParseLinkStates(linkOutput);
+
+            // Combine information
+            foreach (var route in defaultRoutes)
+            {
+                var adapter = new AdapterRoutingPriority
+                {
+                    InterfaceName = route.InterfaceName,
+                    DisplayName = route.InterfaceName,
+                    Gateway = route.Gateway,
+                    Metric = route.Metric,
+                    CurrentSystemMetric = route.Metric,
+                    IsUp = linkStates.GetValueOrDefault(route.InterfaceName, false)
+                };
+
+                if (interfaceInfo.TryGetValue(route.InterfaceName, out var ip))
+                {
+                    adapter.IpAddress = ip;
+                }
+
+                adapters.Add(adapter);
+            }
+
+            // Add interfaces that have IPs but no default route (for completeness)
+            foreach (var (iface, ip) in interfaceInfo)
+            {
+                if (!adapters.Any(a => a.InterfaceName == iface) &&
+                    !iface.StartsWith("lo") && // Skip loopback
+                    !iface.StartsWith("docker") && // Skip docker interfaces
+                    !iface.StartsWith("br-") && // Skip bridge interfaces
+                    !iface.StartsWith("veth")) // Skip veth interfaces
+                {
+                    adapters.Add(new AdapterRoutingPriority
+                    {
+                        InterfaceName = iface,
+                        DisplayName = iface,
+                        IpAddress = ip,
+                        Metric = 0, // No default route
+                        CurrentSystemMetric = 0,
+                        IsUp = linkStates.GetValueOrDefault(iface, false)
+                    });
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting system network adapters: {ex.Message}");
+        }
+
+        return adapters;
+    }
+
+    /// <summary>
+    /// Sets the routing metric for a specific network interface.
+    /// Linux-specific: uses 'ip route replace' command.
+    /// Requires sudo privileges.
+    /// </summary>
+    /// <param name="interfaceName">Network interface name (e.g., "eth0").</param>
+    /// <param name="metric">The metric value to set (lower = higher priority).</param>
+    /// <param name="gateway">The gateway IP address for this interface.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>True if successful, false otherwise.</returns>
+    public async Task<bool> SetAdapterMetricAsync(string interfaceName, int metric, string gateway, CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Console.WriteLine("SpeedifyService: SetAdapterMetricAsync is only supported on Linux");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(interfaceName))
+        {
+            Console.WriteLine("SpeedifyService: Interface name cannot be empty");
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(gateway))
+        {
+            Console.WriteLine($"SpeedifyService: Gateway not specified for interface {interfaceName}");
+            return false;
+        }
+
+        if (metric < 0 || metric > 9999)
+        {
+            Console.WriteLine($"SpeedifyService: Invalid metric value {metric}. Must be between 0 and 9999.");
+            return false;
+        }
+
+        try
+        {
+            // First, delete any existing default route for this interface
+            var deleteCommand = $"sudo ip route del default dev {interfaceName} 2>/dev/null || true";
+            await RunLinuxCommandAsync(deleteCommand, cancellationToken).ConfigureAwait(false);
+
+            // Add the new default route with the specified metric
+            var addCommand = $"sudo ip route add default via {gateway} dev {interfaceName} metric {metric}";
+            await RunLinuxCommandAsync(addCommand, cancellationToken).ConfigureAwait(false);
+
+            Console.WriteLine($"SpeedifyService: Set metric {metric} for interface {interfaceName} via {gateway}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error setting adapter metric: {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets the gateway IP address for a specific network interface.
+    /// Linux-specific: parses output from 'ip route' command.
+    /// </summary>
+    /// <param name="interfaceName">Network interface name (e.g., "eth0").</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Gateway IP address or null if not found.</returns>
+    public async Task<string?> GetAdapterGatewayAsync(string interfaceName, CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Console.WriteLine("SpeedifyService: GetAdapterGatewayAsync is only supported on Linux");
+            return null;
+        }
+
+        try
+        {
+            var output = await RunLinuxCommandAsync($"ip route show dev {interfaceName}", cancellationToken).ConfigureAwait(false);
+            var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var line in lines)
+            {
+                if (line.StartsWith("default"))
+                {
+                    // Parse: "default via 192.168.1.1 dev eth0 metric 100"
+                    var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    var viaIndex = Array.IndexOf(parts, "via");
+                    if (viaIndex >= 0 && viaIndex + 1 < parts.Length)
+                    {
+                        return parts[viaIndex + 1];
+                    }
+                }
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting adapter gateway: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Runs a Linux shell command and returns the output.
+    /// </summary>
+    /// <param name="command">The command to run.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Command output.</returns>
+    private async Task<string> RunLinuxCommandAsync(string command, CancellationToken cancellationToken = default)
+    {
+        var processStartInfo = new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = $"-c \"{command}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using var process = new Process { StartInfo = processStartInfo };
+
+        if (!process.Start())
+        {
+            throw new Exception($"Failed to start process for command: {command}");
+        }
+
+        var output = await process.StandardOutput.ReadToEndAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+        var error = await process.StandardError.ReadToEndAsync().WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+        if (process.ExitCode != 0 && !string.IsNullOrWhiteSpace(error))
+        {
+            throw new Exception($"Command failed with exit code {process.ExitCode}: {error}");
+        }
+
+        return output;
+    }
+
+    /// <summary>
+    /// Parses default routes from 'ip route show' output.
+    /// </summary>
+    private List<(string InterfaceName, string Gateway, int Metric)> ParseDefaultRoutes(string output)
+    {
+        var routes = new List<(string InterfaceName, string Gateway, int Metric)>();
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var line in lines)
+        {
+            if (!line.StartsWith("default")) continue;
+
+            // Parse: "default via 192.168.1.1 dev eth0 proto static metric 100"
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            string? gateway = null;
+            string? dev = null;
+            int metric = 100; // Default metric if not specified
+
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                switch (parts[i])
+                {
+                    case "via":
+                        gateway = parts[i + 1];
+                        break;
+                    case "dev":
+                        dev = parts[i + 1];
+                        break;
+                    case "metric":
+                        if (int.TryParse(parts[i + 1], out var m))
+                            metric = m;
+                        break;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(dev) && !string.IsNullOrEmpty(gateway))
+            {
+                routes.Add((dev, gateway, metric));
+            }
+        }
+
+        return routes;
+    }
+
+    /// <summary>
+    /// Parses interface IP addresses from 'ip -o addr show' output.
+    /// </summary>
+    private Dictionary<string, string> ParseInterfaceInfo(string output)
+    {
+        var info = new Dictionary<string, string>();
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var line in lines)
+        {
+            // Parse: "2: eth0    inet 192.168.1.100/24 brd 192.168.1.255 scope global eth0"
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length < 4) continue;
+
+            // Find interface name (after the index number)
+            var ifaceName = parts[1].TrimEnd(':');
+
+            // Find inet/inet6 and get the IP
+            for (int i = 0; i < parts.Length - 1; i++)
+            {
+                if (parts[i] == "inet" && !info.ContainsKey(ifaceName))
+                {
+                    // IP is in format "192.168.1.100/24"
+                    var ip = parts[i + 1].Split('/')[0];
+                    info[ifaceName] = ip;
+                    break;
+                }
+            }
+        }
+
+        return info;
+    }
+
+    /// <summary>
+    /// Parses link states from 'ip -o link show' output.
+    /// </summary>
+    private Dictionary<string, bool> ParseLinkStates(string output)
+    {
+        var states = new Dictionary<string, bool>();
+        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var line in lines)
+        {
+            // Parse: "2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 ..."
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            if (parts.Length < 3) continue;
+
+            var ifaceName = parts[1].TrimEnd(':');
+            var flags = parts[2];
+
+            // Check if UP flag is present
+            var isUp = flags.Contains("UP") && flags.Contains("LOWER_UP");
+            states[ifaceName] = isUp;
+        }
+
+        return states;
     }
 
     #endregion
