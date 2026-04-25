@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace XNetwork.Models;
@@ -71,6 +72,7 @@ public class AdapterExtended
     /// Rate limiting settings.
     /// </summary>
     [JsonPropertyName("rateLimit")]
+    [JsonConverter(typeof(AdapterRateLimitJsonConverter))]
     public AdapterRateLimit RateLimit { get; set; } = new();
 
     /// <summary>
@@ -144,6 +146,73 @@ public class AdapterRateLimit
     /// </summary>
     [JsonPropertyName("uploadBitsPerSecond")]
     public long UploadBitsPerSecond { get; set; }
+}
+
+public class AdapterRateLimitJsonConverter : JsonConverter<AdapterRateLimit>
+{
+    public override AdapterRateLimit Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number && reader.TryGetInt64(out var rateLimit))
+        {
+            return new AdapterRateLimit
+            {
+                DownloadBitsPerSecond = rateLimit,
+                UploadBitsPerSecond = rateLimit
+            };
+        }
+
+        if (reader.TokenType == JsonTokenType.String &&
+            long.TryParse(reader.GetString(), out var stringRateLimit))
+        {
+            return new AdapterRateLimit
+            {
+                DownloadBitsPerSecond = stringRateLimit,
+                UploadBitsPerSecond = stringRateLimit
+            };
+        }
+
+        if (reader.TokenType == JsonTokenType.StartObject)
+        {
+            using var document = JsonDocument.ParseValue(ref reader);
+            var root = document.RootElement;
+
+            return new AdapterRateLimit
+            {
+                DownloadBitsPerSecond = TryGetInt64(root, "downloadBps", "downloadBitsPerSecond"),
+                UploadBitsPerSecond = TryGetInt64(root, "uploadBps", "uploadBitsPerSecond")
+            };
+        }
+
+        return new AdapterRateLimit();
+    }
+
+    public override void Write(Utf8JsonWriter writer, AdapterRateLimit value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteNumber("downloadBitsPerSecond", value.DownloadBitsPerSecond);
+        writer.WriteNumber("uploadBitsPerSecond", value.UploadBitsPerSecond);
+        writer.WriteEndObject();
+    }
+
+    private static long TryGetInt64(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!element.TryGetProperty(propertyName, out var property))
+            {
+                continue;
+            }
+
+            return property.ValueKind switch
+            {
+                JsonValueKind.Number when property.TryGetInt64(out var value) => value,
+                JsonValueKind.String when long.TryParse(property.GetString(), out var value) => value,
+                _ => 0
+            };
+        }
+
+        return 0;
+    }
 }
 
 /// <summary>

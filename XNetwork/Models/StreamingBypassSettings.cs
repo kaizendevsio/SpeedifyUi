@@ -80,6 +80,13 @@ public class ServiceBypass
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 
+    [JsonPropertyName("title")]
+    public string Title
+    {
+        get => Name;
+        set => Name = value;
+    }
+
     /// <summary>
     /// Whether bypass is enabled for this service.
     /// </summary>

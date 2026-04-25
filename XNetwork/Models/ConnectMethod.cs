@@ -10,7 +10,7 @@ public class ConnectMethod
     /// <summary>
     /// Connection method: "closest", "public", "private", "p2p", or a country code.
     /// </summary>
-    [JsonPropertyName("method")]
+    [JsonPropertyName("connectMethod")]
     public string Method { get; set; } = "closest";
 
     /// <summary>
