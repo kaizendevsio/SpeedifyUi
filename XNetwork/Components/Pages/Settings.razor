@@ -102,7 +102,7 @@
                     <SelectDropdown
                         Label="Transport Mode"
                         Options="_transportModeOptions"
-                        SelectedValue="_transportSettings.TransportMode"
+                        SelectedValue="@_transportSettings.TransportMode"
                         OnChange="HandleTransportModeChange"
                         HelpText="Protocol used for VPN tunnel communication" />
 
@@ -523,7 +523,7 @@
                     <SelectDropdown
                         Label="Connection Method"
                         Options="_connectMethodOptions"
-                        SelectedValue="_connectMethod.Method"
+                        SelectedValue="@_connectMethod.Method"
                         OnChange="HandleConnectMethodChange"
                         HelpText="How Speedify selects which server to connect to" />
 
