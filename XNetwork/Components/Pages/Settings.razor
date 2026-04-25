@@ -291,14 +291,14 @@
                     </div>
 
                     <!-- Custom Services from API -->
-                    @if (_bypassSettings.Services.Any(s => !_allPresetServices.ContainsKey(s.Name.ToLowerInvariant())))
+                    @if (_bypassSettings.Services.Any(s => !IsPresetServiceName(s.Name)))
                     {
                         <div class="mt-4">
                             <h4 class="text-sm font-medium text-slate-300 mb-2">
                                 <i class="fas fa-cogs mr-1"></i> Other Services
                             </h4>
                             <div class="space-y-2">
-                                @foreach (var service in _bypassSettings.Services.Where(s => !_allPresetServices.ContainsKey(s.Name.ToLowerInvariant())))
+                                @foreach (var service in _bypassSettings.Services.Where(s => !IsPresetServiceName(s.Name)))
                                 {
                                     <ToggleSwitch
                                         Id="@($"service-{service.Name}")"
@@ -544,6 +544,20 @@
                                    placeholder="City name"
                                    class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
                         </div>
+
+                        <NumberInput
+                            Label="Server Number"
+                            Value="_connectMethod.Num"
+                            OnChange="HandleConnectMethodNumChange"
+                            Min="0"
+                            Max="999"
+                            HelpText="Optional Speedify server number. Use 0 for nearest server in the selected country/city." />
+
+                        <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                                disabled="@_isProcessing"
+                                @onclick="ApplyConnectMethod">
+                            Apply Server Selection
+                        </button>
                     }
 
                     <ToggleSwitch
@@ -1183,14 +1197,14 @@
         { "netflix", "Netflix" },
         { "hulu", "Hulu" },
         { "disney", "Disney+" },
-        { "amazon", "Amazon Prime Video" },
+        { "amazon", "Amazon" },
         { "youtube", "YouTube" },
         { "twitch", "Twitch" },
         { "spotify", "Spotify" },
-        { "appletv", "Apple TV+" },
-        { "hbomax", "HBO Max" },
+        { "appletv", "Apple TV" },
+        { "hbo", "HBO" },
         { "peacock", "Peacock" },
-        { "paramount", "Paramount+" },
+        { "paramount", "Paramount Plus" },
         { "crunchyroll", "Crunchyroll" }
     };
 
@@ -1203,8 +1217,9 @@
         { "xbox", "Xbox Live" },
         { "playstation", "PlayStation Network" },
         { "epicgames", "Epic Games" },
-        { "battlenet", "Battle.net" },
+        { "battlenet", "Blizzard Entertainment" },
         { "riotgames", "Riot Games" },
+        { "ubisoft", "Ubisoft Connect" },
         { "ea", "EA / Origin" }
     };
 
@@ -1631,6 +1646,13 @@
                (_allPresetServices.TryGetValue(serviceKey, out var serviceName) && _enabledServices.Contains(serviceName));
     }
 
+    private bool IsPresetServiceName(string serviceName)
+    {
+        return _allPresetServices.Any(service =>
+            service.Key.Equals(serviceName, StringComparison.OrdinalIgnoreCase) ||
+            service.Value.Equals(serviceName, StringComparison.OrdinalIgnoreCase));
+    }
+
     private string GetServiceCommandName(string serviceKey)
     {
         return _allPresetServices.GetValueOrDefault(serviceKey, serviceKey);
@@ -1714,8 +1736,10 @@
 
     private async Task HandleOverflowChange(double value)
     {
-        try { await SpeedifyService.SetOverflowThresholdAsync(value); _connectionSettings.OverflowThreshold = value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetOverflowThresholdAsync(value),
+            () => _connectionSettings.OverflowThreshold = value,
+            "Failed to update overflow threshold");
     }
 
     private async Task HandleTransportModeChange(string mode)
@@ -1734,50 +1758,97 @@
 
     private async Task HandleTransportRetryChange(double value)
     {
-        try { var success = await SpeedifyService.SetTransportRetryAsync((int)value); if (success) _transportSettings.TransportRetrySeconds = (int)value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var seconds = (int)value;
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetTransportRetryAsync(seconds),
+            () => _transportSettings.TransportRetrySeconds = seconds,
+            "Failed to update transport retry");
     }
 
     private async Task HandleConnectRetryChange(double value)
     {
-        try { var success = await SpeedifyService.SetConnectRetryAsync((int)value); if (success) _transportSettings.ConnectRetrySeconds = (int)value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var seconds = (int)value;
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetConnectRetryAsync(seconds),
+            () => _transportSettings.ConnectRetrySeconds = seconds,
+            "Failed to update connect retry");
+    }
+
+    private async Task<bool> TryApplyCliSetting(Func<Task<bool>> cliCall, Action onSuccess, string failureMessage)
+    {
+        try
+        {
+            _error = null;
+            var success = await cliCall();
+            if (success)
+            {
+                onSuccess();
+                return true;
+            }
+
+            _error = failureMessage;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+
+        return false;
     }
 
     private async Task HandleAddDns(string dns)
     {
-        try { _privacySettings.DnsAddresses.Add(dns); await SpeedifyService.SetDnsServersAsync(_privacySettings.DnsAddresses); await InvokeAsync(StateHasChanged); }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var dnsAddresses = _privacySettings.DnsAddresses.Append(dns).ToList();
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetDnsServersAsync(dnsAddresses),
+            () => _privacySettings.DnsAddresses = dnsAddresses,
+            "Failed to update DNS servers");
     }
 
     private async Task HandleRemoveDns(int index)
     {
-        try { _privacySettings.DnsAddresses.RemoveAt(index); await SpeedifyService.SetDnsServersAsync(_privacySettings.DnsAddresses); await InvokeAsync(StateHasChanged); }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var dnsAddresses = _privacySettings.DnsAddresses.ToList();
+        dnsAddresses.RemoveAt(index);
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetDnsServersAsync(dnsAddresses),
+            () => _privacySettings.DnsAddresses = dnsAddresses,
+            "Failed to update DNS servers");
     }
 
     private async Task HandleDnsLeakToggle(bool enabled)
     {
-        try { await SpeedifyService.SetDnsLeakProtectionAsync(enabled); _privacySettings.DnsLeak = enabled; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetDnsLeakProtectionAsync(enabled),
+            () => _privacySettings.DnsLeak = enabled,
+            "Failed to update DNS leak protection");
     }
 
     private async Task HandleIpLeakToggle(bool enabled)
     {
-        try { await SpeedifyService.SetIpLeakProtectionAsync(enabled); _privacySettings.IpLeak = enabled; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetIpLeakProtectionAsync(enabled),
+            () => _privacySettings.IpLeak = enabled,
+            "Failed to update IP leak protection");
     }
 
     private async Task HandleKillSwitchToggle(bool enabled)
     {
-        try { await SpeedifyService.SetKillSwitchAsync(enabled); _privacySettings.KillSwitch = enabled; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetKillSwitchAsync(enabled),
+            () => _privacySettings.KillSwitch = enabled,
+            "Failed to update kill switch");
     }
 
     private async Task HandleDisableDoHToggle(bool enabled)
     {
-        try { await SpeedifyService.SetDisableDoHRequestAsync(enabled); _privacySettings.RequestToDisableDoH = enabled; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetDisableDoHRequestAsync(enabled),
+            () => _privacySettings.RequestToDisableDoH = enabled,
+            "Failed to update DNS-over-HTTPS request");
     }
 
     private async Task HandleBypassEnabledToggle(bool enabled)
@@ -1826,71 +1897,53 @@
 
     private async Task HandleAddBypassDomain(string domain)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingBypassDomainsAsync("add", new List<string> { domain });
-            _bypassSettings.Domains.Add(domain);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassDomainsAsync("add", new List<string> { domain }),
+            () => _bypassSettings.Domains.Add(domain),
+            "Failed to add bypass domain");
     }
 
     private async Task HandleRemoveBypassDomain(int index)
     {
-        try
-        {
-            var domain = _bypassSettings.Domains[index];
-            await SpeedifyService.SetStreamingBypassDomainsAsync("rem", new List<string> { domain });
-            _bypassSettings.Domains.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var domain = _bypassSettings.Domains[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassDomainsAsync("rem", new List<string> { domain }),
+            () => _bypassSettings.Domains.RemoveAt(index),
+            "Failed to remove bypass domain");
     }
 
     private async Task HandleAddBypassIpv4(string ip)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingBypassIpv4Async("add", new List<string> { ip });
-            _bypassSettings.Ipv4.Add(ip);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassIpv4Async("add", new List<string> { ip }),
+            () => _bypassSettings.Ipv4.Add(ip),
+            "Failed to add bypass IPv4 address");
     }
 
     private async Task HandleRemoveBypassIpv4(int index)
     {
-        try
-        {
-            var ip = _bypassSettings.Ipv4[index];
-            await SpeedifyService.SetStreamingBypassIpv4Async("rem", new List<string> { ip });
-            _bypassSettings.Ipv4.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var ip = _bypassSettings.Ipv4[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassIpv4Async("rem", new List<string> { ip }),
+            () => _bypassSettings.Ipv4.RemoveAt(index),
+            "Failed to remove bypass IPv4 address");
     }
 
     private async Task HandleAddBypassIpv6(string ip)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingBypassIpv6Async("add", new List<string> { ip });
-            _bypassSettings.Ipv6.Add(ip);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassIpv6Async("add", new List<string> { ip }),
+            () => _bypassSettings.Ipv6.Add(ip),
+            "Failed to add bypass IPv6 address");
     }
 
     private async Task HandleRemoveBypassIpv6(int index)
     {
-        try
-        {
-            var ip = _bypassSettings.Ipv6[index];
-            await SpeedifyService.SetStreamingBypassIpv6Async("rem", new List<string> { ip });
-            _bypassSettings.Ipv6.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var ip = _bypassSettings.Ipv6[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassIpv6Async("rem", new List<string> { ip }),
+            () => _bypassSettings.Ipv6.RemoveAt(index),
+            "Failed to remove bypass IPv6 address");
     }
 
     private void HandleAddBypassPort()
@@ -1912,38 +1965,35 @@
 
     private async Task HandleRemoveBypassPort(int index)
     {
-        try
-        {
-            var port = _bypassSettings.Ports[index];
-            await SpeedifyService.SetStreamingBypassPortsAsync("rem", new List<PortRule> { port });
-            _bypassSettings.Ports.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var port = _bypassSettings.Ports[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassPortsAsync("rem", new List<PortRule> { port }),
+            () => _bypassSettings.Ports.RemoveAt(index),
+            "Failed to remove bypass port");
     }
 
     private async Task HandleServiceBypassToggle(string serviceName, bool enabled)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingBypassServiceAsync(serviceName, enabled);
-            var service = _bypassSettings.Services.FirstOrDefault(s => s.Name == serviceName);
-            if (service != null)
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingBypassServiceAsync(serviceName, enabled),
+            () =>
             {
-                service.Enabled = enabled;
-            }
+                var service = _bypassSettings.Services.FirstOrDefault(s => s.Name == serviceName);
+                if (service != null)
+                {
+                    service.Enabled = enabled;
+                }
 
-            if (enabled)
-            {
-                _enabledServices.Add(serviceName.ToLowerInvariant());
-            }
-            else
-            {
-                _enabledServices.Remove(serviceName.ToLowerInvariant());
-            }
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+                if (enabled)
+                {
+                    _enabledServices.Add(serviceName.ToLowerInvariant());
+                }
+                else
+                {
+                    _enabledServices.Remove(serviceName.ToLowerInvariant());
+                }
+            },
+            $"Failed to {(enabled ? "enable" : "disable")} {serviceName}");
     }
 
     private async Task HandlePresetServiceToggle(string serviceKey, bool enabled)
@@ -1991,71 +2041,53 @@
 
     private async Task HandleAddStreamingDomain(string domain)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingDomainsAsync("add", new List<string> { domain });
-            _streamingSettings.Domains.Add(domain);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingDomainsAsync("add", new List<string> { domain }),
+            () => _streamingSettings.Domains.Add(domain),
+            "Failed to add streaming domain");
     }
 
     private async Task HandleRemoveStreamingDomain(int index)
     {
-        try
-        {
-            var domain = _streamingSettings.Domains[index];
-            await SpeedifyService.SetStreamingDomainsAsync("rem", new List<string> { domain });
-            _streamingSettings.Domains.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var domain = _streamingSettings.Domains[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingDomainsAsync("rem", new List<string> { domain }),
+            () => _streamingSettings.Domains.RemoveAt(index),
+            "Failed to remove streaming domain");
     }
 
     private async Task HandleAddStreamingIpv4(string ip)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingIpv4Async("add", new List<string> { ip });
-            _streamingSettings.Ipv4.Add(ip);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingIpv4Async("add", new List<string> { ip }),
+            () => _streamingSettings.Ipv4.Add(ip),
+            "Failed to add streaming IPv4 address");
     }
 
     private async Task HandleRemoveStreamingIpv4(int index)
     {
-        try
-        {
-            var ip = _streamingSettings.Ipv4[index];
-            await SpeedifyService.SetStreamingIpv4Async("rem", new List<string> { ip });
-            _streamingSettings.Ipv4.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var ip = _streamingSettings.Ipv4[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingIpv4Async("rem", new List<string> { ip }),
+            () => _streamingSettings.Ipv4.RemoveAt(index),
+            "Failed to remove streaming IPv4 address");
     }
 
     private async Task HandleAddStreamingIpv6(string ip)
     {
-        try
-        {
-            await SpeedifyService.SetStreamingIpv6Async("add", new List<string> { ip });
-            _streamingSettings.Ipv6.Add(ip);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingIpv6Async("add", new List<string> { ip }),
+            () => _streamingSettings.Ipv6.Add(ip),
+            "Failed to add streaming IPv6 address");
     }
 
     private async Task HandleRemoveStreamingIpv6(int index)
     {
-        try
-        {
-            var ip = _streamingSettings.Ipv6[index];
-            await SpeedifyService.SetStreamingIpv6Async("rem", new List<string> { ip });
-            _streamingSettings.Ipv6.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var ip = _streamingSettings.Ipv6[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingIpv6Async("rem", new List<string> { ip }),
+            () => _streamingSettings.Ipv6.RemoveAt(index),
+            "Failed to remove streaming IPv6 address");
     }
 
     private void HandleAddStreamingPort()
@@ -2077,50 +2109,105 @@
 
     private async Task HandleRemoveStreamingPort(int index)
     {
-        try
-        {
-            var port = _streamingSettings.Ports[index];
-            await SpeedifyService.SetStreamingPortsAsync("rem", new List<PortRule> { port });
-            _streamingSettings.Ports.RemoveAt(index);
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var port = _streamingSettings.Ports[index];
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStreamingPortsAsync("rem", new List<PortRule> { port }),
+            () => _streamingSettings.Ports.RemoveAt(index),
+            "Failed to remove streaming port");
     }
 
     private async Task HandleConnectMethodChange(string method)
     {
-        try { await SpeedifyService.SetConnectMethodAsync(method, _connectMethod.Country, _connectMethod.City, _connectMethod.Num > 0 ? _connectMethod.Num : null); _connectMethod.Method = method; await InvokeAsync(StateHasChanged); }
+        if (method == "country" && string.IsNullOrWhiteSpace(_connectMethod.Country))
+        {
+            _connectMethod.Method = method;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        await ApplyConnectMethod(method);
+    }
+
+    private async Task ApplyConnectMethod()
+    {
+        await ApplyConnectMethod(_connectMethod.Method);
+    }
+
+    private async Task ApplyConnectMethod(string method)
+    {
+        _isProcessing = true;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await SpeedifyService.SetConnectMethodAsync(
+                method,
+                _connectMethod.Country,
+                _connectMethod.City,
+                _connectMethod.Num > 0 ? _connectMethod.Num : null);
+
+            if (success)
+            {
+                _connectMethod.Method = method;
+                _successMessage = "Server selection updated";
+            }
+            else
+            {
+                _error = "Failed to update server selection";
+            }
+        }
         catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        finally { _isProcessing = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private async Task HandleConnectMethodNumChange(double value)
+    {
+        _connectMethod.Num = (int)value;
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task HandleStartupConnectToggle(bool enabled)
     {
-        try { await SpeedifyService.SetStartupConnectAsync(enabled); _startupConnect = enabled; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetStartupConnectAsync(enabled),
+            () => _startupConnect = enabled,
+            "Failed to update startup connect");
     }
 
     private async Task HandleMaxRedundantChange(double value)
     {
-        try { await SpeedifyService.SetMaxRedundantAsync((int)value); _maxRedundant = (int)value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var connections = (int)value;
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetMaxRedundantAsync(connections),
+            () => _maxRedundant = connections,
+            "Failed to update max redundant connections");
     }
 
     private async Task HandlePriorityOverflowChange(double value)
     {
-        try { await SpeedifyService.SetPriorityOverflowAsync(value); _priorityOverflow = value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetPriorityOverflowAsync(value),
+            () => _priorityOverflow = value,
+            "Failed to update priority overflow");
     }
 
     private async Task HandleTargetUploadChange(double value)
     {
-        try { await SpeedifyService.SetTargetConnectionsAsync((int)value, _targetDownload); _targetUpload = (int)value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var uploadConnections = (int)value;
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetTargetConnectionsAsync(uploadConnections, _targetDownload),
+            () => _targetUpload = uploadConnections,
+            "Failed to update target upload connections");
     }
 
     private async Task HandleTargetDownloadChange(double value)
     {
-        try { await SpeedifyService.SetTargetConnectionsAsync(_targetUpload, (int)value); _targetDownload = (int)value; }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var downloadConnections = (int)value;
+        await TryApplyCliSetting(
+            () => SpeedifyService.SetTargetConnectionsAsync(_targetUpload, downloadConnections),
+            () => _targetDownload = downloadConnections,
+            "Failed to update target download connections");
     }
 
     private async Task HandleFixedDelayChange(double value)
@@ -2156,27 +2243,55 @@
     private async Task HandleAddForwardedPort()
     {
         if (_newForwardedPort <= 0 || _newForwardedPort > 65535) return;
-        try { _forwardedPorts.Add(new ForwardedPort { Port = _newForwardedPort, Protocol = _newForwardedProtocol }); await SpeedifyService.SetForwardedPortsAsync(_forwardedPorts); _newForwardedPort = 0; await InvokeAsync(StateHasChanged); }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var forwardedPorts = _forwardedPorts.Append(new ForwardedPort { Port = _newForwardedPort, Protocol = _newForwardedProtocol }).ToList();
+        await TryApplyCliSetting(
+            () => ApplyForwardedPorts(forwardedPorts),
+            () => { _forwardedPorts = forwardedPorts; _newForwardedPort = 0; },
+            "Failed to update forwarded ports");
     }
 
     private async Task HandleRemoveForwardedPort(int index)
     {
-        try { _forwardedPorts.RemoveAt(index); await SpeedifyService.SetForwardedPortsAsync(_forwardedPorts); await InvokeAsync(StateHasChanged); }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var forwardedPorts = _forwardedPorts.ToList();
+        forwardedPorts.RemoveAt(index);
+        await TryApplyCliSetting(
+            () => ApplyForwardedPorts(forwardedPorts),
+            () => _forwardedPorts = forwardedPorts,
+            "Failed to update forwarded ports");
     }
 
     private async Task HandleAddSubnet()
     {
         if (string.IsNullOrWhiteSpace(_newSubnetAddress) || _newSubnetPrefix <= 0) return;
-        try { _downstreamSubnets.Add(new DownstreamSubnet { Address = _newSubnetAddress, PrefixLength = _newSubnetPrefix }); await SpeedifyService.SetDownstreamSubnetsAsync(_downstreamSubnets); _newSubnetAddress = ""; _newSubnetPrefix = 24; await InvokeAsync(StateHasChanged); }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var downstreamSubnets = _downstreamSubnets.Append(new DownstreamSubnet { Address = _newSubnetAddress, PrefixLength = _newSubnetPrefix }).ToList();
+        await TryApplyCliSetting(
+            () => ApplyDownstreamSubnets(downstreamSubnets),
+            () => { _downstreamSubnets = downstreamSubnets; _newSubnetAddress = ""; _newSubnetPrefix = 24; },
+            "Failed to update downstream subnets");
     }
 
     private async Task HandleRemoveSubnet(int index)
     {
-        try { _downstreamSubnets.RemoveAt(index); await SpeedifyService.SetDownstreamSubnetsAsync(_downstreamSubnets); await InvokeAsync(StateHasChanged); }
-        catch (Exception ex) { _error = $"Error: {ex.Message}"; }
+        var downstreamSubnets = _downstreamSubnets.ToList();
+        downstreamSubnets.RemoveAt(index);
+        await TryApplyCliSetting(
+            () => ApplyDownstreamSubnets(downstreamSubnets),
+            () => _downstreamSubnets = downstreamSubnets,
+            "Failed to update downstream subnets");
+    }
+
+    private Task<bool> ApplyForwardedPorts(List<ForwardedPort> forwardedPorts)
+    {
+        return forwardedPorts.Any()
+            ? SpeedifyService.SetForwardedPortsAsync(forwardedPorts)
+            : SpeedifyService.ClearForwardedPortsAsync();
+    }
+
+    private Task<bool> ApplyDownstreamSubnets(List<DownstreamSubnet> downstreamSubnets)
+    {
+        return downstreamSubnets.Any()
+            ? SpeedifyService.SetDownstreamSubnetsAsync(downstreamSubnets)
+            : SpeedifyService.ClearDownstreamSubnetsAsync();
     }
 
     private async Task SaveSettings()
@@ -2197,7 +2312,7 @@
             successCount++;
 
             // Save pending bypass port changes
-            if (_hasUnsavedBypassChanges && _bypassSettings.Ports.Any())
+            if (_hasUnsavedBypassChanges)
             {
                 try
                 {
@@ -2219,7 +2334,7 @@
             }
 
             // Save pending streaming port changes
-            if (_hasUnsavedStreamingChanges && _streamingSettings.Ports.Any())
+            if (_hasUnsavedStreamingChanges)
             {
                 try
                 {
@@ -2239,16 +2354,14 @@
                 }
             }
 
-            // Clear unsaved changes flags
-            _hasUnsavedBypassChanges = false;
-            _hasUnsavedStreamingChanges = false;
-
             if (errors.Any())
             {
                 _error = $"Some settings failed to save: {string.Join("; ", errors)}";
             }
             else
             {
+                _hasUnsavedBypassChanges = false;
+                _hasUnsavedStreamingChanges = false;
                 _successMessage = $"Settings saved successfully";
             }
         }

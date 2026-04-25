@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using XNetwork.Models;
@@ -1153,14 +1154,28 @@ public class SpeedifyService
     {
         try
         {
-            var args = new List<string> { "connectmethod", method };
+            var selectedMethod = method.Trim();
+            var args = new List<string> { "connectmethod" };
 
-            if (!string.IsNullOrEmpty(country))
-                args.Add(country);
-            if (!string.IsNullOrEmpty(city))
-                args.Add(city);
-            if (num.HasValue)
-                args.Add(num.Value.ToString());
+            if (selectedMethod.Equals("country", StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(country))
+                {
+                    throw new ArgumentException("Country code is required for country server selection");
+                }
+
+                args.Add(country.Trim().ToLowerInvariant());
+            }
+            else
+            {
+                args.Add(QuoteCliArgument(selectedMethod));
+            }
+
+            var cityValue = city?.Trim();
+            if (!string.IsNullOrWhiteSpace(cityValue))
+                args.Add(QuoteCliArgument(cityValue));
+            if (!string.IsNullOrWhiteSpace(cityValue) && num.HasValue)
+                args.Add(num.Value.ToString(CultureInfo.InvariantCulture));
 
             await Task.Run(() => RunTerminatingCommand(string.Join(" ", args)), cancellationToken).ConfigureAwait(false);
             return true;
@@ -1252,7 +1267,7 @@ public class SpeedifyService
                 throw new ArgumentException("Overflow threshold cannot be negative");
             }
 
-            await Task.Run(() => RunTerminatingCommand($"overflow {mbps}"), cancellationToken).ConfigureAwait(false);
+            await Task.Run(() => RunTerminatingCommand($"overflow {mbps.ToString(CultureInfo.InvariantCulture)}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (SpeedifyException ex)
@@ -1282,7 +1297,7 @@ public class SpeedifyService
                 throw new ArgumentException("Priority overflow cannot be negative");
             }
 
-            await Task.Run(() => RunTerminatingCommand($"priorityoverflow {mbps}"), cancellationToken).ConfigureAwait(false);
+            await Task.Run(() => RunTerminatingCommand($"priorityoverflow {mbps.ToString(CultureInfo.InvariantCulture)}"), cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (SpeedifyException ex)
@@ -1451,9 +1466,15 @@ public class SpeedifyService
     {
         try
         {
-            var jsonOutput = await Task.Run(() => RunTerminatingCommand("show fixeddelay"), cancellationToken)
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand("show settings"), cancellationToken)
                 .ConfigureAwait(false);
-            return JsonSerializer.Deserialize<FixedDelaySettings>(jsonOutput, _jsonOptions);
+            using var doc = JsonDocument.Parse(jsonOutput);
+            var root = doc.RootElement;
+
+            return new FixedDelaySettings
+            {
+                DelayMs = GetInt32Setting(root, "fixedDelay")
+            };
         }
         catch (SpeedifyException ex)
         {
