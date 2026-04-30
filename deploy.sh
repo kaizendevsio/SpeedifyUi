@@ -4,25 +4,34 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="xnetwork.service"
 PUBLISH_DIR="$APP_DIR/XNetwork/bin/Release/net9.0/publish"
-CONFIG_BACKUP=""
+PRESERVE_DIR=""
 
 cd "$APP_DIR"
 
 echo "Pulling latest changes..."
 git pull
 
+PRESERVE_DIR="$(mktemp -d)"
 if [[ -f "$PUBLISH_DIR/appsettings.json" ]]; then
-  CONFIG_BACKUP="$(mktemp)"
-  cp "$PUBLISH_DIR/appsettings.json" "$CONFIG_BACKUP"
+  cp "$PUBLISH_DIR/appsettings.json" "$PRESERVE_DIR/appsettings.json"
 fi
+if [[ -f "$PUBLISH_DIR/auto-server-switch-state.json" ]]; then
+  cp "$PUBLISH_DIR/auto-server-switch-state.json" "$PRESERVE_DIR/auto-server-switch-state.json"
+fi
+
+echo "Cleaning previous publish output..."
+rm -rf "$PUBLISH_DIR"
 
 echo "Publishing XNetwork..."
 dotnet publish XNetwork/XNetwork.csproj -c Release
 
-if [[ -n "$CONFIG_BACKUP" && -f "$CONFIG_BACKUP" ]]; then
-  cp "$CONFIG_BACKUP" "$PUBLISH_DIR/appsettings.json"
-  rm -f "$CONFIG_BACKUP"
+if [[ -f "$PRESERVE_DIR/appsettings.json" ]]; then
+  cp "$PRESERVE_DIR/appsettings.json" "$PUBLISH_DIR/appsettings.json"
 fi
+if [[ -f "$PRESERVE_DIR/auto-server-switch-state.json" ]]; then
+  cp "$PRESERVE_DIR/auto-server-switch-state.json" "$PUBLISH_DIR/auto-server-switch-state.json"
+fi
+rm -rf "$PRESERVE_DIR"
 
 echo "Restarting $SERVICE_NAME..."
 MAIN_PID="$(systemctl show -p MainPID --value "$SERVICE_NAME")"
