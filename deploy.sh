@@ -20,7 +20,10 @@ if [[ -f "$PUBLISH_DIR/auto-server-switch-state.json" ]]; then
 fi
 
 echo "Cleaning previous publish output..."
-rm -rf "$PUBLISH_DIR"
+mkdir -p "$PUBLISH_DIR"
+shopt -s dotglob nullglob
+rm -rf "$PUBLISH_DIR"/*
+shopt -u dotglob nullglob
 
 echo "Publishing XNetwork..."
 dotnet publish XNetwork/XNetwork.csproj -c Release
