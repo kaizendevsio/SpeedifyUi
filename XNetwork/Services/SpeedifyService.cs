@@ -342,6 +342,71 @@ public class SpeedifyService
         }
     }
 
+    public async Task<ServerDirectory?> GetServersAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand("show servers"), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Deserialize<ServerDirectory>(jsonOutput, _jsonOptions);
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting servers: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error getting servers: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<bool> ConnectToServerAsync(ServerInfo server, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            string command;
+            if (!string.IsNullOrWhiteSpace(server.Tag))
+            {
+                command = $"connect {QuoteCliArgument(server.Tag)}";
+            }
+            else
+            {
+                var args = new List<string>
+                {
+                    "connect",
+                    QuoteCliArgument(server.Country.Trim().ToLowerInvariant())
+                };
+
+                if (!string.IsNullOrWhiteSpace(server.City))
+                {
+                    args.Add(QuoteCliArgument(server.City.Trim()));
+                }
+
+                if (server.Num > 0)
+                {
+                    args.Add(server.Num.ToString(CultureInfo.InvariantCulture));
+                }
+
+                command = string.Join(" ", args);
+            }
+
+            await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error connecting to server: {ex.Message}");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error connecting to server: {ex.Message}");
+            return false;
+        }
+    }
+
     public async Task<SpeedifySettings?> GetSettingsAsync(CancellationToken cancellationToken = default)
     {
         try

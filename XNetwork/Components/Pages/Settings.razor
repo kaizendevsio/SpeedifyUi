@@ -4,6 +4,7 @@
 @using XNetwork.Components.Custom
 @inject SpeedifyService SpeedifyService
 @inject NetworkMonitorService NetworkMonitorService
+@inject AutoServerSwitchService AutoServerSwitchService
 @inject IConfiguration Configuration
 
 <PageTitle>Settings - X Network</PageTitle>
@@ -568,7 +569,165 @@
                 </div>
             </Accordion>
 
-            <!-- Section 8: Advanced Settings -->
+            <!-- Section 8: Auto Server Switching -->
+            <Accordion Title="Auto Server Switching" IsExpanded="_autoServerSwitchExpanded" OnToggle="(e) => _autoServerSwitchExpanded = e" BadgeText="@GetAutoServerSwitchBadge()">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400">
+                        Automatically reconnect to another Speedify server when local health is degraded and an external probe agent reports a better fresh server score.
+                    </p>
+
+                    <div class="bg-slate-800/50 p-4 rounded-lg border border-slate-700 space-y-3">
+                        <ToggleSwitch
+                            Id="auto-server-switch-enabled"
+                            Label="Enable auto server switching"
+                            IsEnabled="_autoServerSwitchSettings.Enabled"
+                            OnToggle="HandleAutoServerSwitchToggle" />
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <span class="text-slate-500 block">Current Server</span>
+                                <span class="text-white">@(_autoServerSwitchStatus.CurrentServer ?? "Unknown")</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Status</span>
+                                <span class="text-white">@_autoServerSwitchStatus.Message</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">External Probe</span>
+                                <span class="text-white">@FormatAutoSwitchProbeStatus()</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Health</span>
+                                <span class="text-white">@FormatAutoSwitchHealth()</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Last Switch</span>
+                                <span class="text-white">@FormatAutoSwitchLastSwitch()</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Recommendation</span>
+                                <span class="text-white">@FormatAutoSwitchRecommendation()</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block mb-2 font-medium text-white">Probe API URL</label>
+                            <input type="url"
+                                   @bind="_autoServerSwitchSettings.ProbeApiBaseUrl"
+                                   placeholder="http://probe-vps:8090"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            <p class="text-xs text-slate-500 mt-1">The VPS or second device running the SpeedifyProbeAgent project.</p>
+                        </div>
+
+                        <div>
+                            <label class="block mb-2 font-medium text-white">Probe API Key</label>
+                            <input type="password"
+                                   @bind="_autoServerSwitchSettings.ProbeApiKey"
+                                   placeholder="Optional shared API key"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            <p class="text-xs text-slate-500 mt-1">Must match the probe agent Probe:ApiKey value when configured.</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block mb-2 font-medium text-white">Preferred Country</label>
+                            <input type="text"
+                                   @bind="_autoServerSwitchSettings.PreferredCountry"
+                                   placeholder="Country code, e.g. sg"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        </div>
+
+                        <div>
+                            <label class="block mb-2 font-medium text-white">Preferred City</label>
+                            <input type="text"
+                                   @bind="_autoServerSwitchSettings.PreferredCity"
+                                   placeholder="City, e.g. singapore"
+                                   class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block mb-2 font-medium text-white">Fallback Countries</label>
+                        <input type="text"
+                               @bind="_fallbackCountriesInput"
+                               placeholder="Comma-separated country codes, e.g. hk, jp, ph"
+                               class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                        <p class="text-xs text-slate-500 mt-1">Used when no eligible server is available in the preferred country/city.</p>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <NumberInput Label="Max Latency" Value="_autoServerSwitchSettings.MaxLatencyMs" OnChange="HandleAutoSwitchMaxLatencyChange" Min="50" Max="2000" Unit="ms" />
+                        <NumberInput Label="Max Jitter" Value="_autoServerSwitchSettings.MaxJitterMs" OnChange="HandleAutoSwitchMaxJitterChange" Min="5" Max="1000" Unit="ms" />
+                        <NumberInput Label="Min Success Rate" Value="_autoServerSwitchSettings.MinSuccessRate" OnChange="HandleAutoSwitchMinSuccessRateChange" Min="1" Max="100" Unit="%" />
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <NumberInput Label="Health Window" Value="_autoServerSwitchSettings.HealthWindowSeconds" OnChange="HandleAutoSwitchHealthWindowChange" Min="30" Max="600" Unit="seconds" HelpText="Rolling window used to count intermittent bad health samples." />
+                        <NumberInput Label="Bad Samples" Value="_autoServerSwitchSettings.MinimumBadSamplesInWindow" OnChange="HandleAutoSwitchBadSamplesChange" Min="1" Max="50" HelpText="Minimum bad samples required inside the rolling window." />
+                        <NumberInput Label="Bad Sample Ratio" Value="_autoServerSwitchSettings.MinimumBadSampleRatio" OnChange="HandleAutoSwitchBadRatioChange" Min="0" Max="1" Step="0.05" HelpText="Required bad-sample ratio; 0.35 means 35%." />
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <NumberInput Label="Cooldown" Value="_autoServerSwitchSettings.CooldownMinutes" OnChange="HandleAutoSwitchCooldownChange" Min="1" Max="120" Unit="minutes" />
+                        <NumberInput Label="Avoid Server" Value="_autoServerSwitchSettings.AvoidServerMinutes" OnChange="HandleAutoSwitchAvoidMinutesChange" Min="1" Max="240" Unit="minutes" />
+                        <NumberInput Label="Check Interval" Value="_autoServerSwitchSettings.CheckIntervalSeconds" OnChange="HandleAutoSwitchCheckIntervalChange" Min="5" Max="120" Unit="seconds" />
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <NumberInput Label="Max Score Age" Value="_autoServerSwitchSettings.ProbeMaxScoreAgeMinutes" OnChange="HandleAutoSwitchProbeMaxAgeChange" Min="1" Max="240" Unit="minutes" HelpText="Ignore external probe scores older than this." />
+                        <NumberInput Label="Minimum Score" Value="_autoServerSwitchSettings.MinimumProbeScore" OnChange="HandleAutoSwitchMinimumScoreChange" Min="1" Max="100" HelpText="Do not switch to servers below this external probe score." />
+                        <NumberInput Label="Score Improvement" Value="_autoServerSwitchSettings.MinimumScoreImprovement" OnChange="HandleAutoSwitchMinimumImprovementChange" Min="0" Max="100" HelpText="Required improvement over the current server when the probe has a current-server score." />
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <ToggleSwitch Id="auto-switch-require-current-bad" Label="Require current server probe to be bad" IsEnabled="_autoServerSwitchSettings.RequireProbeCurrentServerBad" OnToggle="HandleAutoSwitchRequireCurrentBadToggle" />
+                        <ToggleSwitch Id="auto-switch-premium" Label="Allow premium servers" IsEnabled="_autoServerSwitchSettings.IncludePremiumServers" OnToggle="HandleAutoSwitchPremiumToggle" />
+                        <ToggleSwitch Id="auto-switch-private" Label="Allow private servers" IsEnabled="_autoServerSwitchSettings.IncludePrivateServers" OnToggle="HandleAutoSwitchPrivateToggle" />
+                    </div>
+
+                    <div class="flex flex-wrap gap-3">
+                        <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+                                disabled="@_isProcessing"
+                                @onclick="ApplyAutoServerSwitchSettings">
+                            Apply Auto-Switch Settings
+                        </button>
+                        <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                                disabled="@_isProcessing"
+                                @onclick="TryNextSpeedifyServer">
+                            Use Probe Recommendation Now
+                        </button>
+                        <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+                                disabled="@_isProcessing"
+                                @onclick="RefreshAutoServerSwitchStatus">
+                            Refresh Status
+                        </button>
+                    </div>
+
+                    @if (_autoServerSwitchStatus.RecentScores.Any())
+                    {
+                        <div class="bg-slate-900/60 border border-slate-700 rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-white">External Probe Scores</div>
+                            <div class="divide-y divide-slate-800">
+                                @foreach (var score in _autoServerSwitchStatus.RecentScores.Take(5))
+                                {
+                                    <div class="px-4 py-3 text-sm grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
+                                        <div>
+                                            <div class="text-white font-medium">@score.FriendlyName</div>
+                                            <div class="text-slate-500">@FormatServerScoreDetails(score)</div>
+                                        </div>
+                                        <div class="text-cyan-300 font-semibold md:text-right">@FormatServerScore(score)</div>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            </Accordion>
+
+            <!-- Section 9: Advanced Settings -->
             <Accordion Title="Advanced Settings" IsExpanded="_advancedExpanded" OnToggle="(e) => _advancedExpanded = e">
                 <div class="space-y-4 pt-4">
                     <NumberInput
@@ -1191,6 +1350,10 @@
     private bool _hasUnsavedBypassChanges = false;
     private bool _hasUnsavedStreamingChanges = false;
 
+    private AutoServerSwitchSettings _autoServerSwitchSettings = new();
+    private AutoServerSwitchStatus _autoServerSwitchStatus = new();
+    private string _fallbackCountriesInput = "";
+
     // Service preset dictionaries
     private readonly Dictionary<string, string> _streamingServicePresets = new()
     {
@@ -1236,6 +1399,7 @@
     private bool _bypassExpanded = false;
     private bool _streamingExpanded = false;
     private bool _connectMethodExpanded = false;
+    private bool _autoServerSwitchExpanded = false;
     private bool _advancedExpanded = false;
     private bool _fixedDelayExpanded = false;
     private bool _portForwardingExpanded = false;
@@ -1325,6 +1489,10 @@
                 _monitorSettings = monitorSection.Get<NetworkMonitorSettings>() ?? new NetworkMonitorSettings();
             }
             _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks ?? new List<string>());
+
+            _autoServerSwitchSettings = AutoServerSwitchService.Settings;
+            _fallbackCountriesInput = string.Join(", ", _autoServerSwitchSettings.FallbackCountries);
+            _autoServerSwitchStatus = AutoServerSwitchService.GetStatus();
 
             // Fetch all settings in parallel for efficiency
             var settingsTask = SpeedifyService.GetSettingsAsync();
@@ -1640,6 +1808,93 @@
         return count > 0 ? count.ToString() : null;
     }
 
+    private string? GetAutoServerSwitchBadge()
+    {
+        return _autoServerSwitchSettings.Enabled ? "On" : null;
+    }
+
+    private string FormatAutoSwitchHealth()
+    {
+        if (_autoServerSwitchStatus.LastSuccessRate <= 0 && _autoServerSwitchStatus.LastLatencyMs <= 0)
+        {
+            return "Waiting for samples";
+        }
+
+        var health = $"{_autoServerSwitchStatus.LastLatencyMs:N0}ms latency, {_autoServerSwitchStatus.LastJitterMs:N0}ms jitter, {_autoServerSwitchStatus.LastSuccessRate:N0}% success";
+        if (_autoServerSwitchStatus.HealthWindowSampleCount <= 0)
+        {
+            return health;
+        }
+
+        return $"{health}; window {_autoServerSwitchStatus.HealthWindowBadSampleCount}/{_autoServerSwitchStatus.HealthWindowSampleCount} bad";
+    }
+
+    private string FormatAutoSwitchLastSwitch()
+    {
+        if (!_autoServerSwitchStatus.LastSwitchUtc.HasValue)
+        {
+            return "No switch yet";
+        }
+
+        var localTime = _autoServerSwitchStatus.LastSwitchUtc.Value.ToLocalTime();
+        var server = string.IsNullOrWhiteSpace(_autoServerSwitchStatus.LastSwitchServer)
+            ? "unknown server"
+            : _autoServerSwitchStatus.LastSwitchServer;
+        return $"{localTime:g} to {server}";
+    }
+
+    private string FormatAutoSwitchProbeStatus()
+    {
+        if (string.IsNullOrWhiteSpace(_autoServerSwitchSettings.ProbeApiBaseUrl))
+        {
+            return "Not configured";
+        }
+
+        if (_autoServerSwitchStatus.IsCheckingProbe)
+        {
+            return "Checking scores";
+        }
+
+        if (!string.IsNullOrWhiteSpace(_autoServerSwitchStatus.ProbeApiError))
+        {
+            return _autoServerSwitchStatus.ProbeApiError;
+        }
+
+        if (_autoServerSwitchStatus.LastProbeRunUtc.HasValue)
+        {
+            return $"Last score run {_autoServerSwitchStatus.LastProbeRunUtc.Value.ToLocalTime():g}";
+        }
+
+        return "Waiting for scores";
+    }
+
+    private string FormatAutoSwitchRecommendation()
+    {
+        if (string.IsNullOrWhiteSpace(_autoServerSwitchStatus.RecommendedServer))
+        {
+            return "No recommendation";
+        }
+
+        return _autoServerSwitchStatus.RecommendedServerProbeScore.HasValue
+            ? $"{_autoServerSwitchStatus.RecommendedServer} ({_autoServerSwitchStatus.RecommendedServerProbeScore.Value:N0}/100)"
+            : _autoServerSwitchStatus.RecommendedServer;
+    }
+
+    private static string FormatServerScore(ServerHealthScore score)
+    {
+        return score.WasSuccessful ? $"{score.Score:N0}/100" : "Failed";
+    }
+
+    private static string FormatServerScoreDetails(ServerHealthScore score)
+    {
+        if (!score.WasSuccessful)
+        {
+            return score.FailureReason ?? "Connection failed";
+        }
+
+        return $"{score.LatencyMs:N0}ms latency, {score.JitterMs:N0}ms jitter, {score.SuccessRate:N0}% success";
+    }
+
     private bool IsServiceEnabled(string serviceKey)
     {
         return _enabledServices.Contains(serviceKey) ||
@@ -1656,6 +1911,164 @@
     private string GetServiceCommandName(string serviceKey)
     {
         return _allPresetServices.GetValueOrDefault(serviceKey, serviceKey);
+    }
+
+    private async Task RefreshAutoServerSwitchStatus()
+    {
+        _autoServerSwitchStatus = AutoServerSwitchService.GetStatus();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoServerSwitchToggle(bool enabled)
+    {
+        _autoServerSwitchSettings.Enabled = enabled;
+        await ApplyAutoServerSwitchSettings();
+    }
+
+    private async Task ApplyAutoServerSwitchSettings()
+    {
+        _autoServerSwitchSettings.PreferredCountry = _autoServerSwitchSettings.PreferredCountry.Trim().ToLowerInvariant();
+        _autoServerSwitchSettings.PreferredCity = _autoServerSwitchSettings.PreferredCity.Trim().ToLowerInvariant();
+        _autoServerSwitchSettings.ProbeApiBaseUrl = _autoServerSwitchSettings.ProbeApiBaseUrl.Trim();
+        _autoServerSwitchSettings.ProbeApiKey = _autoServerSwitchSettings.ProbeApiKey.Trim();
+        _autoServerSwitchSettings.FallbackCountries = _fallbackCountriesInput
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(country => country.ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        _autoServerSwitchStatus = AutoServerSwitchService.GetStatus();
+        _successMessage = "Auto server switch settings updated";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task TryNextSpeedifyServer()
+    {
+        _isProcessing = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await ApplyAutoServerSwitchSettings();
+            _successMessage = null;
+            var success = await AutoServerSwitchService.SwitchNowAsync();
+            _autoServerSwitchStatus = AutoServerSwitchService.GetStatus();
+            if (success)
+            {
+                _successMessage = _autoServerSwitchStatus.Message;
+            }
+            else
+            {
+                _error = _autoServerSwitchStatus.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to use external probe recommendation: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task HandleAutoSwitchMaxLatencyChange(double value)
+    {
+        _autoServerSwitchSettings.MaxLatencyMs = value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchMaxJitterChange(double value)
+    {
+        _autoServerSwitchSettings.MaxJitterMs = value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchMinSuccessRateChange(double value)
+    {
+        _autoServerSwitchSettings.MinSuccessRate = value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchDegradedSecondsChange(double value)
+    {
+        _autoServerSwitchSettings.DegradedSecondsBeforeSwitch = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchHealthWindowChange(double value)
+    {
+        _autoServerSwitchSettings.HealthWindowSeconds = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchBadSamplesChange(double value)
+    {
+        _autoServerSwitchSettings.MinimumBadSamplesInWindow = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchBadRatioChange(double value)
+    {
+        _autoServerSwitchSettings.MinimumBadSampleRatio = value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchCheckIntervalChange(double value)
+    {
+        _autoServerSwitchSettings.CheckIntervalSeconds = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchCooldownChange(double value)
+    {
+        _autoServerSwitchSettings.CooldownMinutes = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchAvoidMinutesChange(double value)
+    {
+        _autoServerSwitchSettings.AvoidServerMinutes = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchProbeMaxAgeChange(double value)
+    {
+        _autoServerSwitchSettings.ProbeMaxScoreAgeMinutes = (int)value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchMinimumScoreChange(double value)
+    {
+        _autoServerSwitchSettings.MinimumProbeScore = value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchMinimumImprovementChange(double value)
+    {
+        _autoServerSwitchSettings.MinimumScoreImprovement = value;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchPremiumToggle(bool enabled)
+    {
+        _autoServerSwitchSettings.IncludePremiumServers = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchRequireCurrentBadToggle(bool enabled)
+    {
+        _autoServerSwitchSettings.RequireProbeCurrentServerBad = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleAutoSwitchPrivateToggle(bool enabled)
+    {
+        _autoServerSwitchSettings.IncludePrivateServers = enabled;
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task HandleMonitorToggle(bool enabled)

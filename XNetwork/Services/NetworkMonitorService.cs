@@ -10,6 +10,9 @@ public class NetworkMonitorService : BackgroundService
     private readonly ILogger<NetworkMonitorService> _logger;
     private readonly NetworkMonitorSettings _settings;
     private readonly Dictionary<string, DateTime> _disconnectionTimes = new();
+    private readonly Dictionary<string, Queue<DateTime>> _restartAttempts = new();
+    private readonly Dictionary<string, DateTime> _restartSuppressedUntil = new();
+    private readonly Dictionary<string, DateTime> _lastSuppressionLog = new();
     private readonly IHostApplicationLifetime _appLifetime;
     private readonly SpeedifyService _speedifyService;
 
@@ -95,6 +98,11 @@ public class NetworkMonitorService : BackgroundService
                         var downTime = DateTime.UtcNow - _disconnectionTimes[adapter.Name];
                         if (downTime.TotalSeconds >= _settings.DownTimeoutSeconds)
                         {
+                            if (!CanAttemptRestart(adapter.Name))
+                            {
+                                continue;
+                            }
+
                             await RestartLink(adapter.Name, stoppingToken);
                             _disconnectionTimes.Remove(adapter.Name);
                         }
@@ -114,6 +122,69 @@ public class NetworkMonitorService : BackgroundService
         {
             _logger.LogError(ex, "Error checking Speedify adapters");
         }
+    }
+
+    private bool CanAttemptRestart(string interfaceName)
+    {
+        if (_settings.MaxRestartAttemptsPerHour <= 0)
+        {
+            return true;
+        }
+
+        var now = DateTime.UtcNow;
+        if (_restartSuppressedUntil.TryGetValue(interfaceName, out var suppressedUntil))
+        {
+            if (suppressedUntil > now)
+            {
+                if (!_lastSuppressionLog.TryGetValue(interfaceName, out var lastLog) || now - lastLog > TimeSpan.FromMinutes(1))
+                {
+                    _logger.LogWarning(
+                        "Suppressing restart of {Link} until {SuppressedUntil:u}; restart attempts are not restoring carrier",
+                        interfaceName,
+                        suppressedUntil);
+                    _lastSuppressionLog[interfaceName] = now;
+                }
+
+                return false;
+            }
+
+            _restartSuppressedUntil.Remove(interfaceName);
+            _lastSuppressionLog.Remove(interfaceName);
+        }
+
+        var attempts = GetRestartAttempts(interfaceName);
+        while (attempts.Count > 0 && now - attempts.Peek() > TimeSpan.FromHours(1))
+        {
+            attempts.Dequeue();
+        }
+
+        var maxAttempts = _settings.MaxRestartAttemptsPerHour;
+        if (attempts.Count >= maxAttempts)
+        {
+            var cooldown = TimeSpan.FromMinutes(Math.Max(1, _settings.RestartCooldownMinutes));
+            _restartSuppressedUntil[interfaceName] = now.Add(cooldown);
+            _lastSuppressionLog[interfaceName] = now;
+            _logger.LogWarning(
+                "Suppressing restart of {Link} for {CooldownMinutes} minutes after {AttemptCount} restart attempts in the last hour",
+                interfaceName,
+                Math.Round(cooldown.TotalMinutes),
+                attempts.Count);
+            return false;
+        }
+
+        attempts.Enqueue(now);
+        return true;
+    }
+
+    private Queue<DateTime> GetRestartAttempts(string interfaceName)
+    {
+        if (!_restartAttempts.TryGetValue(interfaceName, out var attempts))
+        {
+            attempts = new Queue<DateTime>();
+            _restartAttempts[interfaceName] = attempts;
+        }
+
+        return attempts;
     }
 
     private async Task RestartLink(string interfaceName, CancellationToken stoppingToken)

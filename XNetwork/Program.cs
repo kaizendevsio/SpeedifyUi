@@ -20,6 +20,17 @@ builder.Services.AddSingleton<ConnectionHealthService>();
 builder.Services.AddSingleton<IConnectionHealthService>(sp => sp.GetRequiredService<ConnectionHealthService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ConnectionHealthService>());
 
+// Add automatic Speedify server health switcher
+builder.Services.AddSingleton(sp =>
+    builder.Configuration.GetSection("AutoServerSwitch").Get<AutoServerSwitchSettings>() ?? new AutoServerSwitchSettings());
+builder.Services.AddHttpClient<ProbeScoreClient>();
+builder.Services.AddSingleton<ServerSwitchRecommendationSelector>();
+builder.Services.AddSingleton<LocalWanStabilityEvaluator>();
+builder.Services.AddSingleton<RecommendationConfidenceTracker>();
+builder.Services.AddSingleton<AutoServerSwitchStateStore>();
+builder.Services.AddSingleton<AutoServerSwitchService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AutoServerSwitchService>());
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

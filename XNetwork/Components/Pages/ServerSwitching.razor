@@ -1,0 +1,592 @@
+@page "/server-switching"
+@using XNetwork.Models
+@using XNetwork.Services
+@using XNetwork.Components.Custom
+@inject AutoServerSwitchService AutoServerSwitchService
+@implements IAsyncDisposable
+
+<PageTitle>Auto Switching - X Network</PageTitle>
+
+<div class="p-4 md:p-6 text-slate-100">
+    <div class="hidden md:block mb-6">
+        <h2 class="text-3xl font-bold text-white mb-1">Speedify Auto Switching</h2>
+        <p class="text-slate-400">External probe status, recommendations, and router-side switch history.</p>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <div class="bg-red-500/10 border border-red-500/50 text-red-300 p-4 mb-6 rounded-lg" role="alert">
+            @_error
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(_successMessage))
+    {
+        <div class="bg-emerald-500/10 border border-emerald-500/50 text-emerald-300 p-4 mb-6 rounded-lg" role="status">
+            @_successMessage
+        </div>
+    }
+
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-white md:hidden">Speedify Auto Switching</h1>
+            <div class="flex flex-wrap items-center gap-2 mt-2 md:mt-0">
+                <span class="px-3 py-1 rounded-full text-xs font-semibold @GetEnabledBadgeClass()">
+                    @(_status.IsEnabled ? "Enabled" : "Disabled")
+                </span>
+                <span class="px-3 py-1 rounded-full text-xs font-semibold @GetProbeBadgeClass()">
+                    @GetProbeStateText()
+                </span>
+                <span class="text-sm text-slate-400">@_status.Message</span>
+            </div>
+        </div>
+
+        <div class="flex flex-wrap gap-3">
+            <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+                    disabled="@_isWorking"
+                    @onclick="RefreshStatus">
+                Refresh
+            </button>
+            <button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                    disabled="@_isWorking"
+                    @onclick="CheckProbeNow">
+                Check Probe Now
+            </button>
+            <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                    disabled="@(_isWorking || _status.IsSwitching)"
+                    @onclick="UseRecommendationNow">
+                Use Recommendation Now
+            </button>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-6">
+        <StatusCard Title="Current Server" Value="@(_status.CurrentServer ?? "Unknown")" Icon="fa-server" Accent="cyan" Detail="@FormatCurrentProbeScore()" />
+        <StatusCard Title="Router Health" Value="@FormatHealth()" Icon="fa-heart-pulse" Accent="emerald" Detail="@FormatHealthWindowDetail()" />
+        <StatusCard Title="Probe API" Value="@FormatProbeEndpoint()" Icon="fa-satellite-dish" Accent="blue" Detail="@FormatProbeTiming()" />
+        <StatusCard Title="Recommendation" Value="@FormatRecommendation()" Icon="fa-route" Accent="violet" Detail="@FormatLastRecommendation()" />
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4 mb-6">
+        <MetricCard Label="Probe Checks" Value="@_status.ProbeCheckCount.ToString()" Detail="@FormatFailedProbeChecks()" />
+        <MetricCard Label="Scores Loaded" Value="@_status.LastProbeScoreCount.ToString()" Detail="Latest probe result" />
+        <MetricCard Label="Recommendations" Value="@_status.RecommendationCount.ToString()" Detail="Valid switch candidates" />
+        <MetricCard Label="Switch Attempts" Value="@_status.SwitchAttemptCount.ToString()" Detail="Router connect commands" />
+        <MetricCard Label="Switch Success" Value="@_status.SuccessfulSwitchCount.ToString()" Detail="@FormatFailedSwitches()" />
+        <MetricCard Label="WAN Links" Value="@FormatWanLinkCount()" Detail="@FormatWanStability()" />
+        <MetricCard Label="Health Window" Value="@FormatHealthWindowCount()" Detail="@FormatHealthWindowRatio()" />
+        <MetricCard Label="Confidence" Value="@FormatRecommendationConfidence()" Detail="@FormatPendingRecommendation()" />
+    </div>
+
+    <section class="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+            <div>
+                <h3 class="text-lg font-semibold text-white">WAN Adapter Status</h3>
+                <p class="text-xs text-slate-500">Speedify adapter states used by the local WAN stability guard.</p>
+            </div>
+            <span class="text-xs text-slate-500">@FormatWanStability()</span>
+        </div>
+
+        @if (_status.Adapters.Count == 0)
+        {
+            <div class="p-6 text-slate-400">No adapter status loaded yet.</div>
+        }
+        else
+        {
+            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 p-4">
+                @foreach (var adapter in _status.Adapters.OrderByDescending(IsAdapterConnected).ThenBy(adapter => adapter.Name))
+                {
+                    <div class="bg-slate-900/50 border border-slate-700 rounded-lg p-3">
+                        <div class="flex items-start justify-between gap-3 mb-2">
+                            <div class="min-w-0">
+                                <div class="text-white font-semibold truncate">@adapter.Name</div>
+                                <div class="text-xs text-slate-500 truncate">@FormatAdapterProvider(adapter)</div>
+                            </div>
+                            <span class="px-2 py-0.5 rounded-full text-xs font-semibold @GetAdapterStateClass(adapter.State)">@adapter.State</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 text-xs text-slate-400">
+                            <div>Priority: <span class="text-slate-200">@adapter.Priority</span></div>
+                            <div>Working: <span class="text-slate-200">@adapter.WorkingPriority</span></div>
+                            <div>Type: <span class="text-slate-200">@adapter.Type</span></div>
+                            <div>ID: <span class="text-slate-200">@adapter.AdapterId</span></div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </section>
+
+    <div class="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
+        <section class="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
+                <div>
+                    <h3 class="text-lg font-semibold text-white">External Probe Scores</h3>
+                    <p class="text-xs text-slate-500">Fresh scores from the separate Speedify probe VM.</p>
+                </div>
+                <span class="text-xs text-slate-500">@FormatLastProbeRun()</span>
+            </div>
+
+            @if (_status.RecentScores.Count == 0)
+            {
+                <div class="p-6 text-slate-400">No probe scores loaded yet. Use Check Probe Now or wait for an automatic check.</div>
+            }
+            else
+            {
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead class="bg-slate-900/60 text-slate-400 uppercase text-xs">
+                            <tr>
+                                <th class="text-left px-4 py-3 font-medium">Server</th>
+                                <th class="text-right px-4 py-3 font-medium">Score</th>
+                                <th class="text-right px-4 py-3 font-medium">Latency</th>
+                                <th class="text-right px-4 py-3 font-medium">Jitter</th>
+                                <th class="text-right px-4 py-3 font-medium">Success</th>
+                                <th class="text-right px-4 py-3 font-medium">Throughput</th>
+                                <th class="text-right px-4 py-3 font-medium">Tested</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700/70">
+                            @foreach (var score in _status.RecentScores)
+                            {
+                                <tr class="hover:bg-slate-700/30 transition-colors">
+                                    <td class="px-4 py-3">
+                                        <div class="text-white font-medium">@score.FriendlyName</div>
+                                        <div class="text-xs text-slate-500">@score.Tag</div>
+                                    </td>
+                                    <td class="px-4 py-3 text-right font-semibold @GetScoreTextClass(score.Score)">@FormatScore(score)</td>
+                                    <td class="px-4 py-3 text-right text-slate-300">@score.LatencyMs.ToString("N1")ms</td>
+                                    <td class="px-4 py-3 text-right text-slate-300">@score.JitterMs.ToString("N1")ms</td>
+                                    <td class="px-4 py-3 text-right text-slate-300">@score.SuccessRate.ToString("N0")%</td>
+                                    <td class="px-4 py-3 text-right text-slate-300">@FormatThroughput(score)</td>
+                                    <td class="px-4 py-3 text-right text-slate-400">@FormatAge(score.TestedUtc)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+
+        <section class="bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden">
+            <div class="px-4 py-3 border-b border-slate-700">
+                <h3 class="text-lg font-semibold text-white">Decision History</h3>
+                <p class="text-xs text-slate-500">Persisted probe checks, recommendations, and switch attempts.</p>
+            </div>
+
+            @if (_status.RecentEvents.Count == 0)
+            {
+                <div class="p-6 text-slate-400">No auto-switch events recorded yet.</div>
+            }
+            else
+            {
+                <div class="divide-y divide-slate-700/70 max-h-[520px] overflow-y-auto">
+                    @foreach (var item in _status.RecentEvents)
+                    {
+                        <div class="p-4">
+                            <div class="flex items-start justify-between gap-3 mb-1">
+                                <span class="px-2 py-0.5 rounded-full text-xs font-semibold @GetEventBadgeClass(item.Type)">@item.Type</span>
+                                <span class="text-xs text-slate-500 whitespace-nowrap">@FormatAge(item.TimestampUtc)</span>
+                            </div>
+                            <div class="text-sm text-white">@item.Message</div>
+                            @if (!string.IsNullOrWhiteSpace(item.Server) || item.Score.HasValue)
+                            {
+                                <div class="text-xs text-slate-500 mt-1">
+                                    @item.Server @FormatEventScore(item)
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+    </div>
+</div>
+
+@code {
+    private AutoServerSwitchStatus _status = new();
+    private bool _isWorking;
+    private string? _error;
+    private string? _successMessage;
+    private CancellationTokenSource? _refreshCts;
+    private Task? _refreshTask;
+
+    protected override Task OnInitializedAsync()
+    {
+        LoadStatus();
+        _refreshCts = new CancellationTokenSource();
+        _refreshTask = RefreshLoopAsync(_refreshCts.Token);
+        return Task.CompletedTask;
+    }
+
+    private void LoadStatus()
+    {
+        _status = AutoServerSwitchService.GetStatus();
+    }
+
+    private async Task RefreshStatus()
+    {
+        LoadStatus();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task CheckProbeNow()
+    {
+        _isWorking = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var response = await AutoServerSwitchService.RefreshProbeScoresAsync();
+            LoadStatus();
+            _successMessage = response == null
+                ? _status.Message
+                : $"Loaded {response.Scores.Count} probe scores";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to check probe: {ex.Message}";
+        }
+        finally
+        {
+            _isWorking = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task UseRecommendationNow()
+    {
+        _isWorking = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var switched = await AutoServerSwitchService.SwitchNowAsync("Manual switch from Auto Switching page");
+            LoadStatus();
+            if (switched)
+            {
+                _successMessage = _status.Message;
+            }
+            else
+            {
+                _error = _status.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to use recommendation: {ex.Message}";
+        }
+        finally
+        {
+            _isWorking = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                LoadStatus();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private string GetEnabledBadgeClass() => _status.IsEnabled
+        ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/40"
+        : "bg-slate-700 text-slate-300 border border-slate-600";
+
+    private string GetProbeBadgeClass()
+    {
+        if (_status.IsCheckingProbe)
+        {
+            return "bg-blue-500/10 text-blue-300 border border-blue-500/40";
+        }
+
+        return string.IsNullOrWhiteSpace(_status.ProbeApiError)
+            ? "bg-emerald-500/10 text-emerald-300 border border-emerald-500/40"
+            : "bg-red-500/10 text-red-300 border border-red-500/40";
+    }
+
+    private string GetProbeStateText()
+    {
+        if (_status.IsCheckingProbe)
+        {
+            return "Checking Probe";
+        }
+
+        return string.IsNullOrWhiteSpace(_status.ProbeApiError) ? "Probe OK" : "Probe Error";
+    }
+
+    private string FormatHealth()
+    {
+        if (_status.LastLatencyMs <= 0 && _status.LastSuccessRate <= 0)
+        {
+            return "Waiting for samples";
+        }
+
+        return $"{_status.LastLatencyMs:N0}ms / {_status.LastJitterMs:N0}ms / {_status.LastSuccessRate:N0}%";
+    }
+
+    private string FormatHealthWindowDetail()
+    {
+        if (string.IsNullOrWhiteSpace(_status.HealthWindowMessage))
+        {
+            return "Waiting for rolling window";
+        }
+
+        return _status.IsHealthWindowTriggered ? $"Investigating: {_status.HealthWindowMessage}" : _status.HealthWindowMessage;
+    }
+
+    private string FormatProbeEndpoint()
+    {
+        if (string.IsNullOrWhiteSpace(_status.ProbeApiBaseUrl))
+        {
+            return "Not configured";
+        }
+
+        return _status.ProbeApiBaseUrl.Replace("http://", "", StringComparison.OrdinalIgnoreCase)
+            .Replace("https://", "", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string FormatProbeTiming()
+    {
+        if (!string.IsNullOrWhiteSpace(_status.ProbeApiError))
+        {
+            return _status.ProbeApiError;
+        }
+
+        if (_status.LastProbeSuccessUtc.HasValue)
+        {
+            return $"Last success {FormatAge(_status.LastProbeSuccessUtc.Value)}";
+        }
+
+        if (_status.LastProbeCheckUtc.HasValue)
+        {
+            return $"Last check {FormatAge(_status.LastProbeCheckUtc.Value)}";
+        }
+
+        return "No check yet";
+    }
+
+    private string FormatRecommendation()
+    {
+        if (string.IsNullOrWhiteSpace(_status.RecommendedServer))
+        {
+            return "No recommendation";
+        }
+
+        return _status.RecommendedServerProbeScore.HasValue
+            ? $"{_status.RecommendedServer} ({_status.RecommendedServerProbeScore.Value:N1})"
+            : _status.RecommendedServer;
+    }
+
+    private string FormatLastRecommendation()
+    {
+        return _status.LastRecommendationUtc.HasValue
+            ? $"Last recommendation {FormatAge(_status.LastRecommendationUtc.Value)}"
+            : "No recommendation accepted yet";
+    }
+
+    private string FormatCurrentProbeScore()
+    {
+        if (!string.IsNullOrWhiteSpace(_status.CurrentServerProbeMessage))
+        {
+            return _status.CurrentServerProbeMessage;
+        }
+
+        return _status.CurrentServerProbeScore.HasValue
+            ? $"Probe score {_status.CurrentServerProbeScore.Value:N1}/100"
+            : "No current-server probe score";
+    }
+
+    private string FormatHealthWindowCount()
+    {
+        return _status.HealthWindowSampleCount <= 0
+            ? "0/0"
+            : $"{_status.HealthWindowBadSampleCount}/{_status.HealthWindowSampleCount}";
+    }
+
+    private string FormatHealthWindowRatio()
+    {
+        if (_status.HealthWindowSampleCount <= 0)
+        {
+            return $"{Math.Max(15, _status.HealthWindowSeconds)}s rolling window";
+        }
+
+        var state = _status.IsHealthWindowTriggered ? "investigating" : "acceptable";
+        return $"{_status.HealthWindowBadSampleRatio:P0} bad, {state}";
+    }
+
+    private string FormatLastProbeRun()
+    {
+        return _status.LastProbeRunUtc.HasValue
+            ? $"Probe run {FormatAge(_status.LastProbeRunUtc.Value)}"
+            : "No probe run loaded";
+    }
+
+    private string FormatFailedProbeChecks()
+    {
+        return _status.FailedProbeCheckCount == 0 ? "No failures" : $"{_status.FailedProbeCheckCount} failed";
+    }
+
+    private string FormatFailedSwitches()
+    {
+        return _status.FailedSwitchCount == 0 ? "No failed switches" : $"{_status.FailedSwitchCount} failed";
+    }
+
+    private string FormatWanLinkCount()
+    {
+        return _status.MinimumConnectedAdaptersBeforeSwitch <= 0
+            ? $"{_status.ConnectedAdapterCount}"
+            : $"{_status.ConnectedAdapterCount}/{_status.MinimumConnectedAdaptersBeforeSwitch}";
+    }
+
+    private string FormatWanStability()
+    {
+        if (string.IsNullOrWhiteSpace(_status.LocalWanStabilityMessage))
+        {
+            return "Waiting for local WAN check";
+        }
+
+        return _status.IsLocalWanStableForSwitching ? "Stable for switching" : _status.LocalWanStabilityMessage;
+    }
+
+    private string FormatRecommendationConfidence()
+    {
+        return _status.RequiredRecommendationConfirmations <= 0
+            ? _status.RecommendationConfirmationCount.ToString()
+            : $"{_status.RecommendationConfirmationCount}/{_status.RequiredRecommendationConfirmations}";
+    }
+
+    private string FormatPendingRecommendation()
+    {
+        return string.IsNullOrWhiteSpace(_status.PendingRecommendationServer)
+            ? "No pending recommendation"
+            : _status.PendingRecommendationServer;
+    }
+
+    private static string FormatAdapterProvider(Adapter adapter)
+    {
+        return string.IsNullOrWhiteSpace(adapter.Isp) ? adapter.Type : adapter.Isp;
+    }
+
+    private static bool IsAdapterConnected(Adapter adapter)
+    {
+        return string.Equals(adapter.State, "connected", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetAdapterStateClass(string state)
+    {
+        return state.ToLowerInvariant() switch
+        {
+            "connected" => "bg-emerald-500/10 text-emerald-300 border border-emerald-500/30",
+            "connecting" => "bg-blue-500/10 text-blue-300 border border-blue-500/30",
+            "disconnected" => "bg-red-500/10 text-red-300 border border-red-500/30",
+            _ => "bg-slate-700 text-slate-300 border border-slate-600"
+        };
+    }
+
+    private static string FormatThroughput(ServerHealthScore score)
+    {
+        if (!score.ThroughputMbps.HasValue)
+        {
+            return "n/a";
+        }
+
+        var detail = score.ThroughputAttemptCount > 0
+            ? $" ({score.ThroughputSampleCount}/{score.ThroughputAttemptCount}, {score.ThroughputConfidence:P0})"
+            : "";
+        return $"{score.ThroughputMbps.Value:N1} Mbps{detail}";
+    }
+
+    private static string FormatScore(ServerHealthScore score)
+    {
+        return score.WasSuccessful ? $"{score.Score:N1}" : "Failed";
+    }
+
+    private static string FormatEventScore(AutoServerSwitchEvent item)
+    {
+        return item.Score.HasValue ? $"({item.Score.Value:N1}/100)" : "";
+    }
+
+    private static string FormatAge(DateTime timestampUtc)
+    {
+        var age = DateTime.UtcNow - timestampUtc;
+        if (age.TotalSeconds < 60)
+        {
+            return $"{Math.Max(0, age.TotalSeconds):N0}s ago";
+        }
+
+        if (age.TotalMinutes < 60)
+        {
+            return $"{age.TotalMinutes:N0}m ago";
+        }
+
+        return timestampUtc.ToLocalTime().ToString("g");
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalMinutes < 1)
+        {
+            return $"{duration.TotalSeconds:N0}s";
+        }
+
+        if (duration.TotalHours < 1)
+        {
+            return $"{duration.TotalMinutes:N0}m";
+        }
+
+        return $"{duration.TotalHours:N1}h";
+    }
+
+    private static string GetScoreTextClass(double score)
+    {
+        return score >= 80 ? "text-emerald-300" : score >= 70 ? "text-cyan-300" : score >= 60 ? "text-amber-300" : "text-red-300";
+    }
+
+    private static string GetEventBadgeClass(string type)
+    {
+        return type switch
+        {
+            "Switch" => "bg-cyan-500/10 text-cyan-300 border border-cyan-500/30",
+            "Recommendation" => "bg-violet-500/10 text-violet-300 border border-violet-500/30",
+            "Probe" => "bg-blue-500/10 text-blue-300 border border-blue-500/30",
+            "Error" => "bg-red-500/10 text-red-300 border border-red-500/30",
+            "Warning" => "bg-amber-500/10 text-amber-300 border border-amber-500/30",
+            _ => "bg-slate-700 text-slate-300 border border-slate-600"
+        };
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_refreshCts != null)
+        {
+            await _refreshCts.CancelAsync();
+        }
+
+        if (_refreshTask != null)
+        {
+            try
+            {
+                await _refreshTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        _refreshCts?.Dispose();
+    }
+}

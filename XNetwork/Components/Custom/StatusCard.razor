@@ -1,0 +1,31 @@
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4 shadow-lg">
+    <div class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 @GetAccentClass()">
+            <i class="fas @Icon text-lg"></i>
+        </div>
+        <div class="min-w-0">
+            <div class="text-xs uppercase tracking-wide text-slate-500 font-semibold">@Title</div>
+            <div class="text-lg font-semibold text-white break-words">@Value</div>
+            <div class="text-sm text-slate-400 mt-1 break-words">@Detail</div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Title { get; set; } = "";
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public string Icon { get; set; } = "fa-circle-info";
+    [Parameter] public string Accent { get; set; } = "blue";
+    [Parameter] public string Detail { get; set; } = "";
+
+    private string GetAccentClass()
+    {
+        return Accent switch
+        {
+            "cyan" => "bg-cyan-500/10 border border-cyan-500/30 text-cyan-300",
+            "emerald" => "bg-emerald-500/10 border border-emerald-500/30 text-emerald-300",
+            "violet" => "bg-violet-500/10 border border-violet-500/30 text-violet-300",
+            _ => "bg-blue-500/10 border border-blue-500/30 text-blue-300"
+        };
+    }
+}

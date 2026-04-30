@@ -12,6 +12,16 @@ public class NetworkMonitorSettings
     /// Default is 30 seconds
     /// </summary>
     public int DownTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Maximum number of restart attempts for a link before cooldown is applied. Set 0 to keep retrying indefinitely.
+    /// </summary>
+    public int MaxRestartAttemptsPerHour { get; set; }
+
+    /// <summary>
+    /// Time to suppress additional restart attempts after the hourly limit is hit.
+    /// </summary>
+    public int RestartCooldownMinutes { get; set; } = 15;
     
     /// <summary>
     /// Whether the network monitor service is enabled
