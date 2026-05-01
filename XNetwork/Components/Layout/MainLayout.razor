@@ -1,4 +1,6 @@
 ﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager NavigationManager
 
 <div class="flex min-h-screen bg-slate-900">
     <!-- SIDEBAR (Desktop) -->
@@ -44,7 +46,7 @@
             <h1 class="text-xl font-bold text-center text-white">X Network</h1>
         </header>
 
-        <section class="page-transition-surface">
+        <section @key="_routeTransitionKey" class="page-transition-surface">
             @Body
         </section>
     </main>
@@ -98,6 +100,22 @@
 </div>
 
 @code {
-    // No C# code is needed in MainLayout for this specific hybrid navigation structure.
-    // The responsiveness is handled by Tailwind's md: prefixes.
+    private string _routeTransitionKey = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        _routeTransitionKey = NavigationManager.Uri;
+        NavigationManager.LocationChanged += HandleLocationChanged;
+    }
+
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs args)
+    {
+        _routeTransitionKey = args.Location;
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        NavigationManager.LocationChanged -= HandleLocationChanged;
+    }
 }
