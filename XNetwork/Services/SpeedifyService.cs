@@ -429,6 +429,22 @@ public class SpeedifyService
 
     public async IAsyncEnumerable<ConnectionItem> GetStatsAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        await foreach (var connection in GetStatsInternalAsync(includeAggregate: false, cancellationToken).ConfigureAwait(false))
+        {
+            yield return connection;
+        }
+    }
+
+    public async IAsyncEnumerable<ConnectionItem> GetStatsWithAggregateAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var connection in GetStatsInternalAsync(includeAggregate: true, cancellationToken).ConfigureAwait(false))
+        {
+            yield return connection;
+        }
+    }
+
+    private async IAsyncEnumerable<ConnectionItem> GetStatsInternalAsync(bool includeAggregate, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
         await foreach (var jsonDocString in StreamCommandOutputAsync("stats", cancellationToken).ConfigureAwait(false))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -472,10 +488,17 @@ public class SpeedifyService
                 foreach (var conn in payload.Connections)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (!string.IsNullOrEmpty(conn.AdapterId) &&
-                        conn.AdapterId != "speedify" && // Filter out aggregate
-                        !string.IsNullOrEmpty(conn.ConnectionId) &&
-                        !conn.ConnectionId.EndsWith("%proxy")) // Filter out proxy connections
+
+                    if (string.IsNullOrEmpty(conn.AdapterId) || string.IsNullOrEmpty(conn.ConnectionId))
+                    {
+                        continue;
+                    }
+
+                    var isSpeedifyAggregate = conn.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) &&
+                                              conn.ConnectionId.Equals("speedify", StringComparison.OrdinalIgnoreCase);
+                    var isProxyConnection = conn.ConnectionId.EndsWith("%proxy", StringComparison.OrdinalIgnoreCase);
+                    if ((includeAggregate && isSpeedifyAggregate) ||
+                        (!conn.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) && !isProxyConnection))
                     {
                         // This yield is now outside a try-catch that would violate CS1626/CS1627
                         yield return conn;

@@ -12,7 +12,7 @@
 <div class="p-4 md:p-6">
     <div class="hidden md:block mb-6">
         <h2 class="text-3xl font-bold text-white mb-1">Analytics</h2>
-        <p class="text-slate-400">Monitor connection health, uptime, and real-time performance.</p>
+        <p class="text-slate-400">Monitor connection health, ping success, and real-time performance.</p>
     </div>
 
     @if (!ConnectionHealthService.IsInitialized())
@@ -35,11 +35,11 @@
             </div>
 
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                <!-- Uptime -->
+                <!-- Ping Success -->
                 <div class="bg-slate-900/50 rounded-lg p-4">
                     <div class="flex items-center gap-2 mb-2">
                         <i class="fas fa-check-circle @GetUptimeIconColor(_overallHealth.SuccessRate)"></i>
-                        <span class="text-xs text-slate-400">Uptime</span>
+                        <span class="text-xs text-slate-400">Ping Success</span>
                     </div>
                     <div class="flex items-baseline gap-1">
                         <span class="text-2xl font-bold @GetUptimeTextColor(_overallHealth.SuccessRate)">
@@ -47,7 +47,7 @@
                         </span>
                         <span class="text-sm text-slate-400">%</span>
                     </div>
-                    <p class="text-xs text-slate-500 mt-1">Last @_overallHealth.SampleCount samples</p>
+                    <p class="text-xs text-slate-500 mt-1">Last @_overallHealth.SampleCount pings</p>
                 </div>
 
                 <!-- Latency -->
@@ -109,20 +109,20 @@
             </div>
         </div>
 
-        <!-- Uptime Chart -->
+        <!-- Ping Success Chart -->
         @if (_uptimeChartModuleLoaded)
         {
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-6">
                 <div class="flex items-center justify-between mb-4">
                     <div class="flex items-center gap-2">
-                        <h3 class="text-xl font-semibold text-white">Uptime History</h3>
+                        <h3 class="text-xl font-semibold text-white">Ping Success History</h3>
                         <button @onclick="() => _showQualityInfo = !_showQualityInfo"
                                 class="w-6 h-6 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-400 hover:text-white transition-colors text-xs"
                                 title="@(_showQualityInfo ? "Hide" : "View") Quality Thresholds">
                             <i class="fas fa-info"></i>
                         </button>
                     </div>
-                    <span class="text-sm text-slate-400">Live monitoring</span>
+                    <span class="text-sm text-slate-400">Live pings</span>
                 </div>
                 
                 <div class="bg-slate-900/50 rounded-lg p-4">
@@ -132,11 +132,11 @@
                 <div class="mt-4 flex items-center justify-center gap-4 text-sm">
                     <div class="flex items-center gap-2">
                         <div class="w-3 h-3 bg-green-500 rounded-full"></div>
-                        <span class="text-slate-300">Successful</span>
+                        <span class="text-slate-300">Successful pings</span>
                     </div>
                     <div class="flex items-center gap-2">
                         <div class="w-3 h-3 bg-red-500 rounded-full"></div>
-                        <span class="text-slate-300">Failed</span>
+                        <span class="text-slate-300">Failed pings</span>
                     </div>
                 </div>
             </div>
@@ -151,7 +151,7 @@
                         <i class="fas fa-star text-green-400"></i>
                         <h4 class="font-semibold text-green-300">Excellent</h4>
                     </div>
-                    <p class="text-xs text-slate-400">Latency &lt; 30ms<br/>Jitter &lt; 5ms<br/>Uptime &gt; 98%</p>
+                    <p class="text-xs text-slate-400">Latency &lt; 30ms<br/>Jitter &lt; 5ms<br/>Ping success &gt; 98%</p>
                 </div>
                 
                 <div class="bg-cyan-900/20 border border-cyan-900/30 rounded-lg p-4">
@@ -159,7 +159,7 @@
                         <i class="fas fa-check text-cyan-400"></i>
                         <h4 class="font-semibold text-cyan-300">Good</h4>
                     </div>
-                    <p class="text-xs text-slate-400">Latency &lt; 80ms<br/>Jitter &lt; 15ms<br/>Uptime &gt; 95%</p>
+                    <p class="text-xs text-slate-400">Latency &lt; 80ms<br/>Jitter &lt; 15ms<br/>Ping success &gt; 95%</p>
                 </div>
                 
                 <div class="bg-yellow-900/20 border border-yellow-900/30 rounded-lg p-4">
@@ -167,7 +167,7 @@
                         <i class="fas fa-exclamation-triangle text-yellow-400"></i>
                         <h4 class="font-semibold text-yellow-300">Fair</h4>
                     </div>
-                    <p class="text-xs text-slate-400">Latency &lt; 150ms<br/>Jitter &lt; 30ms<br/>Uptime &gt; 90%</p>
+                    <p class="text-xs text-slate-400">Latency &lt; 150ms<br/>Jitter &lt; 30ms<br/>Ping success &gt; 90%</p>
                 </div>
                 
                 <div class="bg-red-900/20 border border-red-900/30 rounded-lg p-4">
@@ -175,7 +175,7 @@
                         <i class="fas fa-times-circle text-red-400"></i>
                         <h4 class="font-semibold text-red-300">Poor/Critical</h4>
                     </div>
-                    <p class="text-xs text-slate-400">High latency<br/>High jitter<br/>Low uptime</p>
+                    <p class="text-xs text-slate-400">High latency<br/>High jitter<br/>Low ping success</p>
                 </div>
             </div>
         }
@@ -186,7 +186,7 @@
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
             <div>
                 <h3 class="text-xl font-semibold text-white mb-1">Traffic Statistics</h3>
-                <p class="text-sm text-slate-400">Real-time adapter performance visualization.</p>
+                <p class="text-sm text-slate-400">Real-time adapter performance over the last @_chartPeriod seconds.</p>
             </div>
             <div class="flex gap-1 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
                 <button @onclick="() => ChangePeriod(15)"
@@ -497,7 +497,9 @@
     private string GetAdapterDisplayName(string adapterId)
     {
         var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
-        return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp}" : adapter.Name : adapterId;
+        return adapter != null
+            ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name
+            : adapterId;
     }
 
     private List<ChartCard.LegendItem> GetAdapterLegend()
@@ -562,6 +564,7 @@
 
         try
         {
+            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
             if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Download");}
             if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Upload");}
             if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("RTT");}
@@ -623,17 +626,16 @@
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
 
-                string adapterDisplayName = GetAdapterDisplayName(statEntry.AdapterId);
                 var downloadMbps = Math.Round(statEntry.ReceiveBps * 8.0 / 1_000_000.0, 2);
                 var uploadMbps = Math.Round(statEntry.SendBps * 8.0 / 1_000_000.0, 2);
-                var lossPercent = Math.Round(statEntry.LossReceive + statEntry.LossSend, 2);
+                var lossPercent = Math.Round(statEntry.AverageLossPercent, 2);
 
                 lock (_chartDataLock)
                 {
-                    _batchedChartData["downloadChart"][adapterDisplayName] = downloadMbps;
-                    _batchedChartData["uploadChart"][adapterDisplayName] = uploadMbps;
-                    _batchedChartData["rttChart"][adapterDisplayName] = statEntry.LatencyMs;
-                    _batchedChartData["lossChart"][adapterDisplayName] = lossPercent;
+                    _batchedChartData["downloadChart"][statEntry.AdapterId] = downloadMbps;
+                    _batchedChartData["uploadChart"][statEntry.AdapterId] = uploadMbps;
+                    _batchedChartData["rttChart"][statEntry.AdapterId] = statEntry.LatencyMs;
+                    _batchedChartData["lossChart"][statEntry.AdapterId] = lossPercent;
                 }
                 
                 await InvokeAsync(StateHasChanged); 
@@ -815,11 +817,15 @@
         return "text-red-400";
     }
 
-    private void ChangePeriod(int seconds)
+    private async Task ChangePeriod(int seconds)
     {
         _chartPeriod = seconds;
         Console.WriteLine($"Details.razor: Chart period changed to {_chartPeriod} seconds");
-        // Future: Could implement chart data window resizing here
+
+        if (_jsModuleLoaded && _chartModule != null)
+        {
+            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
+        }
     }
 
     public async ValueTask DisposeAsync()

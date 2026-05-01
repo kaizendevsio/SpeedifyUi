@@ -388,8 +388,7 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
         // Convert bytes/sec to Mbps
         var speedMbps = (connection.ReceiveBps + connection.SendBps) * 8.0 / 1_000_000.0;
 
-        // Calculate average packet loss from send and receive loss
-        var packetLoss = (connection.LossSend + connection.LossReceive) / 2.0;
+        var packetLoss = connection.AverageLossPercent;
 
         // Create snapshot
         var snapshot = new HealthSnapshot(

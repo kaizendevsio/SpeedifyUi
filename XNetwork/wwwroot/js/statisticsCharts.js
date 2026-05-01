@@ -2,7 +2,8 @@
 
 // Store chart instances to manage them
 const charts = {};
-const MAX_DATA_POINTS = 30; // Number of historical data points to show on charts
+let maxDataPoints = 30; // Number of historical data points to show on charts
+const DASHBOARD_DATA_POINTS = 30;
 
 // Dark theme colors
 const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
@@ -17,6 +18,52 @@ const lineColors = [
     '#a855f7',  // purple-400
     '#fb923c'   // orange-400
 ];
+
+export function setMaxDataPoints(value) {
+    const parsed = Number(value);
+    maxDataPoints = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : 30;
+
+    for (const chartId in charts) {
+        if (chartId === 'dashboardChart') {
+            continue;
+        }
+
+        trimChartData(charts[chartId]);
+        charts[chartId].update('none');
+    }
+}
+
+function trimChartData(chart) {
+    while (chart.data.labels.length > maxDataPoints) {
+        chart.data.labels.shift();
+    }
+
+    chart.data.datasets.forEach(dataset => {
+        while (dataset.data.length > maxDataPoints) {
+            dataset.data.shift();
+        }
+    });
+}
+
+function formatValueForAxis(value, yAxisLabel) {
+    if (!Number.isFinite(value)) {
+        return 'No data';
+    }
+
+    if (yAxisLabel.includes('(Mbps)')) {
+        return `${value.toFixed(2)} Mbps`;
+    }
+
+    if (yAxisLabel.includes('(ms)')) {
+        return `${value.toFixed(0)} ms`;
+    }
+
+    if (yAxisLabel.includes('(%)')) {
+        return `${value.toFixed(2)}%`;
+    }
+
+    return value.toString();
+}
 
 // Function to initialize a new chart or update it with initial datasets
 export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapterNames, initialTimestamp) {
@@ -82,6 +129,13 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                     tooltip: {
                         mode: 'index',
                         intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.dataset.label || '';
+                                const yAxisLabel = context.chart.options.scales.y.title.text || '';
+                                return `${label}: ${formatValueForAxis(context.parsed.y, yAxisLabel)}`;
+                            }
+                        }
                     }
                 }
             }
@@ -95,8 +149,8 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
 }
 
 // Function to add a new data point to all datasets in a specific chart
-export function addDataToChart(chartId, timestamp, dataPointsByAdapterDisplayName) {
-    // dataPointsByAdapterDisplayName is an object: { "ISP (Adapter Name)": value1, ... }
+export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
+    // dataPointsByAdapterId is an object: { "adapterID": value1, ... }
     const chart = charts[chartId];
     if (!chart) {
         // This can happen if initialization failed or was called before DOM ready.
@@ -111,9 +165,9 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterDisplayNam
         // console.log(`Updating data for existing timestamp ${timestamp} in chart ${chartId}`);
         const labelIndex = chart.data.labels.indexOf(timestamp);
         chart.data.datasets.forEach(dataset => {
-            const adapterDisplayName = dataset.label; // Dataset label is the display name
-            if (dataPointsByAdapterDisplayName[adapterDisplayName] !== undefined) {
-                dataset.data[labelIndex] = dataPointsByAdapterDisplayName[adapterDisplayName];
+            const adapterId = dataset.AdapterId;
+            if (Object.prototype.hasOwnProperty.call(dataPointsByAdapterId, adapterId)) {
+                dataset.data[labelIndex] = dataPointsByAdapterId[adapterId];
             }
         });
 
@@ -121,21 +175,19 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterDisplayNam
         // Add new timestamp label if it doesn't exist or if it's the first point
         if (!chart.data.labels.includes(timestamp)) {
             chart.data.labels.push(timestamp);
-            if (chart.data.labels.length > MAX_DATA_POINTS) {
+            if (chart.data.labels.length > maxDataPoints) {
                 chart.data.labels.shift(); // Remove oldest label
             }
         }
 
         chart.data.datasets.forEach(dataset => {
-            const adapterDisplayName = dataset.label; // Dataset label is the display name
-            const value = dataPointsByAdapterDisplayName[adapterDisplayName] !== undefined ? dataPointsByAdapterDisplayName[adapterDisplayName] : NaN; // Use NaN for missing data
+            const adapterId = dataset.AdapterId;
+            const value = Object.prototype.hasOwnProperty.call(dataPointsByAdapterId, adapterId) ? dataPointsByAdapterId[adapterId] : NaN; // Use NaN for missing data
 
             dataset.data.push(value);
-            if (dataset.data.length > MAX_DATA_POINTS) {
-                dataset.data.shift(); // Remove oldest data point
-            }
         });
     }
+    trimChartData(chart);
     try {
         chart.update('none'); // 'none' for no animation, 'quiet' for minimal
     } catch (error) {
@@ -171,7 +223,7 @@ export function initializeDashboardSparkline(chartId) {
     const labels = [];
     const data = [];
     const now = Date.now();
-    for (let i = 29; i >= 0; i--) {
+    for (let i = DASHBOARD_DATA_POINTS - 1; i >= 0; i--) {
         labels.push('');
         data.push(Math.random() * 100 + 20); // Random data between 20-120
     }
@@ -241,12 +293,12 @@ export function updateDashboardSparkline(chartId, value) {
 
     // Add new data point and remove oldest
     chart.data.datasets[0].data.push(value);
-    if (chart.data.datasets[0].data.length > MAX_DATA_POINTS) {
+    if (chart.data.datasets[0].data.length > DASHBOARD_DATA_POINTS) {
         chart.data.datasets[0].data.shift();
     }
 
     chart.data.labels.push('');
-    if (chart.data.labels.length > MAX_DATA_POINTS) {
+    if (chart.data.labels.length > DASHBOARD_DATA_POINTS) {
         chart.data.labels.shift();
     }
 

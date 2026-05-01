@@ -200,6 +200,7 @@
 @code {
     private IReadOnlyList<Adapter>? _adapters;
     private List<ConnectionItem> _stats = new();
+    private ConnectionItem? _aggregateStats;
     private ServerInfo? _serverInfo;
     private string? _error;
     private CancellationTokenSource? _statsCts;
@@ -277,8 +278,15 @@
         _statsCts = new CancellationTokenSource();
         try
         {
-            await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
+            await foreach (var statEntry in SpeedifyService.GetStatsWithAggregateAsync(_statsCts.Token))
             {
+                if (IsSpeedifyAggregate(statEntry))
+                {
+                    _aggregateStats = statEntry;
+                    await InvokeAsync(StateHasChanged);
+                    continue;
+                }
+
                 var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
@@ -303,6 +311,12 @@
     private ConnectionItem? GetStatsForAdapter(string adapterId)
     {
         return _stats.FirstOrDefault(x => x.AdapterId == adapterId);
+    }
+
+    private static bool IsSpeedifyAggregate(ConnectionItem statEntry)
+    {
+        return statEntry.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) &&
+               statEntry.ConnectionId.Equals("speedify", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task ChangePriority(string adapterId, string? newPriority)
@@ -341,7 +355,7 @@
         // Return 0-4 bars based on latency and packet loss
         if (currentStats == null) return 0;
         
-        var avgLoss = (currentStats.LossSend + currentStats.LossReceive) / 2.0;
+        var avgLoss = currentStats.AverageLossPercent;
         
         if (currentStats.LatencyMs < 50 && avgLoss < 1) return 4;   // All 4 bars - Excellent
         if (currentStats.LatencyMs < 100 && avgLoss < 3) return 3;  // 3 bars - Good
@@ -411,7 +425,7 @@
             })
             .ThenBy(a => {
                 var stats = GetStatsForAdapter(a.AdapterId);
-                return stats != null ? (stats.LossSend + stats.LossReceive) / 2 : double.MaxValue;
+                return stats?.AverageLossPercent ?? double.MaxValue;
             });
     }
 
@@ -452,8 +466,8 @@
         
         // Calculate quality metrics
         var avgLatency = connectedStats.Average(s => s!.LatencyMs);
-        var avgPacketLoss = connectedStats.Average(s => (s!.LossSend + s.LossReceive) / 2);
-        var totalSpeed = connectedStats.Sum(s => s!.ReceiveBps + s.SendBps) * 8.0 / 1_000_000.0; // Mbps
+        var avgPacketLoss = connectedStats.Average(s => s!.AverageLossPercent);
+        var totalSpeed = GetActualThroughputMbps();
         
         // Speedify-optimized thresholds (bonded connection adds latency overhead)
         if (avgLatency < 100 && avgPacketLoss < 2 && totalSpeed > 50)
@@ -475,7 +489,7 @@
         if (isOffline || currentStats == null) return "bg-slate-800/50";
         
         // Calculate quality based on latency and packet loss
-        var avgLoss = (currentStats.LossSend + currentStats.LossReceive) / 2.0;
+        var avgLoss = currentStats.AverageLossPercent;
         
         if (currentStats.LatencyMs < 50 && avgLoss < 1)
             return "bg-green-900/20 border-green-900/30";
@@ -518,14 +532,37 @@
 
     private double GetTotalDownload()
     {
-        if (!_stats.Any()) return 0;
-        return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.ReceiveBps) * 8.0 / 1_000_000.0, 1);
+        return Math.Round(GetActualReceiveBps() * 8.0 / 1_000_000.0, 1);
     }
 
     private double GetTotalUpload()
     {
-        if (!_stats.Any()) return 0;
-        return Math.Round(_stats.Where(s => s.Connected == true).Sum(s => s.SendBps) * 8.0 / 1_000_000.0, 1);
+        return Math.Round(GetActualSendBps() * 8.0 / 1_000_000.0, 1);
+    }
+
+    private double GetActualThroughputMbps()
+    {
+        return (GetActualReceiveBps() + GetActualSendBps()) * 8.0 / 1_000_000.0;
+    }
+
+    private double GetActualReceiveBps()
+    {
+        if (_aggregateStats?.Connected == true)
+        {
+            return _aggregateStats.ReceiveBps;
+        }
+
+        return _stats.Where(s => s.Connected).Sum(s => s.ReceiveBps);
+    }
+
+    private double GetActualSendBps()
+    {
+        if (_aggregateStats?.Connected == true)
+        {
+            return _aggregateStats.SendBps;
+        }
+
+        return _stats.Where(s => s.Connected).Sum(s => s.SendBps);
     }
 
     private int GetConnectedCount()

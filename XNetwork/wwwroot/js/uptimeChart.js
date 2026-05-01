@@ -30,7 +30,7 @@ export function initializeUptimeChart(canvasId) {
                 labels: [],
                 datasets: [
                     {
-                        label: 'Uptime %',
+                        label: 'Success %',
                         data: [],
                         borderColor: '#10b981', // green-500
                         backgroundColor: 'rgba(16, 185, 129, 0.1)',
@@ -44,7 +44,7 @@ export function initializeUptimeChart(canvasId) {
                         pointBorderWidth: 1
                     },
                     {
-                        label: 'Failures %',
+                        label: 'Failure %',
                         data: [],
                         borderColor: '#ef4444', // red-500
                         backgroundColor: 'rgba(239, 68, 68, 0.1)',

@@ -88,13 +88,17 @@ public class ConnectionItem
     [JsonPropertyName("jitterMs")]
     public double JitterMs { get; set; }
 
-    /// <summary> Fraction of packets lost on the send path in percentage (0 – 1). </summary>
+    /// <summary> Fraction of packets lost on the send path (0 – 1). </summary>
     [JsonPropertyName("lossSend")]
     public double LossSend { get; set; }
 
-    /// <summary> Fraction of packets lost on the receive path percentage (0 – 1). </summary>
+    /// <summary> Fraction of packets lost on the receive path (0 – 1). </summary>
     [JsonPropertyName("lossReceive")]
     public double LossReceive { get; set; }
+
+    /// <summary> Average bidirectional packet loss as a percentage. </summary>
+    [JsonIgnore]
+    public double AverageLossPercent => (LossSend + LossReceive) / 2.0 * 100.0;
 
     /// <summary>
     ///     Mean Opinion Score (1 – 5) estimated by Speedify; higher is better.
