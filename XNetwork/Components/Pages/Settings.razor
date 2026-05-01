@@ -9,9 +9,24 @@
 
 <PageTitle>Settings - X Network</PageTitle>
 
-<div class="p-4 md:p-6">
-    <h2 class="text-3xl font-bold text-white mb-1">Settings</h2>
-    <p class="text-slate-400 mb-6">Configure Speedify and application behavior.</p>
+<div class="settings-page">
+    <section class="settings-hero">
+        <div>
+            <p class="settings-eyebrow">Speedify Control Center</p>
+            <h2 class="settings-title">Settings</h2>
+            <p class="settings-subtitle">Mobile-first controls for tunnel behavior, routing, bypass rules, and adapter policy.</p>
+        </div>
+        <div class="settings-hero-badges">
+            <span class="settings-pill @(_autoServerSwitchSettings.Enabled ? "settings-pill-green" : "settings-pill-muted")">
+                <i class="fas fa-heart-pulse"></i>
+                @(_autoServerSwitchSettings.Enabled ? "Health auto-switch on" : "Health auto-switch off")
+            </span>
+            <span class="settings-pill @(_connectionSettings.Encrypted ? "settings-pill-blue" : "settings-pill-muted")">
+                <i class="fas fa-shield-alt"></i>
+                @(_connectionSettings.Encrypted ? "Encrypted" : "Encryption off")
+            </span>
+        </div>
+    </section>
 
     @if (!string.IsNullOrEmpty(_error))
     {
@@ -40,7 +55,26 @@
     }
     else
     {
-        <div class="space-y-2 max-w-3xl">
+        <div class="settings-layout">
+            <aside class="settings-overview" aria-label="Settings overview">
+                <div class="settings-overview-card settings-overview-primary">
+                    <span class="settings-overview-label">Connection Mode</span>
+                    <strong>@_selectedBondingMode</strong>
+                    <span>@(_startupConnect ? "Auto-connect on startup" : "Manual startup connection")</span>
+                </div>
+                <div class="settings-overview-card">
+                    <span class="settings-overview-label">Link Watchdog</span>
+                    <strong>@(_monitorSettings.Enabled ? "Enabled" : "Disabled")</strong>
+                    <span>@(_monitorSettings.WhitelistedLinks.Count == 0 ? "No links selected" : $"{_monitorSettings.WhitelistedLinks.Count} watched link(s)")</span>
+                </div>
+                <div class="settings-overview-card">
+                    <span class="settings-overview-label">Pending Work</span>
+                    <strong>@((_hasUnsavedBypassChanges || _hasUnsavedStreamingChanges || _adapterPendingChanges.Values.Any(value => value)) ? "Review changes" : "Up to date")</strong>
+                    <span>Most controls apply immediately.</span>
+                </div>
+            </aside>
+
+            <div class="settings-accordion-stack">
             <!-- Section 1: Connection Settings -->
             <Accordion Title="Connection Settings" IsExpanded="_connectionExpanded" OnToggle="(e) => _connectionExpanded = e">
                 <div class="space-y-4 pt-4">
@@ -1262,7 +1296,7 @@
             </Accordion>
 
             <!-- Save Button -->
-            <div class="flex items-center justify-end gap-4 pt-4">
+            <div class="settings-save-bar">
                 <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-6 rounded-md transition-colors shadow-lg"
                         @onclick="SaveSettings"
                         disabled="@_isProcessing">
@@ -1275,6 +1309,7 @@
                         <text>Save Changes</text>
                     }
                 </button>
+            </div>
             </div>
         </div>
     }

@@ -35,7 +35,7 @@
     else if (_adapters != null)
     {
         <!-- Current Server Information -->
-        <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-4">
+        <a href="/server-statistics" class="block bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-4 hover:border-cyan-500/60 hover:bg-slate-800/70 transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/60">
             @if (_serverInfoLoading)
             {
                 <div class="flex items-center gap-3">
@@ -78,12 +78,13 @@
                             <span>@_serverInfo.City, @_serverInfo.Country</span>
                         </div>
                     </div>
-                    <div class="flex-shrink-0">
-                        <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                    <div class="flex-shrink-0 flex items-center gap-3">
+                        <span class="hidden sm:inline text-xs text-slate-500">Server tests</span>
+                        <i class="fas fa-chevron-right text-slate-500 text-xs"></i>
                     </div>
                 </div>
             }
-        </div>
+        </a>
 
         <!-- Overall Connection Summary -->
         <ConnectionSummary
