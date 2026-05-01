@@ -1,74 +1,94 @@
-@* 
-Accordion Component - Collapsible section container
-Provides expandable/collapsible accordion behavior with smooth animations.
+@*
+Settings section launcher. The historical component name is kept to avoid churn in Settings.razor,
+but the UI now opens a modal page instead of expanding inline.
 *@
 
-<div class="accordion-item @(IsExpanded ? "accordion-expanded" : "")">
-    <button type="button" 
-            class="accordion-header" 
-            @onclick="HandleToggle"
+<div class="settings-section-item">
+    <button type="button"
+            class="settings-section-row"
+            @onclick="OpenSection"
+            aria-haspopup="dialog"
             aria-expanded="@IsExpanded">
-        <div class="accordion-title-container">
-            <span class="accordion-title">@Title</span>
+        <div class="settings-section-title-container">
+            <span class="settings-section-title">@Title</span>
             @if (!string.IsNullOrEmpty(BadgeText))
             {
-                <span class="accordion-badge">@BadgeText</span>
+                <span class="settings-section-badge">@BadgeText</span>
             }
         </div>
-        <svg class="accordion-icon @(IsExpanded ? "accordion-icon-rotated" : "")" 
-             xmlns="http://www.w3.org/2000/svg" 
-             width="20" 
-             height="20" 
-             viewBox="0 0 24 24" 
-             fill="none" 
-             stroke="currentColor" 
-             stroke-width="2" 
-             stroke-linecap="round" 
+        <svg class="settings-section-icon"
+             xmlns="http://www.w3.org/2000/svg"
+             width="20"
+             height="20"
+             viewBox="0 0 24 24"
+             fill="none"
+             stroke="currentColor"
+             stroke-width="2"
+             stroke-linecap="round"
              stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"></polyline>
+            <polyline points="9 18 15 12 9 6"></polyline>
         </svg>
     </button>
-    <div class="accordion-content @(IsExpanded ? "accordion-content-expanded" : "")">
-        <div class="accordion-content-inner">
-            @ChildContent
+
+    @if (IsExpanded)
+    {
+        <div class="settings-section-modal-backdrop" @onclick="CloseSection">
+            <section class="settings-section-modal"
+                     role="dialog"
+                     aria-modal="true"
+                     aria-labelledby="@_titleId"
+                     @onclick:stopPropagation="true">
+                <header class="settings-section-modal-header">
+                    <button type="button" class="settings-section-back" @onclick="CloseSection" aria-label="Back to settings">
+                        <i class="fas fa-arrow-left"></i>
+                    </button>
+                    <div class="settings-section-modal-title-group">
+                        <h3 id="@_titleId" class="settings-section-modal-title">@Title</h3>
+                        @if (!string.IsNullOrEmpty(BadgeText))
+                        {
+                            <span class="settings-section-badge">@BadgeText</span>
+                        }
+                    </div>
+                    <button type="button" class="settings-section-close" @onclick="CloseSection" aria-label="Close settings section">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </header>
+
+                <div class="settings-section-modal-body">
+                    @ChildContent
+                </div>
+            </section>
         </div>
-    </div>
+    }
 </div>
 
 @code {
-    /// <summary>
-    /// The title displayed in the accordion header.
-    /// </summary>
     [Parameter]
     public string Title { get; set; } = "";
 
-    /// <summary>
-    /// Whether the accordion is currently expanded.
-    /// </summary>
     [Parameter]
     public bool IsExpanded { get; set; }
 
-    /// <summary>
-    /// Callback when the accordion is toggled.
-    /// </summary>
     [Parameter]
     public EventCallback<bool> OnToggle { get; set; }
 
-    /// <summary>
-    /// Optional badge text (e.g., "unsaved", "modified").
-    /// </summary>
     [Parameter]
     public string? BadgeText { get; set; }
 
-    /// <summary>
-    /// The content to display inside the accordion.
-    /// </summary>
     [Parameter]
     public RenderFragment? ChildContent { get; set; }
 
-    private async Task HandleToggle()
+    private readonly string _titleId = $"settings-section-title-{Guid.NewGuid():N}";
+
+    private async Task OpenSection()
     {
-        IsExpanded = !IsExpanded;
-        await OnToggle.InvokeAsync(IsExpanded);
+        IsExpanded = true;
+        await OnToggle.InvokeAsync(true);
+    }
+
+    private async Task CloseSection()
+    {
+        IsExpanded = false;
+        await OnToggle.InvokeAsync(false);
     }
 }

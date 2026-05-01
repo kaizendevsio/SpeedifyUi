@@ -4,7 +4,7 @@
 const charts = {};
 let maxDataPoints = 30; // Number of historical data points to show on charts
 const DASHBOARD_DATA_POINTS = 30;
-const LIVE_CHART_ANIMATION_DURATION = 420;
+const LIVE_CHART_ANIMATION_DURATION = 240;
 
 // Dark theme colors
 const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
@@ -90,8 +90,13 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
         data: [],
         borderColor: lineColors[index % lineColors.length],
         backgroundColor: lineColors[index % lineColors.length].replace('1)', '0.1)'),
-        tension: 0.4, // Smooth bezier curves
+        tension: 0.3, // Smooth bezier curves without exaggerated endpoint motion
         cubicInterpolationMode: 'monotone', // Smooth interpolation
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHitRadius: 10,
+        borderWidth: 2.5,
+        spanGaps: true,
         fill: false
     }));
 
@@ -122,7 +127,16 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 },
                 animation: {
                     duration: LIVE_CHART_ANIMATION_DURATION,
-                    easing: 'easeOutQuart'
+                    easing: 'easeOutCubic'
+                },
+                animations: {
+                    x: {
+                        duration: 0
+                    },
+                    y: {
+                        duration: LIVE_CHART_ANIMATION_DURATION,
+                        easing: 'easeOutCubic'
+                    }
                 },
                 transitions: {
                     resize: {
