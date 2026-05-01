@@ -372,7 +372,7 @@
                         </div>
 
                         <p class="text-sm text-slate-400">
-                            Connect the Raspberry Pi's built-in Wi-Fi adapter to a specific network. The password is only used for this action and is not saved by the web app; NetworkManager may store the resulting Wi-Fi profile on the router.
+                            Pick a visible Wi-Fi network, enter the password, then connect the Raspberry Pi's built-in adapter. The password is only used for this action and is not saved by the web app; NetworkManager may store the resulting Wi-Fi profile on the router.
                         </p>
 
                         @if (!string.IsNullOrWhiteSpace(_wifiMessage))
@@ -382,7 +382,7 @@
                             </div>
                         }
 
-                        <div class="grid grid-cols-1 md:grid-cols-[0.7fr_1.2fr_1.2fr] gap-4">
+                        <div class="grid grid-cols-1 md:grid-cols-[0.7fr_1.3fr] gap-4">
                             <div>
                                 <label class="block mb-2 font-medium text-white">Interface</label>
                                 <input type="text"
@@ -391,37 +391,88 @@
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
                             </div>
                             <div>
-                                <label class="block mb-2 font-medium text-white">Wi-Fi Name</label>
+                                <label class="block mb-2 font-medium text-white">Selected Wi-Fi</label>
                                 <input type="text"
                                        @bind="_wifiSsid"
-                                       placeholder="SSID"
+                                       placeholder="Select from available networks"
                                        autocomplete="off"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
                             </div>
+                        </div>
+
+                        <div class="bg-slate-900/40 border border-slate-700 rounded-xl overflow-hidden">
+                            <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-700">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-white">Available Wi-Fi</h4>
+                                    <p class="text-xs text-slate-500">Tap a network to select it.</p>
+                                </div>
+                                <button class="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+                                        @onclick="ScanWifiNetworks"
+                                        disabled="@_isWifiBusy">
+                                    <i class="fas fa-radar @(_isWifiScanning ? "fa-spin" : "")"></i>
+                                    Scan
+                                </button>
+                            </div>
+
+                            @if (_isWifiScanning)
+                            {
+                                <Preloader Message="Scanning Wi-Fi networks..." ContainerClass="py-6" />
+                            }
+                            else if (_wifiNetworks.Count == 0)
+                            {
+                                <div class="p-4 text-sm text-slate-400">No visible Wi-Fi networks loaded yet. Tap Scan to refresh nearby networks.</div>
+                            }
+                            else
+                            {
+                                <div class="divide-y divide-slate-800 max-h-80 overflow-y-auto">
+                                    @foreach (var network in _wifiNetworks)
+                                    {
+                                        var selected = string.Equals(_wifiSsid, network.Ssid, StringComparison.Ordinal);
+                                        <button type="button"
+                                                class="w-full text-left px-4 py-3 transition-colors @(selected ? "bg-cyan-500/10" : "hover:bg-slate-800/70")"
+                                                @onclick="() => SelectWifiNetwork(network)">
+                                            <div class="flex items-center justify-between gap-3">
+                                                <div class="flex items-center gap-3 min-w-0">
+                                                    <i class="fas fa-wifi @GetWifiSignalClass(network.Signal)"></i>
+                                                    <div class="min-w-0">
+                                                        <div class="font-semibold text-white truncate">@network.Ssid</div>
+                                                        <div class="text-xs text-slate-500">@FormatWifiNetworkDetail(network)</div>
+                                                    </div>
+                                                </div>
+                                                <span class="shrink-0 text-xs font-semibold @(selected ? "text-cyan-300" : "text-slate-500")">
+                                                    @(selected ? "Selected" : "Choose")
+                                                </span>
+                                            </div>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-4 items-end">
                             <div>
-                                <label class="block mb-2 font-medium text-white">Password</label>
+                                <label class="block mb-2 font-medium text-white">Password @FormatSelectedWifiPasswordHint()</label>
                                 <input type="password"
                                        @bind="_wifiPassword"
                                        placeholder="Wi-Fi password"
                                        autocomplete="new-password"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
                             </div>
+                            <button class="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                                    @onclick="ConnectOnboardWifi"
+                                    disabled="@(_isWifiBusy || string.IsNullOrWhiteSpace(_wifiSsid))">
+                                @if (_isWifiConnecting)
+                                {
+                                    <i class="fas fa-spinner fa-spin"></i>
+                                    <span>Connecting...</span>
+                                }
+                                else
+                                {
+                                    <i class="fas fa-wifi"></i>
+                                    <span>Connect</span>
+                                }
+                            </button>
                         </div>
-
-                        <button class="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors"
-                                @onclick="ConnectOnboardWifi"
-                                disabled="@(_isWifiBusy || string.IsNullOrWhiteSpace(_wifiSsid))">
-                            @if (_isWifiConnecting)
-                            {
-                                <i class="fas fa-spinner fa-spin"></i>
-                                <span>Connecting...</span>
-                            }
-                            else
-                            {
-                                <i class="fas fa-wifi"></i>
-                                <span>Connect Wi-Fi</span>
-                            }
-                        </button>
                     </div>
                 </Accordion>
             }
@@ -1526,13 +1577,15 @@
 
     // On-board Wi-Fi state
     private WifiConnectionStatus? _wifiStatus;
+    private List<WifiNetwork> _wifiNetworks = new();
     private string _wifiInterface = "wlan0";
     private string _wifiSsid = "";
     private string _wifiPassword = "";
     private string? _wifiMessage;
     private bool _isWifiRefreshing = false;
+    private bool _isWifiScanning = false;
     private bool _isWifiConnecting = false;
-    private bool _isWifiBusy => _isWifiRefreshing || _isWifiConnecting;
+    private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
 
     // OS Routing Priority state
     private AdapterRoutingPriorityConfig _routingPriorityConfig = new();
@@ -1596,6 +1649,7 @@
         if (OperatingSystem.IsLinux())
         {
             await LoadWifiStatus();
+            await LoadWifiNetworks(rescan: false);
             await LoadRoutingPrioritySettings();
             await LoadSystemAdapters();
         }
@@ -1768,6 +1822,52 @@
         }
     }
 
+    private async Task LoadWifiNetworks(bool rescan)
+    {
+        if (_wifiStatus is { IsSupported: false })
+        {
+            _wifiNetworks = new List<WifiNetwork>();
+            return;
+        }
+
+        try
+        {
+            _wifiNetworks = await WifiService.ScanNetworksAsync(_wifiInterface, rescan);
+        }
+        catch (Exception ex)
+        {
+            _wifiNetworks = new List<WifiNetwork>();
+            _wifiMessage = $"Could not scan Wi-Fi networks: {ex.Message}";
+        }
+    }
+
+    private async Task ScanWifiNetworks()
+    {
+        _isWifiScanning = true;
+        _wifiMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await LoadWifiStatus();
+            await LoadWifiNetworks(rescan: true);
+        }
+        finally
+        {
+            _isWifiScanning = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void SelectWifiNetwork(WifiNetwork network)
+    {
+        _wifiSsid = network.Ssid;
+        _wifiPassword = "";
+        _wifiMessage = network.RequiresPassword
+            ? $"Selected {network.Ssid}. Enter the Wi-Fi password to connect."
+            : $"Selected open network {network.Ssid}. Password is optional.";
+    }
+
     private async Task RefreshWifiStatus()
     {
         _isWifiRefreshing = true;
@@ -1777,6 +1877,7 @@
         try
         {
             await LoadWifiStatus();
+            await LoadWifiNetworks(rescan: false);
         }
         finally
         {
@@ -1797,6 +1898,7 @@
             _wifiStatus = await WifiService.ConnectAsync(_wifiInterface, _wifiSsid, _wifiPassword);
             _wifiPassword = "";
             _wifiMessage = $"Connected {_wifiStatus.InterfaceName} to {_wifiStatus.Ssid ?? _wifiSsid}.";
+            await LoadWifiNetworks(rescan: false);
             await LoadAdaptersExtended();
         }
         catch (Exception ex)
@@ -1873,6 +1975,33 @@
         }
 
         return string.Join(" • ", parts);
+    }
+
+    private static string FormatWifiNetworkDetail(WifiNetwork network)
+    {
+        var security = network.RequiresPassword ? network.Security : "Open";
+        return $"{network.Signal}% signal • {security}";
+    }
+
+    private string FormatSelectedWifiPasswordHint()
+    {
+        var selected = _wifiNetworks.FirstOrDefault(network => string.Equals(network.Ssid, _wifiSsid, StringComparison.Ordinal));
+        if (selected == null)
+        {
+            return "";
+        }
+
+        return selected.RequiresPassword ? "" : "(optional for open network)";
+    }
+
+    private static string GetWifiSignalClass(int signal)
+    {
+        return signal switch
+        {
+            >= 75 => "text-emerald-300",
+            >= 45 => "text-yellow-300",
+            _ => "text-red-300"
+        };
     }
 
     #endregion

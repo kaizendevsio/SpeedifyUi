@@ -104,6 +104,53 @@ public class WifiService(ILogger<WifiService> logger)
         return status;
     }
 
+    public async Task<List<WifiNetwork>> ScanNetworksAsync(string interfaceName = "wlan0", bool rescan = true, CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return new List<WifiNetwork>();
+        }
+
+        if (!await CommandExistsAsync("nmcli", cancellationToken).ConfigureAwait(false))
+        {
+            return new List<WifiNetwork>();
+        }
+
+        interfaceName = string.IsNullOrWhiteSpace(interfaceName) ? "wlan0" : interfaceName.Trim();
+        var output = await RunNmcliAsync(
+            new[]
+            {
+                "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY",
+                "device", "wifi", "list",
+                "ifname", interfaceName,
+                "--rescan", rescan ? "yes" : "no"
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        if (output.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(output.Error) ? output.Output.Trim() : output.Error.Trim());
+        }
+
+        return output.Output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ParseTerseLine)
+            .Where(parts => parts.Count >= 4 && !string.IsNullOrWhiteSpace(parts[1]))
+            .Select(parts => new WifiNetwork
+            {
+                IsActive = string.Equals(parts[0], "yes", StringComparison.OrdinalIgnoreCase),
+                Ssid = parts[1],
+                Signal = int.TryParse(parts[2], out var signal) ? signal : 0,
+                Security = parts[3]
+            })
+            .GroupBy(network => network.Ssid, StringComparer.Ordinal)
+            .Select(group => group.OrderByDescending(network => network.IsActive).ThenByDescending(network => network.Signal).First())
+            .OrderByDescending(network => network.IsActive)
+            .ThenByDescending(network => network.Signal)
+            .ThenBy(network => network.Ssid)
+            .ToList();
+    }
+
     private static async Task<bool> CommandExistsAsync(string command, CancellationToken cancellationToken)
     {
         var result = await RunProcessAsync("/usr/bin/env", new[] { "sh", "-c", $"command -v {command}" }, cancellationToken).ConfigureAwait(false);
