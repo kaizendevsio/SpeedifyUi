@@ -3,6 +3,7 @@
 @using XNetwork.Models
 @using XNetwork.Components.Custom
 @inject SpeedifyService SpeedifyService
+@inject WifiService WifiService
 @inject NetworkMonitorService NetworkMonitorService
 @inject AutoServerSwitchService AutoServerSwitchService
 @inject IConfiguration Configuration
@@ -346,6 +347,84 @@
                     }
                 </div>
             </Accordion>
+
+            <!-- Section 5: On-board Wi-Fi (Linux-specific) -->
+            @if (OperatingSystem.IsLinux())
+            {
+                <Accordion Title="On-board Wi-Fi" IsExpanded="_wifiExpanded" OnToggle="(e) => _wifiExpanded = e" BadgeText="@GetWifiBadge()">
+                    <div class="space-y-4 pt-4">
+                        <div class="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                    <div class="flex items-center gap-2 text-white font-semibold">
+                                        <i class="fas fa-wifi text-cyan-300"></i>
+                                        <span>@FormatWifiStatusTitle()</span>
+                                    </div>
+                                    <p class="text-sm text-slate-400 mt-1">@FormatWifiStatusDetail()</p>
+                                </div>
+                                <button class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white disabled:opacity-50"
+                                        @onclick="RefreshWifiStatus"
+                                        disabled="@_isWifiBusy">
+                                    <i class="fas fa-sync @(_isWifiRefreshing ? "fa-spin" : "")"></i>
+                                    Refresh
+                                </button>
+                            </div>
+                        </div>
+
+                        <p class="text-sm text-slate-400">
+                            Connect the Raspberry Pi's built-in Wi-Fi adapter to a specific network. The password is only used for this action and is not saved by the web app; NetworkManager may store the resulting Wi-Fi profile on the router.
+                        </p>
+
+                        @if (!string.IsNullOrWhiteSpace(_wifiMessage))
+                        {
+                            <div class="bg-cyan-500/10 border border-cyan-500/30 rounded-lg p-3 text-sm text-cyan-200">
+                                @_wifiMessage
+                            </div>
+                        }
+
+                        <div class="grid grid-cols-1 md:grid-cols-[0.7fr_1.2fr_1.2fr] gap-4">
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Interface</label>
+                                <input type="text"
+                                       @bind="_wifiInterface"
+                                       placeholder="wlan0"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            </div>
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Wi-Fi Name</label>
+                                <input type="text"
+                                       @bind="_wifiSsid"
+                                       placeholder="SSID"
+                                       autocomplete="off"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            </div>
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Password</label>
+                                <input type="password"
+                                       @bind="_wifiPassword"
+                                       placeholder="Wi-Fi password"
+                                       autocomplete="new-password"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            </div>
+                        </div>
+
+                        <button class="w-full sm:w-auto inline-flex items-center justify-center gap-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 text-white font-semibold px-4 py-2.5 rounded-lg transition-colors"
+                                @onclick="ConnectOnboardWifi"
+                                disabled="@(_isWifiBusy || string.IsNullOrWhiteSpace(_wifiSsid))">
+                            @if (_isWifiConnecting)
+                            {
+                                <i class="fas fa-spinner fa-spin"></i>
+                                <span>Connecting...</span>
+                            }
+                            else
+                            {
+                                <i class="fas fa-wifi"></i>
+                                <span>Connect Wi-Fi</span>
+                            }
+                        </button>
+                    </div>
+                </Accordion>
+            }
 
             <!-- Section 5: OS Routing Priority (Linux-specific) -->
             @if (OperatingSystem.IsLinux())
@@ -1442,7 +1521,18 @@
     private bool _monitorExpanded = false;
     private bool _controlsExpanded = false;
     private bool _adapterSettingsExpanded = false;
+    private bool _wifiExpanded = false;
     private bool _routingPriorityExpanded = false;
+
+    // On-board Wi-Fi state
+    private WifiConnectionStatus? _wifiStatus;
+    private string _wifiInterface = "wlan0";
+    private string _wifiSsid = "";
+    private string _wifiPassword = "";
+    private string? _wifiMessage;
+    private bool _isWifiRefreshing = false;
+    private bool _isWifiConnecting = false;
+    private bool _isWifiBusy => _isWifiRefreshing || _isWifiConnecting;
 
     // OS Routing Priority state
     private AdapterRoutingPriorityConfig _routingPriorityConfig = new();
@@ -1505,6 +1595,7 @@
         // Load OS routing priority settings (Linux only)
         if (OperatingSystem.IsLinux())
         {
+            await LoadWifiStatus();
             await LoadRoutingPrioritySettings();
             await LoadSystemAdapters();
         }
@@ -1653,6 +1744,138 @@
         return options.FirstOrDefault(option =>
             string.Equals(option.Value, selectedValue, StringComparison.OrdinalIgnoreCase))?.Value ?? selectedValue;
     }
+
+    #region On-board Wi-Fi Methods
+
+    private async Task LoadWifiStatus()
+    {
+        try
+        {
+            _wifiStatus = await WifiService.GetStatusAsync(_wifiInterface);
+            if (_wifiStatus.IsSupported)
+            {
+                _wifiInterface = _wifiStatus.InterfaceName;
+            }
+        }
+        catch (Exception ex)
+        {
+            _wifiStatus = new WifiConnectionStatus
+            {
+                IsSupported = false,
+                InterfaceName = _wifiInterface,
+                Message = ex.Message
+            };
+        }
+    }
+
+    private async Task RefreshWifiStatus()
+    {
+        _isWifiRefreshing = true;
+        _wifiMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await LoadWifiStatus();
+        }
+        finally
+        {
+            _isWifiRefreshing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ConnectOnboardWifi()
+    {
+        _isWifiConnecting = true;
+        _wifiMessage = null;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _wifiStatus = await WifiService.ConnectAsync(_wifiInterface, _wifiSsid, _wifiPassword);
+            _wifiPassword = "";
+            _wifiMessage = $"Connected {_wifiStatus.InterfaceName} to {_wifiStatus.Ssid ?? _wifiSsid}.";
+            await LoadAdaptersExtended();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to connect Wi-Fi: {ex.Message}";
+        }
+        finally
+        {
+            _isWifiConnecting = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private string? GetWifiBadge()
+    {
+        if (_wifiStatus == null)
+        {
+            return null;
+        }
+
+        if (!_wifiStatus.IsSupported)
+        {
+            return "Unavailable";
+        }
+
+        return string.Equals(_wifiStatus.State, "connected", StringComparison.OrdinalIgnoreCase)
+            ? "Connected"
+            : _wifiStatus.State;
+    }
+
+    private string FormatWifiStatusTitle()
+    {
+        if (_wifiStatus == null)
+        {
+            return "Wi-Fi status not loaded";
+        }
+
+        if (!_wifiStatus.IsSupported)
+        {
+            return "Wi-Fi unavailable";
+        }
+
+        return string.IsNullOrWhiteSpace(_wifiStatus.Ssid)
+            ? $"{_wifiStatus.InterfaceName} is {_wifiStatus.State}"
+            : $"{_wifiStatus.InterfaceName} on {_wifiStatus.Ssid}";
+    }
+
+    private string FormatWifiStatusDetail()
+    {
+        if (_wifiStatus == null)
+        {
+            return "Refresh to read NetworkManager Wi-Fi state.";
+        }
+
+        if (!_wifiStatus.IsSupported)
+        {
+            return _wifiStatus.Message ?? "No supported Wi-Fi interface was found.";
+        }
+
+        var parts = new List<string> { _wifiStatus.State };
+        if (!string.IsNullOrWhiteSpace(_wifiStatus.ConnectionName))
+        {
+            parts.Add(_wifiStatus.ConnectionName);
+        }
+
+        if (_wifiStatus.Signal.HasValue)
+        {
+            parts.Add($"signal {_wifiStatus.Signal.Value}%");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_wifiStatus.Security))
+        {
+            parts.Add(_wifiStatus.Security);
+        }
+
+        return string.Join(" • ", parts);
+    }
+
+    #endregion
 
     #region OS Routing Priority Methods
 
