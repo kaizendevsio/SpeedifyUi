@@ -252,20 +252,22 @@ h1:focus {
    Accordion Component
    ---------------------------------------- */
 .accordion-item {
-    background-color: #1e293b; /* slate-800 */
-    border: 1px solid #334155; /* slate-700 */
-    border-radius: 0.5rem;
-    margin-bottom: 0.75rem;
+    position: relative;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(51, 65, 85, 0.75);
+    border-radius: 0;
+    margin-bottom: 0;
     overflow: hidden;
-    transition: all 0.2s ease-in-out;
+    transition: border-color 0.2s ease-in-out;
 }
 
 .accordion-item:hover {
-    border-color: #475569; /* slate-600 */
+    border-color: rgba(71, 85, 105, 0.95);
 }
 
 .accordion-expanded {
-    border-color: #0891b2; /* cyan-600 */
+    border-color: rgba(34, 211, 238, 0.38);
 }
 
 .accordion-header {
@@ -273,45 +275,62 @@ h1:focus {
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: 1rem 1.25rem;
-    background-color: transparent;
+    gap: 1rem;
+    padding: 1.05rem 0.15rem;
+    background: transparent;
     border: none;
     color: #f1f5f9; /* slate-100 */
-    font-size: 1rem;
+    font-size: 1.02rem;
     font-weight: 500;
     cursor: pointer;
-    transition: background-color 0.2s ease;
+    text-align: left;
+    transition: color 0.2s ease, background-color 0.2s ease;
 }
 
 .accordion-header:hover {
-    background-color: #334155; /* slate-700 */
+    background: transparent;
+    color: #ffffff;
 }
 
 .accordion-title-container {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    min-width: 0;
 }
 
 .accordion-title {
-    font-weight: 600;
+    font-weight: 750;
+    line-height: 1.15;
 }
 
 .accordion-badge {
     display: inline-flex;
     align-items: center;
-    padding: 0.125rem 0.5rem;
-    font-size: 0.75rem;
-    font-weight: 500;
-    background-color: #0891b2; /* cyan-600 */
-    color: white;
+    padding: 0.2rem 0.58rem;
+    border: 1px solid rgba(103, 232, 249, 0.22);
+    font-size: 0.72rem;
+    font-weight: 800;
+    background: rgba(14, 116, 144, 0.42);
+    color: #cffafe;
     border-radius: 9999px;
 }
 
 .accordion-icon {
     color: #94a3b8; /* slate-400 */
-    transition: transform 0.3s ease;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0.28rem;
+    border-radius: 9999px;
+    background: rgba(15, 23, 42, 0.6);
     flex-shrink: 0;
+    transition: transform 0.3s ease, color 0.2s ease, background-color 0.2s ease;
+}
+
+.accordion-expanded .accordion-icon {
+    color: #67e8f9;
+    background: rgba(8, 145, 178, 0.16);
 }
 
 .accordion-icon-rotated {
@@ -319,21 +338,42 @@ h1:focus {
 }
 
 .accordion-content {
-    max-height: 0;
+    display: grid;
+    grid-template-rows: 0fr;
     overflow: hidden;
-    transition: max-height 0.3s ease-out, opacity 0.2s ease-out;
     opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease, visibility 0.2s ease;
 }
 
 .accordion-content-expanded {
-    max-height: 9000px; /* Large enough for dense settings sections */
+    grid-template-rows: 1fr;
     opacity: 1;
-    transition: max-height 0.5s ease-in, opacity 0.2s ease-in;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 .accordion-content-inner {
-    padding: 0 1.25rem 1.25rem 1.25rem;
-    border-top: 1px solid #334155; /* slate-700 */
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 0.15rem 1.35rem 0.15rem;
+    border-top: 0;
+}
+
+.accordion-expanded::before {
+    content: "";
+    position: absolute;
+    top: 0.85rem;
+    bottom: 0.85rem;
+    left: -0.8rem;
+    width: 0.18rem;
+    border-radius: 9999px;
+    background: linear-gradient(180deg, #67e8f9, #2563eb);
+}
+
+.accordion-expanded .accordion-header {
+    color: #ffffff;
 }
 
 /* ----------------------------------------
@@ -644,8 +684,86 @@ h1:focus {
 }
 
 /* ----------------------------------------
+   ToggleSwitch Component
+   ---------------------------------------- */
+.toggle-switch {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 2.8rem;
+}
+
+.toggle-switch-label {
+    flex: 1;
+    color: #f8fafc;
+    font-size: 0.95rem;
+    font-weight: 650;
+    line-height: 1.35;
+}
+
+.toggle-switch-control {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.toggle-switch-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.toggle-switch-track {
+    position: relative;
+    display: inline-block;
+    width: 3.1rem;
+    height: 1.78rem;
+    border-radius: 9999px;
+    background: #334155;
+    box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.16);
+    transition: background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.toggle-switch-track::after {
+    content: "";
+    position: absolute;
+    top: 0.2rem;
+    left: 0.2rem;
+    width: 1.38rem;
+    height: 1.38rem;
+    border-radius: 9999px;
+    background: #ffffff;
+    box-shadow: 0 4px 12px rgba(2, 6, 23, 0.28);
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.toggle-switch-input:checked + .toggle-switch-track {
+    background: linear-gradient(135deg, #0891b2, #2563eb);
+    box-shadow: 0 8px 22px rgba(37, 99, 235, 0.25);
+}
+
+.toggle-switch-input:checked + .toggle-switch-track::after {
+    transform: translateX(1.32rem);
+}
+
+.toggle-switch-input:focus-visible + .toggle-switch-track {
+    outline: 2px solid rgba(103, 232, 249, 0.75);
+    outline-offset: 3px;
+}
+
+/* ----------------------------------------
    NumberInput Component
    ---------------------------------------- */
+
 .number-input {
     margin-bottom: 1rem;
 }
@@ -859,6 +977,8 @@ h1:focus {
 
 .settings-accordion-stack {
     min-width: 0;
+    border-top: 1px solid rgba(51, 65, 85, 0.75);
+    border-bottom: 1px solid rgba(51, 65, 85, 0.75);
 }
 
 .settings-save-bar {
@@ -878,13 +998,120 @@ h1:focus {
    Mobile Responsive Styles
    ---------------------------------------- */
 @media (max-width: 640px) {
+    .settings-page {
+        padding: 0.9rem 1rem 1.5rem;
+    }
+
+    .settings-hero {
+        padding: 0.25rem 0 0.85rem;
+        margin-bottom: 0.25rem;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+    }
+
+    .settings-title {
+        font-size: 1.7rem;
+        letter-spacing: -0.05em;
+    }
+
+    .settings-subtitle {
+        max-width: 22rem;
+        font-size: 0.88rem;
+    }
+
+    .settings-hero-badges {
+        gap: 0.4rem;
+    }
+
+    .settings-pill {
+        padding: 0.38rem 0.62rem;
+        border-color: rgba(148, 163, 184, 0.16);
+        background: rgba(15, 23, 42, 0.54);
+        font-size: 0.7rem;
+    }
+
+    .settings-layout {
+        gap: 0.35rem;
+    }
+
+    .settings-overview {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0;
+        padding: 0.45rem 0 0.75rem;
+        border-bottom: 1px solid rgba(51, 65, 85, 0.75);
+    }
+
+    .settings-overview-card {
+        min-width: 0;
+        padding: 0.15rem 0.55rem;
+        border: 0;
+        border-left: 2px solid rgba(51, 65, 85, 0.95);
+        border-radius: 0;
+        background: transparent;
+    }
+
+    .settings-overview-primary {
+        border-left-color: #22d3ee;
+        background: transparent;
+    }
+
+    .settings-overview-label {
+        font-size: 0.58rem !important;
+        letter-spacing: 0.06em;
+    }
+
+    .settings-overview-card strong {
+        margin: 0.18rem 0 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.83rem;
+    }
+
+    .settings-overview-card span:last-child {
+        display: none;
+    }
+
+    .settings-accordion-stack {
+        border-top: 0;
+    }
+
     /* Accordion */
+    .accordion-expanded::before {
+        left: -0.65rem;
+    }
+
     .accordion-header {
-        padding: 0.875rem 1rem;
+        min-height: 4.35rem;
+        padding: 1rem 0;
+    }
+
+    .accordion-title {
+        font-size: 1.1rem;
     }
     
     .accordion-content-inner {
-        padding: 0 1rem 1rem 1rem;
+        padding: 0.15rem 0 1.25rem 0;
+    }
+
+    .toggle-switch {
+        align-items: center;
+        gap: 0.85rem;
+        min-height: 3.2rem;
+    }
+
+    .toggle-switch-label {
+        font-size: 0.96rem;
+    }
+
+    .number-input-wrapper {
+        align-items: stretch;
+    }
+
+    .number-input-control {
+        min-width: 0;
     }
     
     /* EditableList */
@@ -951,12 +1178,12 @@ h1:focus {
 
 @media (max-width: 480px) {
     .settings-page {
-        padding: 0.75rem;
+        padding: 0.8rem 1rem 1.25rem;
     }
 
     .settings-hero {
-        border-radius: 1rem;
-        padding: 1rem;
+        border-radius: 0;
+        padding: 0.25rem 0 0.85rem;
     }
 
     .settings-title {
@@ -964,11 +1191,11 @@ h1:focus {
     }
 
     .settings-layout {
-        gap: 0.75rem;
+        gap: 0.35rem;
     }
 
     .settings-overview {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .settings-page input,
@@ -984,5 +1211,9 @@ h1:focus {
 
     .settings-page .flex.gap-2 {
         flex-wrap: wrap;
+    }
+
+    .settings-page .accordion-header {
+        min-height: 4.15rem;
     }
 }
