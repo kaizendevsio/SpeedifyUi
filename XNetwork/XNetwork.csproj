@@ -7,6 +7,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <PackageReference Include="BlazorTransitionableRoute" Version="4.0.0" />
       <PackageReference Include="UnitsNet" Version="5.75.0" />
     </ItemGroup>
 

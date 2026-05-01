@@ -1,0 +1,22 @@
+@inherits TransitionableLayoutComponent
+
+<section class="@TransitionClass">
+    @Body
+</section>
+
+@code {
+    private string TransitionClass
+    {
+        get
+        {
+            if (Transition.FirstRender)
+            {
+                return "route-transition route-transition-current";
+            }
+
+            var direction = Transition.Backwards ? "back" : "forward";
+            var state = Transition.IntoView ? "enter" : "exit";
+            return $"route-transition route-transition-{state} route-transition-{direction}";
+        }
+    }
+}
