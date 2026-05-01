@@ -26,6 +26,86 @@ body {
     background: #0f172a;
 }
 
+.skeleton-block {
+    position: relative;
+    overflow: hidden;
+    border-radius: 0.75rem;
+    background: linear-gradient(90deg, rgba(51, 65, 85, 0.65), rgba(71, 85, 105, 0.9), rgba(51, 65, 85, 0.65));
+    background-size: 220% 100%;
+    animation: xnetwork-skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+@keyframes xnetwork-skeleton-shimmer {
+    0% { background-position: 120% 0; }
+    100% { background-position: -120% 0; }
+}
+
+.mobile-tabbar {
+    position: fixed;
+    left: 50%;
+    right: auto;
+    bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    z-index: 50;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.25rem;
+    width: min(calc(100vw - 1rem), 25rem);
+    padding: 0.35rem;
+    transform: translateX(-50%);
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    border-radius: 1.6rem;
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(2, 6, 23, 0.9));
+    box-shadow: 0 22px 60px rgba(2, 6, 23, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+.mobile-tabbar-item {
+    display: flex;
+    min-width: 0;
+    min-height: 3.7rem;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.18rem;
+    border-radius: 1.25rem;
+    color: #94a3b8;
+    text-decoration: none;
+}
+
+.mobile-tabbar-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.08rem;
+    line-height: 1;
+}
+
+.mobile-tabbar-label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.mobile-tabbar-item:hover {
+    color: #e2e8f0;
+    background: rgba(30, 41, 59, 0.62);
+}
+
+.mobile-tabbar-item-active {
+    color: #ffffff;
+    background: linear-gradient(135deg, rgba(8, 145, 178, 0.95), rgba(37, 99, 235, 0.9));
+    box-shadow: 0 10px 26px rgba(8, 145, 178, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.mobile-tabbar-item-active .mobile-tabbar-icon {
+    transform: translateY(-1px);
+}
+
 .route-transition-host {
     display: grid;
     overflow-x: hidden;
@@ -108,7 +188,8 @@ a:active,
 @media (prefers-reduced-motion: reduce) {
     .route-transition-enter,
     .route-transition-exit,
-    .route-transition-current {
+    .route-transition-current,
+    .skeleton-block {
         animation: none;
     }
 

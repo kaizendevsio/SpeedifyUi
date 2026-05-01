@@ -4,6 +4,7 @@
 const charts = {};
 let maxDataPoints = 30; // Number of historical data points to show on charts
 const DASHBOARD_DATA_POINTS = 30;
+const LIVE_CHART_ANIMATION_DURATION = 420;
 
 // Dark theme colors
 const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
@@ -120,7 +121,15 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                     }
                 },
                 animation: {
-                    duration: 150 // Slightly faster animation
+                    duration: LIVE_CHART_ANIMATION_DURATION,
+                    easing: 'easeOutQuart'
+                },
+                transitions: {
+                    resize: {
+                        animation: {
+                            duration: 0
+                        }
+                    }
                 },
                 plugins: {
                     legend: {
@@ -189,7 +198,7 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
     }
     trimChartData(chart);
     try {
-        chart.update('none'); // 'none' for no animation, 'quiet' for minimal
+        chart.update();
     } catch (error) {
         console.error(`Error updating chart ${chartId}:`, error);
     }

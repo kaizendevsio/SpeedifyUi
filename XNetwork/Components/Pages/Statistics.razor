@@ -21,7 +21,27 @@
             <strong class="font-bold">Initializing...</strong>
             <span class="block sm:inline">Connection health monitoring is starting up, please wait.</span>
         </div>
-        <Preloader Message="Initializing health monitoring..." ContainerClass="py-10" />
+        <div class="space-y-6" aria-label="Loading analytics health data">
+            <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <SkeletonBlock CssClass="h-7 w-48" />
+                    <SkeletonBlock CssClass="h-7 w-24 rounded-full" />
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                    @for (var i = 0; i < 4; i++)
+                    {
+                        <div class="bg-slate-900/50 rounded-lg p-4 space-y-3">
+                            <SkeletonBlock CssClass="h-4 w-24" />
+                            <SkeletonBlock CssClass="h-8 w-20" />
+                            <SkeletonBlock CssClass="h-3 w-28" />
+                        </div>
+                    }
+                </div>
+                <div class="pt-4 border-t border-slate-700">
+                    <SkeletonBlock CssClass="h-4 w-4/5" />
+                </div>
+            </div>
+        </div>
     }
     else
     {
@@ -215,10 +235,23 @@
             <strong class="font-bold">Loading...</strong>
             <span class="block sm:inline">Fetching initial data and preparing charts, please wait.</span>
         </div>
-        <Preloader Message="" 
-                   ContainerClass="py-2 items-start" 
-                   MessageClass="text-xs ml-2" 
-                   SpinnerClass="w-5 h-5 border-2"/>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6" aria-label="Loading traffic charts">
+            @for (var i = 0; i < 4; i++)
+            {
+                <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+                    <div class="p-4 space-y-2">
+                        <SkeletonBlock CssClass="h-5 w-40" />
+                        <div class="flex gap-4">
+                            <SkeletonBlock CssClass="h-3 w-24" />
+                            <SkeletonBlock CssClass="h-3 w-24" />
+                        </div>
+                    </div>
+                    <div class="h-64 w-full p-4">
+                        <SkeletonBlock CssClass="h-full w-full" />
+                    </div>
+                </div>
+            }
+        </div>
     }
     else if (!string.IsNullOrEmpty(_errorMessage))
     {
