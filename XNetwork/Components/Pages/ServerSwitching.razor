@@ -27,8 +27,8 @@
         </div>
     }
 
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6">
-        <div>
+    <div class="health-hero">
+        <div class="health-hero-copy">
             <h1 class="text-2xl font-bold text-white md:hidden">Connection Health</h1>
             <div class="flex flex-wrap items-center gap-2 mt-2 md:mt-0">
                 <span class="px-3 py-1 rounded-full text-xs font-semibold @GetEnabledBadgeClass()">
@@ -41,21 +41,42 @@
             </div>
         </div>
 
-        <div class="flex flex-wrap gap-3">
-            <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+        <div class="health-actions" aria-label="Health actions">
+            <button type="button"
+                    class="health-action-button health-action-secondary"
                     disabled="@_isWorking"
                     @onclick="RefreshStatus">
-                Refresh
+                <span class="health-action-icon">
+                    <i class="fas @(_workingAction == "refresh" ? "fa-spinner fa-spin" : "fa-rotate")"></i>
+                </span>
+                <span class="health-action-copy">
+                    <span class="health-action-title">Refresh</span>
+                    <span class="health-action-detail">Reload status</span>
+                </span>
             </button>
-            <button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+            <button type="button"
+                    class="health-action-button health-action-primary"
                     disabled="@_isWorking"
                     @onclick="CheckProbeNow">
-                Check Probe Now
+                <span class="health-action-icon">
+                    <i class="fas @(_workingAction == "probe" ? "fa-spinner fa-spin" : "fa-satellite-dish")"></i>
+                </span>
+                <span class="health-action-copy">
+                    <span class="health-action-title">Check Probe</span>
+                    <span class="health-action-detail">Fetch fresh scores</span>
+                </span>
             </button>
-            <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
-                    disabled="@(_isWorking || _status.IsSwitching)"
+            <button type="button"
+                    class="health-action-button health-action-accent health-action-wide"
+                    disabled="@(_isWorking || _status.IsSwitching || !HasRecommendation())"
                     @onclick="UseRecommendationNow">
-                Use Recommendation Now
+                <span class="health-action-icon">
+                    <i class="fas @(_workingAction == "switch" ? "fa-spinner fa-spin" : "fa-route")"></i>
+                </span>
+                <span class="health-action-copy">
+                    <span class="health-action-title">Switch to Recommendation</span>
+                    <span class="health-action-detail">@(HasRecommendation() ? FormatRecommendationActionDetail() : "No candidate yet")</span>
+                </span>
             </button>
         </div>
     </div>
@@ -207,6 +228,7 @@
 @code {
     private AutoServerSwitchStatus _status = new();
     private bool _isWorking;
+    private string? _workingAction;
     private string? _error;
     private string? _successMessage;
     private CancellationTokenSource? _refreshCts;
@@ -227,13 +249,16 @@
 
     private async Task RefreshStatus()
     {
+        _workingAction = "refresh";
         LoadStatus();
+        _workingAction = null;
         await InvokeAsync(StateHasChanged);
     }
 
     private async Task CheckProbeNow()
     {
         _isWorking = true;
+        _workingAction = "probe";
         _error = null;
         _successMessage = null;
         await InvokeAsync(StateHasChanged);
@@ -253,6 +278,7 @@
         finally
         {
             _isWorking = false;
+            _workingAction = null;
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -260,6 +286,7 @@
     private async Task UseRecommendationNow()
     {
         _isWorking = true;
+        _workingAction = "switch";
         _error = null;
         _successMessage = null;
         await InvokeAsync(StateHasChanged);
@@ -284,6 +311,7 @@
         finally
         {
             _isWorking = false;
+            _workingAction = null;
             await InvokeAsync(StateHasChanged);
         }
     }
@@ -391,6 +419,24 @@
         return _status.RecommendedServerProbeScore.HasValue
             ? $"{_status.RecommendedServer} ({_status.RecommendedServerProbeScore.Value:N1})"
             : _status.RecommendedServer;
+    }
+
+    private bool HasRecommendation()
+    {
+        return !string.IsNullOrWhiteSpace(_status.RecommendedServer) ||
+               !string.IsNullOrWhiteSpace(_status.PendingRecommendationServer);
+    }
+
+    private string FormatRecommendationActionDetail()
+    {
+        if (!string.IsNullOrWhiteSpace(_status.RecommendedServer))
+        {
+            return _status.RecommendedServerProbeScore.HasValue
+                ? $"{_status.RecommendedServer} ({_status.RecommendedServerProbeScore.Value:N0}/100)"
+                : _status.RecommendedServer;
+        }
+
+        return _status.PendingRecommendationServer ?? "Ready";
     }
 
     private string FormatLastRecommendation()

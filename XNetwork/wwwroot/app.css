@@ -106,6 +106,109 @@ body {
     transform: translateY(-1px);
 }
 
+.health-hero {
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+    margin-bottom: 1.5rem;
+}
+
+.health-hero-copy {
+    min-width: 0;
+}
+
+.health-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.health-action-button {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    min-height: 4.3rem;
+    min-width: 0;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid rgba(71, 85, 105, 0.82);
+    border-radius: 1.05rem;
+    color: #ffffff;
+    text-align: left;
+    touch-action: manipulation;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.055), 0 16px 38px rgba(2, 6, 23, 0.24);
+}
+
+.health-action-button:not(:disabled):hover {
+    transform: translateY(-1px);
+}
+
+.health-action-button:not(:disabled):active {
+    transform: translateY(1px) scale(0.99);
+}
+
+.health-action-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+    box-shadow: none;
+}
+
+.health-action-secondary {
+    background: linear-gradient(180deg, rgba(51, 65, 85, 0.96), rgba(30, 41, 59, 0.82));
+}
+
+.health-action-primary {
+    border-color: rgba(96, 165, 250, 0.42);
+    background: linear-gradient(135deg, #2563eb, #3b82f6);
+}
+
+.health-action-accent {
+    border-color: rgba(103, 232, 249, 0.34);
+    background: linear-gradient(135deg, #0891b2, #2563eb);
+}
+
+.health-action-wide {
+    grid-column: 1 / -1;
+}
+
+.health-action-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.45rem;
+    height: 2.45rem;
+    flex-shrink: 0;
+    border-radius: 0.85rem;
+    background: rgba(2, 6, 23, 0.24);
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.health-action-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.health-action-title {
+    overflow: hidden;
+    color: #ffffff;
+    font-size: 0.98rem;
+    font-weight: 800;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.health-action-detail {
+    overflow: hidden;
+    color: rgba(226, 232, 240, 0.78);
+    font-size: 0.74rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .route-transition-host {
     display: grid;
     overflow-x: hidden;
@@ -1350,6 +1453,22 @@ h1:focus {
 }
 
 @media (min-width: 768px) {
+    .health-hero {
+        flex-direction: row;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 1.5rem;
+    }
+
+    .health-actions {
+        grid-template-columns: repeat(3, minmax(10rem, 1fr));
+        width: min(44rem, 56vw);
+    }
+
+    .health-action-wide {
+        grid-column: auto;
+    }
+
     .settings-page {
         padding: 1.5rem;
     }

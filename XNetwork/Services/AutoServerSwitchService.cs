@@ -52,6 +52,8 @@ public class AutoServerSwitchService : BackgroundService
     {
         lock (_statusLock)
         {
+            NormalizeProbeCheckingStatusLocked();
+
             return new AutoServerSwitchStatus
             {
                 IsEnabled = _status.IsEnabled,
@@ -143,7 +145,19 @@ public class AutoServerSwitchService : BackgroundService
             }
             catch (OperationCanceledException)
             {
-                break;
+                if (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                _logger.LogWarning("Auto server switch loop operation timed out or was canceled unexpectedly");
+                UpdateStatus(status =>
+                {
+                    status.IsCheckingProbe = false;
+                    status.IsSwitching = false;
+                    status.Message = "Auto switch operation timed out; will retry on the next check";
+                });
+                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -488,6 +502,19 @@ public class AutoServerSwitchService : BackgroundService
             AddEvent("Error", $"External probe check failed: {ex.Message}");
             return null;
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            var timeoutSeconds = Math.Clamp(_settings.ProbeRequestTimeoutSeconds, 3, 60);
+            var message = $"External probe check timed out after {timeoutSeconds}s";
+            UpdateStatus(status =>
+            {
+                status.FailedProbeCheckCount++;
+                status.ProbeApiError = message;
+                status.Message = message;
+            });
+            AddEvent("Error", message);
+            return null;
+        }
         finally
         {
             UpdateStatus(status => status.IsCheckingProbe = false);
@@ -621,11 +648,47 @@ public class AutoServerSwitchService : BackgroundService
             : $"{score.Country} {score.City} #{score.Num}".Trim();
     }
 
+    private static string FormatAge(DateTime timestampUtc)
+    {
+        var age = DateTime.UtcNow - timestampUtc;
+        if (age.TotalSeconds < 60)
+        {
+            return $"{Math.Max(0, age.TotalSeconds):N0}s ago";
+        }
+
+        if (age.TotalMinutes < 60)
+        {
+            return $"{age.TotalMinutes:N0}m ago";
+        }
+
+        return timestampUtc.ToLocalTime().ToString("g");
+    }
+
     private void UpdateStatus(Action<AutoServerSwitchStatus> update)
     {
         lock (_statusLock)
         {
             update(_status);
+        }
+    }
+
+    private void NormalizeProbeCheckingStatusLocked()
+    {
+        var timeoutSeconds = Math.Clamp(_settings.ProbeRequestTimeoutSeconds, 3, 60);
+        if (_status.IsCheckingProbe && _status.LastProbeCheckUtc.HasValue &&
+            DateTime.UtcNow - _status.LastProbeCheckUtc.Value > TimeSpan.FromSeconds(timeoutSeconds + 10))
+        {
+            _status.IsCheckingProbe = false;
+            _status.ProbeApiError = $"External probe check timed out after {timeoutSeconds}s";
+            _status.Message = _status.ProbeApiError;
+        }
+
+        if (!_status.IsCheckingProbe &&
+            string.Equals(_status.Message, "Checking external Speedify probe scores", StringComparison.OrdinalIgnoreCase))
+        {
+            _status.Message = _status.LastProbeSuccessUtc.HasValue
+                ? $"Last probe check succeeded {FormatAge(_status.LastProbeSuccessUtc.Value)}"
+                : "Waiting for the next external probe check";
         }
     }
 
