@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -160,7 +161,12 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         using var content = new MultipartFormDataContent();
         foreach (var field in fields)
         {
-            content.Add(new StringContent(field.Value), field.Key);
+            var part = new ByteArrayContent(Encoding.UTF8.GetBytes(field.Value));
+            part.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data")
+            {
+                Name = QuoteHeaderValue(field.Key)
+            };
+            content.Add(part);
         }
 
         using var response = await client.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
@@ -171,6 +177,11 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         {
             throw new InvalidOperationException("Cudy returned the login page while applying wireless settings.");
         }
+    }
+
+    private static string QuoteHeaderValue(string value)
+    {
+        return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
     }
 
     private static Uri BuildBaseUri(string managementBaseUrl)
