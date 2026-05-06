@@ -11,9 +11,9 @@ namespace XNetwork.Services;
 public class CudyLuciClient(ILogger<CudyLuciClient> logger)
 {
     private const string LoginPath = "cgi-bin/luci";
-    private const string ComboPath = "cgi-bin/luci/admin/network/wireless/config/combo/embedded";
-    private const string CombinePath = "cgi-bin/luci/admin/network/wireless/config/combine/embedded/nomodal";
-    private const string UncombinePath = "cgi-bin/luci/admin/network/wireless/config/uncombine/embedded/nomodal";
+    private const string ComboPath = "cgi-bin/luci/admin/network/wireless/config/combo";
+    private const string CombinePath = "cgi-bin/luci/admin/network/wireless/config/combine";
+    private const string UncombinePath = "cgi-bin/luci/admin/network/wireless/config/uncombine";
 
     public async Task SetWirelessEnabledAsync(CudyApAutomationSettings settings, bool enabled, CancellationToken cancellationToken = default)
     {
