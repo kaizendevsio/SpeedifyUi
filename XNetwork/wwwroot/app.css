@@ -218,7 +218,6 @@ body {
 .route-transition {
     grid-area: 1 / 1;
     min-width: 0;
-    will-change: opacity, transform;
 }
 
 .route-transition-current {
@@ -227,7 +226,7 @@ body {
 
 .route-transition-enter {
     z-index: 2;
-    pointer-events: none;
+    pointer-events: auto;
 }
 
 .route-transition-exit {
@@ -236,7 +235,7 @@ body {
 }
 
 .route-transition-enter.route-transition-forward {
-    animation: xnetwork-slide-in-from-right 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: xnetwork-slide-in-from-right 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .route-transition-exit.route-transition-forward {
@@ -244,7 +243,7 @@ body {
 }
 
 .route-transition-enter.route-transition-back {
-    animation: xnetwork-slide-in-from-left 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: xnetwork-slide-in-from-left 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .route-transition-exit.route-transition-back {
