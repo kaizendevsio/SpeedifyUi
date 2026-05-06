@@ -1,5 +1,8 @@
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using XNetwork.Models;
 
@@ -7,7 +10,7 @@ namespace XNetwork.Services;
 
 public class CudyLuciClient(ILogger<CudyLuciClient> logger)
 {
-    private const string LoginPath = "cgi-bin/luci/";
+    private const string LoginPath = "cgi-bin/luci";
     private const string ComboPath = "cgi-bin/luci/admin/network/wireless/config/combo/embedded";
     private const string CombinePath = "cgi-bin/luci/admin/network/wireless/config/combine/embedded/nomodal";
     private const string UncombinePath = "cgi-bin/luci/admin/network/wireless/config/uncombine/embedded/nomodal";
@@ -29,7 +32,8 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         using var handler = new HttpClientHandler
         {
             CookieContainer = new CookieContainer(),
-            AllowAutoRedirect = true
+            AllowAutoRedirect = true,
+            ServerCertificateCustomValidationCallback = ValidateServerCertificate
         };
         using var client = new HttpClient(handler)
         {
@@ -109,8 +113,11 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
             postFields["salt"] = salt;
         }
 
+        var loginAction = CudyLuciFormParser.ParseFormAction(loginHtml);
+        var postUri = string.IsNullOrWhiteSpace(loginAction) ? loginUri : ResolveUri(baseUri, loginAction);
+
         using var content = new FormUrlEncodedContent(postFields);
-        using var response = await client.PostAsync(loginUri, content, cancellationToken).ConfigureAwait(false);
+        using var response = await client.PostAsync(postUri, content, cancellationToken).ConfigureAwait(false);
         var responseHtml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
@@ -133,7 +140,7 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
-        if (ContainsLoginPrompt(content) && !uri.AbsolutePath.EndsWith("/cgi-bin/luci/", StringComparison.OrdinalIgnoreCase))
+        if (ContainsLoginPrompt(content) && !IsLoginPath(uri))
         {
             throw new InvalidOperationException("Cudy returned the login page while reading wireless settings.");
         }
@@ -226,11 +233,50 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
             : Environment.GetEnvironmentVariable(settings.AdminPasswordEnvironmentVariable.Trim()) ?? "";
     }
 
+    private static bool ValidateServerCertificate(HttpRequestMessage request, X509Certificate2? certificate, X509Chain? chain, SslPolicyErrors sslErrors)
+    {
+        return sslErrors == SslPolicyErrors.None || IsPrivateHttpsHost(request.RequestUri);
+    }
+
+    private static bool IsPrivateHttpsHost(Uri? uri)
+    {
+        if (uri?.Scheme != Uri.UriSchemeHttps || !IPAddress.TryParse(uri.Host, out var address))
+        {
+            return false;
+        }
+
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        if (IPAddress.IsLoopback(address))
+        {
+            return true;
+        }
+
+        var bytes = address.GetAddressBytes();
+        return address.AddressFamily switch
+        {
+            AddressFamily.InterNetwork => bytes[0] == 10 ||
+                                           bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31 ||
+                                           bytes[0] == 192 && bytes[1] == 168 ||
+                                           bytes[0] == 169 && bytes[1] == 254,
+            AddressFamily.InterNetworkV6 => address.IsIPv6LinkLocal || (bytes[0] & 0xfe) == 0xfc,
+            _ => false
+        };
+    }
+
     private static bool ContainsLoginPrompt(string html)
     {
         return html.Contains("cbi-modal-auth", StringComparison.OrdinalIgnoreCase) ||
                html.Contains("luci_password", StringComparison.OrdinalIgnoreCase) &&
                html.Contains("luci_username", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLoginPath(Uri uri)
+    {
+        return uri.AbsolutePath.TrimEnd('/').EndsWith("/cgi-bin/luci", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string Sha256Hex(string value)
