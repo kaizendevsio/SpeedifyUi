@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.RegularExpressions;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
@@ -156,7 +157,7 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         return content;
     }
 
-    private static async Task PostMultipartAsync(HttpClient client, Uri uri, Dictionary<string, string> fields, CancellationToken cancellationToken)
+    private async Task PostMultipartAsync(HttpClient client, Uri uri, Dictionary<string, string> fields, CancellationToken cancellationToken)
     {
         var boundary = "----xnetworkcudy" + Guid.NewGuid().ToString("N");
         var builder = new StringBuilder();
@@ -180,6 +181,43 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         {
             throw new InvalidOperationException("Cudy returned the login page while applying wireless settings.");
         }
+
+        await ApplyPendingServicesAsync(client, uri, responseHtml, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ApplyPendingServicesAsync(HttpClient client, Uri formUri, string responseHtml, CancellationToken cancellationToken)
+    {
+        var match = Regex.Match(responseHtml, @"\$\.post\('(?<path>[^']+)'\s*,\s*\{\s*token:\s*'(?<token>[^']+)'", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (!match.Success)
+        {
+            return;
+        }
+
+        var applyUri = ResolveUri(formUri, match.Groups["path"].Value);
+        var statusUri = ResolveUri(formUri, "/cgi-bin/luci/admin/servicectl/status");
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["token"] = match.Groups["token"].Value
+        });
+
+        logger.LogInformation("Applying Cudy service changes using {ApplyUri}", applyUri);
+        using var applyResponse = await client.PostAsync(applyUri, content, cancellationToken).ConfigureAwait(false);
+        applyResponse.EnsureSuccessStatusCode();
+
+        for (var attempt = 0; attempt < 45; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            using var statusResponse = await client.GetAsync(statusUri, cancellationToken).ConfigureAwait(false);
+            var status = (await statusResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false)).Trim();
+            statusResponse.EnsureSuccessStatusCode();
+            if (status.Equals("finish", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogInformation("Cudy service changes applied");
+                return;
+            }
+        }
+
+        throw new TimeoutException("Timed out waiting for Cudy service changes to finish applying.");
     }
 
     private static string EscapeMultipartName(string value)
