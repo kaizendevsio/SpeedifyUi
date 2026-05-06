@@ -643,6 +643,11 @@ body:has(.settings-section-modal-backdrop) {
     overflow: hidden;
 }
 
+body:has(.settings-section-modal-backdrop) main > header,
+body:has(.settings-section-modal-backdrop) .mobile-tabbar {
+    display: none;
+}
+
 /* ----------------------------------------
    EditableList Component
    ---------------------------------------- */
@@ -1388,7 +1393,7 @@ body:has(.settings-section-modal-backdrop) {
     }
 
     .settings-section-modal-body {
-        padding: 1.15rem 1rem calc(2rem + env(safe-area-inset-bottom));
+        padding: 1.15rem 1rem calc(1.5rem + env(safe-area-inset-bottom));
     }
 
     .settings-save-bar {
