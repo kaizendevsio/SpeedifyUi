@@ -540,7 +540,7 @@
                                 </div>
                                 <button class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white disabled:opacity-50"
                                         @onclick="RefreshCudyApStatus"
-                                        disabled="@_isCudyApBusy">
+                                        disabled="@_isCudySectionBusy">
                                     <i class="fas fa-sync"></i>
                                     Refresh
                                 </button>
@@ -598,20 +598,104 @@
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block mb-2 font-medium text-white">Scan Interface</label>
                                 <input type="text"
                                        @bind="_cudySettings.WifiInterface"
                                        placeholder="wlan0"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                                <p class="text-xs text-slate-500 mt-1">Uses the same NetworkManager scanner as On-board Wi-Fi.</p>
                             </div>
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Selected Home Wi-Fi</label>
+                                <div class="rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm text-slate-300 min-h-[2.75rem] flex items-center">
+                                    @FormatCudySelectedHomeWifi()
+                                </div>
+                                <p class="text-xs text-slate-500 mt-1">Tap a scanned network below to fill SSID and BSSID automatically.</p>
+                            </div>
+                        </div>
+
+                        <div class="bg-slate-900/40 border border-slate-700 rounded-xl overflow-hidden">
+                            <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-700">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-white">Nearby Home Wi-Fi</h4>
+                                    <p class="text-xs text-slate-500">Choose the trusted network that disables the Cudy AP.</p>
+                                </div>
+                                <button class="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+                                        @onclick="ScanCudyHomeWifiNetworks"
+                                        disabled="@_isCudySectionBusy">
+                                    <i class="fas fa-radar @(_isCudyWifiScanning ? "fa-spin" : "")"></i>
+                                    Scan
+                                </button>
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(_cudyWifiMessage))
+                            {
+                                <div class="px-4 py-3 text-sm text-cyan-200 bg-cyan-500/10 border-b border-cyan-500/20">
+                                    @_cudyWifiMessage
+                                </div>
+                            }
+
+                            @if (_isCudyWifiScanning)
+                            {
+                                <div class="divide-y divide-slate-800" aria-label="Scanning Cudy home Wi-Fi candidates">
+                                    @for (var i = 0; i < 4; i++)
+                                    {
+                                        <div class="px-4 py-3">
+                                            <div class="flex items-center justify-between gap-3">
+                                                <div class="flex items-center gap-3 flex-grow min-w-0">
+                                                    <SkeletonBlock CssClass="h-5 w-5 rounded-full flex-shrink-0" />
+                                                    <div class="flex-grow space-y-2">
+                                                        <SkeletonBlock CssClass="h-4 w-2/5" />
+                                                        <SkeletonBlock CssClass="h-3 w-3/5" />
+                                                    </div>
+                                                </div>
+                                                <SkeletonBlock CssClass="h-4 w-14" />
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else if (_cudyWifiNetworks.Count == 0)
+                            {
+                                <div class="p-4 text-sm text-slate-400">No nearby networks loaded yet. Tap Scan to choose the home Wi-Fi instead of typing it.</div>
+                            }
+                            else
+                            {
+                                <div class="divide-y divide-slate-800 max-h-80 overflow-y-auto">
+                                    @foreach (var network in _cudyWifiNetworks)
+                                    {
+                                        var selected = IsCudyHomeNetworkSelected(network);
+                                        <button type="button"
+                                                class="w-full text-left px-4 py-3 transition-colors @(selected ? "bg-cyan-500/10" : "hover:bg-slate-800/70")"
+                                                @onclick="() => SelectCudyHomeNetwork(network)">
+                                            <div class="flex items-center justify-between gap-3">
+                                                <div class="flex items-center gap-3 min-w-0">
+                                                    <i class="fas fa-wifi @GetWifiSignalClass(network.Signal)"></i>
+                                                    <div class="min-w-0">
+                                                        <div class="font-semibold text-white truncate">@network.Ssid</div>
+                                                        <div class="text-xs text-slate-500">@FormatCudyWifiNetworkDetail(network)</div>
+                                                    </div>
+                                                </div>
+                                                <span class="shrink-0 text-xs font-semibold @(selected ? "text-cyan-300" : "text-slate-500")">
+                                                    @(selected ? "Selected" : "Choose")
+                                                </span>
+                                            </div>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                                 <label class="block mb-2 font-medium text-white">Home SSID</label>
                                 <input type="text"
                                        @bind="_cudySettings.HomeSsid"
                                        placeholder="Trusted home Wi-Fi"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                                <p class="text-xs text-slate-500 mt-1">Manual fallback; scanning fills this for you.</p>
                             </div>
                             <div>
                                 <label class="block mb-2 font-medium text-white">Home BSSID</label>
@@ -619,6 +703,7 @@
                                        @bind="_cudySettings.HomeBssid"
                                        placeholder="Optional MAC address"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                                <p class="text-xs text-slate-500 mt-1">Optional, but recommended when multiple APs share one SSID.</p>
                             </div>
                         </div>
 
@@ -642,22 +727,22 @@
 
                         <div class="flex flex-wrap gap-3">
                             <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
-                                    disabled="@_isCudyApBusy"
+                                    disabled="@_isCudySectionBusy"
                                     @onclick="ApplyCudyApSettings">
                                 Apply Cudy Settings
                             </button>
                             <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
-                                    disabled="@_isCudyApBusy"
+                                    disabled="@_isCudySectionBusy"
                                     @onclick="CheckCudyApNow">
                                 Test Home Wi-Fi Scan
                             </button>
                             <button class="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
-                                    disabled="@_isCudyApBusy"
+                                    disabled="@_isCudySectionBusy"
                                     @onclick="DisableCudyApNow">
                                 Disable Cudy AP
                             </button>
                             <button class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
-                                    disabled="@_isCudyApBusy"
+                                    disabled="@_isCudySectionBusy"
                                     @onclick="EnableCudyApNow">
                                 Enable Cudy AP
                             </button>
@@ -1835,7 +1920,11 @@
     // Cudy AP automation state
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
+    private List<WifiNetwork> _cudyWifiNetworks = new();
+    private string? _cudyWifiMessage;
+    private bool _isCudyWifiScanning = false;
     private bool _isCudyApBusy = false;
+    private bool _isCudySectionBusy => _isCudyApBusy || _isCudyWifiScanning;
 
     // OS Routing Priority state
     private AdapterRoutingPriorityConfig _routingPriorityConfig = new();
@@ -2269,6 +2358,48 @@
         await InvokeAsync(StateHasChanged);
     }
 
+    private async Task ScanCudyHomeWifiNetworks()
+    {
+        _isCudyWifiScanning = true;
+        _cudyWifiMessage = null;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _cudySettings.WifiInterface = string.IsNullOrWhiteSpace(_cudySettings.WifiInterface)
+                ? "wlan0"
+                : _cudySettings.WifiInterface.Trim();
+            _cudyWifiNetworks = await WifiService.ScanNetworksAsync(
+                _cudySettings.WifiInterface,
+                rescan: true,
+                collapseBySsid: false);
+
+            _cudyWifiMessage = _cudyWifiNetworks.Count == 0
+                ? "No nearby Wi-Fi networks were found."
+                : $"Found {_cudyWifiNetworks.Count} nearby Wi-Fi network(s). Tap one to use it as the trusted home Wi-Fi.";
+        }
+        catch (Exception ex)
+        {
+            _cudyWifiNetworks = new List<WifiNetwork>();
+            _cudyWifiMessage = $"Could not scan nearby Wi-Fi networks: {ex.Message}";
+        }
+        finally
+        {
+            _isCudyWifiScanning = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void SelectCudyHomeNetwork(WifiNetwork network)
+    {
+        _cudySettings.HomeSsid = network.Ssid;
+        _cudySettings.HomeBssid = network.Bssid;
+        _cudyWifiMessage = string.IsNullOrWhiteSpace(network.Bssid)
+            ? $"Selected {network.Ssid} as the trusted home Wi-Fi."
+            : $"Selected {network.Ssid} ({network.Bssid}) as the trusted home Wi-Fi.";
+    }
+
     private async Task HandleCudyApAutomationToggle(bool enabled)
     {
         _cudySettings.Enabled = enabled;
@@ -2444,6 +2575,48 @@
         return string.IsNullOrEmpty(Environment.GetEnvironmentVariable(envName))
             ? $"Waiting for {envName}"
             : $"{envName} set";
+    }
+
+    private string FormatCudySelectedHomeWifi()
+    {
+        if (string.IsNullOrWhiteSpace(_cudySettings.HomeSsid) && string.IsNullOrWhiteSpace(_cudySettings.HomeBssid))
+        {
+            return "No trusted home Wi-Fi selected";
+        }
+
+        if (string.IsNullOrWhiteSpace(_cudySettings.HomeBssid))
+        {
+            return _cudySettings.HomeSsid;
+        }
+
+        if (string.IsNullOrWhiteSpace(_cudySettings.HomeSsid))
+        {
+            return _cudySettings.HomeBssid;
+        }
+
+        return $"{_cudySettings.HomeSsid} • {_cudySettings.HomeBssid}";
+    }
+
+    private static string FormatCudyWifiNetworkDetail(WifiNetwork network)
+    {
+        var security = network.RequiresPassword ? network.Security : "Open";
+        var bssid = string.IsNullOrWhiteSpace(network.Bssid) ? "No BSSID" : network.Bssid;
+        return $"{network.Signal}% signal • {security} • {bssid}";
+    }
+
+    private bool IsCudyHomeNetworkSelected(WifiNetwork network)
+    {
+        if (!string.IsNullOrWhiteSpace(_cudySettings.HomeBssid) && !string.IsNullOrWhiteSpace(network.Bssid))
+        {
+            return string.Equals(NormalizeWifiBssid(_cudySettings.HomeBssid), NormalizeWifiBssid(network.Bssid), StringComparison.Ordinal);
+        }
+
+        return string.Equals(_cudySettings.HomeSsid, network.Ssid, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeWifiBssid(string value)
+    {
+        return value.Trim().Replace("-", ":", StringComparison.Ordinal).ToLowerInvariant();
     }
 
     private async Task HandleCudyDisableSignalChange(double value)
