@@ -215,17 +215,24 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
 
     private static Uri ResolveUri(Uri baseUri, string action)
     {
-        if (Uri.TryCreate(action, UriKind.Absolute, out var absoluteUri))
+        var value = action.Trim();
+        if (value.StartsWith('/'))
         {
-            return absoluteUri;
+            return new Uri(new Uri(baseUri.GetLeftPart(UriPartial.Authority)), value);
         }
 
-        if (action.StartsWith('/'))
+        if (Uri.TryCreate(value, UriKind.Absolute, out var absoluteUri))
         {
-            return new Uri(new Uri(baseUri.GetLeftPart(UriPartial.Authority)), action);
+            if (absoluteUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                absoluteUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return absoluteUri;
+            }
+
+            throw new InvalidOperationException($"Cudy form action uses unsupported URL scheme '{absoluteUri.Scheme}'.");
         }
 
-        return new Uri(baseUri, action);
+        return new Uri(baseUri, value);
     }
 
     private static string ResolveAdminPassword(CudyApAutomationSettings settings)
