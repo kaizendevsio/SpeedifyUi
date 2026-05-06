@@ -119,12 +119,13 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         using var content = new FormUrlEncodedContent(postFields);
         using var response = await client.PostAsync(postUri, content, cancellationToken).ConfigureAwait(false);
         var responseHtml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
 
         if (ContainsLoginPrompt(responseHtml))
         {
             throw new InvalidOperationException("Cudy login failed. Check the configured admin password.");
         }
+
+        response.EnsureSuccessStatusCode();
     }
 
     private static async Task<bool> IsSmartConnectEnabledAsync(HttpClient client, Uri baseUri, CancellationToken cancellationToken)
@@ -138,6 +139,12 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
     {
         using var response = await client.GetAsync(uri, cancellationToken).ConfigureAwait(false);
         var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+        if (response.StatusCode == HttpStatusCode.Forbidden && IsLoginPath(uri) && ContainsLoginPrompt(content))
+        {
+            return content;
+        }
+
         response.EnsureSuccessStatusCode();
 
         if (ContainsLoginPrompt(content) && !IsLoginPath(uri))
