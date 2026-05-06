@@ -18,8 +18,13 @@ builder.Services.AddSingleton<NetworkMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NetworkMonitorService>());
 
 // Add Cudy travel-router AP automation
+builder.Services.AddSingleton<CudyAdminPasswordStore>();
 builder.Services.AddSingleton(sp =>
-    builder.Configuration.GetSection("CudyApAutomation").Get<CudyApAutomationSettings>() ?? new CudyApAutomationSettings());
+{
+    var settings = builder.Configuration.GetSection("CudyApAutomation").Get<CudyApAutomationSettings>() ?? new CudyApAutomationSettings();
+    sp.GetRequiredService<CudyAdminPasswordStore>().Load(settings);
+    return settings;
+});
 builder.Services.AddSingleton<CudyLuciClient>();
 builder.Services.AddSingleton<CudyApControlService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CudyApControlService>());

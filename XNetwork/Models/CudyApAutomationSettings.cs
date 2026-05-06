@@ -8,6 +8,8 @@ public class CudyApAutomationSettings
 
     public string AdminPassword { get; set; } = "";
 
+    public string AdminPasswordFilePath { get; set; } = "";
+
     public string AdminPasswordEnvironmentVariable { get; set; } = "CUDY_ADMIN_PASSWORD";
 
     public string WifiInterface { get; set; } = "wlan0";

@@ -5,6 +5,7 @@
 @inject SpeedifyService SpeedifyService
 @inject WifiService WifiService
 @inject CudyApControlService CudyApControlService
+@inject CudyAdminPasswordStore CudyAdminPasswordStore
 @inject NetworkMonitorService NetworkMonitorService
 @inject AutoServerSwitchService AutoServerSwitchService
 @inject IConfiguration Configuration
@@ -595,7 +596,7 @@
                                        placeholder="@GetCudyPasswordPlaceholder()"
                                        autocomplete="new-password"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
-                                <p class="text-xs text-slate-500 mt-1">Enter the Cudy admin password here. It is kept in app memory; runtime config or CUDY_ADMIN_PASSWORD can still be used for persistence.</p>
+                                <p class="text-xs text-slate-500 mt-1">Enter the Cudy admin password here. It is saved to a local runtime file and reused after app restarts.</p>
                             </div>
                         </div>
 
@@ -2417,10 +2418,12 @@
     {
         _cudySettings.ManagementBaseUrl = _cudySettings.ManagementBaseUrl.Trim();
         _cudySettings.AdminPasswordEnvironmentVariable = _cudySettings.AdminPasswordEnvironmentVariable.Trim();
+        var shouldPersistAdminPassword = false;
         if (!string.IsNullOrEmpty(_cudyAdminPasswordInput))
         {
             _cudySettings.AdminPassword = _cudyAdminPasswordInput;
             _cudyAdminPasswordInput = "";
+            shouldPersistAdminPassword = true;
         }
 
         _cudySettings.WifiInterface = string.IsNullOrWhiteSpace(_cudySettings.WifiInterface) ? "wlan0" : _cudySettings.WifiInterface.Trim();
@@ -2432,6 +2435,11 @@
         _cudySettings.DisableAfterSeenSeconds = Math.Clamp(_cudySettings.DisableAfterSeenSeconds, 0, 600);
         _cudySettings.EnableAfterMissingSeconds = Math.Clamp(_cudySettings.EnableAfterMissingSeconds, 0, 1800);
         _cudySettings.RequestTimeoutSeconds = Math.Clamp(_cudySettings.RequestTimeoutSeconds, 3, 60);
+
+        if (shouldPersistAdminPassword)
+        {
+            await CudyAdminPasswordStore.SaveAsync(_cudySettings);
+        }
 
         CudyApControlService.RefreshStatusFromSettings();
         _cudyStatus = CudyApControlService.GetStatus();
