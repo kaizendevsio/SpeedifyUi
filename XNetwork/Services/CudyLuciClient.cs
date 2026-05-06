@@ -158,16 +158,19 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
 
     private static async Task PostMultipartAsync(HttpClient client, Uri uri, Dictionary<string, string> fields, CancellationToken cancellationToken)
     {
-        using var content = new MultipartFormDataContent();
+        var boundary = "----xnetworkcudy" + Guid.NewGuid().ToString("N");
+        var builder = new StringBuilder();
         foreach (var field in fields)
         {
-            var part = new ByteArrayContent(Encoding.UTF8.GetBytes(field.Value));
-            part.Headers.ContentDisposition = new ContentDispositionHeaderValue("form-data")
-            {
-                Name = QuoteHeaderValue(field.Key)
-            };
-            content.Add(part);
+            builder.Append("--").Append(boundary).Append("\r\n");
+            builder.Append("Content-Disposition: form-data; name=\"").Append(EscapeMultipartName(field.Key)).Append("\"\r\n\r\n");
+            builder.Append(field.Value).Append("\r\n");
         }
+
+        builder.Append("--").Append(boundary).Append("--\r\n");
+        using var content = new ByteArrayContent(Encoding.UTF8.GetBytes(builder.ToString()));
+        content.Headers.ContentType = new MediaTypeHeaderValue("multipart/form-data");
+        content.Headers.ContentType.Parameters.Add(new NameValueHeaderValue("boundary", boundary));
 
         using var response = await client.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
         var responseHtml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -179,9 +182,9 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         }
     }
 
-    private static string QuoteHeaderValue(string value)
+    private static string EscapeMultipartName(string value)
     {
-        return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+        return value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
     }
 
     private static Uri BuildBaseUri(string managementBaseUrl)

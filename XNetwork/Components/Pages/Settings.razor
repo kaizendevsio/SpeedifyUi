@@ -2441,6 +2441,8 @@
             await CudyAdminPasswordStore.SaveAsync(_cudySettings);
         }
 
+        await CudyAdminPasswordStore.SaveSettingsAsync(_cudySettings);
+
         CudyApControlService.RefreshStatusFromSettings();
         _cudyStatus = CudyApControlService.GetStatus();
         if (showMessage)
