@@ -40,17 +40,18 @@ public class WifiService(ILogger<WifiService> logger)
 
         try
         {
-            var wifiOutput = await RunNmcliAsync(new[] { "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", status.InterfaceName, "--rescan", "no" }, cancellationToken).ConfigureAwait(false);
+            var wifiOutput = await RunNmcliAsync(new[] { "-t", "-f", "ACTIVE,BSSID,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", status.InterfaceName, "--rescan", "no" }, cancellationToken).ConfigureAwait(false);
             var active = wifiOutput.Output
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(ParseTerseLine)
-                .FirstOrDefault(parts => parts.Count >= 4 && string.Equals(parts[0], "yes", StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(parts => parts.Count >= 5 && string.Equals(parts[0], "yes", StringComparison.OrdinalIgnoreCase));
 
             if (active != null)
             {
-                status.Ssid = active[1];
-                status.Signal = int.TryParse(active[2], out var signal) ? signal : null;
-                status.Security = active[3];
+                status.Bssid = active[1];
+                status.Ssid = active[2];
+                status.Signal = int.TryParse(active[3], out var signal) ? signal : null;
+                status.Security = active[4];
             }
         }
         catch (Exception ex)
@@ -104,7 +105,7 @@ public class WifiService(ILogger<WifiService> logger)
         return status;
     }
 
-    public async Task<List<WifiNetwork>> ScanNetworksAsync(string interfaceName = "wlan0", bool rescan = true, CancellationToken cancellationToken = default)
+    public async Task<List<WifiNetwork>> ScanNetworksAsync(string interfaceName = "wlan0", bool rescan = true, CancellationToken cancellationToken = default, bool collapseBySsid = true)
     {
         if (!OperatingSystem.IsLinux())
         {
@@ -120,7 +121,7 @@ public class WifiService(ILogger<WifiService> logger)
         var output = await RunNmcliAsync(
             new[]
             {
-                "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY",
+                "-t", "-f", "ACTIVE,BSSID,SSID,SIGNAL,SECURITY",
                 "device", "wifi", "list",
                 "ifname", interfaceName,
                 "--rescan", rescan ? "yes" : "no"
@@ -132,19 +133,27 @@ public class WifiService(ILogger<WifiService> logger)
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(output.Error) ? output.Output.Trim() : output.Error.Trim());
         }
 
-        return output.Output
+        var networks = output.Output
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(ParseTerseLine)
-            .Where(parts => parts.Count >= 4 && !string.IsNullOrWhiteSpace(parts[1]))
+            .Where(parts => parts.Count >= 5 && !string.IsNullOrWhiteSpace(parts[2]))
             .Select(parts => new WifiNetwork
             {
                 IsActive = string.Equals(parts[0], "yes", StringComparison.OrdinalIgnoreCase),
-                Ssid = parts[1],
-                Signal = int.TryParse(parts[2], out var signal) ? signal : 0,
-                Security = parts[3]
+                Bssid = parts[1],
+                Ssid = parts[2],
+                Signal = int.TryParse(parts[3], out var signal) ? signal : 0,
+                Security = parts[4]
             })
-            .GroupBy(network => network.Ssid, StringComparer.Ordinal)
-            .Select(group => group.OrderByDescending(network => network.IsActive).ThenByDescending(network => network.Signal).First())
+            .ToList();
+
+        var orderedNetworks = collapseBySsid
+            ? networks
+                .GroupBy(network => network.Ssid, StringComparer.Ordinal)
+                .Select(group => group.OrderByDescending(network => network.IsActive).ThenByDescending(network => network.Signal).First())
+            : networks;
+
+        return orderedNetworks
             .OrderByDescending(network => network.IsActive)
             .ThenByDescending(network => network.Signal)
             .ThenBy(network => network.Ssid)

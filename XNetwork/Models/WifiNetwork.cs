@@ -4,6 +4,8 @@ public class WifiNetwork
 {
     public string Ssid { get; set; } = "";
 
+    public string Bssid { get; set; } = "";
+
     public int Signal { get; set; }
 
     public string Security { get; set; } = "";

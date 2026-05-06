@@ -212,7 +212,6 @@ body {
 .route-transition-host {
     display: grid;
     overflow-x: hidden;
-    isolation: isolate;
 }
 
 .route-transition {
@@ -557,7 +556,7 @@ h1:focus {
 .settings-section-modal-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 80;
+    z-index: 100;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -565,13 +564,15 @@ h1:focus {
     background: rgba(2, 6, 23, 0.72);
     backdrop-filter: blur(18px);
     -webkit-backdrop-filter: blur(18px);
+    overflow: hidden;
+    overscroll-behavior: contain;
 }
 
 .settings-section-modal {
     display: flex;
     flex-direction: column;
     width: min(52rem, 100%);
-    max-height: calc(100vh - 2.5rem);
+    max-height: calc(100dvh - 2.5rem);
     overflow: hidden;
     border: 1px solid rgba(51, 65, 85, 0.92);
     border-radius: 1.4rem;
@@ -634,6 +635,12 @@ h1:focus {
     min-height: 0;
     overflow-y: auto;
     padding: 1rem;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+body:has(.settings-section-modal-backdrop) {
+    overflow: hidden;
 }
 
 /* ----------------------------------------
@@ -1353,12 +1360,15 @@ h1:focus {
         background: #0f172a;
         backdrop-filter: none;
         -webkit-backdrop-filter: none;
+        height: 100dvh;
     }
 
     .settings-section-modal {
         width: 100%;
         max-height: none;
-        min-height: 100vh;
+        height: 100dvh;
+        min-height: 0;
+        max-height: 100dvh;
         border: 0;
         border-radius: 0;
         box-shadow: none;

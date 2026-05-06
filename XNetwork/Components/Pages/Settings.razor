@@ -4,6 +4,7 @@
 @using XNetwork.Components.Custom
 @inject SpeedifyService SpeedifyService
 @inject WifiService WifiService
+@inject CudyApControlService CudyApControlService
 @inject NetworkMonitorService NetworkMonitorService
 @inject AutoServerSwitchService AutoServerSwitchService
 @inject IConfiguration Configuration
@@ -515,6 +516,168 @@
                                 }
                             </button>
                         </div>
+                    </div>
+            </Accordion>
+            }
+
+            <!-- Section 6: Cudy AP Automation (Linux-specific) -->
+            @if (OperatingSystem.IsLinux())
+            {
+                <Accordion Title="Cudy AP Automation" IsExpanded="_cudyApExpanded" OnToggle="(e) => _cudyApExpanded = e" BadgeText="@GetCudyApBadge()">
+                    <div class="space-y-4 pt-4">
+                        <p class="text-sm text-slate-400">
+                            Detect a trusted home Wi-Fi network from the Raspberry Pi and disable or re-enable the downstream Cudy TR3000 AP through its LuCI management page.
+                        </p>
+
+                        <div class="bg-slate-900/60 border border-slate-700 rounded-xl p-4 space-y-3">
+                            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                    <div class="flex items-center gap-2 text-white font-semibold">
+                                        <i class="fas fa-router text-cyan-300"></i>
+                                        <span>@FormatCudyApTitle()</span>
+                                    </div>
+                                    <p class="text-sm text-slate-400 mt-1">@_cudyStatus.Message</p>
+                                </div>
+                                <button class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white disabled:opacity-50"
+                                        @onclick="RefreshCudyApStatus"
+                                        disabled="@_isCudyApBusy">
+                                    <i class="fas fa-sync"></i>
+                                    Refresh
+                                </button>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                <div>
+                                    <span class="text-slate-500 block">Detected Home Wi-Fi</span>
+                                    <span class="text-white">@FormatCudyApDetection()</span>
+                                </div>
+                                <div>
+                                    <span class="text-slate-500 block">Last Action</span>
+                                    <span class="text-white">@FormatCudyApLastAction()</span>
+                                </div>
+                                <div>
+                                    <span class="text-slate-500 block">Management URL</span>
+                                    <span class="text-white">@(_cudyStatus.ManagementBaseUrl ?? "Not configured")</span>
+                                </div>
+                                <div>
+                                    <span class="text-slate-500 block">Admin Secret</span>
+                                    <span class="text-white">@FormatCudyAdminSecretStatus()</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        @if (!_cudyStatus.IsConfigured)
+                        {
+                            <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-200">
+                                Configure a reachable Cudy management URL, an admin secret, and a home SSID or BSSID before enabling automation. The Cudy WAN IP found from the Pi side did not expose HTTP/SSH during probing, so the Cudy management page must be reachable from this router.
+                            </div>
+                        }
+
+                        <ToggleSwitch
+                            Id="cudy-ap-automation-enabled"
+                            Label="Enable Cudy AP automation"
+                            IsEnabled="_cudySettings.Enabled"
+                            OnToggle="HandleCudyApAutomationToggle" />
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Cudy Management URL</label>
+                                <input type="text"
+                                       @bind="_cudySettings.ManagementBaseUrl"
+                                       placeholder="http://192.168.10.1"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                                <p class="text-xs text-slate-500 mt-1">Use the Cudy admin host reachable from the Pi. Do not include a password in the URL.</p>
+                            </div>
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Admin Password Environment Variable</label>
+                                <input type="text"
+                                       @bind="_cudySettings.AdminPasswordEnvironmentVariable"
+                                       placeholder="CUDY_ADMIN_PASSWORD"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                                <p class="text-xs text-slate-500 mt-1">The password is read from runtime config or this environment variable; it is not edited here.</p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Scan Interface</label>
+                                <input type="text"
+                                       @bind="_cudySettings.WifiInterface"
+                                       placeholder="wlan0"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            </div>
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Home SSID</label>
+                                <input type="text"
+                                       @bind="_cudySettings.HomeSsid"
+                                       placeholder="Trusted home Wi-Fi"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            </div>
+                            <div>
+                                <label class="block mb-2 font-medium text-white">Home BSSID</label>
+                                <input type="text"
+                                       @bind="_cudySettings.HomeBssid"
+                                       placeholder="Optional MAC address"
+                                       class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <NumberInput Label="Disable Signal" Value="_cudySettings.DisableWhenSignalAtLeast" OnChange="HandleCudyDisableSignalChange" Min="0" Max="100" Unit="%" HelpText="Disable Cudy AP when the home Wi-Fi is at or above this signal." />
+                            <NumberInput Label="Enable Signal" Value="_cudySettings.EnableWhenSignalBelow" OnChange="HandleCudyEnableSignalChange" Min="0" Max="100" Unit="%" HelpText="Treat home Wi-Fi as weak when at or below this signal." />
+                            <NumberInput Label="Check Interval" Value="_cudySettings.CheckIntervalSeconds" OnChange="HandleCudyCheckIntervalChange" Min="5" Max="300" Unit="seconds" />
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <NumberInput Label="Disable Delay" Value="_cudySettings.DisableAfterSeenSeconds" OnChange="HandleCudyDisableDelayChange" Min="0" Max="600" Unit="seconds" />
+                            <NumberInput Label="Enable Delay" Value="_cudySettings.EnableAfterMissingSeconds" OnChange="HandleCudyEnableDelayChange" Min="0" Max="1800" Unit="seconds" />
+                            <NumberInput Label="Request Timeout" Value="_cudySettings.RequestTimeoutSeconds" OnChange="HandleCudyRequestTimeoutChange" Min="3" Max="60" Unit="seconds" />
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <ToggleSwitch Id="cudy-disable-2g" Label="Control 2.4 GHz AP" IsEnabled="_cudySettings.Disable2G" OnToggle="HandleCudyDisable2GToggle" />
+                            <ToggleSwitch Id="cudy-disable-5g" Label="Control 5 GHz AP" IsEnabled="_cudySettings.Disable5G" OnToggle="HandleCudyDisable5GToggle" />
+                            <ToggleSwitch Id="cudy-auto-enable" Label="Re-enable when home Wi-Fi is gone" IsEnabled="_cudySettings.ReEnableWhenHomeMissing" OnToggle="HandleCudyReEnableToggle" />
+                        </div>
+
+                        <div class="flex flex-wrap gap-3">
+                            <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+                                    disabled="@_isCudyApBusy"
+                                    @onclick="ApplyCudyApSettings">
+                                Apply Cudy Settings
+                            </button>
+                            <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                                    disabled="@_isCudyApBusy"
+                                    @onclick="CheckCudyApNow">
+                                Test Home Wi-Fi Scan
+                            </button>
+                            <button class="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                                    disabled="@_isCudyApBusy"
+                                    @onclick="DisableCudyApNow">
+                                Disable Cudy AP
+                            </button>
+                            <button class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                                    disabled="@_isCudyApBusy"
+                                    @onclick="EnableCudyApNow">
+                                Enable Cudy AP
+                            </button>
+                        </div>
+
+                        @if (_cudyStatus.RecentEvents.Any())
+                        {
+                            <div class="bg-slate-900/60 border border-slate-700 rounded-lg overflow-hidden">
+                                <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-white">Recent Cudy Events</div>
+                                <div class="divide-y divide-slate-800">
+                                    @foreach (var item in _cudyStatus.RecentEvents.Take(5))
+                                    {
+                                        <div class="px-4 py-3 text-sm @(item.IsError ? "text-red-300" : "text-slate-300")">
+                                            <div class="font-medium">@item.Message</div>
+                                            <div class="text-xs text-slate-500">@item.TimestampUtc.ToLocalTime().ToString("g")</div>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
                     </div>
                 </Accordion>
             }
@@ -1654,6 +1817,7 @@
     private bool _controlsExpanded = false;
     private bool _adapterSettingsExpanded = false;
     private bool _wifiExpanded = false;
+    private bool _cudyApExpanded = false;
     private bool _routingPriorityExpanded = false;
 
     // On-board Wi-Fi state
@@ -1667,6 +1831,11 @@
     private bool _isWifiScanning = false;
     private bool _isWifiConnecting = false;
     private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
+
+    // Cudy AP automation state
+    private CudyApAutomationSettings _cudySettings = new();
+    private CudyApControlStatus _cudyStatus = new();
+    private bool _isCudyApBusy = false;
 
     // OS Routing Priority state
     private AdapterRoutingPriorityConfig _routingPriorityConfig = new();
@@ -1754,6 +1923,10 @@
             _autoServerSwitchSettings = AutoServerSwitchService.Settings;
             _fallbackCountriesInput = string.Join(", ", _autoServerSwitchSettings.FallbackCountries);
             _autoServerSwitchStatus = AutoServerSwitchService.GetStatus();
+
+            _cudySettings = CudyApControlService.Settings;
+            CudyApControlService.RefreshStatusFromSettings();
+            _cudyStatus = CudyApControlService.GetStatus();
 
             // Fetch all settings in parallel for efficiency
             var settingsTask = SpeedifyService.GetSettingsAsync();
@@ -2083,6 +2256,256 @@
             >= 45 => "text-yellow-300",
             _ => "text-red-300"
         };
+    }
+
+    #endregion
+
+    #region Cudy AP Automation Methods
+
+    private async Task RefreshCudyApStatus()
+    {
+        CudyApControlService.RefreshStatusFromSettings();
+        _cudyStatus = CudyApControlService.GetStatus();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyApAutomationToggle(bool enabled)
+    {
+        _cudySettings.Enabled = enabled;
+        await ApplyCudyApSettings();
+    }
+
+    private Task ApplyCudyApSettings()
+    {
+        return ApplyCudyApSettings(showMessage: true);
+    }
+
+    private async Task ApplyCudyApSettings(bool showMessage)
+    {
+        _cudySettings.ManagementBaseUrl = _cudySettings.ManagementBaseUrl.Trim();
+        _cudySettings.AdminPasswordEnvironmentVariable = _cudySettings.AdminPasswordEnvironmentVariable.Trim();
+        _cudySettings.WifiInterface = string.IsNullOrWhiteSpace(_cudySettings.WifiInterface) ? "wlan0" : _cudySettings.WifiInterface.Trim();
+        _cudySettings.HomeSsid = _cudySettings.HomeSsid.Trim();
+        _cudySettings.HomeBssid = _cudySettings.HomeBssid.Trim();
+        _cudySettings.DisableWhenSignalAtLeast = Math.Clamp(_cudySettings.DisableWhenSignalAtLeast, 0, 100);
+        _cudySettings.EnableWhenSignalBelow = Math.Clamp(_cudySettings.EnableWhenSignalBelow, 0, _cudySettings.DisableWhenSignalAtLeast);
+        _cudySettings.CheckIntervalSeconds = Math.Clamp(_cudySettings.CheckIntervalSeconds, 5, 300);
+        _cudySettings.DisableAfterSeenSeconds = Math.Clamp(_cudySettings.DisableAfterSeenSeconds, 0, 600);
+        _cudySettings.EnableAfterMissingSeconds = Math.Clamp(_cudySettings.EnableAfterMissingSeconds, 0, 1800);
+        _cudySettings.RequestTimeoutSeconds = Math.Clamp(_cudySettings.RequestTimeoutSeconds, 3, 60);
+
+        CudyApControlService.RefreshStatusFromSettings();
+        _cudyStatus = CudyApControlService.GetStatus();
+        if (showMessage)
+        {
+            _successMessage = "Cudy AP automation settings updated";
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task CheckCudyApNow()
+    {
+        await RunCudyApAction(async () =>
+        {
+            await ApplyCudyApSettings(showMessage: false);
+            await CudyApControlService.CheckNowAsync();
+            _cudyStatus = CudyApControlService.GetStatus();
+            _successMessage = _cudyStatus.Message;
+        }, "Failed to run Cudy home Wi-Fi check");
+    }
+
+    private async Task DisableCudyApNow()
+    {
+        await RunCudyApAction(async () =>
+        {
+            await ApplyCudyApSettings(showMessage: false);
+            await CudyApControlService.SetApEnabledAsync(false);
+            _cudyStatus = CudyApControlService.GetStatus();
+            _successMessage = _cudyStatus.Message;
+        }, "Failed to disable Cudy AP");
+    }
+
+    private async Task EnableCudyApNow()
+    {
+        await RunCudyApAction(async () =>
+        {
+            await ApplyCudyApSettings(showMessage: false);
+            await CudyApControlService.SetApEnabledAsync(true);
+            _cudyStatus = CudyApControlService.GetStatus();
+            _successMessage = _cudyStatus.Message;
+        }, "Failed to enable Cudy AP");
+    }
+
+    private async Task RunCudyApAction(Func<Task> action, string errorPrefix)
+    {
+        _isCudyApBusy = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            _error = $"{errorPrefix}: {ex.Message}";
+            _cudyStatus = CudyApControlService.GetStatus();
+        }
+        finally
+        {
+            _isCudyApBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private string? GetCudyApBadge()
+    {
+        if (_isCudyApBusy || _cudyStatus.IsBusy)
+        {
+            return "Busy";
+        }
+
+        if (!_cudyStatus.IsConfigured)
+        {
+            return "Needs setup";
+        }
+
+        if (_cudyStatus.IsEnabled)
+        {
+            return "On";
+        }
+
+        return _cudyStatus.IsCudyApDisabled switch
+        {
+            true => "AP off",
+            false => "AP on",
+            _ => null
+        };
+    }
+
+    private string FormatCudyApTitle()
+    {
+        if (_isCudyApBusy || _cudyStatus.IsBusy)
+        {
+            return "Cudy AP action in progress";
+        }
+
+        return _cudyStatus.IsCudyApDisabled switch
+        {
+            true => "Cudy AP is disabled",
+            false => "Cudy AP is enabled",
+            _ => _cudyStatus.IsEnabled ? "Cudy AP automation is monitoring" : "Cudy AP automation is off"
+        };
+    }
+
+    private string FormatCudyApDetection()
+    {
+        if (string.IsNullOrWhiteSpace(_cudyStatus.DetectedHomeNetwork))
+        {
+            return _cudyStatus.LastCheckUtc.HasValue ? "Not detected" : "Not checked yet";
+        }
+
+        var parts = new List<string> { _cudyStatus.DetectedHomeNetwork };
+        if (_cudyStatus.DetectedSignal.HasValue)
+        {
+            parts.Add($"{_cudyStatus.DetectedSignal.Value}% signal");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_cudyStatus.DetectedHomeBssid))
+        {
+            parts.Add(_cudyStatus.DetectedHomeBssid);
+        }
+
+        return string.Join(" • ", parts);
+    }
+
+    private string FormatCudyApLastAction()
+    {
+        return _cudyStatus.LastActionUtc.HasValue
+            ? _cudyStatus.LastActionUtc.Value.ToLocalTime().ToString("g")
+            : "No action yet";
+    }
+
+    private string FormatCudyAdminSecretStatus()
+    {
+        if (!string.IsNullOrEmpty(_cudySettings.AdminPassword))
+        {
+            return "Runtime config password set";
+        }
+
+        if (string.IsNullOrWhiteSpace(_cudySettings.AdminPasswordEnvironmentVariable))
+        {
+            return "Not configured";
+        }
+
+        var envName = _cudySettings.AdminPasswordEnvironmentVariable.Trim();
+        return string.IsNullOrEmpty(Environment.GetEnvironmentVariable(envName))
+            ? $"Waiting for {envName}"
+            : $"{envName} set";
+    }
+
+    private async Task HandleCudyDisableSignalChange(double value)
+    {
+        _cudySettings.DisableWhenSignalAtLeast = (int)Math.Round(value);
+        if (_cudySettings.EnableWhenSignalBelow > _cudySettings.DisableWhenSignalAtLeast)
+        {
+            _cudySettings.EnableWhenSignalBelow = _cudySettings.DisableWhenSignalAtLeast;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyEnableSignalChange(double value)
+    {
+        _cudySettings.EnableWhenSignalBelow = (int)Math.Round(value);
+        if (_cudySettings.EnableWhenSignalBelow > _cudySettings.DisableWhenSignalAtLeast)
+        {
+            _cudySettings.DisableWhenSignalAtLeast = _cudySettings.EnableWhenSignalBelow;
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyCheckIntervalChange(double value)
+    {
+        _cudySettings.CheckIntervalSeconds = (int)Math.Round(value);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyDisableDelayChange(double value)
+    {
+        _cudySettings.DisableAfterSeenSeconds = (int)Math.Round(value);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyEnableDelayChange(double value)
+    {
+        _cudySettings.EnableAfterMissingSeconds = (int)Math.Round(value);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyRequestTimeoutChange(double value)
+    {
+        _cudySettings.RequestTimeoutSeconds = (int)Math.Round(value);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyDisable2GToggle(bool enabled)
+    {
+        _cudySettings.Disable2G = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyDisable5GToggle(bool enabled)
+    {
+        _cudySettings.Disable5G = enabled;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandleCudyReEnableToggle(bool enabled)
+    {
+        _cudySettings.ReEnableWhenHomeMissing = enabled;
+        await InvokeAsync(StateHasChanged);
     }
 
     #endregion

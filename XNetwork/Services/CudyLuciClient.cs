@@ -1,0 +1,241 @@
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using XNetwork.Models;
+
+namespace XNetwork.Services;
+
+public class CudyLuciClient(ILogger<CudyLuciClient> logger)
+{
+    private const string LoginPath = "cgi-bin/luci/";
+    private const string ComboPath = "cgi-bin/luci/admin/network/wireless/config/combo/embedded";
+    private const string CombinePath = "cgi-bin/luci/admin/network/wireless/config/combine/embedded/nomodal";
+    private const string UncombinePath = "cgi-bin/luci/admin/network/wireless/config/uncombine/embedded/nomodal";
+
+    public async Task SetWirelessEnabledAsync(CudyApAutomationSettings settings, bool enabled, CancellationToken cancellationToken = default)
+    {
+        if (!settings.Disable2G && !settings.Disable5G)
+        {
+            throw new InvalidOperationException("At least one Cudy Wi-Fi band must be selected.");
+        }
+
+        var baseUri = BuildBaseUri(settings.ManagementBaseUrl);
+        var password = ResolveAdminPassword(settings);
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            throw new InvalidOperationException("Cudy admin password is not configured. Set CudyApAutomation:AdminPassword or the configured environment variable.");
+        }
+
+        using var handler = new HttpClientHandler
+        {
+            CookieContainer = new CookieContainer(),
+            AllowAutoRedirect = true
+        };
+        using var client = new HttpClient(handler)
+        {
+            BaseAddress = baseUri,
+            Timeout = TimeSpan.FromSeconds(Math.Clamp(settings.RequestTimeoutSeconds, 3, 60))
+        };
+
+        await LoginAsync(client, baseUri, password, cancellationToken).ConfigureAwait(false);
+
+        var smartConnect = await IsSmartConnectEnabledAsync(client, baseUri, cancellationToken).ConfigureAwait(false);
+        var formPath = smartConnect ? CombinePath : UncombinePath;
+        var formHtml = await GetStringAsync(client, BuildUri(baseUri, formPath), cancellationToken).ConfigureAwait(false);
+        var fields = CudyLuciFormParser.ParseFields(formHtml);
+
+        fields["timeclock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        fields["cbi.submit"] = "1";
+        fields["cbi.apply"] = "Save & Apply";
+
+        if (smartConnect)
+        {
+            fields["cbid.wireless.wlan.disabled"] = enabled ? "0" : "1";
+        }
+        else
+        {
+            if (settings.Disable2G)
+            {
+                fields["cbid.wireless.wlan00.disabled"] = enabled ? "0" : "1";
+            }
+
+            if (settings.Disable5G)
+            {
+                fields["cbid.wireless.wlan10.disabled"] = enabled ? "0" : "1";
+            }
+        }
+
+        var action = CudyLuciFormParser.ParseFormAction(formHtml) ?? formPath;
+        logger.LogInformation("Setting Cudy AP enabled={Enabled} using {Mode} wireless form at {BaseUrl}", enabled, smartConnect ? "combined" : "split-band", baseUri);
+        await PostMultipartAsync(client, ResolveUri(baseUri, action), fields, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task LoginAsync(HttpClient client, Uri baseUri, string password, CancellationToken cancellationToken)
+    {
+        var loginUri = BuildUri(baseUri, LoginPath);
+        var loginHtml = await GetStringAsync(client, loginUri, cancellationToken).ConfigureAwait(false);
+        var fields = CudyLuciFormParser.ParseFields(loginHtml);
+        fields.TryGetValue("token", out var token);
+        fields.TryGetValue("salt", out var salt);
+        fields.TryGetValue("_csrf", out var csrf);
+
+        var hashedPassword = string.IsNullOrEmpty(salt) ? password : Sha256Hex(password + salt);
+        if (!string.IsNullOrEmpty(token) && !string.IsNullOrEmpty(salt))
+        {
+            hashedPassword = Sha256Hex(hashedPassword + token);
+        }
+
+        var postFields = new Dictionary<string, string>
+        {
+            ["zonename"] = "UTC",
+            ["timeclock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+            ["luci_language"] = "auto",
+            ["luci_username"] = "admin",
+            ["luci_password"] = hashedPassword
+        };
+
+        if (!string.IsNullOrEmpty(csrf))
+        {
+            postFields["_csrf"] = csrf;
+        }
+
+        if (!string.IsNullOrEmpty(token))
+        {
+            postFields["token"] = token;
+        }
+
+        if (!string.IsNullOrEmpty(salt))
+        {
+            postFields["salt"] = salt;
+        }
+
+        using var content = new FormUrlEncodedContent(postFields);
+        using var response = await client.PostAsync(loginUri, content, cancellationToken).ConfigureAwait(false);
+        var responseHtml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        if (ContainsLoginPrompt(responseHtml))
+        {
+            throw new InvalidOperationException("Cudy login failed. Check the configured admin password.");
+        }
+    }
+
+    private static async Task<bool> IsSmartConnectEnabledAsync(HttpClient client, Uri baseUri, CancellationToken cancellationToken)
+    {
+        var comboHtml = await GetStringAsync(client, BuildUri(baseUri, ComboPath), cancellationToken).ConfigureAwait(false);
+        var fields = CudyLuciFormParser.ParseFields(comboHtml);
+        return fields.TryGetValue("cbid.wireless.smart.connect", out var value) && value == "1";
+    }
+
+    private static async Task<string> GetStringAsync(HttpClient client, Uri uri, CancellationToken cancellationToken)
+    {
+        using var response = await client.GetAsync(uri, cancellationToken).ConfigureAwait(false);
+        var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        if (ContainsLoginPrompt(content) && !uri.AbsolutePath.EndsWith("/cgi-bin/luci/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Cudy returned the login page while reading wireless settings.");
+        }
+
+        return content;
+    }
+
+    private static async Task PostMultipartAsync(HttpClient client, Uri uri, Dictionary<string, string> fields, CancellationToken cancellationToken)
+    {
+        using var content = new MultipartFormDataContent();
+        foreach (var field in fields)
+        {
+            content.Add(new StringContent(field.Value), field.Key);
+        }
+
+        using var response = await client.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
+        var responseHtml = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        if (ContainsLoginPrompt(responseHtml))
+        {
+            throw new InvalidOperationException("Cudy returned the login page while applying wireless settings.");
+        }
+    }
+
+    private static Uri BuildBaseUri(string managementBaseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(managementBaseUrl))
+        {
+            throw new InvalidOperationException("Cudy management URL is not configured.");
+        }
+
+        var value = managementBaseUrl.Trim();
+        if (!value.Contains("://", StringComparison.Ordinal))
+        {
+            value = "http://" + value;
+        }
+
+        if (value.EndsWith("/cgi-bin/luci", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value[..^"/cgi-bin/luci".Length];
+        }
+        else if (value.EndsWith("/cgi-bin/luci/", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value[..^"/cgi-bin/luci/".Length];
+        }
+
+        if (!value.EndsWith('/'))
+        {
+            value += "/";
+        }
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException("Cudy management URL is invalid.");
+        }
+
+        return uri;
+    }
+
+    private static Uri BuildUri(Uri baseUri, string relativePath)
+    {
+        return new Uri(baseUri, relativePath);
+    }
+
+    private static Uri ResolveUri(Uri baseUri, string action)
+    {
+        if (Uri.TryCreate(action, UriKind.Absolute, out var absoluteUri))
+        {
+            return absoluteUri;
+        }
+
+        if (action.StartsWith('/'))
+        {
+            return new Uri(new Uri(baseUri.GetLeftPart(UriPartial.Authority)), action);
+        }
+
+        return new Uri(baseUri, action);
+    }
+
+    private static string ResolveAdminPassword(CudyApAutomationSettings settings)
+    {
+        if (!string.IsNullOrEmpty(settings.AdminPassword))
+        {
+            return settings.AdminPassword;
+        }
+
+        return string.IsNullOrWhiteSpace(settings.AdminPasswordEnvironmentVariable)
+            ? ""
+            : Environment.GetEnvironmentVariable(settings.AdminPasswordEnvironmentVariable.Trim()) ?? "";
+    }
+
+    private static bool ContainsLoginPrompt(string html)
+    {
+        return html.Contains("cbi-modal-auth", StringComparison.OrdinalIgnoreCase) ||
+               html.Contains("luci_password", StringComparison.OrdinalIgnoreCase) &&
+               html.Contains("luci_username", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string Sha256Hex(string value)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+}

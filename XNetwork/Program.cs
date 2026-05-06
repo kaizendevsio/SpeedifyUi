@@ -17,6 +17,13 @@ builder.Services.AddSingleton<WifiService>();
 builder.Services.AddSingleton<NetworkMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NetworkMonitorService>());
 
+// Add Cudy travel-router AP automation
+builder.Services.AddSingleton(sp =>
+    builder.Configuration.GetSection("CudyApAutomation").Get<CudyApAutomationSettings>() ?? new CudyApAutomationSettings());
+builder.Services.AddSingleton<CudyLuciClient>();
+builder.Services.AddSingleton<CudyApControlService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CudyApControlService>());
+
 // Add connection health service (both as singleton and hosted service)
 builder.Services.AddSingleton<ConnectionHealthService>();
 builder.Services.AddSingleton<IConnectionHealthService>(sp => sp.GetRequiredService<ConnectionHealthService>());
