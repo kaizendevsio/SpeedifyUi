@@ -560,7 +560,7 @@
                                     <span class="text-white">@(_cudyStatus.ManagementBaseUrl ?? "Not configured")</span>
                                 </div>
                                 <div>
-                                    <span class="text-slate-500 block">Admin Secret</span>
+                                    <span class="text-slate-500 block">Admin Password</span>
                                     <span class="text-white">@FormatCudyAdminSecretStatus()</span>
                                 </div>
                             </div>
@@ -569,7 +569,7 @@
                         @if (!_cudyStatus.IsConfigured)
                         {
                             <div class="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3 text-sm text-yellow-200">
-                                Configure a reachable Cudy management URL, an admin secret, and a home SSID or BSSID before enabling automation. The Cudy WAN IP found from the Pi side did not expose HTTP/SSH during probing, so the Cudy management page must be reachable from this router.
+                                Configure a reachable Cudy management URL, admin password, and home SSID or BSSID before enabling automation. The Cudy WAN IP found from the Pi side did not expose HTTP/SSH during probing, so the Cudy management page must be reachable from this router.
                             </div>
                         }
 
@@ -589,12 +589,13 @@
                                 <p class="text-xs text-slate-500 mt-1">Use the Cudy admin host reachable from the Pi. Do not include a password in the URL.</p>
                             </div>
                             <div>
-                                <label class="block mb-2 font-medium text-white">Admin Password Environment Variable</label>
-                                <input type="text"
-                                       @bind="_cudySettings.AdminPasswordEnvironmentVariable"
-                                       placeholder="CUDY_ADMIN_PASSWORD"
+                                <label class="block mb-2 font-medium text-white">Cudy Admin Password</label>
+                                <input type="password"
+                                       @bind="_cudyAdminPasswordInput"
+                                       placeholder="@GetCudyPasswordPlaceholder()"
+                                       autocomplete="new-password"
                                        class="w-full bg-slate-900 border border-slate-700 rounded-md p-2 text-white" />
-                                <p class="text-xs text-slate-500 mt-1">The password is read from runtime config or this environment variable; it is not edited here.</p>
+                                <p class="text-xs text-slate-500 mt-1">Enter the Cudy admin password here. It is kept in app memory; runtime config or CUDY_ADMIN_PASSWORD can still be used for persistence.</p>
                             </div>
                         </div>
 
@@ -1921,6 +1922,7 @@
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
     private List<WifiNetwork> _cudyWifiNetworks = new();
+    private string _cudyAdminPasswordInput = "";
     private string? _cudyWifiMessage;
     private bool _isCudyWifiScanning = false;
     private bool _isCudyApBusy = false;
@@ -2415,6 +2417,12 @@
     {
         _cudySettings.ManagementBaseUrl = _cudySettings.ManagementBaseUrl.Trim();
         _cudySettings.AdminPasswordEnvironmentVariable = _cudySettings.AdminPasswordEnvironmentVariable.Trim();
+        if (!string.IsNullOrEmpty(_cudyAdminPasswordInput))
+        {
+            _cudySettings.AdminPassword = _cudyAdminPasswordInput;
+            _cudyAdminPasswordInput = "";
+        }
+
         _cudySettings.WifiInterface = string.IsNullOrWhiteSpace(_cudySettings.WifiInterface) ? "wlan0" : _cudySettings.WifiInterface.Trim();
         _cudySettings.HomeSsid = _cudySettings.HomeSsid.Trim();
         _cudySettings.HomeBssid = _cudySettings.HomeBssid.Trim();
@@ -2563,7 +2571,7 @@
     {
         if (!string.IsNullOrEmpty(_cudySettings.AdminPassword))
         {
-            return "Runtime config password set";
+            return "Password set";
         }
 
         if (string.IsNullOrWhiteSpace(_cudySettings.AdminPasswordEnvironmentVariable))
@@ -2573,8 +2581,15 @@
 
         var envName = _cudySettings.AdminPasswordEnvironmentVariable.Trim();
         return string.IsNullOrEmpty(Environment.GetEnvironmentVariable(envName))
-            ? $"Waiting for {envName}"
+            ? "No password set"
             : $"{envName} set";
+    }
+
+    private string GetCudyPasswordPlaceholder()
+    {
+        return string.IsNullOrEmpty(_cudySettings.AdminPassword)
+            ? "Enter Cudy admin password"
+            : "Password already set";
     }
 
     private string FormatCudySelectedHomeWifi()
