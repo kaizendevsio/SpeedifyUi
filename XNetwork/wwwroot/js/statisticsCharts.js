@@ -5,6 +5,8 @@ const charts = {};
 let maxDataPoints = 30; // Number of historical data points to show on charts
 const DASHBOARD_DATA_POINTS = 30;
 const LIVE_CHART_ANIMATION_DURATION = 240;
+const ACTUAL_CONNECTION_ID = '__actual_connection';
+const ACTUAL_CONNECTION_COLOR = '#34d399';
 
 // Dark theme colors
 const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
@@ -83,22 +85,28 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
         delete charts[chartId];
     }
 
-    const datasets = AdapterIds.map((AdapterId, index) => ({
-        // Use AdapterId for internal tracking, adapterNames for display label
-        label: adapterNames[index] || AdapterId,
-        AdapterId: AdapterId, // Store original adapter ID for data mapping
-        data: [],
-        borderColor: lineColors[index % lineColors.length],
-        backgroundColor: lineColors[index % lineColors.length].replace('1)', '0.1)'),
-        tension: 0.3, // Smooth bezier curves without exaggerated endpoint motion
-        cubicInterpolationMode: 'monotone', // Smooth interpolation
-        pointRadius: 0,
-        pointHoverRadius: 4,
-        pointHitRadius: 10,
-        borderWidth: 2.5,
-        spanGaps: true,
-        fill: false
-    }));
+    const datasets = AdapterIds.map((AdapterId, index) => {
+        const isActualConnection = AdapterId === ACTUAL_CONNECTION_ID;
+        const color = isActualConnection ? ACTUAL_CONNECTION_COLOR : lineColors[index % lineColors.length];
+
+        return {
+            // Use AdapterId for internal tracking, adapterNames for display label
+            label: adapterNames[index] || AdapterId,
+            AdapterId: AdapterId, // Store original adapter ID for data mapping
+            data: [],
+            borderColor: color,
+            backgroundColor: color,
+            borderDash: isActualConnection ? [6, 4] : [],
+            tension: 0.3, // Smooth bezier curves without exaggerated endpoint motion
+            cubicInterpolationMode: 'monotone', // Smooth interpolation
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            pointHitRadius: 10,
+            borderWidth: isActualConnection ? 3.5 : 2.5,
+            spanGaps: true,
+            fill: false
+        };
+    });
 
     try {
         charts[chartId] = new Chart(ctx, {

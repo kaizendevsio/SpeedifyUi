@@ -289,13 +289,13 @@
             <ChartCard Title="Latency (ms)"
                       ChartId="rttChart"
                       ShowLegend="true"
-                      LegendItems="@GetAdapterLegend()" />
+                      LegendItems="@GetAdapterLegend(includeActualConnection: true)" />
 
             <!-- Loss Chart -->
             <ChartCard Title="Packet Loss (%)"
                       ChartId="lossChart"
                       ShowLegend="true"
-                      LegendItems="@GetAdapterLegend()" />
+                      LegendItems="@GetAdapterLegend(includeActualConnection: true)" />
         </div>
     }
     else if (!_isInitialLoading && !_adapters.Any() && string.IsNullOrEmpty(_errorMessage)) 
@@ -334,6 +334,9 @@
     private bool _uptimeChartInitialized = false;
     private bool _showQualityInfo = false;
     private int _chartPeriod = 15; // Default to 15 seconds
+    private const string ActualConnectionSeriesId = "__actual_connection";
+    private const string ActualConnectionSeriesLabel = "Actual Connection";
+    private const string ActualConnectionSeriesColor = "#34d399";
 
     private Dictionary<string, Dictionary<string, double>> _batchedChartData = new()
     {
@@ -535,7 +538,7 @@
             : adapterId;
     }
 
-    private List<ChartCard.LegendItem> GetAdapterLegend()
+    private List<ChartCard.LegendItem> GetAdapterLegend(bool includeActualConnection = false)
     {
         var legend = new List<ChartCard.LegendItem>();
         var colors = new[] { "#22d3ee", "#f472b6", "#f59e0b", "#38bdf8", "#a855f7", "#fb923c" };
@@ -549,6 +552,15 @@
             {
                 Label = GetAdapterDisplayName(adapter.AdapterId),
                 Color = colors[colorIndex++ % colors.Length]
+            });
+        }
+
+        if (includeActualConnection)
+        {
+            legend.Add(new ChartCard.LegendItem
+            {
+                Label = ActualConnectionSeriesLabel,
+                Color = ActualConnectionSeriesColor
             });
         }
         
@@ -591,6 +603,8 @@
         
         var adapterIdsForChart = activeAdapters.Select(a => a.AdapterId).ToArray();
         var adapterDisplayNamesForChart = activeAdapters.Select(x => GetAdapterDisplayName(x.AdapterId)).ToArray();
+        var qualityChartIds = adapterIdsForChart.Append(ActualConnectionSeriesId).ToArray();
+        var qualityChartNames = adapterDisplayNamesForChart.Append(ActualConnectionSeriesLabel).ToArray();
         var initialTimestamp = DateTime.Now.ToString("HH:mm:ss");
         bool allChartsOk = true;
         List<string> failedCharts = new List<string>();
@@ -600,8 +614,8 @@
             await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
             if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Download");}
             if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Upload");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("RTT");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Loss");}
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", qualityChartIds, qualityChartNames, initialTimestamp)) { allChartsOk = false; failedCharts.Add("RTT");}
+            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", qualityChartIds, qualityChartNames, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Loss");}
 
             _chartsSuccessfullyInitialized = allChartsOk;
             if (allChartsOk) Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): All charts initialized successfully.");
@@ -647,28 +661,38 @@
             _chartUpdateTimer?.Dispose();
             _chartUpdateTimer = new Timer(_ => _ = InvokeAsync(PushBatchedChartDataToJsAsync), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.1));
 
-            await foreach (var statEntry in SpeedifyService.GetStatsAsync(_statsCts.Token))
+            await foreach (var statEntry in SpeedifyService.GetStatsWithAggregateAsync(_statsCts.Token))
             {
                 if (_isInitialLoading) _isInitialLoading = false;
-                if (statEntry.Connected is false)
+                var isActualConnection = IsActualConnectionStats(statEntry);
+                if (statEntry.Connected is false && !isActualConnection)
                 {
                     continue;  // Skip this adapter, keep stream alive
                 }
-                
-                var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
-                if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
-                else _stats.Add(statEntry);
 
-                var downloadMbps = Math.Round(statEntry.ReceiveBps * 8.0 / 1_000_000.0, 2);
-                var uploadMbps = Math.Round(statEntry.SendBps * 8.0 / 1_000_000.0, 2);
                 var lossPercent = Math.Round(statEntry.AverageLossPercent, 2);
 
                 lock (_chartDataLock)
                 {
-                    _batchedChartData["downloadChart"][statEntry.AdapterId] = downloadMbps;
-                    _batchedChartData["uploadChart"][statEntry.AdapterId] = uploadMbps;
-                    _batchedChartData["rttChart"][statEntry.AdapterId] = statEntry.LatencyMs;
-                    _batchedChartData["lossChart"][statEntry.AdapterId] = lossPercent;
+                    if (isActualConnection)
+                    {
+                        _batchedChartData["rttChart"][ActualConnectionSeriesId] = statEntry.LatencyMs;
+                        _batchedChartData["lossChart"][ActualConnectionSeriesId] = lossPercent;
+                    }
+                    else
+                    {
+                        var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
+                        if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
+                        else _stats.Add(statEntry);
+
+                        var downloadMbps = Math.Round(statEntry.ReceiveBps * 8.0 / 1_000_000.0, 2);
+                        var uploadMbps = Math.Round(statEntry.SendBps * 8.0 / 1_000_000.0, 2);
+
+                        _batchedChartData["downloadChart"][statEntry.AdapterId] = downloadMbps;
+                        _batchedChartData["uploadChart"][statEntry.AdapterId] = uploadMbps;
+                        _batchedChartData["rttChart"][statEntry.AdapterId] = statEntry.LatencyMs;
+                        _batchedChartData["lossChart"][statEntry.AdapterId] = lossPercent;
+                    }
                 }
                 
                 await InvokeAsync(StateHasChanged); 
@@ -859,6 +883,12 @@
         {
             await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
         }
+    }
+
+    private static bool IsActualConnectionStats(ConnectionItem statEntry)
+    {
+        return statEntry.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) &&
+               statEntry.ConnectionId.Equals("speedify", StringComparison.OrdinalIgnoreCase);
     }
 
     public async ValueTask DisposeAsync()
