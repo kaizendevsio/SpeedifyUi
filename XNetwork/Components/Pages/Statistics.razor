@@ -676,7 +676,6 @@
                 {
                     if (isActualConnection)
                     {
-                        _batchedChartData["rttChart"][ActualConnectionSeriesId] = statEntry.LatencyMs;
                         _batchedChartData["lossChart"][ActualConnectionSeriesId] = lossPercent;
                     }
                     else
@@ -732,6 +731,8 @@
 
             lock (_chartDataLock)
             {
+                AddActualConnectionLatencyPoint();
+
                 dlData = new Dictionary<string, double>(_batchedChartData["downloadChart"]);
                 ulData = new Dictionary<string, double>(_batchedChartData["uploadChart"]);
                 rttData = new Dictionary<string, double>(_batchedChartData["rttChart"]);
@@ -883,6 +884,22 @@
         {
             await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
         }
+    }
+
+    private void AddActualConnectionLatencyPoint()
+    {
+        if (!ConnectionHealthService.IsInitialized())
+        {
+            return;
+        }
+
+        var health = ConnectionHealthService.GetOverallHealth();
+        if (health.AverageLatency <= 0)
+        {
+            return;
+        }
+
+        _batchedChartData["rttChart"][ActualConnectionSeriesId] = Math.Round(health.AverageLatency, 1);
     }
 
     private static bool IsActualConnectionStats(ConnectionItem statEntry)
