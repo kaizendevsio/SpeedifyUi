@@ -49,6 +49,15 @@ body {
     vertical-align: baseline;
 }
 
+.animated-number.odometer.odometer-animating-up .odometer-ribbon-inner,
+.animated-number.odometer.odometer-animating-down.odometer-animating .odometer-ribbon-inner {
+    -webkit-transition-duration: 300ms !important;
+    -moz-transition-duration: 300ms !important;
+    -ms-transition-duration: 300ms !important;
+    -o-transition-duration: 300ms !important;
+    transition-duration: 300ms !important;
+}
+
 .action-sheet-backdrop {
     position: fixed;
     inset: 0;
