@@ -47,9 +47,9 @@ body {
     bottom: calc(0.75rem + env(safe-area-inset-bottom));
     z-index: 50;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 0.25rem;
-    width: min(calc(100vw - 1rem), 25rem);
+    width: min(calc(100vw - 1rem), 30rem);
     padding: 0.35rem;
     transform: translateX(-50%);
     border: 1px solid rgba(148, 163, 184, 0.16);

@@ -16,6 +16,9 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
     private const string ComboPath = "cgi-bin/luci/admin/network/wireless/config/combo";
     private const string CombinePath = "cgi-bin/luci/admin/network/wireless/config/combine";
     private const string UncombinePath = "cgi-bin/luci/admin/network/wireless/config/uncombine";
+    private const string XRouterDeviceListPath = "cgi-bin/luci/admin/network/devices/devlist?detail=1";
+    private const string XRouterDeviceInfoPath = "cgi-bin/luci/admin/network/devices/devinfo";
+    private const string XRouterInternetPath = "cgi-bin/luci/admin/network/devices/internet";
 
     public async Task SetWirelessEnabledAsync(CudyApAutomationSettings settings, bool enabled, CancellationToken cancellationToken = default)
     {
@@ -24,26 +27,9 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
             throw new InvalidOperationException("At least one Cudy Wi-Fi band must be selected.");
         }
 
-        var baseUri = BuildBaseUri(settings.ManagementBaseUrl);
-        var password = ResolveAdminPassword(settings);
-        if (string.IsNullOrWhiteSpace(password))
-        {
-            throw new InvalidOperationException("Cudy admin password is not configured. Set CudyApAutomation:AdminPassword or the configured environment variable.");
-        }
-
-        using var handler = new HttpClientHandler
-        {
-            CookieContainer = new CookieContainer(),
-            AllowAutoRedirect = true,
-            ServerCertificateCustomValidationCallback = ValidateServerCertificate
-        };
-        using var client = new HttpClient(handler)
-        {
-            BaseAddress = baseUri,
-            Timeout = TimeSpan.FromSeconds(Math.Clamp(settings.RequestTimeoutSeconds, 3, 60))
-        };
-
-        await LoginAsync(client, baseUri, password, cancellationToken).ConfigureAwait(false);
+        using var session = await CreateAuthenticatedSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        var baseUri = session.BaseUri;
+        var client = session.Client;
 
         var smartConnect = await IsSmartConnectEnabledAsync(client, baseUri, cancellationToken).ConfigureAwait(false);
         var formPath = smartConnect ? CombinePath : UncombinePath;
@@ -74,6 +60,92 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         var action = CudyLuciFormParser.ParseFormAction(formHtml) ?? formPath;
         logger.LogInformation("Setting Cudy AP enabled={Enabled} using {Mode} wireless form at {BaseUrl}", enabled, smartConnect ? "combined" : "split-band", baseUri);
         await PostMultipartAsync(client, ResolveUri(baseUri, action), fields, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<XRouterClient>> GetXRouterClientsAsync(CudyApAutomationSettings settings, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateAuthenticatedSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        var html = await GetStringAsync(session.Client, BuildUri(session.BaseUri, XRouterDeviceListPath), cancellationToken).ConfigureAwait(false);
+        return CudyXRouterClientParser.ParseClients(html);
+    }
+
+    public async Task SetXRouterClientInternetAccessAsync(CudyApAutomationSettings settings, XRouterClient target, bool allowed, CancellationToken cancellationToken = default)
+    {
+        if (target.InternetAllowed == allowed)
+        {
+            return;
+        }
+
+        using var session = await CreateAuthenticatedSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        var query = BuildXRouterClientQuery(target, target.InternetAllowed);
+        var uri = BuildUri(session.BaseUri, XRouterInternetPath + "?" + query);
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>());
+
+        logger.LogInformation("Setting xrouter client {MacAddress} internet allowed={Allowed}", target.MacAddress, allowed);
+        using var response = await session.Client.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
+        var responseText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        if (ContainsLoginPrompt(responseText))
+        {
+            throw new InvalidOperationException("Cudy returned the login page while changing xrouter client internet access.");
+        }
+    }
+
+    public async Task SetXRouterClientRateLimitAsync(CudyApAutomationSettings settings, XRouterClient target, bool enabled, int? downloadMbps, int? uploadMbps, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateAuthenticatedSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        var query = BuildXRouterClientQuery(target, target.InternetAllowed);
+        var path = XRouterDeviceInfoPath + "?" + query;
+        var formHtml = await GetStringAsync(session.Client, BuildUri(session.BaseUri, path), cancellationToken).ConfigureAwait(false);
+        var fields = CudyLuciFormParser.ParseFields(formHtml);
+
+        fields["timeclock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        fields["cbi.submit"] = "1";
+        fields["cbi.apply"] = "Save & Apply";
+        fields["cbid.luci._devname.hostname"] = target.Hostname;
+        fields["cbi.cbe.luci._devname.limit"] = "1";
+        fields["cbid.luci._devname.limit"] = enabled ? "1" : "0";
+        fields["cbid.luci._devname.ddrate"] = enabled ? Math.Max(1, downloadMbps ?? 1).ToString() : "";
+        fields["cbid.luci._devname.uurate"] = enabled ? Math.Max(1, uploadMbps ?? 1).ToString() : "";
+
+        var action = CudyLuciFormParser.ParseFormAction(formHtml) ?? path;
+        logger.LogInformation("Setting xrouter client {MacAddress} rate limit enabled={Enabled}", target.MacAddress, enabled);
+        await PostMultipartAsync(session.Client, ResolveUri(session.BaseUri, action), fields, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<AuthenticatedCudySession> CreateAuthenticatedSessionAsync(CudyApAutomationSettings settings, CancellationToken cancellationToken)
+    {
+        var baseUri = BuildBaseUri(settings.ManagementBaseUrl);
+        var password = ResolveAdminPassword(settings);
+        if (string.IsNullOrWhiteSpace(password))
+        {
+            throw new InvalidOperationException("Cudy admin password is not configured. Set CudyApAutomation:AdminPassword or the configured environment variable.");
+        }
+
+        var handler = new HttpClientHandler
+        {
+            CookieContainer = new CookieContainer(),
+            AllowAutoRedirect = true,
+            ServerCertificateCustomValidationCallback = ValidateServerCertificate
+        };
+
+        var client = new HttpClient(handler)
+        {
+            BaseAddress = baseUri,
+            Timeout = TimeSpan.FromSeconds(Math.Clamp(settings.RequestTimeoutSeconds, 3, 60))
+        };
+
+        try
+        {
+            await LoginAsync(client, baseUri, password, cancellationToken).ConfigureAwait(false);
+            return new AuthenticatedCudySession(baseUri, client);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
     }
 
     private static async Task LoginAsync(HttpClient client, Uri baseUri, string password, CancellationToken cancellationToken)
@@ -299,6 +371,21 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
             : Environment.GetEnvironmentVariable(settings.AdminPasswordEnvironmentVariable.Trim()) ?? "";
     }
 
+    private static string BuildXRouterClientQuery(XRouterClient client, bool internetAllowed)
+    {
+        var fields = new Dictionary<string, string>
+        {
+            ["macaddr"] = client.MacAddress,
+            ["hostname"] = client.Hostname,
+            ["internet"] = internetAllowed ? "1" : "0",
+            ["vpn"] = client.VpnEnabled ? "1" : "0",
+            ["dnsfilter"] = client.DnsFilterEnabled ? "1" : "0"
+        };
+
+        return string.Join("&", fields.Select(field =>
+            Uri.EscapeDataString(field.Key) + "=" + Uri.EscapeDataString(field.Value)));
+    }
+
     private static bool ValidateServerCertificate(HttpRequestMessage request, X509Certificate2? certificate, X509Chain? chain, SslPolicyErrors sslErrors)
     {
         return sslErrors == SslPolicyErrors.None || IsPrivateHttpsHost(request.RequestUri);
@@ -349,5 +436,17 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(value));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private sealed class AuthenticatedCudySession(Uri baseUri, HttpClient client) : IDisposable
+    {
+        public Uri BaseUri { get; } = baseUri;
+
+        public HttpClient Client { get; } = client;
+
+        public void Dispose()
+        {
+            Client.Dispose();
+        }
     }
 }
