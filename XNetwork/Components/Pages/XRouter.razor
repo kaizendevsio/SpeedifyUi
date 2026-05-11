@@ -5,18 +5,18 @@
 @inject XRouterService XRouterService
 @implements IAsyncDisposable
 
-<PageTitle>xrouter</PageTitle>
+<PageTitle>Wifi - XNetwork</PageTitle>
 
 <div class="p-4 md:p-6">
     <div class="hidden md:block mb-6">
-        <h2 class="text-3xl font-bold text-white mb-1">xrouter</h2>
+        <h2 class="text-3xl font-bold text-white mb-1">Wifi</h2>
         <p class="text-slate-400">Monitor Cudy clients, block internet access, and apply per-device rate limits.</p>
     </div>
 
     @if (!XRouterService.IsConfigured)
     {
         <div class="bg-yellow-500/10 border border-yellow-500/50 text-yellow-200 px-4 py-3 rounded-xl mb-6">
-            Configure the Cudy management URL and admin password in Settings before using xrouter.
+            Configure the Cudy management URL and admin password in Settings before using Wifi controls.
         </div>
     }
     else
@@ -228,7 +228,7 @@
         }
         catch (Exception ex)
         {
-            ShowMessage($"Could not refresh xrouter clients: {ex.Message}", isError: true);
+            ShowMessage($"Could not refresh Wifi clients: {ex.Message}", isError: true);
         }
         finally
         {
@@ -290,7 +290,7 @@
         }
         catch (Exception ex)
         {
-            ShowMessage($"xrouter action failed: {ex.Message}", isError: true);
+            ShowMessage($"Wifi action failed: {ex.Message}", isError: true);
         }
         finally
         {

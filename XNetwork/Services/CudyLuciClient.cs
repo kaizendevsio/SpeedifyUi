@@ -81,14 +81,14 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         var uri = BuildUri(session.BaseUri, XRouterInternetPath + "?" + query);
         using var content = new FormUrlEncodedContent(new Dictionary<string, string>());
 
-        logger.LogInformation("Setting xrouter client {MacAddress} internet allowed={Allowed}", target.MacAddress, allowed);
+        logger.LogInformation("Setting Wifi client {MacAddress} internet allowed={Allowed}", target.MacAddress, allowed);
         using var response = await session.Client.PostAsync(uri, content, cancellationToken).ConfigureAwait(false);
         var responseText = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         if (ContainsLoginPrompt(responseText))
         {
-            throw new InvalidOperationException("Cudy returned the login page while changing xrouter client internet access.");
+            throw new InvalidOperationException("Cudy returned the login page while changing Wifi client internet access.");
         }
     }
 
@@ -110,7 +110,7 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         fields["cbid.luci._devname.uurate"] = enabled ? Math.Max(1, uploadMbps ?? 1).ToString() : "";
 
         var action = CudyLuciFormParser.ParseFormAction(formHtml) ?? path;
-        logger.LogInformation("Setting xrouter client {MacAddress} rate limit enabled={Enabled}", target.MacAddress, enabled);
+        logger.LogInformation("Setting Wifi client {MacAddress} rate limit enabled={Enabled}", target.MacAddress, enabled);
         await PostMultipartAsync(session.Client, ResolveUri(session.BaseUri, action), fields, cancellationToken).ConfigureAwait(false);
     }
 
