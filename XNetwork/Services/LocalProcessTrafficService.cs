@@ -8,7 +8,7 @@ namespace XNetwork.Services;
 public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logger)
 {
     private const string DefaultInterface = "connectify0";
-    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan CacheDuration = TimeSpan.FromMilliseconds(750);
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(4);
     private static readonly Regex NethogsLineRegex = new("^(?<command>.+?)\\s+(?<upload>\\d+(?:\\.\\d+)?)\\s+(?<download>\\d+(?:\\.\\d+)?)$", RegexOptions.Compiled);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
@@ -57,7 +57,7 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
 
         try
         {
-            var result = await RunProcessAsync("nethogs", ["-t", "-c", "2", DefaultInterface], cancellationToken).ConfigureAwait(false);
+            var result = await RunProcessAsync("nethogs", ["-t", "-b", "-C", "-d", "1", "-c", "1", DefaultInterface], cancellationToken).ConfigureAwait(false);
             if (result.ExitCode != 0)
             {
                 var message = string.IsNullOrWhiteSpace(result.Error)
@@ -99,7 +99,6 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
             var line = rawLine.Trim();
             if (line.Length == 0 ||
                 line.StartsWith("Refreshing", StringComparison.OrdinalIgnoreCase) ||
-                line.StartsWith("unknown ", StringComparison.OrdinalIgnoreCase) ||
                 line.StartsWith("total", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -138,6 +137,11 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
 
     private static string ExtractProcessName(string command)
     {
+        if (command.StartsWith("unknown ", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Unknown tunnel flow";
+        }
+
         var withoutMetadata = Regex.Replace(command, "/\\d+(?:/\\d+)?$", "");
         var name = withoutMetadata.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
         return string.IsNullOrWhiteSpace(name) ? command : name;
@@ -146,7 +150,7 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
     private static int? ExtractProcessId(string command)
     {
         var match = Regex.Match(command, "/(?<pid>\\d+)(?:/\\d+)?$");
-        return match.Success && int.TryParse(match.Groups["pid"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid)
+        return match.Success && int.TryParse(match.Groups["pid"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid) && pid > 0
             ? pid
             : null;
     }

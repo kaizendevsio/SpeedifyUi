@@ -4,7 +4,7 @@ namespace XNetwork.Services;
 
 public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings settings, LocalProcessTrafficService localProcessTrafficService)
 {
-    private static readonly TimeSpan ClientCacheDuration = TimeSpan.FromSeconds(1.5);
+    private static readonly TimeSpan ClientCacheDuration = TimeSpan.FromMilliseconds(750);
     private readonly SemaphoreSlim _clientRefreshLock = new(1, 1);
     private IReadOnlyList<XRouterClient>? _cachedClients;
     private long _cachedClientsAtTicks;

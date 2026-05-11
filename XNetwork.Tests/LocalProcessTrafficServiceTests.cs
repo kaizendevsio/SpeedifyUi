@@ -24,4 +24,20 @@ public class LocalProcessTrafficServiceTests
         Assert.Equal(0.08, dotnet.UploadMbps, 3);
         Assert.Equal(1.0, dotnet.DownloadMbps, 3);
     }
+
+    [Fact]
+    public void ParseNethogsOutputKeepsUnknownTunnelFlows()
+    {
+        const string output = """
+            Refreshing:
+            unknown TCP/0/0 2.00 20.00
+            """;
+
+        var process = Assert.Single(LocalProcessTrafficService.ParseNethogsOutput(output));
+
+        Assert.Equal("Unknown tunnel flow", process.ProcessName);
+        Assert.Null(process.ProcessId);
+        Assert.Equal(0.016, process.UploadMbps, 3);
+        Assert.Equal(0.16, process.DownloadMbps, 3);
+    }
 }

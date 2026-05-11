@@ -310,7 +310,7 @@
                         <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
                             <div>
                                 <h4 class="font-semibold text-white">Top Local Processes</h4>
-                                <p class="text-xs text-slate-400">Live process throughput on the Speedify tunnel interface.</p>
+                                <p class="text-xs text-slate-400">Live process names and throughput observed on the Speedify tunnel interface.</p>
                             </div>
                             <span class="text-xs text-slate-500">@trafficSummary.LocalProcessTraffic.Source</span>
                         </div>
@@ -348,7 +348,7 @@
                     </section>
 
                     <p class="text-xs text-slate-500">
-                        Estimated VPN / overhead is the unmatched part after subtracting Wifi clients and observed local processes from Speedify tunnel totals. It can include Speedify encapsulation, retransmits, timing-window mismatch, or local traffic the process sampler cannot attribute.
+                        Estimated VPN / overhead is the unmatched part after subtracting Wifi clients and observed local processes from Speedify tunnel totals. It can include Speedify encapsulation, retransmits, timing-window mismatch, forwarded client packets that nethogs cannot map to a Pi process, or local traffic the process sampler cannot attribute.
                     </p>
                 }
 
@@ -451,7 +451,7 @@
         }
 
         _showTrafficBreakdown = true;
-        _routerTrafficRefreshTimer ??= new Timer(async _ => await InvokeAsync(() => LoadRouterTrafficAsync(true)), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        _routerTrafficRefreshTimer ??= new Timer(async _ => await InvokeAsync(() => LoadRouterTrafficAsync(true)), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         await LoadRouterTrafficAsync(false);
     }
 
