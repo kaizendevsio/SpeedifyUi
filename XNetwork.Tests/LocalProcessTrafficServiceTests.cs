@@ -40,4 +40,19 @@ public class LocalProcessTrafficServiceTests
         Assert.Equal(0.016, process.UploadMbps, 3);
         Assert.Equal(0.16, process.DownloadMbps, 3);
     }
+
+    [Fact]
+    public void ParseNethogsOutputSkipsZeroThroughputRows()
+    {
+        const string output = """
+            Refreshing:
+            unknown UDP/0/0 0 0
+            unknown TCP/0/0 0 0
+            /usr/bin/dotnet/1000/1234 0 0
+            """;
+
+        var processes = LocalProcessTrafficService.ParseNethogsOutput(output);
+
+        Assert.Empty(processes);
+    }
 }

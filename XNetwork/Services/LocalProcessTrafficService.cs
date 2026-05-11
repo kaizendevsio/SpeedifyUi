@@ -117,6 +117,11 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
                 continue;
             }
 
+            if (uploadKbps <= 0 && downloadKbps <= 0)
+            {
+                continue;
+            }
+
             latestByCommand[command] = new LocalProcessTrafficItem
             {
                 Command = command,
