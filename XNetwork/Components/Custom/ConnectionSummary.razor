@@ -4,7 +4,11 @@
 @implements IAsyncDisposable
 
 <!-- Overall Connection Summary -->
-<div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden">
+<div class="@GetContainerClass()"
+     role="@(ShowTrafficDetailsHint ? "button" : null)"
+     tabindex="@(ShowTrafficDetailsHint ? "0" : null)"
+     @onclick="HandleTrafficDetailsRequested"
+     @onkeydown="HandleSummaryKeyDown">
     <div class="p-4">
         <div class="flex items-center gap-3 mb-3">
             @{
@@ -57,6 +61,13 @@
                 <p class="text-white font-bold text-xl">@SpeedFormatter.FormatSpeedValue(Upload) <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Upload)</span></p>
             </div>
         </div>
+        @if (ShowTrafficDetailsHint)
+        {
+            <div class="mt-3 flex items-center gap-2 text-xs text-cyan-300">
+                <i class="fas fa-circle-info"></i>
+                <span>Tap for traffic breakdown</span>
+            </div>
+        }
     </div>
     <div class="w-full h-12">
         <canvas id="dashboardChart"></canvas>
@@ -69,6 +80,8 @@
     [Parameter] public double Download { get; set; } = 85.3;
     [Parameter] public double Upload { get; set; } = 15.9;
     [Parameter] public bool IsStable { get; set; } = true;
+    [Parameter] public bool ShowTrafficDetailsHint { get; set; }
+    [Parameter] public EventCallback OnTrafficDetailsRequested { get; set; }
     
     private IJSObjectReference? _chartModule;
     private bool _chartInitialized = false;
@@ -140,6 +153,31 @@
             _ => "slate-400"
         };
         return (ConnectionStatus, color);
+    }
+
+    private string GetContainerClass()
+    {
+        var interactiveClass = ShowTrafficDetailsHint
+            ? "cursor-pointer hover:border-cyan-500/50 hover:bg-slate-800/70 focus:outline-none focus:ring-2 focus:ring-cyan-500/60 transition-colors"
+            : "";
+
+        return $"bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden {interactiveClass}";
+    }
+
+    private async Task HandleTrafficDetailsRequested()
+    {
+        if (ShowTrafficDetailsHint && OnTrafficDetailsRequested.HasDelegate)
+        {
+            await OnTrafficDetailsRequested.InvokeAsync();
+        }
+    }
+
+    private async Task HandleSummaryKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key is "Enter" or " ")
+        {
+            await HandleTrafficDetailsRequested();
+        }
     }
 
     private int GetSignalBarCount(string status)

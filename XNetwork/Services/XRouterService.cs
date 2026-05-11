@@ -2,7 +2,7 @@ using XNetwork.Models;
 
 namespace XNetwork.Services;
 
-public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings settings)
+public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings settings, LocalProcessTrafficService localProcessTrafficService)
 {
     private static readonly TimeSpan ClientCacheDuration = TimeSpan.FromSeconds(1.5);
     private readonly SemaphoreSlim _clientRefreshLock = new(1, 1);
@@ -50,13 +50,15 @@ public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings 
     public async Task<RouterTrafficSummary> GetTrafficSummaryAsync(double speedifyDownloadMbps, double speedifyUploadMbps, CancellationToken cancellationToken = default)
     {
         var clients = await GetClientsAsync(cancellationToken).ConfigureAwait(false);
+        var localProcessTraffic = await localProcessTrafficService.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         return new RouterTrafficSummary
         {
             SpeedifyDownloadMbps = speedifyDownloadMbps,
             SpeedifyUploadMbps = speedifyUploadMbps,
             CudyClientDownloadMbps = clients.Sum(client => client.DownloadMbps),
             CudyClientUploadMbps = clients.Sum(client => client.UploadMbps),
-            CudyClientCount = clients.Count
+            CudyClientCount = clients.Count,
+            LocalProcessTraffic = localProcessTraffic
         };
     }
 

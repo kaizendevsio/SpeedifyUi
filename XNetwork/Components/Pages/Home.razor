@@ -144,65 +144,9 @@
             Latency="@GetAverageLatency()"
             Download="@GetTotalDownload()"
             Upload="@GetTotalUpload()"
-            IsStable="@IsConnectionStable()" />
-
-        @if (XRouterService.IsConfigured)
-        {
-            <section class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-4">
-                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
-                    <div>
-                        <h3 class="text-lg font-semibold text-white">Traffic Attribution</h3>
-                        <p class="text-sm text-slate-400">Compares Speedify tunnel throughput with the Cudy client table.</p>
-                    </div>
-                    <span class="self-start px-3 py-1 bg-cyan-500/10 text-cyan-300 text-sm font-medium rounded-full">
-                        @(_routerTrafficSummary?.CudyClientCount ?? 0) clients
-                    </span>
-                </div>
-
-                @if (_routerTrafficLoading && _routerTrafficSummary is null)
-                {
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3" aria-label="Loading traffic attribution">
-                        @for (var i = 0; i < 3; i++)
-                        {
-                            <div class="bg-slate-900/50 rounded-lg p-4 space-y-3">
-                                <SkeletonBlock CssClass="h-4 w-2/5" />
-                                <SkeletonBlock CssClass="h-7 w-3/5" />
-                                <SkeletonBlock CssClass="h-4 w-1/2" />
-                            </div>
-                        }
-                    </div>
-                }
-                else if (_routerTrafficSummary is not null)
-                {
-                    var trafficSummary = GetCurrentRouterTrafficSummary();
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div class="bg-slate-900/50 rounded-lg p-4">
-                            <p class="text-xs text-slate-400 mb-2">Speedify Tunnel</p>
-                            <p class="text-xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.SpeedifyDownloadMbps)</p>
-                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.SpeedifyUploadMbps)</p>
-                        </div>
-                        <div class="bg-slate-900/50 rounded-lg p-4">
-                            <p class="text-xs text-slate-400 mb-2">Cudy Clients</p>
-                            <p class="text-xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.CudyClientDownloadMbps)</p>
-                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.CudyClientUploadMbps)</p>
-                        </div>
-                        <div class="bg-slate-900/50 rounded-lg p-4 border border-amber-500/20">
-                            <p class="text-xs text-amber-200 mb-2">Router Local / Overhead</p>
-                            <p class="text-xl font-bold text-amber-200">↓ @FormatTrafficSpeed(trafficSummary.OtherDownloadMbps)</p>
-                            <p class="text-sm text-amber-100/80">↑ @FormatTrafficSpeed(trafficSummary.OtherUploadMbps)</p>
-                        </div>
-                    </div>
-                    <p class="text-xs text-slate-500 mt-3">
-                        Difference includes xrouter/Speedify/Tailscale/local Pi traffic, VPN overhead, retransmits, and short timing-window mismatch.
-                    </p>
-                }
-
-                @if (!string.IsNullOrWhiteSpace(_routerTrafficError))
-                {
-                    <p class="text-xs text-red-300 mt-3">Cudy traffic refresh failed: @_routerTrafficError</p>
-                }
-            </section>
-        }
+            IsStable="@IsConnectionStable()"
+            ShowTrafficDetailsHint="@XRouterService.IsConfigured"
+            OnTrafficDetailsRequested="ShowTrafficBreakdownAsync" />
 
         <!-- Adapter List -->
         <div class="space-y-3">
@@ -307,6 +251,116 @@
     }
 </div>
 
+@if (_showTrafficBreakdown)
+{
+    <div class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" @onclick="CloseTrafficBreakdownAsync">
+        <section class="w-full md:max-w-5xl max-h-[92vh] md:max-h-[86vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-t-3xl md:rounded-2xl shadow-2xl" @onclick:stopPropagation="true" role="dialog" aria-modal="true" aria-labelledby="traffic-breakdown-title">
+            <header class="sticky top-0 z-10 bg-slate-900/95 backdrop-blur border-b border-slate-700 p-4 md:p-5 flex items-start justify-between gap-4">
+                <div>
+                    <h3 id="traffic-breakdown-title" class="text-xl font-bold text-white">Traffic Breakdown</h3>
+                    <p class="text-sm text-slate-400 mt-1">Speedify tunnel traffic split by Wifi clients, local router processes, and estimated VPN overhead.</p>
+                </div>
+                <button type="button" class="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center" @onclick="CloseTrafficBreakdownAsync" aria-label="Close traffic breakdown">
+                    <i class="fas fa-times"></i>
+                </button>
+            </header>
+
+            <div class="p-4 md:p-5 space-y-5">
+                @if (_routerTrafficLoading && _routerTrafficSummary is null)
+                {
+                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3" aria-label="Loading traffic breakdown">
+                        @for (var i = 0; i < 4; i++)
+                        {
+                            <div class="bg-slate-950/60 rounded-xl p-4 space-y-3">
+                                <SkeletonBlock CssClass="h-4 w-2/5" />
+                                <SkeletonBlock CssClass="h-8 w-3/5" />
+                                <SkeletonBlock CssClass="h-4 w-1/2" />
+                            </div>
+                        }
+                    </div>
+                }
+                else if (_routerTrafficSummary is not null)
+                {
+                    var trafficSummary = GetCurrentRouterTrafficSummary();
+                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                        <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
+                            <p class="text-xs text-slate-400 mb-2">Speedify Tunnel</p>
+                            <p class="text-2xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.SpeedifyDownloadMbps)</p>
+                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.SpeedifyUploadMbps)</p>
+                        </div>
+                        <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
+                            <p class="text-xs text-slate-400 mb-2">Wifi Clients</p>
+                            <p class="text-2xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.CudyClientDownloadMbps)</p>
+                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.CudyClientUploadMbps)</p>
+                            <p class="text-xs text-slate-500 mt-2">@trafficSummary.CudyClientCount Cudy clients</p>
+                        </div>
+                        <div class="bg-slate-950/60 rounded-xl p-4 border border-blue-500/20">
+                            <p class="text-xs text-blue-200 mb-2">Local Processes</p>
+                            <p class="text-2xl font-bold text-blue-200">↓ @FormatTrafficSpeed(trafficSummary.LocalProcessDownloadMbps)</p>
+                            <p class="text-sm text-blue-100/80">↑ @FormatTrafficSpeed(trafficSummary.LocalProcessUploadMbps)</p>
+                        </div>
+                        <div class="bg-slate-950/60 rounded-xl p-4 border border-amber-500/25">
+                            <p class="text-xs text-amber-200 mb-2">Estimated VPN / Overhead</p>
+                            <p class="text-2xl font-bold text-amber-200">↓ @FormatTrafficSpeed(trafficSummary.EstimatedOverheadDownloadMbps)</p>
+                            <p class="text-sm text-amber-100/80">↑ @FormatTrafficSpeed(trafficSummary.EstimatedOverheadUploadMbps)</p>
+                        </div>
+                    </div>
+
+                    <section class="bg-slate-950/50 border border-slate-800 rounded-xl overflow-hidden">
+                        <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                            <div>
+                                <h4 class="font-semibold text-white">Top Local Processes</h4>
+                                <p class="text-xs text-slate-400">Live process throughput on the Speedify tunnel interface.</p>
+                            </div>
+                            <span class="text-xs text-slate-500">@trafficSummary.LocalProcessTraffic.Source</span>
+                        </div>
+
+                        @if (!trafficSummary.LocalProcessTraffic.IsSupported)
+                        {
+                            <div class="p-4 text-sm text-slate-300">
+                                @trafficSummary.LocalProcessTraffic.Message
+                            </div>
+                        }
+                        else if (!trafficSummary.LocalProcessTraffic.Processes.Any())
+                        {
+                            <div class="p-4 text-sm text-slate-300">
+                                @trafficSummary.LocalProcessTraffic.Message
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="divide-y divide-slate-800">
+                                @foreach (var process in trafficSummary.LocalProcessTraffic.Processes)
+                                {
+                                    <div class="p-4 flex items-center justify-between gap-4">
+                                        <div class="min-w-0">
+                                            <p class="font-semibold text-white truncate">@process.ProcessName</p>
+                                            <p class="text-xs text-slate-500 truncate">@FormatProcessDetail(process)</p>
+                                        </div>
+                                        <div class="text-right flex-shrink-0">
+                                            <p class="text-sm text-cyan-300">↓ @FormatTrafficSpeed(process.DownloadMbps)</p>
+                                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(process.UploadMbps)</p>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </section>
+
+                    <p class="text-xs text-slate-500">
+                        Estimated VPN / overhead is the unmatched part after subtracting Wifi clients and observed local processes from Speedify tunnel totals. It can include Speedify encapsulation, retransmits, timing-window mismatch, or local traffic the process sampler cannot attribute.
+                    </p>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_routerTrafficError))
+                {
+                    <p class="text-sm text-red-300">Traffic breakdown refresh failed: @_routerTrafficError</p>
+                }
+            </div>
+        </section>
+    </div>
+}
+
 @code {
     private IReadOnlyList<Adapter>? _adapters;
     private List<ConnectionItem> _stats = new();
@@ -322,6 +376,7 @@
     private RouterTrafficSummary? _routerTrafficSummary;
     private string? _routerTrafficError;
     private bool _routerTrafficLoading;
+    private bool _showTrafficBreakdown;
     private int _routerTrafficRefreshInProgress;
 
     private bool _initialLoadComplete = false;
@@ -334,17 +389,9 @@
         
         _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         _serverInfoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadServerInfoAsync), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
-        if (XRouterService.IsConfigured)
-        {
-            _routerTrafficRefreshTimer = new Timer(async _ => await InvokeAsync(() => LoadRouterTrafficAsync(true)), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-        }
 
         await LoadAdaptersAndSettingsAsync();
         await LoadServerInfoAsync();
-        if (XRouterService.IsConfigured)
-        {
-            await LoadRouterTrafficAsync(false);
-        }
 
         await StreamSpeedifyDataAsync();
     }
@@ -396,9 +443,31 @@
         }
     }
 
-    private async Task LoadRouterTrafficAsync(bool background)
+    private async Task ShowTrafficBreakdownAsync()
     {
         if (!XRouterService.IsConfigured)
+        {
+            return;
+        }
+
+        _showTrafficBreakdown = true;
+        _routerTrafficRefreshTimer ??= new Timer(async _ => await InvokeAsync(() => LoadRouterTrafficAsync(true)), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        await LoadRouterTrafficAsync(false);
+    }
+
+    private async Task CloseTrafficBreakdownAsync()
+    {
+        _showTrafficBreakdown = false;
+        if (_routerTrafficRefreshTimer != null)
+        {
+            await _routerTrafficRefreshTimer.DisposeAsync();
+            _routerTrafficRefreshTimer = null;
+        }
+    }
+
+    private async Task LoadRouterTrafficAsync(bool background)
+    {
+        if (!XRouterService.IsConfigured || !_showTrafficBreakdown)
         {
             return;
         }
@@ -408,7 +477,7 @@
             return;
         }
 
-        if (!background && _routerTrafficSummary is null)
+        if (!background)
         {
             _routerTrafficLoading = true;
             await InvokeAsync(StateHasChanged);
@@ -733,6 +802,12 @@
         return SpeedFormatter.FormatSpeed(speedMbps);
     }
 
+    private static string FormatProcessDetail(LocalProcessTrafficItem process)
+    {
+        var pid = process.ProcessId.HasValue ? $"PID {process.ProcessId.Value} · " : "";
+        return pid + process.Command;
+    }
+
     private RouterTrafficSummary GetCurrentRouterTrafficSummary()
     {
         var cached = _routerTrafficSummary ?? new RouterTrafficSummary();
@@ -742,7 +817,8 @@
             SpeedifyUploadMbps = GetTotalUpload(),
             CudyClientDownloadMbps = cached.CudyClientDownloadMbps,
             CudyClientUploadMbps = cached.CudyClientUploadMbps,
-            CudyClientCount = cached.CudyClientCount
+            CudyClientCount = cached.CudyClientCount,
+            LocalProcessTraffic = cached.LocalProcessTraffic
         };
     }
 

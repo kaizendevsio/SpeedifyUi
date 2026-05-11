@@ -28,6 +28,7 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<CudyLuciClient>();
 builder.Services.AddSingleton<CudyApControlService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CudyApControlService>());
+builder.Services.AddSingleton<LocalProcessTrafficService>();
 builder.Services.AddSingleton<XRouterService>();
 
 // Add connection health service (both as singleton and hosted service)
