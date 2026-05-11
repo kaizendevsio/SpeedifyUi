@@ -2,6 +2,7 @@
 @using System.Globalization
 @using XNetwork.Models
 @using XNetwork.Services
+@using XNetwork.Components.Custom
 @inject XRouterService XRouterService
 @implements IAsyncDisposable
 
@@ -24,19 +25,19 @@
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
                 <p class="text-xs text-slate-400">Connected</p>
-                <p class="text-2xl font-bold text-white">@_clients.Count</p>
+                <p class="text-2xl font-bold text-white"><AnimatedNumber Value="@_clients.Count" Decimals="0" AriaLabel="@($"{_clients.Count} connected clients")" /></p>
             </div>
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
                 <p class="text-xs text-slate-400">Blocked</p>
-                <p class="text-2xl font-bold text-red-300">@_clients.Count(c => !c.InternetAllowed)</p>
+                <p class="text-2xl font-bold text-red-300"><AnimatedNumber Value="@GetBlockedClientCount()" Decimals="0" AriaLabel="@($"{GetBlockedClientCount()} blocked clients")" /></p>
             </div>
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
                 <p class="text-xs text-slate-400">Download</p>
-                <p class="text-2xl font-bold text-cyan-300">@FormatMbps(_clients.Sum(c => c.DownloadMbps))</p>
+                <p class="text-2xl font-bold text-cyan-300"><AnimatedNumber Value="@GetTotalDownloadMbps()" Decimals="@GetMbpsDecimals(GetTotalDownloadMbps())" AriaLabel="@FormatMbps(GetTotalDownloadMbps())" /> <span class="text-sm font-semibold text-cyan-200/80">Mbps</span></p>
             </div>
             <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4">
                 <p class="text-xs text-slate-400">Upload</p>
-                <p class="text-2xl font-bold text-pink-300">@FormatMbps(_clients.Sum(c => c.UploadMbps))</p>
+                <p class="text-2xl font-bold text-pink-300"><AnimatedNumber Value="@GetTotalUploadMbps()" Decimals="@GetMbpsDecimals(GetTotalUploadMbps())" AriaLabel="@FormatMbps(GetTotalUploadMbps())" /> <span class="text-sm font-semibold text-pink-200/80">Mbps</span></p>
             </div>
         </div>
 
@@ -91,8 +92,8 @@
                                         <p class="text-xs text-slate-500 mt-1">@client.ConnectionType @FormatSignal(client.SignalDbm) · @client.OnlineDuration</p>
                                     </div>
                                     <div class="text-right flex-shrink-0">
-                                        <p class="text-sm text-cyan-300">↓ @FormatMbps(client.DownloadMbps)</p>
-                                        <p class="text-sm text-pink-300">↑ @FormatMbps(client.UploadMbps)</p>
+                                        <p class="text-sm text-cyan-300">↓ <AnimatedNumber Value="@client.DownloadMbps" Decimals="@GetMbpsDecimals(client.DownloadMbps)" AriaLabel="@FormatMbps(client.DownloadMbps)" /> <span class="text-xs text-cyan-200/70">Mbps</span></p>
+                                        <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@client.UploadMbps" Decimals="@GetMbpsDecimals(client.UploadMbps)" AriaLabel="@FormatMbps(client.UploadMbps)" /> <span class="text-xs text-pink-200/70">Mbps</span></p>
                                     </div>
                                 </div>
                             </button>
@@ -127,7 +128,7 @@
                     <div class="bg-slate-950/50 border border-slate-700 rounded-xl p-3 mb-4">
                         <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
                             <span>Realtime Throughput</span>
-                            <span>Last @GetHistory(client.MacAddress).Count samples</span>
+                            <span>Last <AnimatedNumber Value="@GetHistory(client.MacAddress).Count" Decimals="0" AriaLabel="@($"{GetHistory(client.MacAddress).Count} samples")" /> samples</span>
                         </div>
                         <svg viewBox="0 0 320 140" class="w-full h-44 overflow-visible" role="img" aria-label="Client throughput chart">
                             <line x1="8" y1="124" x2="312" y2="124" stroke="rgba(148,163,184,0.25)" stroke-width="1" />
@@ -136,8 +137,8 @@
                             <polyline points="@BuildPolyline(client.MacAddress, false)" fill="none" stroke="#f472b6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
                         </svg>
                         <div class="flex items-center gap-4 text-xs">
-                            <span class="text-cyan-300">↓ Download @FormatMbps(client.DownloadMbps)</span>
-                            <span class="text-pink-300">↑ Upload @FormatMbps(client.UploadMbps)</span>
+                            <span class="text-cyan-300">↓ Download <AnimatedNumber Value="@client.DownloadMbps" Decimals="@GetMbpsDecimals(client.DownloadMbps)" AriaLabel="@FormatMbps(client.DownloadMbps)" /> Mbps</span>
+                            <span class="text-pink-300">↑ Upload <AnimatedNumber Value="@client.UploadMbps" Decimals="@GetMbpsDecimals(client.UploadMbps)" AriaLabel="@FormatMbps(client.UploadMbps)" /> Mbps</span>
                         </div>
                     </div>
 
@@ -381,6 +382,26 @@
     private static string FormatMbps(double value)
     {
         return value >= 10 ? $"{value:F1} Mbps" : $"{value:F2} Mbps";
+    }
+
+    private int GetBlockedClientCount()
+    {
+        return _clients.Count(client => !client.InternetAllowed);
+    }
+
+    private double GetTotalDownloadMbps()
+    {
+        return _clients.Sum(client => client.DownloadMbps);
+    }
+
+    private double GetTotalUploadMbps()
+    {
+        return _clients.Sum(client => client.UploadMbps);
+    }
+
+    private static int GetMbpsDecimals(double value)
+    {
+        return value >= 10 ? 1 : 2;
     }
 
     private static string FormatSignal(int? signalDbm)

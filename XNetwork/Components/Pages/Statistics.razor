@@ -62,12 +62,10 @@
                         <span class="text-xs text-slate-400">Ping Success</span>
                     </div>
                     <div class="flex items-baseline gap-1">
-                        <span class="text-2xl font-bold @GetUptimeTextColor(_overallHealth.SuccessRate)">
-                            @_overallHealth.SuccessRate.ToString("F1")
-                        </span>
+                        <AnimatedNumber Value="@_overallHealth.SuccessRate" Decimals="1" CssClass="@($"text-2xl font-bold {GetUptimeTextColor(_overallHealth.SuccessRate)}")" AriaLabel="@($"{_overallHealth.SuccessRate:F1}% ping success")" />
                         <span class="text-sm text-slate-400">%</span>
                     </div>
-                    <p class="text-xs text-slate-500 mt-1">Last @_overallHealth.SampleCount pings</p>
+                    <p class="text-xs text-slate-500 mt-1">Last <AnimatedNumber Value="@_overallHealth.SampleCount" Decimals="0" AriaLabel="@($"{_overallHealth.SampleCount} pings")" /> pings</p>
                 </div>
 
                 <!-- Latency -->
@@ -77,9 +75,7 @@
                         <span class="text-xs text-slate-400">Avg Latency</span>
                     </div>
                     <div class="flex items-baseline gap-1">
-                        <span class="text-2xl font-bold @GetLatencyTextColor(_overallHealth.AverageLatency)">
-                            @Math.Round(_overallHealth.AverageLatency)
-                        </span>
+                        <AnimatedNumber Value="@Math.Round(_overallHealth.AverageLatency)" Decimals="0" CssClass="@($"text-2xl font-bold {GetLatencyTextColor(_overallHealth.AverageLatency)}")" AriaLabel="@($"{Math.Round(_overallHealth.AverageLatency)} milliseconds average latency")" />
                         <span class="text-sm text-slate-400">ms</span>
                     </div>
                     <p class="text-xs text-slate-500 mt-1">Response time</p>
@@ -92,9 +88,7 @@
                         <span class="text-xs text-slate-400">Jitter</span>
                     </div>
                     <div class="flex items-baseline gap-1">
-                        <span class="text-2xl font-bold @GetJitterTextColor(_overallHealth.Jitter)">
-                            @Math.Round(_overallHealth.Jitter, 1)
-                        </span>
+                        <AnimatedNumber Value="@Math.Round(_overallHealth.Jitter, 1)" Decimals="1" CssClass="@($"text-2xl font-bold {GetJitterTextColor(_overallHealth.Jitter)}")" AriaLabel="@($"{Math.Round(_overallHealth.Jitter, 1):F1} milliseconds jitter")" />
                         <span class="text-sm text-slate-400">ms</span>
                     </div>
                     <p class="text-xs text-slate-500 mt-1">Variation</p>
@@ -107,9 +101,7 @@
                         <span class="text-xs text-slate-400">Stability</span>
                     </div>
                     <div class="flex items-baseline gap-1">
-                        <span class="text-2xl font-bold @GetStabilityTextColor(_overallHealth.StabilityScore)">
-                            @((_overallHealth.StabilityScore * 100).ToString("F0"))
-                        </span>
+                        <AnimatedNumber Value="@(Math.Round(_overallHealth.StabilityScore * 100))" Decimals="0" CssClass="@($"text-2xl font-bold {GetStabilityTextColor(_overallHealth.StabilityScore)}")" AriaLabel="@($"{Math.Round(_overallHealth.StabilityScore * 100)}% stability")" />
                         <span class="text-sm text-slate-400">%</span>
                     </div>
                     <p class="text-xs text-slate-500 mt-1">Consistency</p>
