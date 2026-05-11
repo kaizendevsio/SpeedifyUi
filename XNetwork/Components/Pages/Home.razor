@@ -7,6 +7,9 @@
 @inject XRouterService XRouterService
 @inject IConnectionHealthService ConnectionHealthService
 @inject NetworkMonitorService NetworkMonitorService
+@inject AutoServerSwitchService AutoServerSwitchService
+@inject CudyApControlService CudyApControlService
+@inject LocalProcessTrafficService LocalProcessTrafficService
 @inject IJSRuntime JSRuntime
 @implements IAsyncDisposable
 
@@ -17,6 +20,27 @@
         <h2 class="text-3xl font-bold text-white mb-1">Dashboard</h2>
         <p class="text-slate-400 mb-6">Manage and monitor network adapters in real-time.</p>
     </div>
+
+    @{
+        var dashboardAlerts = GetDashboardAlerts().ToList();
+    }
+    @if (dashboardAlerts.Any())
+    {
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-6" aria-label="Network health alerts">
+            @foreach (var alert in dashboardAlerts)
+            {
+                <div class="rounded-xl border p-4 @alert.CssClass">
+                    <div class="flex items-start gap-3">
+                        <i class="fas @alert.Icon mt-0.5"></i>
+                        <div class="min-w-0">
+                            <p class="font-semibold text-white">@alert.Title</p>
+                            <p class="text-sm text-slate-300 mt-1">@alert.Message</p>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
 
     @if (!string.IsNullOrEmpty(_error) && _adapters == null && !_initialLoadComplete) 
     {
@@ -302,6 +326,18 @@
                 </div>
             </div>
 
+            @if (IsRedundantMode())
+            {
+                <div class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-100">
+                    <div class="flex items-start gap-3">
+                        <i class="fas fa-clone mt-0.5 text-amber-300"></i>
+                        <p>
+                            Speedify redundant mode is active. Tunnel traffic can exceed Wifi client traffic because packets may be duplicated across up to @GetMaxRedundantConnections() available connections, plus retransmits and timing mismatch.
+                        </p>
+                    </div>
+                </div>
+            }
+
             <section class="bg-slate-950/50 border border-slate-800 rounded-xl overflow-hidden">
                 <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
                     <div>
@@ -365,12 +401,23 @@
     private Timer? _autoRefreshTimer;
     private Timer? _serverInfoRefreshTimer;
     private Timer? _routerTrafficRefreshTimer;
+    private Timer? _healthAlertRefreshTimer;
     private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"];
     private Dictionary<string, string?> _gatewayCache = new();
     private RouterTrafficSummary? _routerTrafficSummary;
+    private SpeedifySettings? _speedifySettings;
+    private AutoServerSwitchStatus? _autoSwitchStatus;
+    private CudyApControlStatus? _cudyApStatus;
+    private NetworkMonitorStatus? _networkMonitorStatus;
+    private LocalProcessTrafficSnapshot? _localProcessTrafficHealth;
+    private string? _cudyClientHealthError;
+    private string? _speedifySettingsError;
     private string? _routerTrafficError;
     private bool _routerTrafficLoading;
     private bool _showTrafficBreakdown;
+    private int _adapterRefreshInProgress;
+    private int _serverInfoRefreshInProgress;
+    private int _healthAlertRefreshInProgress;
     private int _routerTrafficRefreshInProgress;
     private ElementReference _adapterListElement;
     private IJSObjectReference? _animatedUiModule;
@@ -386,11 +433,64 @@
         
         _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         _serverInfoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadServerInfoAsync), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        _healthAlertRefreshTimer = new Timer(_ => _ = InvokeAsync(() => LoadHealthAlertsAsync(true)), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(15));
 
         await LoadAdaptersAndSettingsAsync();
         await LoadServerInfoAsync();
 
         await StreamSpeedifyDataAsync();
+    }
+
+    private async Task LoadHealthAlertsAsync(bool background)
+    {
+        if (Interlocked.Exchange(ref _healthAlertRefreshInProgress, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            _autoSwitchStatus = AutoServerSwitchService.GetStatus();
+            _cudyApStatus = CudyApControlService.GetStatus();
+            _networkMonitorStatus = NetworkMonitorService.GetStatus();
+
+            try
+            {
+                _speedifySettings = await SpeedifyService.GetSettingsAsync(_statsCts?.Token ?? CancellationToken.None);
+                _speedifySettingsError = null;
+            }
+            catch (Exception ex)
+            {
+                _speedifySettingsError = ex.Message;
+            }
+
+            if (XRouterService.IsConfigured)
+            {
+                try
+                {
+                    await XRouterService.GetClientsAsync(_statsCts?.Token ?? CancellationToken.None);
+                    _cudyClientHealthError = null;
+                }
+                catch (Exception ex)
+                {
+                    _cudyClientHealthError = ex.Message;
+                }
+
+                try
+                {
+                    _localProcessTrafficHealth = await LocalProcessTrafficService.GetSnapshotAsync(_statsCts?.Token ?? CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    _localProcessTrafficHealth = LocalProcessTrafficSnapshot.Unsupported(ex.Message);
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _healthAlertRefreshInProgress, 0);
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -415,33 +515,50 @@
 
     private async Task LoadAdaptersAndSettingsAsync()
     {
-        _adapters = await SpeedifyService.GetAdaptersAsync();
-        
-        // Load gateway IPs for all adapters (Linux only)
-        if (OperatingSystem.IsLinux() && _adapters != null)
+        if (Interlocked.Exchange(ref _adapterRefreshInProgress, 1) == 1)
         {
-            foreach (var adapter in _adapters)
+            return;
+        }
+
+        try
+        {
+            _adapters = await SpeedifyService.GetAdaptersAsync();
+
+            // Load gateway IPs for all adapters (Linux only)
+            if (OperatingSystem.IsLinux() && _adapters != null)
             {
-                if (!_gatewayCache.ContainsKey(adapter.AdapterId))
+                foreach (var adapter in _adapters)
                 {
-                    try
+                    if (!_gatewayCache.ContainsKey(adapter.AdapterId))
                     {
-                        var gateway = await NetworkMonitorService.GetGatewayAsync(adapter.AdapterId);
-                        _gatewayCache[adapter.AdapterId] = gateway;
-                    }
-                    catch (Exception)
-                    {
-                        _gatewayCache[adapter.AdapterId] = null;
+                        try
+                        {
+                            var gateway = await NetworkMonitorService.GetGatewayAsync(adapter.AdapterId);
+                            _gatewayCache[adapter.AdapterId] = gateway;
+                        }
+                        catch (Exception)
+                        {
+                            _gatewayCache[adapter.AdapterId] = null;
+                        }
                     }
                 }
             }
+
+            await InvokeAsync(StateHasChanged);
         }
-        
-        await InvokeAsync(StateHasChanged);
+        finally
+        {
+            Interlocked.Exchange(ref _adapterRefreshInProgress, 0);
+        }
     }
     
     private async Task LoadServerInfoAsync()
     {
+        if (Interlocked.Exchange(ref _serverInfoRefreshInProgress, 1) == 1)
+        {
+            return;
+        }
+
         try
         {
             _serverInfo = await SpeedifyService.GetCurrentServerAsync();
@@ -451,6 +568,10 @@
         catch (Exception)
         {
             _serverInfoLoading = false;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _serverInfoRefreshInProgress, 0);
         }
     }
 
@@ -874,15 +995,86 @@
         return "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30";
     }
 
+    private IEnumerable<DashboardAlert> GetDashboardAlerts()
+    {
+        if (!string.IsNullOrWhiteSpace(_error))
+        {
+            yield return Alert("Speedify CLI", _error, "fa-terminal", "border-red-500/35 bg-red-500/10");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_speedifySettingsError))
+        {
+            yield return Alert("Speedify settings", _speedifySettingsError, "fa-sliders", "border-red-500/35 bg-red-500/10");
+        }
+
+        if (_autoSwitchStatus?.IsEnabled == true && !string.IsNullOrWhiteSpace(_autoSwitchStatus.ProbeApiError))
+        {
+            yield return Alert("External probe", _autoSwitchStatus.ProbeApiError!, "fa-satellite-dish", "border-amber-500/35 bg-amber-500/10");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_cudyClientHealthError))
+        {
+            yield return Alert("Cudy clients", _cudyClientHealthError, "fa-wifi", "border-amber-500/35 bg-amber-500/10");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_cudyApStatus?.LastError))
+        {
+            yield return Alert("Cudy AP automation", _cudyApStatus.LastError!, "fa-tower-broadcast", "border-amber-500/35 bg-amber-500/10");
+        }
+
+        if (XRouterService.IsConfigured && _localProcessTrafficHealth is { IsSupported: false })
+        {
+            yield return Alert("Local process traffic", _localProcessTrafficHealth.Message, "fa-magnifying-glass-chart", "border-blue-500/35 bg-blue-500/10");
+        }
+
+        if (_networkMonitorStatus?.IsEnabled == true)
+        {
+            foreach (var link in _networkMonitorStatus.Links.Where(link => link.IsDown || link.IsRestartSuppressed || !string.IsNullOrWhiteSpace(link.LastRestartError)))
+            {
+                yield return Alert("Adapter monitor", FormatNetworkMonitorAlert(link), "fa-network-wired", "border-amber-500/35 bg-amber-500/10");
+            }
+        }
+    }
+
+    private static DashboardAlert Alert(string title, string message, string icon, string cssClass)
+    {
+        return new DashboardAlert(title, message, icon, cssClass);
+    }
+
+    private static string FormatNetworkMonitorAlert(NetworkLinkMonitorStatus link)
+    {
+        if (link.IsRestartSuppressed)
+        {
+            return $"{link.Name} restart is suppressed until {link.RestartSuppressedUntilUtc!.Value.ToLocalTime():HH:mm}.";
+        }
+
+        if (!string.IsNullOrWhiteSpace(link.LastRestartError))
+        {
+            return $"{link.Name} restart failed: {link.LastRestartError}";
+        }
+
+        if (link.DisconnectedSinceUtc.HasValue)
+        {
+            return $"{link.Name} has been down since {link.DisconnectedSinceUtc.Value.ToLocalTime():HH:mm:ss}; restart will be attempted after the configured timeout.";
+        }
+
+        return $"{link.Name} state is {link.State ?? "unknown"}.";
+    }
+
+    private bool IsRedundantMode()
+    {
+        return string.Equals(_speedifySettings?.BondingMode, "redundant", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private int GetMaxRedundantConnections()
+    {
+        return Math.Max(1, _speedifySettings?.MaxRedundant ?? 1);
+    }
+
+    private sealed record DashboardAlert(string Title, string Message, string Icon, string CssClass);
+
     public async ValueTask DisposeAsync()
     {
-        if (_statsCts != null)
-        {
-            if (!_statsCts.IsCancellationRequested) await _statsCts.CancelAsync();
-            _statsCts.Dispose();
-            _statsCts = null;
-        }
-        
         if (_autoRefreshTimer != null)
         {
             await _autoRefreshTimer.DisposeAsync();
@@ -893,9 +1085,21 @@
             await _serverInfoRefreshTimer.DisposeAsync();
         }
 
+        if (_healthAlertRefreshTimer != null)
+        {
+            await _healthAlertRefreshTimer.DisposeAsync();
+        }
+
         if (_routerTrafficRefreshTimer != null)
         {
             await _routerTrafficRefreshTimer.DisposeAsync();
+        }
+
+        if (_statsCts != null)
+        {
+            if (!_statsCts.IsCancellationRequested) await _statsCts.CancelAsync();
+            _statsCts.Dispose();
+            _statsCts = null;
         }
 
         if (_animatedUiModule != null)

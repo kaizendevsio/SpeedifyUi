@@ -1,5 +1,10 @@
-/* Google Fonts - Inter */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url('/vendor/fonts/inter-latin.woff2') format('woff2');
+}
 
 /* Custom Scrollbar Styling for Dark Theme */
 ::-webkit-scrollbar {

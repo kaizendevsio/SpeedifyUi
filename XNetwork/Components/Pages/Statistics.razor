@@ -326,6 +326,8 @@
     private bool _uptimeChartInitialized = false;
     private bool _showQualityInfo = false;
     private int _chartPeriod = 15; // Default to 15 seconds
+    private int _healthUpdateInProgress;
+    private int _adapterRefreshInProgress;
     private const string ActualConnectionSeriesId = "__actual_connection";
     private const string ActualConnectionSeriesLabel = "Actual Connection";
     private const string ActualConnectionSeriesColor = "#34d399";
@@ -347,6 +349,11 @@
 
     private async Task LoadInitialData()
     {
+        if (Interlocked.Exchange(ref _adapterRefreshInProgress, 1) == 1)
+        {
+            return;
+        }
+
         Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData");
         try
         {
@@ -359,6 +366,10 @@
         {
             Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Error: {ex.Message}");
             _errorMessage = $"Could not load adapter information: {ex.Message}";
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _adapterRefreshInProgress, 0);
         }
     }
     
@@ -459,6 +470,11 @@
 
     private async Task UpdateHealthData()
     {
+        if (Interlocked.Exchange(ref _healthUpdateInProgress, 1) == 1)
+        {
+            return;
+        }
+
         try
         {
             _overallHealth = ConnectionHealthService.GetOverallHealth();
@@ -481,6 +497,10 @@
         catch (Exception ex)
         {
             Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Error updating health data: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _healthUpdateInProgress, 0);
         }
     }
 

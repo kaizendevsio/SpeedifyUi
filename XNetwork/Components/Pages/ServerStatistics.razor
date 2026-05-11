@@ -350,6 +350,7 @@
     private string? _errorMessage;
     
     private Timer? _serverInfoRefreshTimer;
+    private int _serverInfoRefreshInProgress;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -363,6 +364,11 @@
 
     private async Task LoadServerInfoAsync()
     {
+        if (Interlocked.Exchange(ref _serverInfoRefreshInProgress, 1) == 1)
+        {
+            return;
+        }
+
         try
         {
             _serverInfo = await SpeedifyService.GetCurrentServerAsync();
@@ -373,6 +379,10 @@
         {
             Console.WriteLine($"ServerStatistics: Error loading server info: {ex.Message}");
             _serverInfoLoading = false;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _serverInfoRefreshInProgress, 0);
         }
     }
 

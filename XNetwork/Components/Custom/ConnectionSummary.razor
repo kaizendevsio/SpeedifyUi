@@ -87,6 +87,7 @@
     private bool _chartInitialized = false;
     private Timer? _chartUpdateTimer;
     private double _previousDownload = 0;
+    private int _sparklineUpdateInProgress;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -125,16 +126,27 @@
 
     private async Task UpdateSparkline()
     {
-        if (_chartModule != null && _chartInitialized)
+        if (_chartModule == null || !_chartInitialized)
         {
-            try
-            {
-                await _chartModule.InvokeVoidAsync("updateDashboardSparkline", "dashboardChart", Download);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ConnectionSummary: Error updating sparkline: {ex.Message}");
-            }
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _sparklineUpdateInProgress, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            await _chartModule.InvokeVoidAsync("updateDashboardSparkline", "dashboardChart", Download);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ConnectionSummary: Error updating sparkline: {ex.Message}");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _sparklineUpdateInProgress, 0);
         }
     }
 

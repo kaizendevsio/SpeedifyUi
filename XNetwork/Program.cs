@@ -13,6 +13,7 @@ builder.Services.AddScoped<BlazorTransitionableRoute.IRouteTransitionInvoker, Bl
 builder.Services.Configure<NetworkMonitorSettings>(
     builder.Configuration.GetSection("NetworkMonitor"));
 builder.Services.AddSingleton<SpeedifyService>();
+builder.Services.AddSingleton<BuildInfoService>();
 builder.Services.AddSingleton<WifiService>();
 builder.Services.AddSingleton<NetworkMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NetworkMonitorService>());

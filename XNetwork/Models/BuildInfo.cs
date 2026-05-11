@@ -1,0 +1,14 @@
+namespace XNetwork.Models;
+
+public class BuildInfo
+{
+    public string Version { get; init; } = "dev";
+
+    public string Commit { get; init; } = "unknown";
+
+    public string Branch { get; init; } = "unknown";
+
+    public DateTimeOffset? BuiltAtUtc { get; init; }
+
+    public string ShortCommit => Commit.Length > 7 ? Commit[..7] : Commit;
+}

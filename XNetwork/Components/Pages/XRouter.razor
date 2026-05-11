@@ -102,7 +102,7 @@
                 }
             </section>
 
-            <section class="bg-slate-800/50 border border-slate-700 rounded-xl p-4 min-h-[28rem]">
+            <section class="hidden xl:block bg-slate-800/50 border border-slate-700 rounded-xl p-4 min-h-[28rem]">
                 @if (SelectedClient is null)
                 {
                     <div class="h-full flex items-center justify-center text-center text-slate-400">
@@ -112,59 +112,47 @@
                 else
                 {
                     var client = SelectedClient;
-                    <div class="flex items-start justify-between gap-4 mb-4">
-                        <div class="min-w-0">
-                            <h3 class="text-xl font-bold text-white truncate">@client.Hostname</h3>
-                            <p class="text-sm text-slate-400">@client.IpAddress · @client.ConnectionType</p>
-                            <p class="text-xs text-slate-500 mt-1">@client.MacAddress</p>
-                        </div>
-                        <button class="px-3 py-2 rounded-lg text-sm font-semibold @(client.InternetAllowed ? "bg-red-500/15 text-red-200 border border-red-500/30" : "bg-green-500/15 text-green-200 border border-green-500/30") disabled:opacity-60"
-                                @onclick="() => ToggleInternetAsync(client)"
-                                disabled="@IsBusy(client.MacAddress)">
-                            @(client.InternetAllowed ? "Block" : "Unblock")
-                        </button>
-                    </div>
-
-                    <div class="bg-slate-950/50 border border-slate-700 rounded-xl p-3 mb-4">
-                        <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
-                            <span>Realtime Throughput</span>
-                            <span>Last <AnimatedNumber Value="@GetHistory(client.MacAddress).Count" Decimals="0" AriaLabel="@($"{GetHistory(client.MacAddress).Count} samples")" /> samples</span>
-                        </div>
-                        <svg viewBox="0 0 320 140" class="w-full h-44 overflow-visible" role="img" aria-label="Client throughput chart">
-                            <line x1="8" y1="124" x2="312" y2="124" stroke="rgba(148,163,184,0.25)" stroke-width="1" />
-                            <line x1="8" y1="12" x2="8" y2="124" stroke="rgba(148,163,184,0.2)" stroke-width="1" />
-                            <polyline points="@BuildPolyline(client.MacAddress, true)" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-                            <polyline points="@BuildPolyline(client.MacAddress, false)" fill="none" stroke="#f472b6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-                        </svg>
-                        <div class="flex items-center gap-4 text-xs">
-                            <span class="text-cyan-300">↓ Download <AnimatedNumber Value="@client.DownloadMbps" Decimals="@GetMbpsDecimals(client.DownloadMbps)" AriaLabel="@FormatMbps(client.DownloadMbps)" /> Mbps</span>
-                            <span class="text-pink-300">↑ Upload <AnimatedNumber Value="@client.UploadMbps" Decimals="@GetMbpsDecimals(client.UploadMbps)" AriaLabel="@FormatMbps(client.UploadMbps)" /> Mbps</span>
-                        </div>
-                    </div>
-
-                    <div class="bg-slate-950/40 border border-slate-700 rounded-xl p-4">
-                        <h4 class="font-semibold text-white mb-3">Rate Limit</h4>
-                        <div class="grid grid-cols-2 gap-3 mb-3">
-                            <label class="block">
-                                <span class="text-xs text-slate-400">Download Mbps</span>
-                                <input class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-white" inputmode="numeric" value="@GetLimitDraft(client.MacAddress).DownloadMbps" @onchange="e => SetDownloadDraft(client.MacAddress, e.Value?.ToString())" />
-                            </label>
-                            <label class="block">
-                                <span class="text-xs text-slate-400">Upload Mbps</span>
-                                <input class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-white" inputmode="numeric" value="@GetLimitDraft(client.MacAddress).UploadMbps" @onchange="e => SetUploadDraft(client.MacAddress, e.Value?.ToString())" />
-                            </label>
-                        </div>
-                        <div class="flex flex-wrap gap-2">
-                            <button class="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold disabled:opacity-60" @onclick="() => ApplyRateLimitAsync(client)" disabled="@IsBusy(client.MacAddress)">Apply Limit</button>
-                            <button class="px-3 py-2 rounded-lg bg-slate-700 text-white text-sm font-semibold disabled:opacity-60" @onclick="() => ClearRateLimitAsync(client)" disabled="@IsBusy(client.MacAddress)">Unlimited</button>
-                        </div>
-                        <p class="text-xs text-slate-500 mt-3">Cudy applies limits in Mbps per device. Data caps are not exposed by this firmware endpoint yet.</p>
-                    </div>
+                    <WifiClientDetails Client="client"
+                                       HistorySampleCount="@GetHistory(client.MacAddress).Count"
+                                       DownloadPolyline="@BuildPolyline(client.MacAddress, true)"
+                                       UploadPolyline="@BuildPolyline(client.MacAddress, false)"
+                                       DownloadLimit="@GetLimitDraft(client.MacAddress).DownloadMbps"
+                                       UploadLimit="@GetLimitDraft(client.MacAddress).UploadMbps"
+                                       IsBusy="@IsBusy(client.MacAddress)"
+                                       OnToggleInternet="() => ToggleInternetAsync(client)"
+                                       OnApplyRateLimit="() => ApplyRateLimitAsync(client)"
+                                       OnClearRateLimit="() => ClearRateLimitAsync(client)"
+                                       OnDownloadLimitChanged="value => SetDownloadDraft(client.MacAddress, value)"
+                                       OnUploadLimitChanged="value => SetUploadDraft(client.MacAddress, value)" />
                 }
             </section>
         </div>
     }
 </div>
+
+@if (SelectedClient is not null)
+{
+    var sheetClient = SelectedClient;
+    <ActionSheet IsOpen="_showClientDetailsSheet"
+                 Title="@sheetClient.Hostname"
+                 Description="@($"{sheetClient.IpAddress} · {sheetClient.ConnectionType}")"
+                 CloseLabel="Close Wifi device details"
+                 BackdropClass="xl:hidden"
+                 OnClose="CloseClientDetailsSheet">
+        <WifiClientDetails Client="sheetClient"
+                           HistorySampleCount="@GetHistory(sheetClient.MacAddress).Count"
+                           DownloadPolyline="@BuildPolyline(sheetClient.MacAddress, true)"
+                           UploadPolyline="@BuildPolyline(sheetClient.MacAddress, false)"
+                           DownloadLimit="@GetLimitDraft(sheetClient.MacAddress).DownloadMbps"
+                           UploadLimit="@GetLimitDraft(sheetClient.MacAddress).UploadMbps"
+                           IsBusy="@IsBusy(sheetClient.MacAddress)"
+                           OnToggleInternet="() => ToggleInternetAsync(sheetClient)"
+                           OnApplyRateLimit="() => ApplyRateLimitAsync(sheetClient)"
+                           OnClearRateLimit="() => ClearRateLimitAsync(sheetClient)"
+                           OnDownloadLimitChanged="value => SetDownloadDraft(sheetClient.MacAddress, value)"
+                           OnUploadLimitChanged="value => SetUploadDraft(sheetClient.MacAddress, value)" />
+    </ActionSheet>
+}
 
 @code {
     private const int MaxHistoryPoints = 60;
@@ -179,6 +167,7 @@
     private string _messageClass = "bg-slate-700 text-slate-100";
     private bool _isLoading = true;
     private bool _isRefreshing;
+    private bool _showClientDetailsSheet;
     private int _refreshInProgress;
 
     private XRouterClient? SelectedClient => _clients.FirstOrDefault(client => string.Equals(client.MacAddress, _selectedMac, StringComparison.OrdinalIgnoreCase));
@@ -222,6 +211,7 @@
             if (_selectedMac is null || _clients.All(client => !string.Equals(client.MacAddress, _selectedMac, StringComparison.OrdinalIgnoreCase)))
             {
                 _selectedMac = _clients.FirstOrDefault()?.MacAddress;
+                _showClientDetailsSheet = false;
             }
         }
         catch (OperationCanceledException)
@@ -243,6 +233,12 @@
     private void SelectClient(string macAddress)
     {
         _selectedMac = macAddress;
+        _showClientDetailsSheet = true;
+    }
+
+    private void CloseClientDetailsSheet()
+    {
+        _showClientDetailsSheet = false;
     }
 
     private async Task ToggleInternetAsync(XRouterClient client)

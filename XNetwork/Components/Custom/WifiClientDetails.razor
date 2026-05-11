@@ -1,0 +1,91 @@
+@using XNetwork.Models
+
+<div class="flex items-start justify-between gap-4 mb-4">
+    <div class="min-w-0">
+        <h3 class="text-xl font-bold text-white truncate">@Client.Hostname</h3>
+        <p class="text-sm text-slate-400">@Client.IpAddress · @Client.ConnectionType</p>
+        <p class="text-xs text-slate-500 mt-1">@Client.MacAddress</p>
+    </div>
+    <button class="px-3 py-2 rounded-lg text-sm font-semibold @(Client.InternetAllowed ? "bg-red-500/15 text-red-200 border border-red-500/30" : "bg-green-500/15 text-green-200 border border-green-500/30") disabled:opacity-60"
+            @onclick="ToggleInternetAsync"
+            disabled="@IsBusy">
+        @(Client.InternetAllowed ? "Block" : "Unblock")
+    </button>
+</div>
+
+<div class="bg-slate-950/50 border border-slate-700 rounded-xl p-3 mb-4">
+    <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+        <span>Realtime Throughput</span>
+        <span>Last <AnimatedNumber Value="@HistorySampleCount" Decimals="0" AriaLabel="@($"{HistorySampleCount} samples")" /> samples</span>
+    </div>
+    <svg viewBox="0 0 320 140" class="w-full h-44 overflow-visible" role="img" aria-label="Client throughput chart">
+        <line x1="8" y1="124" x2="312" y2="124" stroke="rgba(148,163,184,0.25)" stroke-width="1" />
+        <line x1="8" y1="12" x2="8" y2="124" stroke="rgba(148,163,184,0.2)" stroke-width="1" />
+        <polyline points="@DownloadPolyline" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="@UploadPolyline" fill="none" stroke="#f472b6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    <div class="flex items-center gap-4 text-xs">
+        <span class="text-cyan-300">↓ Download <AnimatedNumber Value="@Client.DownloadMbps" Decimals="@GetMbpsDecimals(Client.DownloadMbps)" AriaLabel="@FormatMbps(Client.DownloadMbps)" /> Mbps</span>
+        <span class="text-pink-300">↑ Upload <AnimatedNumber Value="@Client.UploadMbps" Decimals="@GetMbpsDecimals(Client.UploadMbps)" AriaLabel="@FormatMbps(Client.UploadMbps)" /> Mbps</span>
+    </div>
+</div>
+
+<div class="bg-slate-950/40 border border-slate-700 rounded-xl p-4">
+    <h4 class="font-semibold text-white mb-3">Rate Limit</h4>
+    <div class="grid grid-cols-2 gap-3 mb-3">
+        <label class="block">
+            <span class="text-xs text-slate-400">Download Mbps</span>
+            <input class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-white" inputmode="numeric" value="@DownloadLimit" @onchange="HandleDownloadLimitChanged" />
+        </label>
+        <label class="block">
+            <span class="text-xs text-slate-400">Upload Mbps</span>
+            <input class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-white" inputmode="numeric" value="@UploadLimit" @onchange="HandleUploadLimitChanged" />
+        </label>
+    </div>
+    <div class="flex flex-wrap gap-2">
+        <button class="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold disabled:opacity-60" @onclick="ApplyRateLimitAsync" disabled="@IsBusy">Apply Limit</button>
+        <button class="px-3 py-2 rounded-lg bg-slate-700 text-white text-sm font-semibold disabled:opacity-60" @onclick="ClearRateLimitAsync" disabled="@IsBusy">Unlimited</button>
+    </div>
+    <p class="text-xs text-slate-500 mt-3">Cudy applies limits in Mbps per device. Data caps are not exposed by this firmware endpoint yet.</p>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public XRouterClient Client { get; set; } = default!;
+    [Parameter] public int HistorySampleCount { get; set; }
+    [Parameter] public string DownloadPolyline { get; set; } = string.Empty;
+    [Parameter] public string UploadPolyline { get; set; } = string.Empty;
+    [Parameter] public string DownloadLimit { get; set; } = string.Empty;
+    [Parameter] public string UploadLimit { get; set; } = string.Empty;
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public EventCallback OnToggleInternet { get; set; }
+    [Parameter] public EventCallback OnApplyRateLimit { get; set; }
+    [Parameter] public EventCallback OnClearRateLimit { get; set; }
+    [Parameter] public EventCallback<string?> OnDownloadLimitChanged { get; set; }
+    [Parameter] public EventCallback<string?> OnUploadLimitChanged { get; set; }
+
+    private async Task ToggleInternetAsync() => await OnToggleInternet.InvokeAsync();
+
+    private async Task ApplyRateLimitAsync() => await OnApplyRateLimit.InvokeAsync();
+
+    private async Task ClearRateLimitAsync() => await OnClearRateLimit.InvokeAsync();
+
+    private async Task HandleDownloadLimitChanged(ChangeEventArgs args)
+    {
+        await OnDownloadLimitChanged.InvokeAsync(args.Value?.ToString());
+    }
+
+    private async Task HandleUploadLimitChanged(ChangeEventArgs args)
+    {
+        await OnUploadLimitChanged.InvokeAsync(args.Value?.ToString());
+    }
+
+    private static string FormatMbps(double value)
+    {
+        return value >= 10 ? $"{value:F1} Mbps" : $"{value:F2} Mbps";
+    }
+
+    private static int GetMbpsDecimals(double value)
+    {
+        return value >= 10 ? 1 : 2;
+    }
+}

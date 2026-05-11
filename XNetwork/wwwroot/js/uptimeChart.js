@@ -1,5 +1,5 @@
 // Uptime Chart Module for Connection Health Visualization
-import 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js';
+import '/vendor/chartjs/chart.umd.min.js';
 
 let uptimeChart = null;
 const MAX_DATA_POINTS = 30; // Show last 30 seconds

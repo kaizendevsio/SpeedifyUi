@@ -28,6 +28,18 @@ shopt -u dotglob nullglob
 echo "Publishing XNetwork..."
 dotnet publish XNetwork/XNetwork.csproj -c Release
 
+GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+BUILD_TIME_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+cat > "$PUBLISH_DIR/build-info.json" <<EOF
+{
+  "version": "$GIT_COMMIT",
+  "commit": "$GIT_COMMIT",
+  "branch": "$GIT_BRANCH",
+  "builtAtUtc": "$BUILD_TIME_UTC"
+}
+EOF
+
 if [[ -f "$PRESERVE_DIR/appsettings.json" ]]; then
   cp "$PRESERVE_DIR/appsettings.json" "$PUBLISH_DIR/appsettings.json"
 fi

@@ -1,17 +1,31 @@
 // Service Worker for X Network PWA
 // Version 1.0.0
 
-const CACHE_NAME = 'xnetwork-cache-v1';
-const RUNTIME_CACHE = 'xnetwork-runtime-v1';
+const CACHE_NAME = 'xnetwork-cache-v2';
+const RUNTIME_CACHE = 'xnetwork-runtime-v2';
 
 // Assets to cache on install
 const PRECACHE_ASSETS = [
     '/',
     '/app.css',
     '/manifest.json',
+    '/js/animatedUi.js',
     '/js/statisticsCharts.js',
+    '/js/uptimeChart.js',
+    '/vendor/auto-animate/index.min.js',
+    '/vendor/chartjs/chart.umd.min.js',
+    '/vendor/fontawesome/css/all.min.css',
+    '/vendor/fontawesome/webfonts/fa-brands-400.ttf',
+    '/vendor/fontawesome/webfonts/fa-brands-400.woff2',
+    '/vendor/fontawesome/webfonts/fa-regular-400.ttf',
+    '/vendor/fontawesome/webfonts/fa-regular-400.woff2',
+    '/vendor/fontawesome/webfonts/fa-solid-900.ttf',
+    '/vendor/fontawesome/webfonts/fa-solid-900.woff2',
+    '/vendor/fonts/inter-latin.woff2',
+    '/vendor/odometer/odometer-theme-minimal.min.css',
+    '/vendor/odometer/odometer.min.js',
+    '/vendor/tailwind/tailwindcss-3.4.17.js',
     '/XNetwork.styles.css',
-    // External resources (will be cached on first use)
 ];
 
 // Install event - cache essential assets

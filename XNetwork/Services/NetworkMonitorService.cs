@@ -13,6 +13,10 @@ public class NetworkMonitorService : BackgroundService
     private readonly Dictionary<string, Queue<DateTime>> _restartAttempts = new();
     private readonly Dictionary<string, DateTime> _restartSuppressedUntil = new();
     private readonly Dictionary<string, DateTime> _lastSuppressionLog = new();
+    private readonly Dictionary<string, string> _lastObservedStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _lastRestartAttemptUtc = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string?> _lastRestartErrors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _stateLock = new();
     private readonly IHostApplicationLifetime _appLifetime;
     private readonly SpeedifyService _speedifyService;
 
@@ -85,35 +89,44 @@ public class NetworkMonitorService : BackgroundService
                     continue;
 
                 bool isDisconnected = adapter.State.ToLowerInvariant() == "disconnected";
+                var shouldRestart = false;
                 if (isDisconnected)
                 {
-                    if (!_disconnectionTimes.ContainsKey(adapter.Name))
+                    lock (_stateLock)
                     {
-                        _disconnectionTimes[adapter.Name] = DateTime.UtcNow;
-                        _logger.LogWarning("Speedify adapter {Link} is disconnected. Will attempt restart after {Timeout} seconds",
-                            adapter.Name, _settings.DownTimeoutSeconds);
-                    }
-                    else
-                    {
-                        var downTime = DateTime.UtcNow - _disconnectionTimes[adapter.Name];
-                        if (downTime.TotalSeconds >= _settings.DownTimeoutSeconds)
+                        _lastObservedStates[adapter.Name] = adapter.State;
+                        if (!_disconnectionTimes.ContainsKey(adapter.Name))
                         {
-                            if (!CanAttemptRestart(adapter.Name))
-                            {
-                                continue;
-                            }
+                            _disconnectionTimes[adapter.Name] = DateTime.UtcNow;
+                            _logger.LogWarning("Speedify adapter {Link} is disconnected. Will attempt restart after {Timeout} seconds",
+                                adapter.Name, _settings.DownTimeoutSeconds);
+                        }
+                        else
+                        {
+                            var downTime = DateTime.UtcNow - _disconnectionTimes[adapter.Name];
+                            shouldRestart = downTime.TotalSeconds >= _settings.DownTimeoutSeconds && CanAttemptRestartLocked(adapter.Name);
+                        }
+                    }
 
-                            await RestartLink(adapter.Name, stoppingToken);
+                    if (shouldRestart)
+                    {
+                        await RestartLink(adapter.Name, stoppingToken);
+                        lock (_stateLock)
+                        {
                             _disconnectionTimes.Remove(adapter.Name);
                         }
                     }
                 }
                 else
                 {
-                    if (_disconnectionTimes.ContainsKey(adapter.Name))
+                    lock (_stateLock)
                     {
-                        _logger.LogInformation("Speedify adapter {Link} is now up", adapter.Name);
-                        _disconnectionTimes.Remove(adapter.Name);
+                        _lastObservedStates[adapter.Name] = adapter.State;
+                        if (_disconnectionTimes.ContainsKey(adapter.Name))
+                        {
+                            _logger.LogInformation("Speedify adapter {Link} is now up", adapter.Name);
+                            _disconnectionTimes.Remove(adapter.Name);
+                        }
                     }
                 }
             }
@@ -124,10 +137,11 @@ public class NetworkMonitorService : BackgroundService
         }
     }
 
-    private bool CanAttemptRestart(string interfaceName)
+    private bool CanAttemptRestartLocked(string interfaceName)
     {
         if (_settings.MaxRestartAttemptsPerHour <= 0)
         {
+            _lastRestartAttemptUtc[interfaceName] = DateTime.UtcNow;
             return true;
         }
 
@@ -152,7 +166,7 @@ public class NetworkMonitorService : BackgroundService
             _lastSuppressionLog.Remove(interfaceName);
         }
 
-        var attempts = GetRestartAttempts(interfaceName);
+        var attempts = GetRestartAttemptsLocked(interfaceName);
         while (attempts.Count > 0 && now - attempts.Peek() > TimeSpan.FromHours(1))
         {
             attempts.Dequeue();
@@ -173,10 +187,11 @@ public class NetworkMonitorService : BackgroundService
         }
 
         attempts.Enqueue(now);
+        _lastRestartAttemptUtc[interfaceName] = now;
         return true;
     }
 
-    private Queue<DateTime> GetRestartAttempts(string interfaceName)
+    private Queue<DateTime> GetRestartAttemptsLocked(string interfaceName)
     {
         if (!_restartAttempts.TryGetValue(interfaceName, out var attempts))
         {
@@ -185,6 +200,38 @@ public class NetworkMonitorService : BackgroundService
         }
 
         return attempts;
+    }
+
+    public NetworkMonitorStatus GetStatus()
+    {
+        lock (_stateLock)
+        {
+            var now = DateTime.UtcNow;
+            var links = _settings.WhitelistedLinks.Select(link =>
+            {
+                var attempts = _restartAttempts.TryGetValue(link, out var restartAttempts)
+                    ? restartAttempts.Count(attempt => now - attempt <= TimeSpan.FromHours(1))
+                    : 0;
+
+                return new NetworkLinkMonitorStatus
+                {
+                    Name = link,
+                    State = _lastObservedStates.GetValueOrDefault(link),
+                    DisconnectedSinceUtc = _disconnectionTimes.TryGetValue(link, out var disconnectedSince) ? disconnectedSince : null,
+                    RestartSuppressedUntilUtc = _restartSuppressedUntil.TryGetValue(link, out var suppressedUntil) ? suppressedUntil : null,
+                    LastRestartAttemptUtc = _lastRestartAttemptUtc.TryGetValue(link, out var lastRestartAttempt) ? lastRestartAttempt : null,
+                    LastRestartError = _lastRestartErrors.GetValueOrDefault(link),
+                    RestartAttemptsInLastHour = attempts
+                };
+            }).ToList();
+
+            return new NetworkMonitorStatus
+            {
+                IsEnabled = _settings.Enabled,
+                DownTimeoutSeconds = _settings.DownTimeoutSeconds,
+                Links = links
+            };
+        }
     }
 
     private async Task RestartLink(string interfaceName, CancellationToken stoppingToken)
@@ -198,6 +245,10 @@ public class NetworkMonitorService : BackgroundService
             if (!downResult)
             {
                 _logger.LogError("Failed to bring down network link {Link}", interfaceName);
+                lock (_stateLock)
+                {
+                    _lastRestartErrors[interfaceName] = "Failed to bring link down.";
+                }
                 return;
             }
             
@@ -209,14 +260,26 @@ public class NetworkMonitorService : BackgroundService
             if (!upResult)
             {
                 _logger.LogError("Failed to bring up network link {Link}", interfaceName);
+                lock (_stateLock)
+                {
+                    _lastRestartErrors[interfaceName] = "Failed to bring link up.";
+                }
                 return;
             }
             
+            lock (_stateLock)
+            {
+                _lastRestartErrors[interfaceName] = null;
+            }
             _logger.LogInformation("Successfully restarted network link {Link}", interfaceName);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error restarting network link {Link}", interfaceName);
+            lock (_stateLock)
+            {
+                _lastRestartErrors[interfaceName] = ex.Message;
+            }
         }
     }
 

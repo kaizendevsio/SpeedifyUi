@@ -1,6 +1,6 @@
 @if (IsOpen)
 {
-    <div class="action-sheet-backdrop" @onclick="CloseAsync">
+    <div class="@GetBackdropClass()" @onclick="CloseAsync">
         <section class="@GetPanelClass()" @onclick:stopPropagation="true" role="dialog" aria-modal="true" aria-labelledby="@_titleId">
             <header class="action-sheet-header">
                 <div class="min-w-0">
@@ -28,6 +28,7 @@
     [Parameter] public string? Description { get; set; }
     [Parameter] public string CloseLabel { get; set; } = "Close";
     [Parameter] public string MaxWidthClass { get; set; } = "md:max-w-3xl";
+    [Parameter] public string BackdropClass { get; set; } = string.Empty;
     [Parameter] public string CssClass { get; set; } = string.Empty;
     [Parameter] public string BodyClass { get; set; } = string.Empty;
     [Parameter] public EventCallback OnClose { get; set; }
@@ -46,6 +47,11 @@
     private string GetPanelClass()
     {
         return $"action-sheet-panel {MaxWidthClass} {CssClass}".Trim();
+    }
+
+    private string GetBackdropClass()
+    {
+        return $"action-sheet-backdrop {BackdropClass}".Trim();
     }
 
     private string GetBodyClass()

@@ -88,7 +88,7 @@ export async function enableAutoAnimate(element, options = {}) {
     }
 
     try {
-        autoAnimateModulePromise ??= import("https://cdn.jsdelivr.net/npm/@formkit/auto-animate@0.8.2/index.min.js");
+        autoAnimateModulePromise ??= import("/vendor/auto-animate/index.min.js");
         const autoAnimateModule = await autoAnimateModulePromise;
         const autoAnimate = autoAnimateModule.default;
         const controller = autoAnimate(element, {
