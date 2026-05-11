@@ -35,27 +35,83 @@ body {
     animation: xnetwork-skeleton-shimmer 1.35s ease-in-out infinite;
 }
 
-.animated-number,
-.odometer.odometer-auto-theme,
-.odometer.odometer-theme-minimal {
+.animated-number {
     display: inline-block;
+    position: relative;
     font-family: inherit;
     font-variant-numeric: tabular-nums;
     line-height: inherit;
+    vertical-align: baseline;
 }
 
+.animated-number .odometer-inside,
 .animated-number .odometer-digit,
 .animated-number .odometer-formatting-mark {
+    display: inline-block;
     vertical-align: baseline;
+}
+
+.animated-number .odometer-digit {
+    position: relative;
+}
+
+.animated-number .odometer-digit-spacer {
+    display: inline-block;
+    visibility: hidden;
+}
+
+.animated-number .odometer-digit-inner {
+    position: absolute;
+    inset: 0;
+    display: block;
+    overflow: hidden;
+    text-align: left;
+}
+
+.animated-number .odometer-ribbon,
+.animated-number .odometer-ribbon-inner,
+.animated-number .odometer-value {
+    display: block;
+}
+
+.animated-number .odometer-ribbon-inner {
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+}
+
+.animated-number .odometer-value {
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+}
+
+.animated-number .odometer-value.odometer-last-value {
+    position: absolute;
 }
 
 .animated-number.odometer.odometer-animating-up .odometer-ribbon-inner,
 .animated-number.odometer.odometer-animating-down.odometer-animating .odometer-ribbon-inner {
-    -webkit-transition-duration: 300ms !important;
-    -moz-transition-duration: 300ms !important;
-    -ms-transition-duration: 300ms !important;
-    -o-transition-duration: 300ms !important;
-    transition-duration: 300ms !important;
+    -webkit-transition: -webkit-transform 300ms !important;
+    -moz-transition: -moz-transform 300ms !important;
+    -ms-transition: -ms-transform 300ms !important;
+    -o-transition: -o-transform 300ms !important;
+    transition: transform 300ms !important;
+}
+
+.animated-number.odometer.odometer-animating-up.odometer-animating .odometer-ribbon-inner,
+.animated-number.odometer.odometer-animating-down .odometer-ribbon-inner {
+    -webkit-transform: translateY(-100%);
+    -moz-transform: translateY(-100%);
+    -ms-transform: translateY(-100%);
+    -o-transform: translateY(-100%);
+    transform: translateY(-100%);
+}
+
+.animated-number.odometer.odometer-animating-down.odometer-animating .odometer-ribbon-inner {
+    -webkit-transform: translateY(0);
+    -moz-transform: translateY(0);
+    -ms-transform: translateY(0);
+    -o-transform: translateY(0);
+    transform: translateY(0);
 }
 
 .action-sheet-backdrop {
