@@ -23,7 +23,7 @@ function getDecimalPlaces(value) {
 function getDuration(value) {
     const duration = Number(value);
     if (!Number.isFinite(duration)) {
-        return 700;
+        return 300;
     }
 
     return Math.max(0, duration);
