@@ -7,6 +7,7 @@
 @inject XRouterService XRouterService
 @inject IConnectionHealthService ConnectionHealthService
 @inject NetworkMonitorService NetworkMonitorService
+@inject IJSRuntime JSRuntime
 @implements IAsyncDisposable
 
 <PageTitle>Dashboard - XNetwork</PageTitle>
@@ -150,216 +151,209 @@
 
         <!-- Adapter List -->
         <div class="space-y-3">
-            <div class="flex items-center gap-3 px-1 mb-3">
+            <div class="flex items-center gap-3 px-1">
                 <h3 class="text-lg font-semibold text-white">Adapters</h3>
                 <span class="px-3 py-1 bg-green-500/10 text-green-400 text-sm font-medium rounded-full">
                     @GetConnectedCount() connected
                 </span>
             </div>
             
-            @foreach (var adapter in GetSortedAdapters())
-            {
-                var currentStats = GetStatsForAdapter(adapter.AdapterId);
-                var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
-                var isConnecting = adapter.State.ToLowerInvariant() == "connecting";
-                var bgClass = GetAdapterBackgroundClass(adapter, currentStats);
-                var signalStrength = !isOffline ? GetSignalStrength(adapter, currentStats) : 0;
-                var signalColor = !isOffline ? GetSignalColor(adapter.State, signalStrength) : "slate-700";
-                
-                <div class="@bgClass border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative cursor-pointer hover:bg-slate-700/30 transition-colors"
-                     @onclick="() => OnAdapterClick(adapter)">
-                    <!-- Row 1: Header -->
-                    <div class="flex items-center justify-between gap-3 text-sm">
-                    <div class="flex items-center gap-3 flex-grow min-w-0">
-                        @if (!isOffline)
-                        {
-                            <div class="flex items-end gap-0.5 w-10 h-6 flex-shrink-0">
-                                @for (int i = 0; i < 4; i++)
-                                {
-                                    var isActive = isConnecting ? (i < 2) : (i < signalStrength);
-                                    var heightClass = i switch
+            <div class="space-y-3" @ref="_adapterListElement">
+                @foreach (var adapter in GetSortedAdapters())
+                {
+                    var currentStats = GetStatsForAdapter(adapter.AdapterId);
+                    var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
+                    var isConnecting = adapter.State.ToLowerInvariant() == "connecting";
+                    var bgClass = GetAdapterBackgroundClass(adapter, currentStats);
+                    var signalStrength = !isOffline ? GetSignalStrength(adapter, currentStats) : 0;
+                    var signalColor = !isOffline ? GetSignalColor(adapter.State, signalStrength) : "slate-700";
+
+                    <div @key="adapter.AdapterId"
+                         class="@bgClass border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative cursor-pointer hover:bg-slate-700/30 transition-colors"
+                         @onclick="() => OnAdapterClick(adapter)">
+                        <!-- Row 1: Header -->
+                        <div class="flex items-center justify-between gap-3 text-sm">
+                        <div class="flex items-center gap-3 flex-grow min-w-0">
+                            @if (!isOffline)
+                            {
+                                <div class="flex items-end gap-0.5 w-10 h-6 flex-shrink-0">
+                                    @for (int i = 0; i < 4; i++)
                                     {
-                                        0 => "h-2",  // 25% height
-                                        1 => "h-3",  // 37.5% height
-                                        2 => "h-4",  // 50% height
-                                        3 => "h-6",  // 100% height
-                                        _ => "h-2"
-                                    };
-                                    var animationClass = isConnecting && isActive ? "animate-pulse" : "";
-                                    var colorClass = isActive ? $"bg-{signalColor}" : "bg-slate-700";
-                                    <div class="@heightClass @colorClass @animationClass w-1.5 rounded-sm transition-all"></div>
+                                        var isActive = isConnecting ? (i < 2) : (i < signalStrength);
+                                        var heightClass = i switch
+                                        {
+                                            0 => "h-2",  // 25% height
+                                            1 => "h-3",  // 37.5% height
+                                            2 => "h-4",  // 50% height
+                                            3 => "h-6",  // 100% height
+                                            _ => "h-2"
+                                        };
+                                        var animationClass = isConnecting && isActive ? "animate-pulse" : "";
+                                        var colorClass = isActive ? $"bg-{signalColor}" : "bg-slate-700";
+                                        <div class="@heightClass @colorClass @animationClass w-1.5 rounded-sm transition-all"></div>
+                                    }
+                                </div>
+                            }
+                                else
+                                {
+                                    <i class="fas fa-signal-slash text-red-400 text-lg w-8 text-center flex-shrink-0"></i>
                                 }
+                                <div class="flex flex-col min-w-0">
+                                    <span class="text-base font-medium text-white truncate">@GetProviderName(adapter)</span>
+                                    <span class="text-sm text-slate-400 truncate">@adapter.Name</span>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2 flex-shrink-0">
+                                @{
+                                    var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
+                                }
+                                @if (!string.IsNullOrEmpty(gateway))
+                                {
+                                    <a href="http://@gateway"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 hover:text-white transition-colors border border-slate-600/50 hover:border-slate-500"
+                                       title="Open Router Admin (@gateway)"
+                                       @onclick:stopPropagation="true">
+                                         <span class="text-base">↗</span>
+                                     </a>
+                                 }
+                                 <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full">
+                                     @adapter.State
+                                 </span>
+                            </div>
+                        </div>
+                        
+                        <!-- Row 2: Stats -->
+                        @if (!isOffline && currentStats != null)
+                        {
+                            var downloadSpeedMbps = currentStats.ReceiveBps * 8.0 / 1_000_000.0;
+                            var uploadSpeedMbps = currentStats.SendBps * 8.0 / 1_000_000.0;
+
+                            <div class="flex items-center gap-4 mt-3 text-sm">
+                                <div class="flex items-center gap-1.5">
+                                    <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
+                                    <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(downloadSpeedMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(downloadSpeedMbps)" CssClass="text-white font-semibold" AriaLabel="@SpeedFormatter.FormatSpeed(downloadSpeedMbps)" />
+                                    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(downloadSpeedMbps)</span>
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
+                                    <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(uploadSpeedMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(uploadSpeedMbps)" CssClass="text-white font-semibold" AriaLabel="@SpeedFormatter.FormatSpeed(uploadSpeedMbps)" />
+                                    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(uploadSpeedMbps)</span>
+                                </div>
+                                <div class="flex items-center gap-1.5">
+                                    <i class="far fa-clock text-slate-400 text-sm"></i>
+                                    <AnimatedNumber Value="@currentStats.LatencyMs" Decimals="0" CssClass="text-white font-semibold" AriaLabel="@($"{currentStats.LatencyMs} milliseconds")" />
+                                    <span class="text-xs text-slate-400">ms</span>
+                                </div>
                             </div>
                         }
-                            else
-                            {
-                                <i class="fas fa-signal-slash text-red-400 text-lg w-8 text-center flex-shrink-0"></i>
-                            }
-                            <div class="flex flex-col min-w-0">
-                                <span class="text-base font-medium text-white truncate">@GetProviderName(adapter)</span>
-                                <span class="text-sm text-slate-400 truncate">@adapter.Name</span>
-                            </div>
-                        </div>
-                        <div class="flex items-center gap-2 flex-shrink-0">
-                            @{
-                                var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
-                            }
-                            @if (!string.IsNullOrEmpty(gateway))
-                            {
-                                <a href="http://@gateway"
-                                   target="_blank"
-                                   rel="noopener noreferrer"
-                                   class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 hover:text-white transition-colors border border-slate-600/50 hover:border-slate-500"
-                                   title="Open Router Admin (@gateway)"
-                                   @onclick:stopPropagation="true">
-                                    <span class="text-base">↗</span>
-                                </a>
-                            }
-                            <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full">
-                                @adapter.State
-                            </span>
-                        </div>
                     </div>
-                    
-                    <!-- Row 2: Stats -->
-                    @if (!isOffline && currentStats != null)
-                    {
-                        var downloadSpeedMbps = currentStats.ReceiveBps * 8.0 / 1_000_000.0;
-                        var uploadSpeedMbps = currentStats.SendBps * 8.0 / 1_000_000.0;
-                        
-                        <div class="flex items-center gap-4 mt-3 text-sm">
-                            <div class="flex items-center gap-1.5">
-                                <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
-                                <span class="text-white font-semibold">@SpeedFormatter.FormatSpeedValue(downloadSpeedMbps)</span>
-                                <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(downloadSpeedMbps)</span>
-                            </div>
-                            <div class="flex items-center gap-1.5">
-                                <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
-                                <span class="text-white font-semibold">@SpeedFormatter.FormatSpeedValue(uploadSpeedMbps)</span>
-                                <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(uploadSpeedMbps)</span>
-                            </div>
-                            <div class="flex items-center gap-1.5">
-                                <i class="far fa-clock text-slate-400 text-sm"></i>
-                                <span class="text-white font-semibold">@currentStats.LatencyMs</span>
-                                <span class="text-xs text-slate-400">ms</span>
-                            </div>
-                        </div>
-                    }
-                </div>
-            }
+                }
+            </div>
         </div>
     }
 </div>
 
-@if (_showTrafficBreakdown)
-{
-    <div class="fixed inset-0 z-[90] bg-slate-950/80 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-6" @onclick="CloseTrafficBreakdownAsync">
-        <section class="w-full md:max-w-5xl max-h-[92vh] md:max-h-[86vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-t-3xl md:rounded-2xl shadow-2xl" @onclick:stopPropagation="true" role="dialog" aria-modal="true" aria-labelledby="traffic-breakdown-title">
-            <header class="sticky top-0 z-10 bg-slate-900/95 backdrop-blur border-b border-slate-700 p-4 md:p-5 flex items-start justify-between gap-4">
-                <div>
-                    <h3 id="traffic-breakdown-title" class="text-xl font-bold text-white">Traffic Breakdown</h3>
-                    <p class="text-sm text-slate-400 mt-1">Speedify tunnel traffic split by Wifi clients, local router processes, and estimated VPN overhead.</p>
-                </div>
-                <button type="button" class="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center" @onclick="CloseTrafficBreakdownAsync" aria-label="Close traffic breakdown">
-                    <i class="fas fa-times"></i>
-                </button>
-            </header>
-
-            <div class="p-4 pb-[calc(7rem+env(safe-area-inset-bottom))] md:p-5 md:pb-5 space-y-5">
-                @if (_routerTrafficLoading && _routerTrafficSummary is null)
+<ActionSheet IsOpen="_showTrafficBreakdown"
+             Title="Traffic Breakdown"
+             Description="Speedify tunnel traffic split by Wifi clients, local router processes, and estimated VPN overhead."
+             CloseLabel="Close traffic breakdown"
+             MaxWidthClass="md:max-w-5xl"
+             OnClose="CloseTrafficBreakdownAsync">
+    <div class="space-y-5">
+        @if (_routerTrafficLoading && _routerTrafficSummary is null)
+        {
+            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3" aria-label="Loading traffic breakdown">
+                @for (var i = 0; i < 4; i++)
                 {
-                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3" aria-label="Loading traffic breakdown">
-                        @for (var i = 0; i < 4; i++)
-                        {
-                            <div class="bg-slate-950/60 rounded-xl p-4 space-y-3">
-                                <SkeletonBlock CssClass="h-4 w-2/5" />
-                                <SkeletonBlock CssClass="h-8 w-3/5" />
-                                <SkeletonBlock CssClass="h-4 w-1/2" />
-                            </div>
-                        }
+                    <div class="bg-slate-950/60 rounded-xl p-4 space-y-3">
+                        <SkeletonBlock CssClass="h-4 w-2/5" />
+                        <SkeletonBlock CssClass="h-8 w-3/5" />
+                        <SkeletonBlock CssClass="h-4 w-1/2" />
                     </div>
-                }
-                else if (_routerTrafficSummary is not null)
-                {
-                    var trafficSummary = GetCurrentRouterTrafficSummary();
-                    <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                        <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
-                            <p class="text-xs text-slate-400 mb-2">Speedify Tunnel</p>
-                            <p class="text-2xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.SpeedifyDownloadMbps)</p>
-                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.SpeedifyUploadMbps)</p>
-                        </div>
-                        <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
-                            <p class="text-xs text-slate-400 mb-2">Wifi Clients</p>
-                            <p class="text-2xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.CudyClientDownloadMbps)</p>
-                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.CudyClientUploadMbps)</p>
-                            <p class="text-xs text-slate-500 mt-2">@trafficSummary.CudyClientCount Cudy clients</p>
-                        </div>
-                        <div class="bg-slate-950/60 rounded-xl p-4 border border-blue-500/20">
-                            <p class="text-xs text-blue-200 mb-2">Local Processes</p>
-                            <p class="text-2xl font-bold text-blue-200">↓ @FormatTrafficSpeed(trafficSummary.LocalProcessDownloadMbps)</p>
-                            <p class="text-sm text-blue-100/80">↑ @FormatTrafficSpeed(trafficSummary.LocalProcessUploadMbps)</p>
-                        </div>
-                        <div class="bg-slate-950/60 rounded-xl p-4 border border-amber-500/25">
-                            <p class="text-xs text-amber-200 mb-2">Estimated VPN / Overhead</p>
-                            <p class="text-2xl font-bold text-amber-200">↓ @FormatTrafficSpeed(trafficSummary.EstimatedOverheadDownloadMbps)</p>
-                            <p class="text-sm text-amber-100/80">↑ @FormatTrafficSpeed(trafficSummary.EstimatedOverheadUploadMbps)</p>
-                        </div>
-                    </div>
-
-                    <section class="bg-slate-950/50 border border-slate-800 rounded-xl overflow-hidden">
-                        <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
-                            <div>
-                                <h4 class="font-semibold text-white">Top Local Processes</h4>
-                                <p class="text-xs text-slate-400">Live process names and throughput observed on the Speedify tunnel interface.</p>
-                            </div>
-                            <span class="text-xs text-slate-500">@trafficSummary.LocalProcessTraffic.Source</span>
-                        </div>
-
-                        @if (!trafficSummary.LocalProcessTraffic.IsSupported)
-                        {
-                            <div class="p-4 text-sm text-slate-300">
-                                @trafficSummary.LocalProcessTraffic.Message
-                            </div>
-                        }
-                        else if (!trafficSummary.LocalProcessTraffic.Processes.Any())
-                        {
-                            <div class="p-4 text-sm text-slate-300">
-                                @trafficSummary.LocalProcessTraffic.Message
-                            </div>
-                        }
-                        else
-                        {
-                            <div class="divide-y divide-slate-800">
-                                @foreach (var process in trafficSummary.LocalProcessTraffic.Processes)
-                                {
-                                    <div class="p-4 flex items-center justify-between gap-4">
-                                        <div class="min-w-0">
-                                            <p class="font-semibold text-white truncate">@process.ProcessName</p>
-                                            <p class="text-xs text-slate-500 truncate">@FormatProcessDetail(process)</p>
-                                        </div>
-                                        <div class="text-right flex-shrink-0">
-                                            <p class="text-sm text-cyan-300">↓ @FormatTrafficSpeed(process.DownloadMbps)</p>
-                                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(process.UploadMbps)</p>
-                                        </div>
-                                    </div>
-                                }
-                            </div>
-                        }
-                    </section>
-
-                    <p class="text-xs text-slate-500">
-                        Estimated VPN / overhead is the unmatched part after subtracting Wifi clients and observed local processes from Speedify tunnel totals. It can include Speedify encapsulation, retransmits, timing-window mismatch, forwarded client packets that nethogs cannot map to a Pi process, or local traffic the process sampler cannot attribute.
-                    </p>
-                }
-
-                @if (!string.IsNullOrWhiteSpace(_routerTrafficError))
-                {
-                    <p class="text-sm text-red-300">Traffic breakdown refresh failed: @_routerTrafficError</p>
                 }
             </div>
-        </section>
+        }
+        else if (_routerTrafficSummary is not null)
+        {
+            var trafficSummary = GetCurrentRouterTrafficSummary();
+            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
+                    <p class="text-xs text-slate-400 mb-2">Speedify Tunnel</p>
+                    <p class="text-2xl font-bold text-cyan-300">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.SpeedifyDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.SpeedifyDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.SpeedifyDownloadMbps)" /> <span class="text-sm font-semibold text-cyan-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.SpeedifyDownloadMbps)</span></p>
+                    <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.SpeedifyUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.SpeedifyUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.SpeedifyUploadMbps)" /> <span class="text-xs font-semibold text-pink-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.SpeedifyUploadMbps)</span></p>
+                </div>
+                <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
+                    <p class="text-xs text-slate-400 mb-2">Wifi Clients</p>
+                    <p class="text-2xl font-bold text-cyan-300">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.CudyClientDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.CudyClientDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.CudyClientDownloadMbps)" /> <span class="text-sm font-semibold text-cyan-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.CudyClientDownloadMbps)</span></p>
+                    <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.CudyClientUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.CudyClientUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.CudyClientUploadMbps)" /> <span class="text-xs font-semibold text-pink-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.CudyClientUploadMbps)</span></p>
+                    <p class="text-xs text-slate-500 mt-2">@trafficSummary.CudyClientCount Cudy clients</p>
+                </div>
+                <div class="bg-slate-950/60 rounded-xl p-4 border border-blue-500/20">
+                    <p class="text-xs text-blue-200 mb-2">Local Processes</p>
+                    <p class="text-2xl font-bold text-blue-200">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.LocalProcessDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.LocalProcessDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.LocalProcessDownloadMbps)" /> <span class="text-sm font-semibold text-blue-100/70">@SpeedFormatter.GetSpeedUnit(trafficSummary.LocalProcessDownloadMbps)</span></p>
+                    <p class="text-sm text-blue-100/80">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.LocalProcessUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.LocalProcessUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.LocalProcessUploadMbps)" /> <span class="text-xs font-semibold text-blue-100/60">@SpeedFormatter.GetSpeedUnit(trafficSummary.LocalProcessUploadMbps)</span></p>
+                </div>
+                <div class="bg-slate-950/60 rounded-xl p-4 border border-amber-500/25">
+                    <p class="text-xs text-amber-200 mb-2">Estimated VPN / Overhead</p>
+                    <p class="text-2xl font-bold text-amber-200">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.EstimatedOverheadDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.EstimatedOverheadDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.EstimatedOverheadDownloadMbps)" /> <span class="text-sm font-semibold text-amber-100/70">@SpeedFormatter.GetSpeedUnit(trafficSummary.EstimatedOverheadDownloadMbps)</span></p>
+                    <p class="text-sm text-amber-100/80">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.EstimatedOverheadUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.EstimatedOverheadUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.EstimatedOverheadUploadMbps)" /> <span class="text-xs font-semibold text-amber-100/60">@SpeedFormatter.GetSpeedUnit(trafficSummary.EstimatedOverheadUploadMbps)</span></p>
+                </div>
+            </div>
+
+            <section class="bg-slate-950/50 border border-slate-800 rounded-xl overflow-hidden">
+                <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                    <div>
+                        <h4 class="font-semibold text-white">Top Local Processes</h4>
+                        <p class="text-xs text-slate-400">Live process names and throughput observed on the Speedify tunnel interface.</p>
+                    </div>
+                    <span class="text-xs text-slate-500">@trafficSummary.LocalProcessTraffic.Source</span>
+                </div>
+
+                @if (!trafficSummary.LocalProcessTraffic.IsSupported)
+                {
+                    <div class="p-4 text-sm text-slate-300">
+                        @trafficSummary.LocalProcessTraffic.Message
+                    </div>
+                }
+                else if (!trafficSummary.LocalProcessTraffic.Processes.Any())
+                {
+                    <div class="p-4 text-sm text-slate-300">
+                        @trafficSummary.LocalProcessTraffic.Message
+                    </div>
+                }
+                else
+                {
+                    <div class="divide-y divide-slate-800">
+                        @foreach (var process in trafficSummary.LocalProcessTraffic.Processes)
+                        {
+                            <div class="p-4 flex items-center justify-between gap-4">
+                                <div class="min-w-0">
+                                    <p class="font-semibold text-white truncate">@process.ProcessName</p>
+                                    <p class="text-xs text-slate-500 truncate">@FormatProcessDetail(process)</p>
+                                </div>
+                                <div class="text-right flex-shrink-0">
+                                    <p class="text-sm text-cyan-300">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(process.DownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(process.DownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(process.DownloadMbps)" /> <span class="text-xs text-cyan-200/70">@SpeedFormatter.GetSpeedUnit(process.DownloadMbps)</span></p>
+                                    <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(process.UploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(process.UploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(process.UploadMbps)" /> <span class="text-xs text-pink-200/70">@SpeedFormatter.GetSpeedUnit(process.UploadMbps)</span></p>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+
+            <p class="text-xs text-slate-500">
+                Estimated VPN / overhead is the unmatched part after subtracting Wifi clients and observed local processes from Speedify tunnel totals. It can include Speedify encapsulation, retransmits, timing-window mismatch, forwarded client packets that nethogs cannot map to a Pi process, or local traffic the process sampler cannot attribute.
+            </p>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(_routerTrafficError))
+        {
+            <p class="text-sm text-red-300">Traffic breakdown refresh failed: @_routerTrafficError</p>
+        }
     </div>
-}
+</ActionSheet>
 
 @code {
     private IReadOnlyList<Adapter>? _adapters;
@@ -378,6 +372,9 @@
     private bool _routerTrafficLoading;
     private bool _showTrafficBreakdown;
     private int _routerTrafficRefreshInProgress;
+    private ElementReference _adapterListElement;
+    private IJSObjectReference? _animatedUiModule;
+    private bool _adapterListAnimationEnabled;
 
     private bool _initialLoadComplete = false;
     private bool _isProcessingAction = false;
@@ -394,6 +391,20 @@
         await LoadServerInfoAsync();
 
         await StreamSpeedifyDataAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _animatedUiModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/animatedUi.js");
+        }
+
+        if (_animatedUiModule is not null && !_adapterListAnimationEnabled && _adapters?.Any() == true)
+        {
+            await _animatedUiModule.InvokeVoidAsync("enableAutoAnimate", _adapterListElement);
+            _adapterListAnimationEnabled = true;
+        }
     }
 
     private string GetAdapterDisplayName(string adapterId)
@@ -797,11 +808,6 @@
         return _stats.Where(s => s.Connected).Sum(s => s.SendBps);
     }
 
-    private static string FormatTrafficSpeed(double speedMbps)
-    {
-        return SpeedFormatter.FormatSpeed(speedMbps);
-    }
-
     private static string FormatProcessDetail(LocalProcessTrafficItem process)
     {
         var pid = process.ProcessId.HasValue ? $"PID {process.ProcessId.Value} · " : "";
@@ -890,6 +896,18 @@
         if (_routerTrafficRefreshTimer != null)
         {
             await _routerTrafficRefreshTimer.DisposeAsync();
+        }
+
+        if (_animatedUiModule != null)
+        {
+            try
+            {
+                await _animatedUiModule.InvokeVoidAsync("disableAutoAnimate", _adapterListElement);
+                await _animatedUiModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
         }
     }
 }

@@ -41,20 +41,31 @@ public static class SpeedFormatter
     /// <returns>Formatted numeric value as string</returns>
     public static string FormatSpeedValue(double speedMbps)
     {
+        return GetDisplayValue(speedMbps).ToString();
+    }
+
+    /// <summary>
+    /// Gets the numeric value to display for a speed value after unit conversion.
+    /// </summary>
+    public static double GetDisplayValue(double speedMbps)
+    {
         if (speedMbps <= 0)
-            return "0";
+            return 0;
 
         var bitRate = BitRate.FromMegabitsPerSecond(speedMbps);
-        
-        if (speedMbps < 1.0)
-        {
-            var kbps = bitRate.KilobitsPerSecond;
-            return Math.Round(kbps, 1).ToString();
-        }
-        else
-        {
-            return Math.Round(speedMbps, 1).ToString();
-        }
+
+        return speedMbps < 1.0
+            ? (double)Math.Round(bitRate.KilobitsPerSecond, 1)
+            : Math.Round(speedMbps, 1);
+    }
+
+    /// <summary>
+    /// Gets the number of decimal places needed to preserve the formatted speed value.
+    /// </summary>
+    public static int GetDisplayDecimals(double speedMbps)
+    {
+        var displayValue = GetDisplayValue(speedMbps);
+        return Math.Abs(displayValue - Math.Round(displayValue)) < 0.05 ? 0 : 1;
     }
     
     /// <summary>

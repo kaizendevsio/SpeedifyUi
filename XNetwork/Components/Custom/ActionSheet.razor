@@ -1,0 +1,55 @@
+@if (IsOpen)
+{
+    <div class="action-sheet-backdrop" @onclick="CloseAsync">
+        <section class="@GetPanelClass()" @onclick:stopPropagation="true" role="dialog" aria-modal="true" aria-labelledby="@_titleId">
+            <header class="action-sheet-header">
+                <div class="min-w-0">
+                    <h3 id="@_titleId" class="action-sheet-title">@Title</h3>
+                    @if (!string.IsNullOrWhiteSpace(Description))
+                    {
+                        <p class="action-sheet-description">@Description</p>
+                    }
+                </div>
+                <button type="button" class="action-sheet-close" @onclick="CloseAsync" aria-label="@CloseLabel">
+                    <i class="fas fa-times"></i>
+                </button>
+            </header>
+
+            <div class="@GetBodyClass()">
+                @ChildContent
+            </div>
+        </section>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string? Description { get; set; }
+    [Parameter] public string CloseLabel { get; set; } = "Close";
+    [Parameter] public string MaxWidthClass { get; set; } = "md:max-w-3xl";
+    [Parameter] public string CssClass { get; set; } = string.Empty;
+    [Parameter] public string BodyClass { get; set; } = string.Empty;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private readonly string _titleId = $"action-sheet-title-{Guid.NewGuid():N}";
+
+    private async Task CloseAsync()
+    {
+        if (OnClose.HasDelegate)
+        {
+            await OnClose.InvokeAsync();
+        }
+    }
+
+    private string GetPanelClass()
+    {
+        return $"action-sheet-panel {MaxWidthClass} {CssClass}".Trim();
+    }
+
+    private string GetBodyClass()
+    {
+        return $"action-sheet-body {BodyClass}".Trim();
+    }
+}

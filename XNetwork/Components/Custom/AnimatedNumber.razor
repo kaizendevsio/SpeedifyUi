@@ -1,0 +1,69 @@
+@inject IJSRuntime JSRuntime
+@implements IAsyncDisposable
+
+<span @ref="_element" class="@GetCssClass()" aria-label="@AriaLabel"></span>
+
+@code {
+    [Parameter] public double Value { get; set; }
+    [Parameter] public int Decimals { get; set; } = 1;
+    [Parameter] public int Duration { get; set; } = 700;
+    [Parameter] public string CssClass { get; set; } = string.Empty;
+    [Parameter] public string? AriaLabel { get; set; }
+
+    private ElementReference _element;
+    private IJSObjectReference? _module;
+    private double? _lastValue;
+    private int? _lastDecimals;
+    private bool _disposed;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (firstRender)
+        {
+            _module = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/animatedUi.js");
+        }
+
+        if (_module is not null && ShouldUpdate())
+        {
+            await _module.InvokeVoidAsync("updateAnimatedNumber", _element, Value, new { decimals = Decimals, duration = Duration });
+            _lastValue = Value;
+            _lastDecimals = Decimals;
+        }
+    }
+
+    private bool ShouldUpdate()
+    {
+        return !_lastValue.HasValue ||
+               Math.Abs(_lastValue.Value - Value) > 0.0001 ||
+               _lastDecimals != Decimals;
+    }
+
+    private string GetCssClass()
+    {
+        return $"animated-number odometer {CssClass}".Trim();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+
+        if (_module is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _module.InvokeVoidAsync("disposeAnimatedNumber", _element);
+            await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+    }
+}
