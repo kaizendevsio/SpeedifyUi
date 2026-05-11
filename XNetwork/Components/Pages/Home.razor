@@ -4,6 +4,7 @@
 @using XNetwork.Components.Custom
 @using XNetwork.Utils
 @inject SpeedifyService SpeedifyService
+@inject XRouterService XRouterService
 @inject IConnectionHealthService ConnectionHealthService
 @inject NetworkMonitorService NetworkMonitorService
 @implements IAsyncDisposable
@@ -145,6 +146,64 @@
             Upload="@GetTotalUpload()"
             IsStable="@IsConnectionStable()" />
 
+        @if (XRouterService.IsConfigured)
+        {
+            <section class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-4">
+                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Traffic Attribution</h3>
+                        <p class="text-sm text-slate-400">Compares Speedify tunnel throughput with the Cudy client table.</p>
+                    </div>
+                    <span class="self-start px-3 py-1 bg-cyan-500/10 text-cyan-300 text-sm font-medium rounded-full">
+                        @(_routerTrafficSummary?.CudyClientCount ?? 0) clients
+                    </span>
+                </div>
+
+                @if (_routerTrafficLoading && _routerTrafficSummary is null)
+                {
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3" aria-label="Loading traffic attribution">
+                        @for (var i = 0; i < 3; i++)
+                        {
+                            <div class="bg-slate-900/50 rounded-lg p-4 space-y-3">
+                                <SkeletonBlock CssClass="h-4 w-2/5" />
+                                <SkeletonBlock CssClass="h-7 w-3/5" />
+                                <SkeletonBlock CssClass="h-4 w-1/2" />
+                            </div>
+                        }
+                    </div>
+                }
+                else if (_routerTrafficSummary is not null)
+                {
+                    var trafficSummary = GetCurrentRouterTrafficSummary();
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div class="bg-slate-900/50 rounded-lg p-4">
+                            <p class="text-xs text-slate-400 mb-2">Speedify Tunnel</p>
+                            <p class="text-xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.SpeedifyDownloadMbps)</p>
+                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.SpeedifyUploadMbps)</p>
+                        </div>
+                        <div class="bg-slate-900/50 rounded-lg p-4">
+                            <p class="text-xs text-slate-400 mb-2">Cudy Clients</p>
+                            <p class="text-xl font-bold text-cyan-300">↓ @FormatTrafficSpeed(trafficSummary.CudyClientDownloadMbps)</p>
+                            <p class="text-sm text-pink-300">↑ @FormatTrafficSpeed(trafficSummary.CudyClientUploadMbps)</p>
+                        </div>
+                        <div class="bg-slate-900/50 rounded-lg p-4 border border-amber-500/20">
+                            <p class="text-xs text-amber-200 mb-2">Router Local / Overhead</p>
+                            <p class="text-xl font-bold text-amber-200">↓ @FormatTrafficSpeed(trafficSummary.OtherDownloadMbps)</p>
+                            <p class="text-sm text-amber-100/80">↑ @FormatTrafficSpeed(trafficSummary.OtherUploadMbps)</p>
+                        </div>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-3">
+                        Difference includes xrouter/Speedify/Tailscale/local Pi traffic, VPN overhead, retransmits, and short timing-window mismatch.
+                    </p>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(_routerTrafficError))
+                {
+                    <p class="text-xs text-red-300 mt-3">Cudy traffic refresh failed: @_routerTrafficError</p>
+                }
+            </section>
+        }
+
         <!-- Adapter List -->
         <div class="space-y-3">
             <div class="flex items-center gap-3 px-1 mb-3">
@@ -257,8 +316,13 @@
     private CancellationTokenSource? _statsCts;
     private Timer? _autoRefreshTimer;
     private Timer? _serverInfoRefreshTimer;
+    private Timer? _routerTrafficRefreshTimer;
     private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"];
     private Dictionary<string, string?> _gatewayCache = new();
+    private RouterTrafficSummary? _routerTrafficSummary;
+    private string? _routerTrafficError;
+    private bool _routerTrafficLoading;
+    private int _routerTrafficRefreshInProgress;
 
     private bool _initialLoadComplete = false;
     private bool _isProcessingAction = false;
@@ -270,8 +334,18 @@
         
         _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         _serverInfoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadServerInfoAsync), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        if (XRouterService.IsConfigured)
+        {
+            _routerTrafficRefreshTimer = new Timer(async _ => await InvokeAsync(() => LoadRouterTrafficAsync(true)), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        }
+
         await LoadAdaptersAndSettingsAsync();
         await LoadServerInfoAsync();
+        if (XRouterService.IsConfigured)
+        {
+            await LoadRouterTrafficAsync(false);
+        }
+
         await StreamSpeedifyDataAsync();
     }
 
@@ -319,6 +393,44 @@
         catch (Exception)
         {
             _serverInfoLoading = false;
+        }
+    }
+
+    private async Task LoadRouterTrafficAsync(bool background)
+    {
+        if (!XRouterService.IsConfigured)
+        {
+            return;
+        }
+
+        if (Interlocked.Exchange(ref _routerTrafficRefreshInProgress, 1) == 1)
+        {
+            return;
+        }
+
+        if (!background && _routerTrafficSummary is null)
+        {
+            _routerTrafficLoading = true;
+            await InvokeAsync(StateHasChanged);
+        }
+
+        try
+        {
+            _routerTrafficSummary = await XRouterService.GetTrafficSummaryAsync(GetTotalDownload(), GetTotalUpload(), _statsCts?.Token ?? CancellationToken.None);
+            _routerTrafficError = null;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _routerTrafficError = ex.Message;
+        }
+        finally
+        {
+            _routerTrafficLoading = false;
+            Interlocked.Exchange(ref _routerTrafficRefreshInProgress, 0);
+            await InvokeAsync(StateHasChanged);
         }
     }
     
@@ -616,6 +728,24 @@
         return _stats.Where(s => s.Connected).Sum(s => s.SendBps);
     }
 
+    private static string FormatTrafficSpeed(double speedMbps)
+    {
+        return SpeedFormatter.FormatSpeed(speedMbps);
+    }
+
+    private RouterTrafficSummary GetCurrentRouterTrafficSummary()
+    {
+        var cached = _routerTrafficSummary ?? new RouterTrafficSummary();
+        return new RouterTrafficSummary
+        {
+            SpeedifyDownloadMbps = GetTotalDownload(),
+            SpeedifyUploadMbps = GetTotalUpload(),
+            CudyClientDownloadMbps = cached.CudyClientDownloadMbps,
+            CudyClientUploadMbps = cached.CudyClientUploadMbps,
+            CudyClientCount = cached.CudyClientCount
+        };
+    }
+
     private int GetConnectedCount()
     {
         if (_adapters == null || !_adapters.Any())
@@ -679,6 +809,11 @@
         if (_serverInfoRefreshTimer != null)
         {
             await _serverInfoRefreshTimer.DisposeAsync();
+        }
+
+        if (_routerTrafficRefreshTimer != null)
+        {
+            await _routerTrafficRefreshTimer.DisposeAsync();
         }
     }
 }
