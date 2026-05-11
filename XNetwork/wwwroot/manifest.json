@@ -1,7 +1,7 @@
 {
-  "name": "X Network",
-  "short_name": "XNetwork",
-  "description": "X Network - Speedify Network Management and Monitoring",
+  "name": "xrouter",
+  "short_name": "xrouter",
+  "description": "xrouter - Speedify and Cudy network management",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f172a",
