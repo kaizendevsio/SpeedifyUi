@@ -38,7 +38,7 @@ public class BuildInfoService(IHostEnvironment environment)
 
         return new BuildInfo
         {
-            Version = string.IsNullOrWhiteSpace(informationalVersion) ? "dev" : informationalVersion,
+            Version = string.IsNullOrWhiteSpace(informationalVersion) ? "local" : informationalVersion,
             Commit = "local",
             Branch = environmentName,
             BuiltAtUtc = builtAtUtc == default ? null : new DateTimeOffset(builtAtUtc, TimeSpan.Zero)

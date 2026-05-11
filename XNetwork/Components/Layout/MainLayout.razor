@@ -43,8 +43,9 @@
             </NavLink>
         </nav>
         <div class="mt-auto rounded-xl border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-500">
-            <div class="font-semibold text-slate-300">Build @BuildInfo.ShortCommit</div>
-            <div class="mt-1 truncate">@BuildInfo.Branch</div>
+            <div class="font-semibold text-slate-300">Version @BuildInfo.DisplayVersion</div>
+            <div class="mt-1 truncate">Commit @BuildInfo.ShortCommit</div>
+            <div class="truncate">@BuildInfo.Branch</div>
             <div>@FormatBuildTime()</div>
         </div>
     </aside>
@@ -53,11 +54,14 @@
     <main class="w-full pb-28 md:pb-0 overflow-x-hidden">
         <!-- App Header (Mobile) -->
         <header class="md:hidden sticky top-0 bg-slate-900/80 backdrop-blur-sm border-b border-slate-800 p-4 z-40">
-            <div class="flex items-center justify-center gap-2">
-                <img src="/icons/xnetwork-logo.png?v=20260511" alt="" class="w-8 h-8 rounded-lg object-cover shadow-lg" />
-                <div class="text-center leading-tight">
+            <div class="flex items-center justify-between gap-3">
+                <div class="flex min-w-0 items-center gap-2">
+                    <img src="/icons/xnetwork-logo.png?v=20260511" alt="" class="w-8 h-8 rounded-lg object-cover shadow-lg" />
                     <h1 class="text-xl font-bold text-white">XNetwork</h1>
-                    <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Build @BuildInfo.ShortCommit</p>
+                </div>
+                <div class="rounded-full border border-slate-700 bg-slate-950/70 px-3 py-1 text-right leading-tight">
+                    <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Version</p>
+                    <p class="text-sm font-bold text-white">@BuildInfo.DisplayVersion</p>
                 </div>
             </div>
         </header>
