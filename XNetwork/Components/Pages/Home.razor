@@ -408,7 +408,6 @@
     private SpeedifySettings? _speedifySettings;
     private AutoServerSwitchStatus? _autoSwitchStatus;
     private CudyApControlStatus? _cudyApStatus;
-    private NetworkMonitorStatus? _networkMonitorStatus;
     private LocalProcessTrafficSnapshot? _localProcessTrafficHealth;
     private string? _cudyClientHealthError;
     private string? _speedifySettingsError;
@@ -452,8 +451,6 @@
         {
             _autoSwitchStatus = AutoServerSwitchService.GetStatus();
             _cudyApStatus = CudyApControlService.GetStatus();
-            _networkMonitorStatus = NetworkMonitorService.GetStatus();
-
             try
             {
                 _speedifySettings = await SpeedifyService.GetSettingsAsync(_statsCts?.Token ?? CancellationToken.None);
@@ -1027,38 +1024,11 @@
             yield return Alert("Local process traffic", _localProcessTrafficHealth.Message, "fa-magnifying-glass-chart", "border-blue-500/35 bg-blue-500/10");
         }
 
-        if (_networkMonitorStatus?.IsEnabled == true)
-        {
-            foreach (var link in _networkMonitorStatus.Links.Where(link => link.IsDown || link.IsRestartSuppressed || !string.IsNullOrWhiteSpace(link.LastRestartError)))
-            {
-                yield return Alert("Adapter monitor", FormatNetworkMonitorAlert(link), "fa-network-wired", "border-amber-500/35 bg-amber-500/10");
-            }
-        }
     }
 
     private static DashboardAlert Alert(string title, string message, string icon, string cssClass)
     {
         return new DashboardAlert(title, message, icon, cssClass);
-    }
-
-    private static string FormatNetworkMonitorAlert(NetworkLinkMonitorStatus link)
-    {
-        if (link.IsRestartSuppressed)
-        {
-            return $"{link.Name} restart is suppressed until {link.RestartSuppressedUntilUtc!.Value.ToLocalTime():HH:mm}.";
-        }
-
-        if (!string.IsNullOrWhiteSpace(link.LastRestartError))
-        {
-            return $"{link.Name} restart failed: {link.LastRestartError}";
-        }
-
-        if (link.DisconnectedSinceUtc.HasValue)
-        {
-            return $"{link.Name} has been down since {link.DisconnectedSinceUtc.Value.ToLocalTime():HH:mm:ss}; restart will be attempted after the configured timeout.";
-        }
-
-        return $"{link.Name} state is {link.State ?? "unknown"}.";
     }
 
     private bool IsRedundantMode()
