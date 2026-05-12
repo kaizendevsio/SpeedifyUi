@@ -113,6 +113,93 @@ public class AutoServerSwitchService : BackgroundService
         return await SwitchToBestServerAsync(reason, force: true, cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<bool> SwitchToBestProbeScoreAsync(string reason = "Manual switch to highest external probe score", CancellationToken cancellationToken = default)
+    {
+        if (!await _switchLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            UpdateStatus(status => status.Message = "Server switch already in progress");
+            return false;
+        }
+
+        try
+        {
+            UpdateStatus(status =>
+            {
+                status.IsSwitching = true;
+                status.RecommendedServer = null;
+                status.MinimumConnectedAdaptersBeforeSwitch = Math.Max(0, _settings.MinimumConnectedAdaptersBeforeSwitch);
+                status.RequiredRecommendationConfirmations = Math.Max(1, _settings.RequiredRecommendationConfirmations);
+            });
+
+            var currentServer = await _speedifyService.GetCurrentServerAsync(cancellationToken).ConfigureAwait(false);
+            var probeResponse = await FetchProbeScoresAsync(currentServer, cancellationToken).ConfigureAwait(false);
+            if (probeResponse == null)
+            {
+                return false;
+            }
+
+            var targetScore = SelectHighestManualProbeScore(probeResponse.Scores, currentServer);
+            if (targetScore == null)
+            {
+                UpdateStatus(status => status.Message = "No switchable external probe score is available");
+                AddEvent("Warning", "Manual best-score switch skipped because no switchable probe score was available");
+                return false;
+            }
+
+            return await ConnectToProbeScoreAsync(targetScore, currentServer, reason, "highest external probe score", cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            UpdateStatus(status =>
+            {
+                status.IsSwitching = false;
+                status.IsCheckingProbe = false;
+            });
+            _switchLock.Release();
+        }
+    }
+
+    public async Task<bool> SwitchToProbeScoreAsync(ServerHealthScore score, string reason = "Manual selected external probe server switch", CancellationToken cancellationToken = default)
+    {
+        if (!IsSwitchableProbeScore(score))
+        {
+            UpdateStatus(status => status.Message = "Selected probe score does not contain enough server information to switch");
+            return false;
+        }
+
+        if (!await _switchLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            UpdateStatus(status => status.Message = "Server switch already in progress");
+            return false;
+        }
+
+        try
+        {
+            UpdateStatus(status =>
+            {
+                status.IsSwitching = true;
+                status.MinimumConnectedAdaptersBeforeSwitch = Math.Max(0, _settings.MinimumConnectedAdaptersBeforeSwitch);
+                status.RequiredRecommendationConfirmations = Math.Max(1, _settings.RequiredRecommendationConfirmations);
+            });
+
+            var currentServer = await _speedifyService.GetCurrentServerAsync(cancellationToken).ConfigureAwait(false);
+            if (IsSameServer(score, currentServer))
+            {
+                var message = $"Already connected to {FormatScoreServer(score)}";
+                UpdateStatus(status => status.Message = message);
+                AddEvent("Switch", message, FormatScoreServer(score), score.Score);
+                return false;
+            }
+
+            return await ConnectToProbeScoreAsync(score, currentServer, reason, "selected external probe score", cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            UpdateStatus(status => status.IsSwitching = false);
+            _switchLock.Release();
+        }
+    }
+
     public async Task<ProbeScoresResponse?> RefreshProbeScoresAsync(CancellationToken cancellationToken = default)
     {
         if (!await _probeCheckLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
@@ -600,6 +687,114 @@ public class AutoServerSwitchService : BackgroundService
         }
 
         return result;
+    }
+
+    private async Task<bool> ConnectToProbeScoreAsync(ServerHealthScore score, ServerInfo? currentServer, string reason, string sourceDescription, CancellationToken cancellationToken)
+    {
+        if (!string.IsNullOrWhiteSpace(currentServer?.Tag))
+        {
+            _avoidServersUntil[currentServer.Tag] = DateTime.UtcNow.AddMinutes(Math.Max(1, _settings.AvoidServerMinutes));
+        }
+
+        var targetServer = ToServerInfo(score);
+        var targetServerName = FormatScoreServer(score);
+        UpdateStatus(status =>
+        {
+            status.SwitchAttemptCount++;
+            status.RecommendedServer = targetServerName;
+            status.RecommendedServerProbeScore = score.Score;
+            status.Message = $"Switching to {sourceDescription} {targetServerName} ({score.Score:N0}/100)";
+        });
+
+        AddEvent("Switch", $"Attempting manual switch to {targetServerName}", targetServerName, score.Score);
+        _logger.LogWarning(
+            "Attempting manual Speedify server switch from {CurrentServer} to {TargetServer}. ProbeScore={ProbeScore}, Reason={Reason}",
+            FormatServer(currentServer),
+            targetServerName,
+            score.Score,
+            reason);
+
+        var connected = await _speedifyService.ConnectToServerAsync(targetServer, cancellationToken).ConfigureAwait(false);
+        if (!connected)
+        {
+            UpdateStatus(status =>
+            {
+                status.FailedSwitchCount++;
+                status.Message = $"Failed to connect to {targetServerName}";
+            });
+            AddEvent("Error", $"Failed to connect to {targetServerName}", targetServerName, score.Score);
+            return false;
+        }
+
+        _lastSwitchUtc = DateTime.UtcNow;
+        _degradedSinceUtc = null;
+        _recommendationConfidenceTracker.Reset();
+        UpdateStatus(status =>
+        {
+            status.CurrentServer = targetServerName;
+            status.LastSwitchReason = reason;
+            status.LastSwitchServer = targetServerName;
+            status.LastSwitchUtc = _lastSwitchUtc;
+            status.DegradedSinceUtc = null;
+            status.SuccessfulSwitchCount++;
+            status.PendingRecommendationServer = null;
+            status.RecommendationConfirmationCount = 0;
+            status.Message = $"Switched to {targetServerName} from {sourceDescription} {score.Score:N0}/100";
+        });
+        AddEvent("Switch", $"Switched to {targetServerName}", targetServerName, score.Score);
+
+        _logger.LogWarning("Switched Speedify server to {Server} from manual probe score {Score}. Reason: {Reason}", targetServerName, score.Score, reason);
+        return true;
+    }
+
+    private ServerHealthScore? SelectHighestManualProbeScore(IEnumerable<ServerHealthScore> scores, ServerInfo? currentServer)
+    {
+        var cutoff = DateTime.UtcNow.AddMinutes(-Math.Max(1, _settings.ProbeMaxScoreAgeMinutes));
+        return scores
+            .Where(score => score.TestedUtc >= cutoff)
+            .Where(score => score.WasSuccessful)
+            .Where(IsSwitchableProbeScore)
+            .Where(score => !IsSameServer(score, currentServer))
+            .OrderByDescending(score => score.Score)
+            .ThenBy(score => score.LatencyMs)
+            .FirstOrDefault();
+    }
+
+    private static bool IsSwitchableProbeScore(ServerHealthScore score)
+    {
+        return !string.IsNullOrWhiteSpace(score.Tag) || !string.IsNullOrWhiteSpace(score.Country);
+    }
+
+    private static bool IsSameServer(ServerHealthScore score, ServerInfo? server)
+    {
+        if (server == null)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(score.Tag) && !string.IsNullOrWhiteSpace(server.Tag))
+        {
+            return string.Equals(score.Tag, server.Tag, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(score.Country, server.Country, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(score.City, server.City, StringComparison.OrdinalIgnoreCase) &&
+               score.Num == server.Num;
+    }
+
+    private static ServerInfo ToServerInfo(ServerHealthScore score)
+    {
+        return new ServerInfo
+        {
+            Tag = score.Tag,
+            FriendlyName = score.FriendlyName,
+            Country = score.Country,
+            City = score.City,
+            Num = score.Num,
+            IsPremium = score.IsPremium,
+            IsPrivate = score.IsPrivate,
+            DataCenter = score.DataCenter
+        };
     }
 
     private void RemoveExpiredAvoidedServers()

@@ -68,14 +68,14 @@
             </button>
             <button type="button"
                     class="health-action-button health-action-accent health-action-wide"
-                    disabled="@(_isWorking || _status.IsSwitching || !HasRecommendation())"
-                    @onclick="UseRecommendationNow">
+                    disabled="@(_isWorking || _status.IsSwitching)"
+                    @onclick="UseBestScoreNow">
                 <span class="health-action-icon">
-                    <i class="fas @(_workingAction == "switch" ? "fa-spinner fa-spin" : "fa-route")"></i>
+                    <i class="fas @(_workingAction == "best" ? "fa-spinner fa-spin" : "fa-ranking-star")"></i>
                 </span>
                 <span class="health-action-copy">
-                    <span class="health-action-title">Switch to Recommendation</span>
-                    <span class="health-action-detail">@(HasRecommendation() ? FormatRecommendationActionDetail() : "No candidate yet")</span>
+                    <span class="health-action-title">Switch to Best Score</span>
+                    <span class="health-action-detail">@FormatBestScoreActionDetail()</span>
                 </span>
             </button>
         </div>
@@ -166,6 +166,7 @@
                                 <th class="text-right px-4 py-3 font-medium">Success</th>
                                 <th class="text-right px-4 py-3 font-medium">Throughput</th>
                                 <th class="text-right px-4 py-3 font-medium">Tested</th>
+                                <th class="text-right px-4 py-3 font-medium">Action</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-700/70">
@@ -182,6 +183,23 @@
                                     <td class="px-4 py-3 text-right text-slate-300">@score.SuccessRate.ToString("N0")%</td>
                                     <td class="px-4 py-3 text-right text-slate-300">@FormatThroughput(score)</td>
                                     <td class="px-4 py-3 text-right text-slate-400">@FormatAge(score.TestedUtc)</td>
+                                    <td class="px-4 py-3 text-right">
+                                        @if (IsCurrentScore(score))
+                                        {
+                                            <span class="text-xs font-semibold text-slate-500">Current</span>
+                                        }
+                                        else
+                                        {
+                                            var actionKey = GetScoreActionKey(score);
+                                            <button type="button"
+                                                    class="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    disabled="@(_isWorking || _status.IsSwitching || !CanSwitchScore(score))"
+                                                    @onclick="() => SwitchToScoreNow(score)">
+                                                <i class="fas @(_workingAction == actionKey ? "fa-spinner fa-spin" : "fa-right-left") mr-1"></i>
+                                                Switch
+                                            </button>
+                                        }
+                                    </td>
                                 </tr>
                             }
                         </tbody>
@@ -283,17 +301,17 @@
         }
     }
 
-    private async Task UseRecommendationNow()
+    private async Task UseBestScoreNow()
     {
         _isWorking = true;
-        _workingAction = "switch";
+        _workingAction = "best";
         _error = null;
         _successMessage = null;
         await InvokeAsync(StateHasChanged);
 
         try
         {
-            var switched = await AutoServerSwitchService.SwitchNowAsync("Manual switch from Auto Switching page");
+            var switched = await AutoServerSwitchService.SwitchToBestProbeScoreAsync("Manual switch to highest probe score from Health page");
             LoadStatus();
             if (switched)
             {
@@ -306,7 +324,41 @@
         }
         catch (Exception ex)
         {
-            _error = $"Failed to use recommendation: {ex.Message}";
+            _error = $"Failed to switch to best score: {ex.Message}";
+        }
+        finally
+        {
+            _isWorking = false;
+            _workingAction = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task SwitchToScoreNow(ServerHealthScore score)
+    {
+        _isWorking = true;
+        _workingAction = GetScoreActionKey(score);
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var target = FormatScoreServer(score);
+            var switched = await AutoServerSwitchService.SwitchToProbeScoreAsync(score, $"Manual switch to selected probe score {target} from Health page");
+            LoadStatus();
+            if (switched)
+            {
+                _successMessage = _status.Message;
+            }
+            else
+            {
+                _error = _status.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to switch to selected score: {ex.Message}";
         }
         finally
         {
@@ -437,6 +489,55 @@
         }
 
         return _status.PendingRecommendationServer ?? "Ready";
+    }
+
+    private ServerHealthScore? GetBestScoreTarget()
+    {
+        return _status.RecentScores
+            .Where(score => score.WasSuccessful)
+            .Where(CanSwitchScore)
+            .OrderByDescending(score => score.Score)
+            .ThenBy(score => score.LatencyMs)
+            .FirstOrDefault();
+    }
+
+    private string FormatBestScoreActionDetail()
+    {
+        var best = GetBestScoreTarget();
+        return best == null
+            ? "Fetch fresh scores and switch"
+            : $"{FormatScoreServer(best)} ({best.Score:N0}/100)";
+    }
+
+    private bool CanSwitchScore(ServerHealthScore score)
+    {
+        return HasSwitchTarget(score) && !IsCurrentScore(score);
+    }
+
+    private bool IsCurrentScore(ServerHealthScore score)
+    {
+        return !string.IsNullOrWhiteSpace(_status.CurrentServer) &&
+               string.Equals(FormatScoreServer(score), _status.CurrentServer, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasSwitchTarget(ServerHealthScore score)
+    {
+        return !string.IsNullOrWhiteSpace(score.Tag) || !string.IsNullOrWhiteSpace(score.Country);
+    }
+
+    private static string FormatScoreServer(ServerHealthScore score)
+    {
+        return !string.IsNullOrWhiteSpace(score.FriendlyName)
+            ? score.FriendlyName
+            : $"{score.Country} {score.City} #{score.Num}".Trim();
+    }
+
+    private static string GetScoreActionKey(ServerHealthScore score)
+    {
+        var key = !string.IsNullOrWhiteSpace(score.Tag)
+            ? score.Tag
+            : $"{score.Country}|{score.City}|{score.Num}";
+        return $"score:{key}".ToLowerInvariant();
     }
 
     private string FormatLastRecommendation()
