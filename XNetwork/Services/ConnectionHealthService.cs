@@ -29,7 +29,7 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
     private const double FAILED_PING_LATENCY = 9999.0; // Sentinel for failed pings
 
     // Configuration constants
-    private const int BUFFER_SIZE = 10; // 10 samples = 5 seconds at 500ms interval
+    private const int BUFFER_SIZE = 30; // 30 samples = 15 seconds at 500ms interval
     private const int MIN_SAMPLES_FOR_HEALTH = 3; // Minimum samples before reporting
     private const int STALE_ADAPTER_TIMEOUT_MINUTES = 5; // Clean up after 5 minutes
     private const int CLEANUP_INTERVAL_SECONDS = 60; // Run cleanup every minute
@@ -38,8 +38,8 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
     private static class PingThresholds
     {
         // Excellent - Gaming/VoIP quality
-        public const double EXCELLENT_LATENCY = 30;
-        public const double EXCELLENT_JITTER = 5;
+        public const double EXCELLENT_LATENCY = 50;
+        public const double EXCELLENT_JITTER = 10;
         public const double EXCELLENT_SUCCESS_RATE = 98;
 
         // Good - Normal browsing/streaming
