@@ -7,6 +7,7 @@
 @inject CudyApControlService CudyApControlService
 @inject CudyAdminPasswordStore CudyAdminPasswordStore
 @inject NetworkMonitorService NetworkMonitorService
+@inject NetworkMonitorSettingsStore NetworkMonitorSettingsStore
 @inject AutoServerSwitchService AutoServerSwitchService
 @inject IConfiguration Configuration
 
@@ -2004,12 +2005,8 @@
 
         try
         {
-            // Load app-specific monitor settings from configuration
-            var monitorSection = Configuration.GetSection("NetworkMonitor");
-            if (monitorSection.Exists())
-            {
-                _monitorSettings = monitorSection.Get<NetworkMonitorSettings>() ?? new NetworkMonitorSettings();
-            }
+            // Load app-specific monitor settings from the live service so saved updates are reflected immediately.
+            _monitorSettings = NetworkMonitorService.GetSettings();
             _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks ?? new List<string>());
 
             _autoServerSwitchSettings = AutoServerSwitchService.Settings;
@@ -3166,6 +3163,22 @@
         await InvokeAsync(StateHasChanged);
     }
 
+    private async Task SaveNetworkMonitorSettings()
+    {
+        _monitorSettings.WhitelistedLinks = _whitelistedLinksInput
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _monitorSettings.DownTimeoutSeconds = Math.Clamp(_monitorSettings.DownTimeoutSeconds, 5, 300);
+        _monitorSettings.MaxRestartAttemptsPerHour = Math.Max(0, _monitorSettings.MaxRestartAttemptsPerHour);
+        _monitorSettings.RestartCooldownMinutes = Math.Max(1, _monitorSettings.RestartCooldownMinutes);
+
+        await NetworkMonitorSettingsStore.SaveAsync(_monitorSettings);
+        NetworkMonitorService.UpdateSettings(_monitorSettings);
+        _monitorSettings = NetworkMonitorService.GetSettings();
+        _whitelistedLinksInput = string.Join(", ", _monitorSettings.WhitelistedLinks);
+    }
+
     private async Task HandleEncryptionToggle(bool enabled)
     {
         _isProcessing = true;
@@ -3809,8 +3822,7 @@
         try
         {
             // Save network monitor settings
-            var links = _whitelistedLinksInput.Split(',').Select(s => s.Trim()).Where(s => !string.IsNullOrEmpty(s)).ToList();
-            _monitorSettings.WhitelistedLinks = links;
+            await SaveNetworkMonitorSettings();
             successCount++;
 
             // Save pending bypass port changes

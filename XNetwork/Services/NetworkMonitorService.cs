@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net.NetworkInformation;
-using Microsoft.Extensions.Options;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
@@ -22,38 +21,25 @@ public class NetworkMonitorService : BackgroundService
 
     public NetworkMonitorService(
         ILogger<NetworkMonitorService> logger,
-        IOptions<NetworkMonitorSettings> settings,
+        NetworkMonitorSettings settings,
         IHostApplicationLifetime appLifetime,
         SpeedifyService speedifyService)
     {
         _logger = logger;
-        _settings = settings.Value;
+        _settings = CopySettings(settings);
         _appLifetime = appLifetime;
         _speedifyService = speedifyService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_settings.Enabled)
-        {
-            _logger.LogInformation("Network monitor service is disabled");
-            return;
-        }
-
         if (!OperatingSystem.IsLinux())
         {
             _logger.LogWarning("Network monitor service is only supported on Linux");
             return;
         }
 
-        if (_settings.WhitelistedLinks.Count == 0)
-        {
-            _logger.LogWarning("No network links are whitelisted for monitoring");
-            return;
-        }
-
-        _logger.LogInformation("Network monitor service started. Monitoring links: {Links}", 
-            string.Join(", ", _settings.WhitelistedLinks));
+        _logger.LogInformation("Network monitor service started");
 
         using var registration = _appLifetime.ApplicationStopping.Register(() =>
         {
@@ -62,9 +48,40 @@ public class NetworkMonitorService : BackgroundService
 
         try
         {
+            var loggedDisabled = false;
+            var loggedNoLinks = false;
+
             while (!stoppingToken.IsCancellationRequested)
             {
-                await CheckNetworkLinks(stoppingToken);
+                var settings = GetSettings();
+                if (!settings.Enabled)
+                {
+                    if (!loggedDisabled)
+                    {
+                        _logger.LogInformation("Network monitor service is disabled");
+                        loggedDisabled = true;
+                    }
+
+                    loggedNoLinks = false;
+                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                    continue;
+                }
+
+                loggedDisabled = false;
+                if (settings.WhitelistedLinks.Count == 0)
+                {
+                    if (!loggedNoLinks)
+                    {
+                        _logger.LogWarning("No network links are whitelisted for monitoring");
+                        loggedNoLinks = true;
+                    }
+
+                    await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
+                    continue;
+                }
+
+                loggedNoLinks = false;
+                await CheckNetworkLinks(settings, stoppingToken);
                 await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
             }
         }
@@ -78,14 +95,15 @@ public class NetworkMonitorService : BackgroundService
         }
     }
 
-    private async Task CheckNetworkLinks(CancellationToken stoppingToken)
+    private async Task CheckNetworkLinks(NetworkMonitorSettings settings, CancellationToken stoppingToken)
     {
         try
         {
+            var whitelistedLinks = new HashSet<string>(settings.WhitelistedLinks, StringComparer.OrdinalIgnoreCase);
             var adapters = await _speedifyService.GetAdaptersAsync(stoppingToken);
             foreach (var adapter in adapters)
             {
-                if (!_settings.WhitelistedLinks.Contains(adapter.Name))
+                if (!whitelistedLinks.Contains(adapter.Name))
                     continue;
 
                 bool isDisconnected = adapter.State.ToLowerInvariant() == "disconnected";
@@ -99,12 +117,12 @@ public class NetworkMonitorService : BackgroundService
                         {
                             _disconnectionTimes[adapter.Name] = DateTime.UtcNow;
                             _logger.LogWarning("Speedify adapter {Link} is disconnected. Will attempt restart after {Timeout} seconds",
-                                adapter.Name, _settings.DownTimeoutSeconds);
+                                adapter.Name, settings.DownTimeoutSeconds);
                         }
                         else
                         {
                             var downTime = DateTime.UtcNow - _disconnectionTimes[adapter.Name];
-                            shouldRestart = downTime.TotalSeconds >= _settings.DownTimeoutSeconds && CanAttemptRestartLocked(adapter.Name);
+                            shouldRestart = downTime.TotalSeconds >= settings.DownTimeoutSeconds && CanAttemptRestartLocked(adapter.Name, settings);
                         }
                     }
 
@@ -137,9 +155,9 @@ public class NetworkMonitorService : BackgroundService
         }
     }
 
-    private bool CanAttemptRestartLocked(string interfaceName)
+    private bool CanAttemptRestartLocked(string interfaceName, NetworkMonitorSettings settings)
     {
-        if (_settings.MaxRestartAttemptsPerHour <= 0)
+        if (settings.MaxRestartAttemptsPerHour <= 0)
         {
             _lastRestartAttemptUtc[interfaceName] = DateTime.UtcNow;
             return true;
@@ -172,10 +190,10 @@ public class NetworkMonitorService : BackgroundService
             attempts.Dequeue();
         }
 
-        var maxAttempts = _settings.MaxRestartAttemptsPerHour;
+        var maxAttempts = settings.MaxRestartAttemptsPerHour;
         if (attempts.Count >= maxAttempts)
         {
-            var cooldown = TimeSpan.FromMinutes(Math.Max(1, _settings.RestartCooldownMinutes));
+            var cooldown = TimeSpan.FromMinutes(Math.Max(1, settings.RestartCooldownMinutes));
             _restartSuppressedUntil[interfaceName] = now.Add(cooldown);
             _lastSuppressionLog[interfaceName] = now;
             _logger.LogWarning(
@@ -206,8 +224,9 @@ public class NetworkMonitorService : BackgroundService
     {
         lock (_stateLock)
         {
+            var settings = CopySettings(_settings);
             var now = DateTime.UtcNow;
-            var links = _settings.WhitelistedLinks.Select(link =>
+            var links = settings.WhitelistedLinks.Select(link =>
             {
                 var attempts = _restartAttempts.TryGetValue(link, out var restartAttempts)
                     ? restartAttempts.Count(attempt => now - attempt <= TimeSpan.FromHours(1))
@@ -227,11 +246,77 @@ public class NetworkMonitorService : BackgroundService
 
             return new NetworkMonitorStatus
             {
-                IsEnabled = _settings.Enabled,
-                DownTimeoutSeconds = _settings.DownTimeoutSeconds,
+                IsEnabled = settings.Enabled,
+                DownTimeoutSeconds = settings.DownTimeoutSeconds,
                 Links = links
             };
         }
+    }
+
+    public NetworkMonitorSettings GetSettings()
+    {
+        lock (_stateLock)
+        {
+            return CopySettings(_settings);
+        }
+    }
+
+    public void UpdateSettings(NetworkMonitorSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        var updatedSettings = CopySettings(settings);
+        lock (_stateLock)
+        {
+            var activeLinks = new HashSet<string>(updatedSettings.WhitelistedLinks, StringComparer.OrdinalIgnoreCase);
+            foreach (var link in _settings.WhitelistedLinks.Where(link => !activeLinks.Contains(link)).ToList())
+            {
+                ClearLinkStateLocked(link);
+            }
+
+            _settings.Enabled = updatedSettings.Enabled;
+            _settings.WhitelistedLinks = updatedSettings.WhitelistedLinks;
+            _settings.DownTimeoutSeconds = updatedSettings.DownTimeoutSeconds;
+            _settings.MaxRestartAttemptsPerHour = updatedSettings.MaxRestartAttemptsPerHour;
+            _settings.RestartCooldownMinutes = updatedSettings.RestartCooldownMinutes;
+        }
+
+        _logger.LogInformation(
+            "Network monitor settings updated. Enabled: {Enabled}. Monitoring links: {Links}",
+            updatedSettings.Enabled,
+            string.Join(", ", updatedSettings.WhitelistedLinks));
+    }
+
+    private void ClearLinkStateLocked(string link)
+    {
+        _disconnectionTimes.Remove(link);
+        _restartAttempts.Remove(link);
+        _restartSuppressedUntil.Remove(link);
+        _lastSuppressionLog.Remove(link);
+        _lastObservedStates.Remove(link);
+        _lastRestartAttemptUtc.Remove(link);
+        _lastRestartErrors.Remove(link);
+    }
+
+    private static NetworkMonitorSettings CopySettings(NetworkMonitorSettings settings)
+    {
+        return new NetworkMonitorSettings
+        {
+            Enabled = settings.Enabled,
+            WhitelistedLinks = NormalizeLinks(settings.WhitelistedLinks),
+            DownTimeoutSeconds = Math.Clamp(settings.DownTimeoutSeconds, 5, 300),
+            MaxRestartAttemptsPerHour = Math.Max(0, settings.MaxRestartAttemptsPerHour),
+            RestartCooldownMinutes = Math.Max(1, settings.RestartCooldownMinutes)
+        };
+    }
+
+    private static List<string> NormalizeLinks(IEnumerable<string>? links)
+    {
+        return links?
+            .Select(link => link.Trim())
+            .Where(link => !string.IsNullOrWhiteSpace(link))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
     }
 
     private async Task RestartLink(string interfaceName, CancellationToken stoppingToken)

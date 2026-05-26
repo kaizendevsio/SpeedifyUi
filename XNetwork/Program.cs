@@ -10,8 +10,13 @@ builder.Services.AddRazorComponents()
 builder.Services.AddScoped<BlazorTransitionableRoute.IRouteTransitionInvoker, BlazorTransitionableRoute.DefaultRouteTransitionInvoker>();
 
 // Add network monitor service
-builder.Services.Configure<NetworkMonitorSettings>(
-    builder.Configuration.GetSection("NetworkMonitor"));
+builder.Services.AddSingleton<NetworkMonitorSettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("NetworkMonitor").Get<NetworkMonitorSettings>() ?? new NetworkMonitorSettings();
+    sp.GetRequiredService<NetworkMonitorSettingsStore>().Load(settings);
+    return settings;
+});
 builder.Services.AddSingleton<SpeedifyService>();
 builder.Services.AddSingleton<BuildInfoService>();
 builder.Services.AddSingleton<WifiService>();
