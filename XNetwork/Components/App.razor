@@ -45,27 +45,9 @@
             <div class="xnetwork-reconnect-blur" aria-hidden="true"></div>
             <div class="xnetwork-reconnect-toast" role="status" aria-live="polite">
                 <div class="xnetwork-reconnect-spinner" aria-hidden="true"></div>
-                <div class="xnetwork-reconnect-copy">
-                    <p class="xnetwork-reconnect-title xnetwork-reconnect-title-trying">Connection stalled</p>
-                    <p class="xnetwork-reconnect-title xnetwork-reconnect-title-failed">Still reconnecting</p>
-                    <p class="xnetwork-reconnect-title xnetwork-reconnect-title-rejected">Session expired</p>
-                    <p class="xnetwork-reconnect-message xnetwork-reconnect-message-trying">
-                        Restoring the live dashboard connection.
-                    </p>
-                    <p class="xnetwork-reconnect-message xnetwork-reconnect-message-failed">
-                        Automatic retries are continuing in the background.
-                    </p>
-                    <p class="xnetwork-reconnect-message xnetwork-reconnect-message-rejected">
-                        Reloading will create a fresh dashboard session.
-                    </p>
-                    <p class="xnetwork-reconnect-attempt">
-                        Attempt <span id="components-reconnect-current-attempt">0</span>/<span id="components-reconnect-max-retries">0</span>
-                    </p>
-                </div>
-                <div class="xnetwork-reconnect-actions">
-                    <button id="xnetwork-reconnect-retry" type="button" class="xnetwork-reconnect-button">Retry</button>
-                    <button id="xnetwork-reconnect-reload" type="button" class="xnetwork-reconnect-button xnetwork-reconnect-button-primary">Reload</button>
-                </div>
+                <p class="xnetwork-reconnect-text xnetwork-reconnect-text-trying">Reconnecting dashboard</p>
+                <p class="xnetwork-reconnect-text xnetwork-reconnect-text-failed">Still reconnecting</p>
+                <p class="xnetwork-reconnect-text xnetwork-reconnect-text-rejected">Session expired. Reloading</p>
             </div>
         </div>
         <script src="_framework/blazor.web.js" autostart="false"></script>

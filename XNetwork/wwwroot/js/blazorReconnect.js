@@ -17,10 +17,12 @@
         keepAliveMs: 5000,
         serverTimeoutMs: 15000,
         maxRetries: 60,
-        failedRetryDelayMs: 5000
+        failedRetryDelayMs: 5000,
+        rejectedReloadDelayMs: 900
     };
 
     let failedRetryTimerId = null;
+    let rejectedReloadTimerId = null;
 
     function retryIntervalMilliseconds(previousAttempts, maxRetries) {
         if (previousAttempts >= maxRetries) {
@@ -35,6 +37,22 @@
             window.clearTimeout(failedRetryTimerId);
             failedRetryTimerId = null;
         }
+    }
+
+    function clearRejectedReloadTimer() {
+        if (rejectedReloadTimerId !== null) {
+            window.clearTimeout(rejectedReloadTimerId);
+            rejectedReloadTimerId = null;
+        }
+    }
+
+    function scheduleRejectedReload() {
+        clearRejectedReloadTimer();
+
+        rejectedReloadTimerId = window.setTimeout(() => {
+            rejectedReloadTimerId = null;
+            window.location.reload();
+        }, options.rejectedReloadDelayMs);
     }
 
     function scheduleFailedReconnect() {
@@ -81,15 +99,6 @@
 
         document.documentElement.dataset.xnetworkReconnectWired = 'true';
 
-        document.getElementById('xnetwork-reconnect-retry')?.addEventListener('click', () => {
-            clearFailedRetryTimer();
-            void reconnectNow();
-        });
-
-        document.getElementById('xnetwork-reconnect-reload')?.addEventListener('click', () => {
-            window.location.reload();
-        });
-
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) {
                 const reconnectModal = document.getElementById('components-reconnect-modal');
@@ -108,6 +117,7 @@
 
             if (reconnectState === 'hide') {
                 clearFailedRetryTimer();
+                clearRejectedReloadTimer();
                 return;
             }
 
@@ -118,6 +128,7 @@
 
             if (reconnectState === 'rejected') {
                 clearFailedRetryTimer();
+                scheduleRejectedReload();
             }
         });
     }

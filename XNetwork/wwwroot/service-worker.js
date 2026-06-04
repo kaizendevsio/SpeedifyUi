@@ -1,8 +1,8 @@
 // Service Worker for X Network PWA
 // Version 1.0.0
 
-const CACHE_NAME = 'xnetwork-cache-v3';
-const RUNTIME_CACHE = 'xnetwork-runtime-v3';
+const CACHE_NAME = 'xnetwork-cache-v4';
+const RUNTIME_CACHE = 'xnetwork-runtime-v4';
 
 // Assets to cache on install
 const PRECACHE_ASSETS = [
