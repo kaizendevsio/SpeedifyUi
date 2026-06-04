@@ -5,6 +5,7 @@
 @using System.Collections
 @using XNetwork.Models
 @using XNetwork.Components.Custom
+@using XNetwork.Utils
 @implements IAsyncDisposable
 
 <PageTitle>Analytics - XNetwork</PageTitle>
@@ -696,8 +697,8 @@
                         if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                         else _stats.Add(statEntry);
 
-                        var downloadMbps = Math.Round(statEntry.ReceiveBps * 8.0 / 1_000_000.0, 2);
-                        var uploadMbps = Math.Round(statEntry.SendBps * 8.0 / 1_000_000.0, 2);
+                        var downloadMbps = Math.Round(SpeedifyStatsUnits.RateFieldToMbps(statEntry.ReceiveBps), 2);
+                        var uploadMbps = Math.Round(SpeedifyStatsUnits.RateFieldToMbps(statEntry.SendBps), 2);
 
                         _batchedChartData["downloadChart"][statEntry.AdapterId] = downloadMbps;
                         _batchedChartData["uploadChart"][statEntry.AdapterId] = uploadMbps;

@@ -385,8 +385,7 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
 
     private void ProcessConnectionSnapshot(ConnectionItem connection)
     {
-        // Convert bytes/sec to Mbps
-        var speedMbps = (connection.ReceiveBps + connection.SendBps) * 8.0 / 1_000_000.0;
+        var speedMbps = SpeedifyStatsUnits.RateFieldToMbps(connection.ReceiveBps + connection.SendBps);
 
         var packetLoss = connection.AverageLossPercent;
 

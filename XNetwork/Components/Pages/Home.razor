@@ -251,8 +251,8 @@
                         <!-- Row 2: Stats -->
                         @if (!isOffline && currentStats != null)
                         {
-                            var downloadSpeedMbps = currentStats.ReceiveBps * 8.0 / 1_000_000.0;
-                            var uploadSpeedMbps = currentStats.SendBps * 8.0 / 1_000_000.0;
+                            var downloadSpeedMbps = SpeedifyStatsUnits.RateFieldToMbps(currentStats.ReceiveBps);
+                            var uploadSpeedMbps = SpeedifyStatsUnits.RateFieldToMbps(currentStats.SendBps);
 
                             <div class="flex items-center gap-4 mt-3 text-sm">
                                 <div class="flex items-center gap-1.5">
@@ -893,17 +893,17 @@
 
     private double GetTotalDownload()
     {
-        return Math.Round(GetActualReceiveBps() * 8.0 / 1_000_000.0, 1);
+        return Math.Round(SpeedifyStatsUnits.RateFieldToMbps(GetActualReceiveBps()), 1);
     }
 
     private double GetTotalUpload()
     {
-        return Math.Round(GetActualSendBps() * 8.0 / 1_000_000.0, 1);
+        return Math.Round(SpeedifyStatsUnits.RateFieldToMbps(GetActualSendBps()), 1);
     }
 
     private double GetActualThroughputMbps()
     {
-        return (GetActualReceiveBps() + GetActualSendBps()) * 8.0 / 1_000_000.0;
+        return SpeedifyStatsUnits.RateFieldToMbps(GetActualReceiveBps() + GetActualSendBps());
     }
 
     private double GetActualReceiveBps()

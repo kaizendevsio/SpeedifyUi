@@ -50,15 +50,24 @@ public class ConnectionItem
 
     // ───────────────────────────── Throughput ─────────────────────────────
 
-    /// <summary> Current downstream throughput in <b>bytes / second</b>. </summary>
+    /// <summary>
+    /// Current downstream Speedify stats rate field. Live Speedify 16.8.0 measurements match
+    /// bits/sec even though the JSON name and older documentation use Bps wording.
+    /// </summary>
     [JsonPropertyName("receiveBps")]
     public double ReceiveBps { get; set; }
 
-    /// <summary> Current upstream throughput in <b>bytes / second</b>. </summary>
+    /// <summary>
+    /// Current upstream Speedify stats rate field. Live Speedify 16.8.0 measurements match
+    /// bits/sec even though the JSON name and older documentation use Bps wording.
+    /// </summary>
     [JsonPropertyName("sendBps")]
     public double SendBps { get; set; }
 
-    /// <summary> Combined send + receive throughput in <b>bytes / second</b>. </summary>
+    /// <summary>
+    /// Combined send + receive Speedify stats rate field. Live Speedify 16.8.0 measurements match
+    /// bits/sec even though the JSON name and older documentation use Bps wording.
+    /// </summary>
     [JsonPropertyName("totalBps")]
     public double TotalBps { get; set; }
 
