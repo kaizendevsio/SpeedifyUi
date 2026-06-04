@@ -63,6 +63,8 @@
 
 ## Blazor Runtime
 - Components are server-side interactive from `App.razor`; timer, stream, and background callbacks should marshal UI updates with `InvokeAsync(StateHasChanged)`.
+- Blazor reconnect is customized in `App.razor` with `components-reconnect-modal`, `wwwroot/js/blazorReconnect.js`, and reconnect CSS in `wwwroot/app.css`; Blazor autostart is disabled so the script can set 15s server timeout, 5s keepalive, fast early retry intervals, and background retries after built-in retry failure.
+- Server-side SignalR circuit timings are also tuned in `Program.cs` with `ClientTimeoutInterval=15s`, `HandshakeTimeout=15s`, and `KeepAliveInterval=5s`.
 - `Home.razor` runs a 3s adapter refresh, 10s server refresh, one Speedify stats stream, and a traffic breakdown timer only while the modal is open.
 - `ConnectionHealthService` pings `1.1.1.1` every 500ms and consumes its own Speedify stats stream; avoid adding unbounded extra `speedify_cli stats` consumers.
 - `Statistics.razor` is the `/details` page; chart setup intentionally takes two render cycles using `_readyForChartInitializationStep` before initializing canvases and starting streaming.
