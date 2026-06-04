@@ -92,10 +92,8 @@ public class PrivateReconnectService(
                     status.Message = $"Private reconnect loop failed: {ex.Message}";
                     AddEvent(status, status.Message, isError: true);
                 });
-            }
-            finally
-            {
-                if (settings.Enabled)
+
+                if (settings.Enabled && (!_nextAttemptUtc.HasValue || _nextAttemptUtc.Value <= DateTime.UtcNow))
                 {
                     _nextAttemptUtc = DateTime.UtcNow.AddMinutes(settings.IntervalMinutes);
                     UpdateStatus(status => status.NextAttemptUtc = _nextAttemptUtc);
