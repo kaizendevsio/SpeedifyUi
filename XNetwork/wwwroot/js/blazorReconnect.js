@@ -23,6 +23,7 @@
 
     let failedRetryTimerId = null;
     let rejectedReloadTimerId = null;
+    let reconnectStateObserver = null;
 
     function retryIntervalMilliseconds(previousAttempts, maxRetries) {
         if (previousAttempts >= maxRetries) {
@@ -47,11 +48,13 @@
     }
 
     function scheduleRejectedReload() {
-        clearRejectedReloadTimer();
+        if (rejectedReloadTimerId !== null) {
+            return;
+        }
 
         rejectedReloadTimerId = window.setTimeout(() => {
             rejectedReloadTimerId = null;
-            window.location.reload();
+            window.location.replace(window.location.href);
         }, options.rejectedReloadDelayMs);
     }
 
@@ -92,12 +95,81 @@
         }
     }
 
+    function getReconnectState(reconnectModal) {
+        if (!reconnectModal) {
+            return null;
+        }
+
+        if (reconnectModal.classList.contains('components-reconnect-rejected')) {
+            return 'rejected';
+        }
+
+        if (reconnectModal.classList.contains('components-reconnect-failed')) {
+            return 'failed';
+        }
+
+        if (reconnectModal.classList.contains('components-reconnect-retrying')) {
+            return 'retrying';
+        }
+
+        if (reconnectModal.classList.contains('components-reconnect-show')) {
+            return 'show';
+        }
+
+        if (reconnectModal.classList.contains('components-reconnect-hide')) {
+            return 'hide';
+        }
+
+        return null;
+    }
+
+    function handleReconnectState(reconnectState) {
+        if (reconnectState === 'hide') {
+            clearFailedRetryTimer();
+            clearRejectedReloadTimer();
+            return;
+        }
+
+        if (reconnectState === 'failed') {
+            scheduleFailedReconnect();
+            return;
+        }
+
+        if (reconnectState === 'rejected') {
+            clearFailedRetryTimer();
+            scheduleRejectedReload();
+        }
+    }
+
+    function watchReconnectModalState() {
+        if (reconnectStateObserver !== null) {
+            return;
+        }
+
+        const reconnectModal = document.getElementById('components-reconnect-modal');
+        if (!reconnectModal) {
+            return;
+        }
+
+        reconnectStateObserver = new MutationObserver(() => {
+            handleReconnectState(getReconnectState(reconnectModal));
+        });
+
+        reconnectStateObserver.observe(reconnectModal, {
+            attributes: true,
+            attributeFilter: ['class']
+        });
+
+        handleReconnectState(getReconnectState(reconnectModal));
+    }
+
     function wireReconnectUi() {
         if (document.documentElement.dataset.xnetworkReconnectWired === 'true') {
             return;
         }
 
         document.documentElement.dataset.xnetworkReconnectWired = 'true';
+        watchReconnectModalState();
 
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) {
@@ -115,21 +187,7 @@
                 ? event.detail
                 : event.detail?.state;
 
-            if (reconnectState === 'hide') {
-                clearFailedRetryTimer();
-                clearRejectedReloadTimer();
-                return;
-            }
-
-            if (reconnectState === 'failed') {
-                scheduleFailedReconnect();
-                return;
-            }
-
-            if (reconnectState === 'rejected') {
-                clearFailedRetryTimer();
-                scheduleRejectedReload();
-            }
+            handleReconnectState(reconnectState);
         });
     }
 
