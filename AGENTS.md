@@ -49,6 +49,8 @@
 - Router `AutoServerSwitchService` uses `ProbeScoreClient`, `ServerSwitchRecommendationSelector`, `LocalWanStabilityEvaluator`, `RecommendationConfidenceTracker`, and `AutoServerSwitchStateStore`.
 - Auto-switch can block switching when the probe says the current server is still acceptable, treating local router health as a WAN issue.
 - Router Tailscale connectivity can be affected by Speedify routing; restarting Speedify has previously restored router-to-probe connectivity.
+- `PrivateReconnectService` is a hosted service for refreshing the private Speedify session with `speedify_cli disconnect`, a short delay, then `speedify_cli connect private`; it is disabled by default and configured by `PrivateReconnect` / `private-reconnect-settings.json`.
+- Private reconnect defaults: `Enabled=false`, `IntervalMinutes=30`, `DelaySeconds=2`; the Settings page can enable it, change the interval/delay, view status/events, and trigger `Reconnect Private Now`.
 
 ## Linux And Privileges
 - `NetworkMonitorService` exits unless the app runs on Linux, monitoring is enabled, and `NetworkMonitor:WhitelistedLinks` is non-empty.
@@ -103,6 +105,7 @@
 ## Settings Page
 - `Settings.razor` is a large accordion/modal page; reusable controls live in `XNetwork/Components/Custom` and related styles are in `XNetwork/wwwroot/app.css`.
 - Most settings apply immediately through CLI handlers; pending flags `_hasUnsavedBypassChanges`, `_hasUnsavedStreamingChanges`, and `_adapterPendingChanges` only cover selected rule/list/adapter edits.
+- The `Private Server Reconnect` Settings accordion persists via `PrivateReconnectSettingsStore` and triggers manual/scheduled reconnects through `PrivateReconnectService`; do not call `speedify_cli` directly from UI code.
 - Streaming and gaming service presets are hardcoded dictionaries, while `_enabledServices` is a separate case-insensitive `HashSet` that must stay in sync with `_bypassSettings.Services`.
 - Adapter settings cache local state in `_adapterLocalState`; UI converts MB/GB to bytes for data limits, keeps rate limits as raw bits/sec, and only offers monthly reset days 1-28.
 - Port rules for streaming, bypass, and fixed-delay are formatted in `SpeedifyService.FormatPortRule` as `port[-end]/protocol`.

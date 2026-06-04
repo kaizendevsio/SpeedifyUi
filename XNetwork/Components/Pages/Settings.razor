@@ -9,6 +9,8 @@
 @inject NetworkMonitorService NetworkMonitorService
 @inject NetworkMonitorSettingsStore NetworkMonitorSettingsStore
 @inject AutoServerSwitchService AutoServerSwitchService
+@inject PrivateReconnectService PrivateReconnectService
+@inject PrivateReconnectSettingsStore PrivateReconnectSettingsStore
 @inject IConfiguration Configuration
 
 <PageTitle>Settings - XNetwork</PageTitle>
@@ -24,6 +26,10 @@
             <span class="settings-pill @(_autoServerSwitchSettings.Enabled ? "settings-pill-green" : "settings-pill-muted")">
                 <i class="fas fa-heart-pulse"></i>
                 @(_autoServerSwitchSettings.Enabled ? "Health auto-switch on" : "Health auto-switch off")
+            </span>
+            <span class="settings-pill @(_privateReconnectSettings.Enabled ? "settings-pill-blue" : "settings-pill-muted")">
+                <i class="fas fa-rotate"></i>
+                @(_privateReconnectSettings.Enabled ? "Private reconnect on" : "Private reconnect off")
             </span>
             <span class="settings-pill @(_connectionSettings.Encrypted ? "settings-pill-blue" : "settings-pill-muted")">
                 <i class="fas fa-shield-alt"></i>
@@ -1202,7 +1208,89 @@
                 </div>
             </Accordion>
 
-            <!-- Section 9: Advanced Settings -->
+            <!-- Section 9: Private Server Reconnect -->
+            <Accordion Title="Private Server Reconnect" IsExpanded="_privateReconnectExpanded" OnToggle="(e) => _privateReconnectExpanded = e" BadgeText="@GetPrivateReconnectBadge()">
+                <div class="space-y-4 pt-4">
+                    <p class="text-sm text-slate-400">
+                        Periodically refreshes the private Speedify session by disconnecting and reconnecting to the private server.
+                    </p>
+
+                    <div class="bg-slate-800/50 p-4 rounded-lg border border-slate-700 space-y-3">
+                        <ToggleSwitch
+                            Id="private-reconnect-enabled"
+                            Label="Enable scheduled private reconnect"
+                            IsEnabled="_privateReconnectSettings.Enabled"
+                            OnToggle="HandlePrivateReconnectToggle" />
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                            <div>
+                                <span class="text-slate-500 block">Status</span>
+                                <span class="text-white">@_privateReconnectStatus.Message</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Next Attempt</span>
+                                <span class="text-white">@FormatPrivateReconnectTime(_privateReconnectStatus.NextAttemptUtc)</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Last Attempt</span>
+                                <span class="text-white">@FormatPrivateReconnectTime(_privateReconnectStatus.LastAttemptUtc)</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Last Success</span>
+                                <span class="text-white">@FormatPrivateReconnectTime(_privateReconnectStatus.LastSuccessUtc)</span>
+                            </div>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(_privateReconnectStatus.LastError))
+                        {
+                            <div class="text-sm text-red-300">
+                                @_privateReconnectStatus.LastError
+                            </div>
+                        }
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <NumberInput Label="Reconnect Interval" Value="_privateReconnectSettings.IntervalMinutes" OnChange="HandlePrivateReconnectIntervalChange" Min="5" Max="1440" Unit="minutes" />
+                        <NumberInput Label="Reconnect Delay" Value="_privateReconnectSettings.DelaySeconds" OnChange="HandlePrivateReconnectDelayChange" Min="1" Max="30" Unit="seconds" />
+                    </div>
+
+                    <div class="flex flex-wrap gap-3">
+                        <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+                                disabled="@_isProcessing"
+                                @onclick="SavePrivateReconnectSettings">
+                            Save Reconnect Settings
+                        </button>
+                        <button class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 disabled:text-slate-400 rounded-md text-white font-medium transition-colors"
+                                disabled="@(_isProcessing || _privateReconnectStatus.IsRunning)"
+                                @onclick="TriggerPrivateReconnectNow">
+                            Reconnect Private Now
+                        </button>
+                        <button class="px-4 py-2 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-800 disabled:text-slate-500 rounded-md text-white font-medium transition-colors"
+                                disabled="@_isProcessing"
+                                @onclick="RefreshPrivateReconnectStatus">
+                            Refresh Status
+                        </button>
+                    </div>
+
+                    @if (_privateReconnectStatus.RecentEvents.Any())
+                    {
+                        <div class="bg-slate-900/60 border border-slate-700 rounded-lg overflow-hidden">
+                            <div class="px-4 py-3 border-b border-slate-700 text-sm font-medium text-white">Recent Reconnect Events</div>
+                            <div class="divide-y divide-slate-800">
+                                @foreach (var reconnectEvent in _privateReconnectStatus.RecentEvents.Take(5))
+                                {
+                                    <div class="px-4 py-3 text-sm grid grid-cols-1 md:grid-cols-[auto_1fr] gap-2">
+                                        <span class="@(reconnectEvent.IsError ? "text-red-300" : "text-slate-500")">@FormatPrivateReconnectTime(reconnectEvent.TimestampUtc)</span>
+                                        <span class="text-white">@reconnectEvent.Message</span>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            </Accordion>
+
+            <!-- Section 10: Advanced Settings -->
             <Accordion Title="Advanced Settings" IsExpanded="_advancedExpanded" OnToggle="(e) => _advancedExpanded = e">
                 <div class="space-y-4 pt-4">
                     <NumberInput
@@ -1851,6 +1939,9 @@
     private AutoServerSwitchStatus _autoServerSwitchStatus = new();
     private string _fallbackCountriesInput = "";
 
+    private PrivateReconnectSettings _privateReconnectSettings = new();
+    private PrivateReconnectStatus _privateReconnectStatus = new();
+
     // Service preset dictionaries
     private readonly Dictionary<string, string> _streamingServicePresets = new()
     {
@@ -1897,6 +1988,7 @@
     private bool _streamingExpanded = false;
     private bool _connectMethodExpanded = false;
     private bool _autoServerSwitchExpanded = false;
+    private bool _privateReconnectExpanded = false;
     private bool _advancedExpanded = false;
     private bool _fixedDelayExpanded = false;
     private bool _portForwardingExpanded = false;
@@ -2012,6 +2104,9 @@
             _autoServerSwitchSettings = AutoServerSwitchService.Settings;
             _fallbackCountriesInput = string.Join(", ", _autoServerSwitchSettings.FallbackCountries);
             _autoServerSwitchStatus = AutoServerSwitchService.GetStatus();
+
+            _privateReconnectSettings = PrivateReconnectService.Settings;
+            _privateReconnectStatus = PrivateReconnectService.GetStatus();
 
             _cudySettings = CudyApControlService.Settings;
             CudyApControlService.RefreshStatusFromSettings();
@@ -3059,6 +3154,107 @@
             _isProcessing = false;
             await InvokeAsync(StateHasChanged);
         }
+    }
+
+    private string? GetPrivateReconnectBadge()
+    {
+        if (_privateReconnectStatus.IsRunning)
+        {
+            return "Running";
+        }
+
+        return _privateReconnectSettings.Enabled ? "On" : null;
+    }
+
+    private async Task RefreshPrivateReconnectStatus()
+    {
+        _privateReconnectStatus = PrivateReconnectService.GetStatus();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task HandlePrivateReconnectToggle(bool enabled)
+    {
+        _privateReconnectSettings.Enabled = enabled;
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task HandlePrivateReconnectIntervalChange(double value)
+    {
+        _privateReconnectSettings.IntervalMinutes = (int)Math.Round(value);
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task HandlePrivateReconnectDelayChange(double value)
+    {
+        _privateReconnectSettings.DelaySeconds = (int)Math.Round(value);
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task SavePrivateReconnectSettings()
+    {
+        _isProcessing = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _privateReconnectSettings.IntervalMinutes = Math.Clamp(_privateReconnectSettings.IntervalMinutes, 5, 1440);
+            _privateReconnectSettings.DelaySeconds = Math.Clamp(_privateReconnectSettings.DelaySeconds, 1, 30);
+
+            await PrivateReconnectSettingsStore.SaveAsync(_privateReconnectSettings);
+            PrivateReconnectService.UpdateSettings(_privateReconnectSettings);
+            _privateReconnectSettings = PrivateReconnectService.Settings;
+            _privateReconnectStatus = PrivateReconnectService.GetStatus();
+            _successMessage = "Private reconnect settings updated";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to save private reconnect settings: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task TriggerPrivateReconnectNow()
+    {
+        _isProcessing = true;
+        _error = null;
+        _successMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var success = await PrivateReconnectService.TriggerNowAsync();
+            _privateReconnectStatus = PrivateReconnectService.GetStatus();
+            if (success)
+            {
+                _successMessage = _privateReconnectStatus.Message;
+            }
+            else
+            {
+                _error = _privateReconnectStatus.Message;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to reconnect private server: {ex.Message}";
+        }
+        finally
+        {
+            _isProcessing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private static string FormatPrivateReconnectTime(DateTime? timestampUtc)
+    {
+        return timestampUtc.HasValue
+            ? timestampUtc.Value.ToLocalTime().ToString("g")
+            : "Not scheduled";
     }
 
     private async Task HandleAutoSwitchMaxLatencyChange(double value)

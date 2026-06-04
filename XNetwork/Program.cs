@@ -22,6 +22,15 @@ builder.Services.AddSingleton<BuildInfoService>();
 builder.Services.AddSingleton<WifiService>();
 builder.Services.AddSingleton<NetworkMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NetworkMonitorService>());
+builder.Services.AddSingleton<PrivateReconnectSettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("PrivateReconnect").Get<PrivateReconnectSettings>() ?? new PrivateReconnectSettings();
+    sp.GetRequiredService<PrivateReconnectSettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<PrivateReconnectService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<PrivateReconnectService>());
 
 // Add Cudy travel-router AP automation
 builder.Services.AddSingleton<CudyAdminPasswordStore>();

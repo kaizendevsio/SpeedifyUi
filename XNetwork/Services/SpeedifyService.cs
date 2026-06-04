@@ -200,6 +200,33 @@ public class SpeedifyService
         await Task.Run(() => RunTerminatingCommand("connect"), cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task<SpeedifyState?> GetStateAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var jsonOutput = await Task.Run(() => RunTerminatingCommand("state"), cancellationToken)
+                .ConfigureAwait(false);
+            return JsonSerializer.Deserialize<SpeedifyState>(jsonOutput, _jsonOptions);
+        }
+        catch (SpeedifyException ex)
+        {
+            Console.WriteLine($"SpeedifyService: Error getting state: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SpeedifyService: Unexpected error getting state: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task ReconnectPrivateAsync(TimeSpan delay, CancellationToken cancellationToken = default)
+    {
+        await Task.Run(() => RunTerminatingCommand("disconnect"), cancellationToken).ConfigureAwait(false);
+        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        await Task.Run(() => RunTerminatingCommand("connect private"), cancellationToken).ConfigureAwait(false);
+    }
+
     public Task StopAsync(CancellationToken cancellationToken = default)
     {
         return Task.Run(() => RunTerminatingCommand("disconnect"), cancellationToken);
