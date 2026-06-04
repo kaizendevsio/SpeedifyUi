@@ -88,7 +88,7 @@ public class AdapterExtended
 public class AdapterDataUsage
 {
     /// <summary>
-    /// Rate limit applied when over data limit (bytes/sec, 0 = blocked).
+    /// Rate limit applied when over data limit (bits/sec, 0 = blocked).
     /// </summary>
     [JsonPropertyName("overlimitRatelimit")]
     public long OverlimitRatelimit { get; set; }
@@ -136,16 +136,16 @@ public class AdapterDataUsage
 public class AdapterRateLimit
 {
     /// <summary>
-    /// Download rate limit in bits per second (0 = unlimited).
+    /// Download rate limit reported by show adapters in bytes per second (0 = unlimited).
     /// </summary>
-    [JsonPropertyName("downloadBitsPerSecond")]
-    public long DownloadBitsPerSecond { get; set; }
+    [JsonPropertyName("downloadBytesPerSecond")]
+    public long DownloadBytesPerSecond { get; set; }
 
     /// <summary>
-    /// Upload rate limit in bits per second (0 = unlimited).
+    /// Upload rate limit reported by show adapters in bytes per second (0 = unlimited).
     /// </summary>
-    [JsonPropertyName("uploadBitsPerSecond")]
-    public long UploadBitsPerSecond { get; set; }
+    [JsonPropertyName("uploadBytesPerSecond")]
+    public long UploadBytesPerSecond { get; set; }
 }
 
 public class AdapterRateLimitJsonConverter : JsonConverter<AdapterRateLimit>
@@ -156,8 +156,8 @@ public class AdapterRateLimitJsonConverter : JsonConverter<AdapterRateLimit>
         {
             return new AdapterRateLimit
             {
-                DownloadBitsPerSecond = rateLimit,
-                UploadBitsPerSecond = rateLimit
+                DownloadBytesPerSecond = rateLimit,
+                UploadBytesPerSecond = rateLimit
             };
         }
 
@@ -166,8 +166,8 @@ public class AdapterRateLimitJsonConverter : JsonConverter<AdapterRateLimit>
         {
             return new AdapterRateLimit
             {
-                DownloadBitsPerSecond = stringRateLimit,
-                UploadBitsPerSecond = stringRateLimit
+                DownloadBytesPerSecond = stringRateLimit,
+                UploadBytesPerSecond = stringRateLimit
             };
         }
 
@@ -178,8 +178,8 @@ public class AdapterRateLimitJsonConverter : JsonConverter<AdapterRateLimit>
 
             return new AdapterRateLimit
             {
-                DownloadBitsPerSecond = TryGetInt64(root, "downloadBps", "downloadBitsPerSecond"),
-                UploadBitsPerSecond = TryGetInt64(root, "uploadBps", "uploadBitsPerSecond")
+                DownloadBytesPerSecond = TryGetInt64(root, "downloadBps", "downloadBytesPerSecond", "downloadBitsPerSecond"),
+                UploadBytesPerSecond = TryGetInt64(root, "uploadBps", "uploadBytesPerSecond", "uploadBitsPerSecond")
             };
         }
 
@@ -189,8 +189,8 @@ public class AdapterRateLimitJsonConverter : JsonConverter<AdapterRateLimit>
     public override void Write(Utf8JsonWriter writer, AdapterRateLimit value, JsonSerializerOptions options)
     {
         writer.WriteStartObject();
-        writer.WriteNumber("downloadBitsPerSecond", value.DownloadBitsPerSecond);
-        writer.WriteNumber("uploadBitsPerSecond", value.UploadBitsPerSecond);
+        writer.WriteNumber("downloadBytesPerSecond", value.DownloadBytesPerSecond);
+        writer.WriteNumber("uploadBytesPerSecond", value.UploadBytesPerSecond);
         writer.WriteEndObject();
     }
 

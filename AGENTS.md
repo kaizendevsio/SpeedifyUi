@@ -38,7 +38,7 @@
 - All Speedify process execution belongs in `SpeedifyService`: terminating commands use `RunTerminatingCommand`, streaming stats use `StreamCommandOutputAsync("stats")`.
 - Streaming stats must buffer until a complete JSON `[]` array parses; keep the 32KB runaway safeguard and `Kill(true)` plus 2-second wait cleanup for canceled streams.
 - `GetStatsAsync` yields only per-connection `connection_stats` and intentionally filters the `speedify` aggregate plus `%proxy` connections; `GetStatsWithAggregateAsync` includes the `speedify` aggregate for dashboard actual throughput.
-- Units differ by API: `ConnectionItem.ReceiveBps`/`SendBps` are bytes/sec, adapter rate limits are bits/sec, adapter data usage/limits are bytes, and `0` means unlimited.
+- Units differ by API: `ConnectionItem.ReceiveBps`/`SendBps` are bytes/sec, `show adapters` rate-limit fields `downloadBps`/`uploadBps` are bytes/sec, `speedify_cli adapter ratelimit` command inputs are bits/sec, adapter data usage/limits are bytes, and `0` means unlimited.
 - For new CLI response models, use `System.Text.Json` with `[JsonPropertyName]` when JSON names differ from C# names.
 - Observed runtime Speedify settings have used `bondingMode: redundant`, `transportMode: udp`, `headerCompression: true`, `jumboPackets: true`, `packetAggregation: true`, and `maxRedundant: 5`; redundant mode can make Speedify tunnel throughput much higher than Cudy client throughput.
 - Large `Estimated VPN / Overhead` in the traffic modal is not necessarily pure protocol overhead; it can include redundant-mode duplication, retransmits/loss recovery, forwarded client packets that process attribution cannot map, and timing mismatch between data sources.
@@ -108,12 +108,12 @@
 - Most settings apply immediately through CLI handlers; pending flags `_hasUnsavedBypassChanges`, `_hasUnsavedStreamingChanges`, and `_adapterPendingChanges` only cover selected rule/list/adapter edits.
 - The `Private Server Reconnect` Settings accordion persists via `PrivateReconnectSettingsStore` and triggers manual/scheduled reconnects through `PrivateReconnectService`; do not call `speedify_cli` directly from UI code.
 - Streaming and gaming service presets are hardcoded dictionaries, while `_enabledServices` is a separate case-insensitive `HashSet` that must stay in sync with `_bypassSettings.Services`.
-- Adapter settings cache local state in `_adapterLocalState`; UI converts MB/GB to bytes for data limits, keeps rate limits as raw bits/sec, and only offers monthly reset days 1-28.
+- Adapter settings cache local state in `_adapterLocalState`; UI converts MB/GB to bytes for data limits, displays adapter rate limits in Mbps while converting Speedify's returned bytes/sec to command bits/sec on save, and only offers monthly reset days 1-28.
 - Port rules for streaming, bypass, and fixed-delay are formatted in `SpeedifyService.FormatPortRule` as `port[-end]/protocol`.
 
 ## Tests
 - Test project is `XNetwork.Tests`; current tests cover Cudy form/client parsing, local process traffic parsing, rolling health windows, probe score calculations, server switch recommendations, recommendation confidence, auto-switch state store, and local WAN stability.
-- After traffic attribution changes, expected test count has been 29; do not hard-code that as a permanent invariant.
+- Latest local full test run during the adapter rate-limit unit fix passed 34 tests; do not hard-code that as a permanent invariant.
 - Add focused tests for parser changes because Cudy/LuCI endpoints are HTML/form based and firmware-specific.
 
 ## Instruction Sources

@@ -1931,16 +1931,16 @@ public class SpeedifyService
     /// Sets the rate limit for a specific adapter.
     /// </summary>
     /// <param name="adapterId">Adapter identifier.</param>
-    /// <param name="downloadBps">Download rate limit in bits per second, or null for unlimited.</param>
-    /// <param name="uploadBps">Upload rate limit in bits per second, or null for unlimited.</param>
+    /// <param name="downloadBitsPerSecond">Download rate limit command value in bits per second, or null for unlimited.</param>
+    /// <param name="uploadBitsPerSecond">Upload rate limit command value in bits per second, or null for unlimited.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>True if successful, false otherwise.</returns>
-    public async Task<bool> SetAdapterRateLimitAsync(string adapterId, long? downloadBps, long? uploadBps, CancellationToken cancellationToken = default)
+    public async Task<bool> SetAdapterRateLimitAsync(string adapterId, long? downloadBitsPerSecond, long? uploadBitsPerSecond, CancellationToken cancellationToken = default)
     {
         try
         {
-            var downloadArg = downloadBps.HasValue ? downloadBps.Value.ToString() : "unlimited";
-            var uploadArg = uploadBps.HasValue ? uploadBps.Value.ToString() : "unlimited";
+            var downloadArg = downloadBitsPerSecond.HasValue ? downloadBitsPerSecond.Value.ToString() : "unlimited";
+            var uploadArg = uploadBitsPerSecond.HasValue ? uploadBitsPerSecond.Value.ToString() : "unlimited";
             var command = $"adapter ratelimit {adapterId} {downloadArg} {uploadArg}";
             await Task.Run(() => RunTerminatingCommand(command), cancellationToken).ConfigureAwait(false);
             return true;

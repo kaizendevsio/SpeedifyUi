@@ -1,4 +1,5 @@
 @page "/settings"
+@using System.Globalization
 @using XNetwork.Services
 @using XNetwork.Models
 @using XNetwork.Components.Custom
@@ -1724,18 +1725,19 @@
                                                 </h4>
                                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pl-4">
                                                     <div>
-                                                        <label class="text-xs text-slate-400 block mb-1">Download Limit (bps)</label>
+                                                        <label class="text-xs text-slate-400 block mb-1">Download Limit (Mbps)</label>
                                                         <div class="flex items-center gap-2">
                                                             <input type="number"
                                                                    class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
-                                                                   value="@adapter.RateLimit.DownloadBitsPerSecond"
-                                                                   disabled="@(adapter.RateLimit.DownloadBitsPerSecond == 0)"
+                                                                   value="@FormatAdapterRateLimitMbps(adapter.RateLimit.DownloadBytesPerSecond)"
+                                                                   disabled="@(adapter.RateLimit.DownloadBytesPerSecond == 0)"
                                                                    @onchange="(e) => HandleAdapterDownloadRateLimitChange(adapter.AdapterId, e)"
-                                                                   min="0" />
+                                                                   min="0"
+                                                                   step="0.1" />
                                                             <div class="flex items-center gap-1">
                                                                 <input type="checkbox"
                                                                        id="@($"dl-unlimited-{adapter.AdapterId}")"
-                                                                       checked="@(adapter.RateLimit.DownloadBitsPerSecond == 0)"
+                                                                       checked="@(adapter.RateLimit.DownloadBytesPerSecond == 0)"
                                                                        @onchange="(e) => HandleAdapterDownloadUnlimitedToggle(adapter.AdapterId, e)"
                                                                        class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-600" />
                                                                 <label for="@($"dl-unlimited-{adapter.AdapterId}")" class="text-xs text-slate-300">∞</label>
@@ -1743,18 +1745,19 @@
                                                         </div>
                                                     </div>
                                                     <div>
-                                                        <label class="text-xs text-slate-400 block mb-1">Upload Limit (bps)</label>
+                                                        <label class="text-xs text-slate-400 block mb-1">Upload Limit (Mbps)</label>
                                                         <div class="flex items-center gap-2">
                                                             <input type="number"
                                                                    class="flex-1 bg-slate-900 border border-slate-700 rounded-md p-2 text-white text-sm"
-                                                                   value="@adapter.RateLimit.UploadBitsPerSecond"
-                                                                   disabled="@(adapter.RateLimit.UploadBitsPerSecond == 0)"
+                                                                   value="@FormatAdapterRateLimitMbps(adapter.RateLimit.UploadBytesPerSecond)"
+                                                                   disabled="@(adapter.RateLimit.UploadBytesPerSecond == 0)"
                                                                    @onchange="(e) => HandleAdapterUploadRateLimitChange(adapter.AdapterId, e)"
-                                                                   min="0" />
+                                                                   min="0"
+                                                                   step="0.1" />
                                                             <div class="flex items-center gap-1">
                                                                 <input type="checkbox"
                                                                        id="@($"ul-unlimited-{adapter.AdapterId}")"
-                                                                       checked="@(adapter.RateLimit.UploadBitsPerSecond == 0)"
+                                                                       checked="@(adapter.RateLimit.UploadBytesPerSecond == 0)"
                                                                        @onchange="(e) => HandleAdapterUploadUnlimitedToggle(adapter.AdapterId, e)"
                                                                        class="w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-600" />
                                                                 <label for="@($"ul-unlimited-{adapter.AdapterId}")" class="text-xs text-slate-300">∞</label>
@@ -4467,17 +4470,21 @@
 
     private async Task HandleAdapterDownloadRateLimitChange(string adapterId, ChangeEventArgs e)
     {
-        if (long.TryParse(e.Value?.ToString(), out var bps))
+        if (TryParseAdapterRateLimitMbps(e.Value?.ToString(), out var mbps))
         {
             var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
-            var uploadBps = adapter?.RateLimit.UploadBitsPerSecond ?? 0;
+            var downloadBitsPerSecond = MegabitsPerSecondToBitsPerSecond(mbps);
+            var uploadBitsPerSecond = BytesPerSecondToBitsPerSecond(adapter?.RateLimit.UploadBytesPerSecond ?? 0);
 
             try
             {
-                var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, bps == 0 ? null : bps, uploadBps == 0 ? null : uploadBps);
+                var success = await SpeedifyService.SetAdapterRateLimitAsync(
+                    adapterId,
+                    downloadBitsPerSecond == 0 ? null : downloadBitsPerSecond,
+                    uploadBitsPerSecond == 0 ? null : uploadBitsPerSecond);
                 if (success && adapter != null)
                 {
-                    adapter.RateLimit.DownloadBitsPerSecond = bps;
+                    adapter.RateLimit.DownloadBytesPerSecond = MegabitsPerSecondToBytesPerSecond(mbps);
                 }
             }
             catch (Exception ex)
@@ -4492,14 +4499,18 @@
     {
         var unlimited = e.Value is bool b && b;
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
-        var uploadBps = adapter?.RateLimit.UploadBitsPerSecond ?? 0;
+        var uploadBitsPerSecond = BytesPerSecondToBitsPerSecond(adapter?.RateLimit.UploadBytesPerSecond ?? 0);
+        var downloadBitsPerSecond = MegabitsPerSecondToBitsPerSecond(DefaultAdapterRateLimitMbps);
 
         try
         {
-            var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, unlimited ? null : 10000000, uploadBps == 0 ? null : uploadBps);
+            var success = await SpeedifyService.SetAdapterRateLimitAsync(
+                adapterId,
+                unlimited ? null : downloadBitsPerSecond,
+                uploadBitsPerSecond == 0 ? null : uploadBitsPerSecond);
             if (success && adapter != null)
             {
-                adapter.RateLimit.DownloadBitsPerSecond = unlimited ? 0 : 10000000;
+                adapter.RateLimit.DownloadBytesPerSecond = unlimited ? 0 : MegabitsPerSecondToBytesPerSecond(DefaultAdapterRateLimitMbps);
             }
         }
         catch (Exception ex)
@@ -4511,17 +4522,21 @@
 
     private async Task HandleAdapterUploadRateLimitChange(string adapterId, ChangeEventArgs e)
     {
-        if (long.TryParse(e.Value?.ToString(), out var bps))
+        if (TryParseAdapterRateLimitMbps(e.Value?.ToString(), out var mbps))
         {
             var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
-            var downloadBps = adapter?.RateLimit.DownloadBitsPerSecond ?? 0;
+            var downloadBitsPerSecond = BytesPerSecondToBitsPerSecond(adapter?.RateLimit.DownloadBytesPerSecond ?? 0);
+            var uploadBitsPerSecond = MegabitsPerSecondToBitsPerSecond(mbps);
 
             try
             {
-                var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, downloadBps == 0 ? null : downloadBps, bps == 0 ? null : bps);
+                var success = await SpeedifyService.SetAdapterRateLimitAsync(
+                    adapterId,
+                    downloadBitsPerSecond == 0 ? null : downloadBitsPerSecond,
+                    uploadBitsPerSecond == 0 ? null : uploadBitsPerSecond);
                 if (success && adapter != null)
                 {
-                    adapter.RateLimit.UploadBitsPerSecond = bps;
+                    adapter.RateLimit.UploadBytesPerSecond = MegabitsPerSecondToBytesPerSecond(mbps);
                 }
             }
             catch (Exception ex)
@@ -4536,14 +4551,18 @@
     {
         var unlimited = e.Value is bool b && b;
         var adapter = _adaptersExtended?.FirstOrDefault(a => a.AdapterId == adapterId);
-        var downloadBps = adapter?.RateLimit.DownloadBitsPerSecond ?? 0;
+        var downloadBitsPerSecond = BytesPerSecondToBitsPerSecond(adapter?.RateLimit.DownloadBytesPerSecond ?? 0);
+        var uploadBitsPerSecond = MegabitsPerSecondToBitsPerSecond(DefaultAdapterRateLimitMbps);
 
         try
         {
-            var success = await SpeedifyService.SetAdapterRateLimitAsync(adapterId, downloadBps == 0 ? null : downloadBps, unlimited ? null : 10000000);
+            var success = await SpeedifyService.SetAdapterRateLimitAsync(
+                adapterId,
+                downloadBitsPerSecond == 0 ? null : downloadBitsPerSecond,
+                unlimited ? null : uploadBitsPerSecond);
             if (success && adapter != null)
             {
-                adapter.RateLimit.UploadBitsPerSecond = unlimited ? 0 : 10000000;
+                adapter.RateLimit.UploadBytesPerSecond = unlimited ? 0 : MegabitsPerSecondToBytesPerSecond(DefaultAdapterRateLimitMbps);
             }
         }
         catch (Exception ex)
@@ -4551,6 +4570,56 @@
             _error = $"Failed to update upload rate limit: {ex.Message}";
         }
         await InvokeAsync(StateHasChanged);
+    }
+
+    private const double DefaultAdapterRateLimitMbps = 10.0;
+
+    private static string FormatAdapterRateLimitMbps(long bytesPerSecond)
+    {
+        if (bytesPerSecond <= 0)
+        {
+            return "0";
+        }
+
+        return BytesPerSecondToMegabitsPerSecond(bytesPerSecond).ToString("0.###", CultureInfo.InvariantCulture);
+    }
+
+    private static bool TryParseAdapterRateLimitMbps(string? value, out double mbps)
+    {
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out mbps))
+        {
+            mbps = Math.Max(0, mbps);
+            return true;
+        }
+
+        if (double.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out mbps))
+        {
+            mbps = Math.Max(0, mbps);
+            return true;
+        }
+
+        mbps = 0;
+        return false;
+    }
+
+    private static double BytesPerSecondToMegabitsPerSecond(long bytesPerSecond)
+    {
+        return bytesPerSecond * 8.0 / 1_000_000.0;
+    }
+
+    private static long MegabitsPerSecondToBytesPerSecond(double mbps)
+    {
+        return (long)Math.Round(mbps * 1_000_000.0 / 8.0, MidpointRounding.AwayFromZero);
+    }
+
+    private static long BytesPerSecondToBitsPerSecond(long bytesPerSecond)
+    {
+        return bytesPerSecond <= 0 ? 0 : bytesPerSecond * 8;
+    }
+
+    private static long MegabitsPerSecondToBitsPerSecond(double mbps)
+    {
+        return (long)Math.Round(mbps * 1_000_000.0, MidpointRounding.AwayFromZero);
     }
 
     private async Task HandleAdapterUploadModeChange(string adapterId, string mode)
