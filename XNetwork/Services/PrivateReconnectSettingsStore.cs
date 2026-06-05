@@ -82,6 +82,11 @@ public class PrivateReconnectSettingsStore
         target.Enabled = source.Enabled;
         target.IntervalMinutes = source.IntervalMinutes;
         target.DelaySeconds = source.DelaySeconds;
+        target.HealthTriggerEnabled = source.HealthTriggerEnabled;
+        target.HealthLatencyThresholdMs = source.HealthLatencyThresholdMs;
+        target.HealthDegradedSeconds = source.HealthDegradedSeconds;
+        target.HealthRecoveryObserveSeconds = source.HealthRecoveryObserveSeconds;
+        target.HealthCooldownMinutes = source.HealthCooldownMinutes;
     }
 
     private static string GetAppDataDirectory(IHostEnvironment environment)

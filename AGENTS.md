@@ -52,6 +52,7 @@
 - `PrivateReconnectService` is a hosted service for refreshing the private Speedify session with `speedify_cli disconnect`, a short delay, then `speedify_cli connect private`; it is disabled by default and configured by `PrivateReconnect` / `private-reconnect-settings.json`.
 - Private reconnect defaults: `Enabled=false`, `IntervalMinutes=30`, `DelaySeconds=2`; the Settings page can enable it, change the interval/delay, view status/events, and trigger `Reconnect Private Now`.
 - 2026-06-04: A scheduling bug was fixed in `PrivateReconnectService`: do not reschedule `NextAttemptUtc` after every sleep/check tick, or the due time is pushed forward forever and only manual reconnect works.
+- Private reconnect also supports an optional high-latency trigger: only while connected to a verified private Speedify server, sustained latency defaults to `>=300ms` for `120s`, then it reconnects, observes recovery for `60s`, and if latency remains high it suppresses further health-triggered reconnects for `15m`. Manual reconnect and the scheduled timer remain separate.
 
 ## Linux And Privileges
 - `NetworkMonitorService` exits unless the app runs on Linux, monitoring is enabled, and `NetworkMonitor:WhitelistedLinks` is non-empty.

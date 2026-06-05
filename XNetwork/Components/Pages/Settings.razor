@@ -1213,7 +1213,7 @@
             <Accordion Title="Private Server Reconnect" IsExpanded="_privateReconnectExpanded" OnToggle="(e) => _privateReconnectExpanded = e" BadgeText="@GetPrivateReconnectBadge()">
                 <div class="space-y-4 pt-4">
                     <p class="text-sm text-slate-400">
-                        Periodically refreshes the private Speedify session by disconnecting and reconnecting to the private server.
+                        Refreshes the private Speedify session on a schedule or when sustained high latency is detected on a private server.
                     </p>
 
                     <div class="bg-slate-800/50 p-4 rounded-lg border border-slate-700 space-y-3">
@@ -1222,6 +1222,12 @@
                             Label="Enable scheduled private reconnect"
                             IsEnabled="_privateReconnectSettings.Enabled"
                             OnToggle="HandlePrivateReconnectToggle" />
+
+                        <ToggleSwitch
+                            Id="private-reconnect-health-enabled"
+                            Label="Enable high-latency private reconnect"
+                            IsEnabled="_privateReconnectSettings.HealthTriggerEnabled"
+                            OnToggle="HandlePrivateReconnectHealthToggle" />
 
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
                             <div>
@@ -1240,6 +1246,22 @@
                                 <span class="text-slate-500 block">Last Success</span>
                                 <span class="text-white">@FormatPrivateReconnectTime(_privateReconnectStatus.LastSuccessUtc)</span>
                             </div>
+                            <div>
+                                <span class="text-slate-500 block">Health Trigger</span>
+                                <span class="text-white">@(_privateReconnectStatus.HealthMessage ?? "Not monitoring")</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Current Health Latency</span>
+                                <span class="text-white">@FormatPrivateReconnectLatency(_privateReconnectStatus.LastHealthLatencyMs)</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">High Since</span>
+                                <span class="text-white">@FormatPrivateReconnectTime(_privateReconnectStatus.HealthDegradedSinceUtc)</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-500 block">Health Cooldown Until</span>
+                                <span class="text-white">@FormatPrivateReconnectTime(_privateReconnectStatus.HealthSuppressedUntilUtc)</span>
+                            </div>
                         </div>
 
                         @if (!string.IsNullOrWhiteSpace(_privateReconnectStatus.LastError))
@@ -1253,6 +1275,10 @@
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <NumberInput Label="Reconnect Interval" Value="_privateReconnectSettings.IntervalMinutes" OnChange="HandlePrivateReconnectIntervalChange" Min="5" Max="1440" Unit="minutes" />
                         <NumberInput Label="Reconnect Delay" Value="_privateReconnectSettings.DelaySeconds" OnChange="HandlePrivateReconnectDelayChange" Min="1" Max="30" Unit="seconds" />
+                        <NumberInput Label="Health Latency Threshold" Value="_privateReconnectSettings.HealthLatencyThresholdMs" OnChange="HandlePrivateReconnectHealthLatencyChange" Min="100" Max="2000" Unit="ms" />
+                        <NumberInput Label="Sustained High Latency" Value="_privateReconnectSettings.HealthDegradedSeconds" OnChange="HandlePrivateReconnectHealthDegradedChange" Min="30" Max="1800" Unit="seconds" />
+                        <NumberInput Label="Recovery Observation" Value="_privateReconnectSettings.HealthRecoveryObserveSeconds" OnChange="HandlePrivateReconnectHealthObserveChange" Min="10" Max="300" Unit="seconds" />
+                        <NumberInput Label="Health Cooldown" Value="_privateReconnectSettings.HealthCooldownMinutes" OnChange="HandlePrivateReconnectHealthCooldownChange" Min="5" Max="240" Unit="minutes" />
                     </div>
 
                     <div class="flex flex-wrap gap-3">
@@ -3166,7 +3192,17 @@
             return "Running";
         }
 
-        return _privateReconnectSettings.Enabled ? "On" : null;
+        if (_privateReconnectSettings.Enabled && _privateReconnectSettings.HealthTriggerEnabled)
+        {
+            return "On + Health";
+        }
+
+        if (_privateReconnectSettings.Enabled)
+        {
+            return "On";
+        }
+
+        return _privateReconnectSettings.HealthTriggerEnabled ? "Health" : null;
     }
 
     private async Task RefreshPrivateReconnectStatus()
@@ -3178,6 +3214,12 @@
     private async Task HandlePrivateReconnectToggle(bool enabled)
     {
         _privateReconnectSettings.Enabled = enabled;
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task HandlePrivateReconnectHealthToggle(bool enabled)
+    {
+        _privateReconnectSettings.HealthTriggerEnabled = enabled;
         await SavePrivateReconnectSettings();
     }
 
@@ -3193,6 +3235,30 @@
         await SavePrivateReconnectSettings();
     }
 
+    private async Task HandlePrivateReconnectHealthLatencyChange(double value)
+    {
+        _privateReconnectSettings.HealthLatencyThresholdMs = value;
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task HandlePrivateReconnectHealthDegradedChange(double value)
+    {
+        _privateReconnectSettings.HealthDegradedSeconds = (int)Math.Round(value);
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task HandlePrivateReconnectHealthObserveChange(double value)
+    {
+        _privateReconnectSettings.HealthRecoveryObserveSeconds = (int)Math.Round(value);
+        await SavePrivateReconnectSettings();
+    }
+
+    private async Task HandlePrivateReconnectHealthCooldownChange(double value)
+    {
+        _privateReconnectSettings.HealthCooldownMinutes = (int)Math.Round(value);
+        await SavePrivateReconnectSettings();
+    }
+
     private async Task SavePrivateReconnectSettings()
     {
         _isProcessing = true;
@@ -3204,6 +3270,10 @@
         {
             _privateReconnectSettings.IntervalMinutes = Math.Clamp(_privateReconnectSettings.IntervalMinutes, 5, 1440);
             _privateReconnectSettings.DelaySeconds = Math.Clamp(_privateReconnectSettings.DelaySeconds, 1, 30);
+            _privateReconnectSettings.HealthLatencyThresholdMs = Math.Clamp(_privateReconnectSettings.HealthLatencyThresholdMs, 100, 2000);
+            _privateReconnectSettings.HealthDegradedSeconds = Math.Clamp(_privateReconnectSettings.HealthDegradedSeconds, 30, 1800);
+            _privateReconnectSettings.HealthRecoveryObserveSeconds = Math.Clamp(_privateReconnectSettings.HealthRecoveryObserveSeconds, 10, 300);
+            _privateReconnectSettings.HealthCooldownMinutes = Math.Clamp(_privateReconnectSettings.HealthCooldownMinutes, 5, 240);
 
             await PrivateReconnectSettingsStore.SaveAsync(_privateReconnectSettings);
             PrivateReconnectService.UpdateSettings(_privateReconnectSettings);
@@ -3258,6 +3328,13 @@
         return timestampUtc.HasValue
             ? timestampUtc.Value.ToLocalTime().ToString("g")
             : "Not scheduled";
+    }
+
+    private static string FormatPrivateReconnectLatency(double? latencyMs)
+    {
+        return latencyMs.HasValue
+            ? $"{latencyMs.Value:N0} ms"
+            : "No sample";
     }
 
     private async Task HandleAutoSwitchMaxLatencyChange(double value)
