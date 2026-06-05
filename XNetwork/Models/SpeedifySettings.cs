@@ -54,6 +54,18 @@ public class SpeedifySettings
 
     [JsonPropertyName("perConnectionEncryptionEnabled")]
     public bool PerConnectionEncryptionEnabled { get; set; }
+
+    [JsonPropertyName("perConnectionEncryptionSettings")]
+    public List<PerConnectionEncryptionSetting> PerConnectionEncryptionSettings { get; set; } = new();
+}
+
+public class PerConnectionEncryptionSetting
+{
+    [JsonPropertyName("adapterID")]
+    public string AdapterId { get; set; } = string.Empty;
+
+    [JsonPropertyName("encrypted")]
+    public bool Encrypted { get; set; }
 }
 
 public class TargetNumberOfConnections

@@ -112,6 +112,7 @@
 - The `Private Server Reconnect` Settings accordion persists via `PrivateReconnectSettingsStore` and triggers manual/scheduled reconnects through `PrivateReconnectService`; do not call `speedify_cli` directly from UI code.
 - Streaming and gaming service presets are hardcoded dictionaries, while `_enabledServices` is a separate case-insensitive `HashSet` that must stay in sync with `_bypassSettings.Services`.
 - Adapter settings cache local state in `_adapterLocalState`; UI converts MB/GB to bytes for data limits, displays adapter rate limits in Mbps while converting Speedify's returned bytes/sec to command bits/sec on save, and only offers monthly reset days 1-28.
+- Adapter encryption state is not returned by `speedify_cli show adapters`; read it from `speedify_cli show settings` using `perConnectionEncryptionEnabled` / `perConnectionEncryptionSettings` and merge it into adapter rows. Missing per-adapter entries inherit the global `encrypted` setting.
 - Port rules for streaming, bypass, and fixed-delay are formatted in `SpeedifyService.FormatPortRule` as `port[-end]/protocol`.
 
 ## Tests

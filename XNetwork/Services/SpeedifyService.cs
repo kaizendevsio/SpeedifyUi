@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using XNetwork.Models;
+using XNetwork.Utils;
 
 namespace XNetwork.Services;
 
@@ -1733,7 +1734,10 @@ public class SpeedifyService
         {
             var jsonOutput = await Task.Run(() => RunTerminatingCommand("show adapters"), cancellationToken)
                 .ConfigureAwait(false);
-            return JsonSerializer.Deserialize<List<AdapterExtended>>(jsonOutput, _jsonOptions);
+            var adapters = JsonSerializer.Deserialize<List<AdapterExtended>>(jsonOutput, _jsonOptions);
+            var settings = await GetSettingsAsync(cancellationToken).ConfigureAwait(false);
+            AdapterEncryptionMapper.Apply(adapters, settings);
+            return adapters;
         }
         catch (SpeedifyException ex)
         {
