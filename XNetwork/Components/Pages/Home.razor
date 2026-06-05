@@ -169,6 +169,8 @@
             Latency="@GetAverageLatency()"
             Download="@GetTotalDownload()"
             Upload="@GetTotalUpload()"
+            TransportProtocol="@GetTransportProtocolLabel()"
+            TransportDetail="@GetTransportDetailLabel()"
             IsStable="@IsConnectionStable()"
             ShowTrafficDetailsHint="@XRouterService.IsConfigured"
             OnTrafficDetailsRequested="ShowTrafficBreakdownAsync" />
@@ -406,6 +408,7 @@
     private Dictionary<string, string?> _gatewayCache = new();
     private RouterTrafficSummary? _routerTrafficSummary;
     private SpeedifySettings? _speedifySettings;
+    private TransportSettings? _transportSettings;
     private AutoServerSwitchStatus? _autoSwitchStatus;
     private CudyApControlStatus? _cudyApStatus;
     private LocalProcessTrafficSnapshot? _localProcessTrafficHealth;
@@ -558,7 +561,13 @@
 
         try
         {
-            _serverInfo = await SpeedifyService.GetCurrentServerAsync();
+            var serverInfoTask = SpeedifyService.GetCurrentServerAsync();
+            var transportSettingsTask = SpeedifyService.GetTransportSettingsAsync();
+
+            await Task.WhenAll(serverInfoTask, transportSettingsTask);
+
+            _serverInfo = await serverInfoTask;
+            _transportSettings = await transportSettingsTask;
             _serverInfoLoading = false;
             await InvokeAsync(StateHasChanged);
         }
@@ -924,6 +933,110 @@
         }
 
         return _stats.Where(s => s.Connected).Sum(s => s.SendBps);
+    }
+
+    private string GetTransportProtocolLabel()
+    {
+        var configured = NormalizeTransportMode(_transportSettings?.TransportMode);
+        var actual = GetActualTransportProtocol();
+
+        if (configured == "auto")
+        {
+            return FormatTransportMode(actual ?? configured);
+        }
+
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return FormatTransportMode(actual);
+        }
+
+        if (!string.IsNullOrWhiteSpace(actual) && !TransportModesMatch(configured, actual))
+        {
+            return FormatTransportMode(actual);
+        }
+
+        return FormatTransportMode(configured);
+    }
+
+    private string? GetTransportDetailLabel()
+    {
+        var configured = NormalizeTransportMode(_transportSettings?.TransportMode);
+        var actual = GetActualTransportProtocol();
+
+        if (configured == "auto" && !string.IsNullOrWhiteSpace(actual))
+        {
+            return "Auto selected";
+        }
+
+        if (!string.IsNullOrWhiteSpace(configured) &&
+            !string.IsNullOrWhiteSpace(actual) &&
+            !TransportModesMatch(configured, actual))
+        {
+            return $"Configured {FormatTransportMode(configured)}";
+        }
+
+        if (configured == "tcp-multi")
+        {
+            return "Multiple TCP sockets";
+        }
+
+        return null;
+    }
+
+    private string? GetActualTransportProtocol()
+    {
+        var protocol = _stats
+            .Where(s => s.Connected)
+            .Where(s => !IsSpeedifyAggregate(s))
+            .Where(s => !IsAuxiliaryConnection(s))
+            .Select(s => NormalizeTransportMode(s.Protocol))
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Where(s => s is not "auto" and not "proxy" and not "share")
+            .GroupBy(s => s)
+            .OrderByDescending(g => g.Count())
+            .ThenByDescending(g => _stats
+                .Where(s => NormalizeTransportMode(s.Protocol) == g.Key)
+                .Sum(s => s.ReceiveBps + s.SendBps))
+            .FirstOrDefault()
+            ?.Key;
+
+        return string.IsNullOrWhiteSpace(protocol) ? null : protocol;
+    }
+
+    private static bool IsAuxiliaryConnection(ConnectionItem stat)
+    {
+        return stat.ConnectionId.Contains("%proxy", StringComparison.OrdinalIgnoreCase) ||
+               stat.ConnectionId.Contains("%share", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TransportModesMatch(string configured, string actual)
+    {
+        if (configured == actual)
+        {
+            return true;
+        }
+
+        return configured == "tcp-multi" && actual == "tcp";
+    }
+
+    private static string NormalizeTransportMode(string? mode)
+    {
+        return string.IsNullOrWhiteSpace(mode)
+            ? ""
+            : mode.Trim().ToLowerInvariant();
+    }
+
+    private static string FormatTransportMode(string? mode)
+    {
+        return NormalizeTransportMode(mode) switch
+        {
+            "tcp-multi" => "TCP Multi",
+            "tcp" => "TCP",
+            "udp" => "UDP",
+            "https" => "HTTPS",
+            "auto" => "Auto",
+            _ => "Unknown"
+        };
     }
 
     private static string FormatProcessDetail(LocalProcessTrafficItem process)

@@ -47,7 +47,7 @@
                 <p class="text-xs text-slate-400 mt-1">@GetStatusDescription()</p>
             </div>
         </div>
-        <div class="grid grid-cols-3 gap-4 text-sm">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div>
                 <p class="text-slate-400">Latency</p>
                 <p class="text-white font-bold text-xl"><AnimatedNumber Value="@Latency" Decimals="0" AriaLabel="@($"{Latency} milliseconds")" /> <span class="text-base font-medium text-slate-300">ms</span></p>
@@ -59,6 +59,14 @@
             <div>
                 <p class="text-slate-400">Upload</p>
                 <p class="text-white font-bold text-xl"><AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(Upload)" Decimals="@SpeedFormatter.GetDisplayDecimals(Upload)" AriaLabel="@SpeedFormatter.FormatSpeed(Upload)" /> <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Upload)</span></p>
+            </div>
+            <div class="min-w-0">
+                <p class="text-slate-400">Transport</p>
+                <p class="text-white font-bold text-xl truncate">@TransportProtocol</p>
+                @if (!string.IsNullOrWhiteSpace(TransportDetail))
+                {
+                    <p class="text-xs text-slate-500 mt-0.5 truncate">@TransportDetail</p>
+                }
             </div>
         </div>
         @if (ShowTrafficDetailsHint)
@@ -79,6 +87,8 @@
     [Parameter] public int Latency { get; set; } = 12;
     [Parameter] public double Download { get; set; } = 85.3;
     [Parameter] public double Upload { get; set; } = 15.9;
+    [Parameter] public string TransportProtocol { get; set; } = "Unknown";
+    [Parameter] public string? TransportDetail { get; set; }
     [Parameter] public bool IsStable { get; set; } = true;
     [Parameter] public bool ShowTrafficDetailsHint { get; set; }
     [Parameter] public EventCallback OnTrafficDetailsRequested { get; set; }
