@@ -150,9 +150,19 @@
                                 @GetServerConnectionType()
                             </span>
                         </div>
-                        <div class="flex items-center gap-2 text-sm text-slate-400">
-                            <i class="fas fa-map-marker-alt text-xs"></i>
-                            <span>@_serverInfo.City, @_serverInfo.Country</span>
+                        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-400">
+                            <span class="inline-flex items-center gap-1.5 min-w-0">
+                                <i class="fas fa-map-marker-alt text-xs"></i>
+                                <span class="truncate">@_serverInfo.City, @_serverInfo.Country</span>
+                            </span>
+                            <span class="inline-flex items-center gap-1.5 text-slate-300" title="@GetTransportTooltip()">
+                                <i class="fas fa-network-wired text-xs text-cyan-300"></i>
+                                <span>@GetServerTransportLabel()</span>
+                            </span>
+                            <span class="inline-flex items-center gap-1.5 text-slate-300" title="Speedify bonding mode">
+                                <i class="fas fa-layer-group text-xs text-emerald-300"></i>
+                                <span>@GetBondingModeLabel()</span>
+                            </span>
                         </div>
                     </div>
                     <div class="flex-shrink-0 flex items-center gap-3">
@@ -169,8 +179,6 @@
             Latency="@GetAverageLatency()"
             Download="@GetTotalDownload()"
             Upload="@GetTotalUpload()"
-            TransportProtocol="@GetTransportProtocolLabel()"
-            TransportDetail="@GetTransportDetailLabel()"
             IsStable="@IsConnectionStable()"
             ShowTrafficDetailsHint="@XRouterService.IsConfigured"
             OnTrafficDetailsRequested="ShowTrafficBreakdownAsync" />
@@ -408,7 +416,6 @@
     private Dictionary<string, string?> _gatewayCache = new();
     private RouterTrafficSummary? _routerTrafficSummary;
     private SpeedifySettings? _speedifySettings;
-    private TransportSettings? _transportSettings;
     private AutoServerSwitchStatus? _autoSwitchStatus;
     private CudyApControlStatus? _cudyApStatus;
     private LocalProcessTrafficSnapshot? _localProcessTrafficHealth;
@@ -562,12 +569,16 @@
         try
         {
             var serverInfoTask = SpeedifyService.GetCurrentServerAsync();
-            var transportSettingsTask = SpeedifyService.GetTransportSettingsAsync();
+            var settingsTask = SpeedifyService.GetSettingsAsync();
 
-            await Task.WhenAll(serverInfoTask, transportSettingsTask);
+            await Task.WhenAll(serverInfoTask, settingsTask);
 
             _serverInfo = await serverInfoTask;
-            _transportSettings = await transportSettingsTask;
+            _speedifySettings = await settingsTask;
+            if (_speedifySettings is not null)
+            {
+                _speedifySettingsError = null;
+            }
             _serverInfoLoading = false;
             await InvokeAsync(StateHasChanged);
         }
@@ -937,7 +948,7 @@
 
     private string GetTransportProtocolLabel()
     {
-        var configured = NormalizeTransportMode(_transportSettings?.TransportMode);
+        var configured = NormalizeTransportMode(_speedifySettings?.TransportMode);
         var actual = GetActualTransportProtocol();
 
         if (configured == "auto")
@@ -960,7 +971,7 @@
 
     private string? GetTransportDetailLabel()
     {
-        var configured = NormalizeTransportMode(_transportSettings?.TransportMode);
+        var configured = NormalizeTransportMode(_speedifySettings?.TransportMode);
         var actual = GetActualTransportProtocol();
 
         if (configured == "auto" && !string.IsNullOrWhiteSpace(actual))
@@ -981,6 +992,39 @@
         }
 
         return null;
+    }
+
+    private string GetServerTransportLabel()
+    {
+        var protocol = GetTransportProtocolLabel();
+        var configured = NormalizeTransportMode(_speedifySettings?.TransportMode);
+
+        if (configured == "auto" && protocol != "Auto" && protocol != "Unknown")
+        {
+            return $"{protocol} (Auto)";
+        }
+
+        return protocol;
+    }
+
+    private string GetTransportTooltip()
+    {
+        var detail = GetTransportDetailLabel();
+        return string.IsNullOrWhiteSpace(detail)
+            ? "Speedify transport protocol"
+            : $"Speedify transport protocol: {detail}";
+    }
+
+    private string GetBondingModeLabel()
+    {
+        var mode = NormalizeTransportMode(_speedifySettings?.BondingMode);
+        return mode switch
+        {
+            "redundant" => $"Redundant x{Math.Max(1, _speedifySettings?.MaxRedundant ?? 1)}",
+            "streaming" => "Streaming",
+            "speed" => "Speed",
+            _ => "Mode unknown"
+        };
     }
 
     private string? GetActualTransportProtocol()

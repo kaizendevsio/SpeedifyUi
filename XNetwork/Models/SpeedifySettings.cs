@@ -19,6 +19,9 @@ public class SpeedifySettings
     [JsonPropertyName("bondingMode")]
     public string BondingMode { get; set; } = "speed";
 
+    [JsonPropertyName("transportMode")]
+    public string TransportMode { get; set; } = "auto";
+
     [JsonPropertyName("enableDefaultRoute")]
     public bool EnableDefaultRoute { get; set; }
 
