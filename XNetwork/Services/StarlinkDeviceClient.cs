@@ -2,6 +2,8 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.IO.Compression;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
@@ -41,6 +43,49 @@ public sealed class StarlinkDeviceClient : IDisposable
             _logger.LogDebug(ex, "Starlink h2c gRPC status request failed; trying gRPC-Web fallback");
             return await GetStatusOverGrpcWebAsync(cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    public async Task<StarlinkCapabilitySnapshot> GetCapabilitiesAsync(bool statusAvailable, CancellationToken cancellationToken)
+    {
+        string? rootHtml = null;
+        string? scriptText = null;
+        var webUiReachable = false;
+        string? error = null;
+
+        try
+        {
+            var rootUri = new Uri($"http://{_settings.Host}/");
+            rootHtml = await _httpClient.GetStringAsync(rootUri, cancellationToken).ConfigureAwait(false);
+            webUiReachable = true;
+
+            var scriptPath = FindStarlinkScriptPath(rootHtml);
+            if (!string.IsNullOrWhiteSpace(scriptPath))
+            {
+                var scriptUri = new Uri(rootUri, scriptPath);
+                using var response = await _httpClient.GetAsync(scriptUri, cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                scriptText = DecodeMaybeGzip(bytes, response.Content.Headers.ContentEncoding.Contains("gzip"));
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            _logger.LogDebug(ex, "Starlink capability probe failed");
+        }
+
+        return StarlinkCapabilityDetector.Detect(
+            _settings.Host,
+            statusAvailable,
+            webUiReachable,
+            rootHtml,
+            scriptText,
+            error);
     }
 
     private async Task<StarlinkTelemetrySnapshot> GetStatusOverGrpcAsync(CancellationToken cancellationToken)
@@ -88,6 +133,30 @@ public sealed class StarlinkDeviceClient : IDisposable
     private Uri BuildUri(int port)
     {
         return new Uri($"http://{_settings.Host}:{port}/SpaceX.API.Device.Device/Handle");
+    }
+
+    private static string? FindStarlinkScriptPath(string rootHtml)
+    {
+        var match = Regex.Match(
+            rootHtml,
+            """<script[^>]+src=["'](?<src>[^"']*script\.js(?:\.gz)?[^"']*)["']""",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        return match.Success ? match.Groups["src"].Value : null;
+    }
+
+    private static string DecodeMaybeGzip(byte[] bytes, bool hasGzipEncoding)
+    {
+        if (hasGzipEncoding || bytes is [0x1f, 0x8b, ..])
+        {
+            using var compressed = new MemoryStream(bytes);
+            using var gzip = new GZipStream(compressed, CompressionMode.Decompress);
+            using var decompressed = new MemoryStream();
+            gzip.CopyTo(decompressed);
+            return Encoding.UTF8.GetString(decompressed.ToArray());
+        }
+
+        return Encoding.UTF8.GetString(bytes);
     }
 
     private static ByteArrayContent CreateGrpcContent(string contentType)

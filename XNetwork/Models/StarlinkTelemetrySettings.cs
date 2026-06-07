@@ -18,6 +18,12 @@ public sealed class StarlinkTelemetrySettings
 
     public int StaleAfterSeconds { get; set; } = 30;
 
+    public int HistoryMinutes { get; set; } = 5;
+
+    public int HistoryMaxSamples { get; set; } = 120;
+
+    public int CapabilityProbeIntervalSeconds { get; set; } = 3600;
+
     public List<string> AdapterNameHints { get; set; } = new() { "Starlink" };
 
     public bool AdapterProbeEnabled { get; set; } = true;
@@ -31,4 +37,10 @@ public sealed class StarlinkTelemetrySettings
     public TimeSpan RequestTimeout => TimeSpan.FromSeconds(Math.Clamp(RequestTimeoutSeconds, 1, 30));
 
     public TimeSpan StaleAfter => TimeSpan.FromSeconds(Math.Clamp(StaleAfterSeconds, 5, 600));
+
+    public TimeSpan HistoryAge => TimeSpan.FromMinutes(Math.Clamp(HistoryMinutes, 1, 60));
+
+    public int HistorySampleLimit => Math.Clamp(HistoryMaxSamples, 10, 1000);
+
+    public TimeSpan CapabilityProbeInterval => TimeSpan.FromSeconds(Math.Clamp(CapabilityProbeIntervalSeconds, 60, 86_400));
 }

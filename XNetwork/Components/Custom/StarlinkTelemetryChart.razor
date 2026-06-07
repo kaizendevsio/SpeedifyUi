@@ -1,0 +1,119 @@
+@using System.Globalization
+@using XNetwork.Models
+
+<div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
+    <div class="flex items-start justify-between gap-3 mb-2">
+        <div>
+            <p class="text-xs text-slate-400">@Title</p>
+            <p class="text-lg font-semibold text-white">@FormatValue(LatestValue)</p>
+        </div>
+        <span class="text-[11px] text-slate-500">@PointCount points</span>
+    </div>
+
+    @if (PointCount < 2)
+    {
+        <div class="h-24 rounded-lg border border-dashed border-slate-800 flex items-center justify-center text-xs text-slate-500">
+            Waiting for samples
+        </div>
+    }
+    else
+    {
+        <svg viewBox="0 0 300 96" preserveAspectRatio="none" class="h-24 w-full overflow-visible" role="img" aria-label="@Title chart">
+            <line x1="0" y1="88" x2="300" y2="88" stroke="rgba(148,163,184,0.16)" stroke-width="1" />
+            <line x1="0" y1="12" x2="300" y2="12" stroke="rgba(148,163,184,0.10)" stroke-width="1" />
+            <polyline points="@BuildPolyline()" fill="none" stroke="@Stroke" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+        </svg>
+        <div class="mt-1 flex justify-between text-[11px] text-slate-500">
+            <span>Min @FormatValue(MinValue)</span>
+            <span>Max @FormatValue(MaxValue)</span>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public IReadOnlyList<StarlinkTelemetrySnapshot> Samples { get; set; } = Array.Empty<StarlinkTelemetrySnapshot>();
+    [Parameter] public string Title { get; set; } = string.Empty;
+    [Parameter] public string Metric { get; set; } = string.Empty;
+    [Parameter] public string Unit { get; set; } = string.Empty;
+    [Parameter] public string Stroke { get; set; } = "#22d3ee";
+
+    private IReadOnlyList<double> Values => Samples
+        .Select(GetMetricValue)
+        .Where(value => value is not null && !double.IsNaN(value.Value) && !double.IsInfinity(value.Value))
+        .Select(value => value!.Value)
+        .ToList();
+
+    private int PointCount => Values.Count;
+
+    private double? LatestValue
+    {
+        get
+        {
+            var values = Values;
+            return values.Count > 0 ? values[values.Count - 1] : null;
+        }
+    }
+
+    private double? MinValue => Values.Count > 0 ? Values.Min() : null;
+
+    private double? MaxValue => Values.Count > 0 ? Values.Max() : null;
+
+    private double? GetMetricValue(StarlinkTelemetrySnapshot sample)
+    {
+        return Metric switch
+        {
+            "latency" => sample.PopPingLatencyMs,
+            "download" => sample.DownlinkMbps,
+            "upload" => sample.UplinkMbps,
+            "obstruction" => sample.ObstructionPercent,
+            "alignment" => sample.AlignmentErrorDegrees,
+            _ => null
+        };
+    }
+
+    private string BuildPolyline()
+    {
+        var values = Values;
+        if (values.Count < 2)
+        {
+            return string.Empty;
+        }
+
+        var min = values.Min();
+        var max = values.Max();
+        if (Math.Abs(max - min) < 0.001)
+        {
+            max = min + 1;
+        }
+
+        var points = values.Select((value, index) =>
+        {
+            var x = values.Count == 1 ? 0 : index * 300.0 / (values.Count - 1);
+            var normalized = (value - min) / (max - min);
+            var y = 88 - (normalized * 76);
+
+            return string.Create(CultureInfo.InvariantCulture, $"{x:0.##},{y:0.##}");
+        });
+
+        return string.Join(" ", points);
+    }
+
+    private string FormatValue(double? value)
+    {
+        if (value is null)
+        {
+            return "--";
+        }
+
+        var rawValue = value.Value;
+        var rounded = rawValue < 1
+            ? Math.Round(rawValue, 2)
+            : rawValue < 10
+                ? Math.Round(rawValue, 1)
+                : Math.Round(rawValue);
+
+        return string.IsNullOrWhiteSpace(Unit)
+            ? rounded.ToString(CultureInfo.InvariantCulture)
+            : $"{rounded.ToString(CultureInfo.InvariantCulture)} {Unit}";
+    }
+}

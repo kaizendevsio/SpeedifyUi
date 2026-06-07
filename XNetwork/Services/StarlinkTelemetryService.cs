@@ -7,7 +7,10 @@ public sealed class StarlinkTelemetryService : BackgroundService, IStarlinkTelem
     private readonly StarlinkTelemetrySettings _settings;
     private readonly StarlinkDeviceClient _client;
     private readonly ILogger<StarlinkTelemetryService> _logger;
+    private readonly StarlinkTelemetryHistory _history = new();
     private StarlinkTelemetrySnapshot _snapshot = StarlinkTelemetrySnapshot.Unavailable();
+    private StarlinkCapabilitySnapshot _capabilities = StarlinkCapabilitySnapshot.Unavailable();
+    private DateTimeOffset _lastCapabilityProbeUtc = DateTimeOffset.MinValue;
 
     public StarlinkTelemetryService(
         StarlinkTelemetrySettings settings,
@@ -32,6 +35,16 @@ public sealed class StarlinkTelemetryService : BackgroundService, IStarlinkTelem
         }
 
         return snapshot;
+    }
+
+    public IReadOnlyList<StarlinkTelemetrySnapshot> GetHistory()
+    {
+        return _history.GetSamples();
+    }
+
+    public StarlinkCapabilitySnapshot GetCapabilities()
+    {
+        return _capabilities;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -59,6 +72,13 @@ public sealed class StarlinkTelemetryService : BackgroundService, IStarlinkTelem
         try
         {
             _snapshot = await _client.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+            _history.Add(
+                _snapshot,
+                _settings.HistoryAge,
+                _settings.HistorySampleLimit,
+                DateTimeOffset.UtcNow);
+
+            await RefreshCapabilitiesIfDueAsync(statusAvailable: true, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -72,10 +92,24 @@ public sealed class StarlinkTelemetryService : BackgroundService, IStarlinkTelem
             if (previous.IsAvailable && !previous.IsStale(_settings.StaleAfter))
             {
                 _snapshot = previous with { Error = ex.Message };
+                await RefreshCapabilitiesIfDueAsync(statusAvailable: true, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
             _snapshot = StarlinkTelemetrySnapshot.Unavailable(ex.Message);
+            await RefreshCapabilitiesIfDueAsync(statusAvailable: false, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async Task RefreshCapabilitiesIfDueAsync(bool statusAvailable, CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastCapabilityProbeUtc < _settings.CapabilityProbeInterval)
+        {
+            return;
+        }
+
+        _lastCapabilityProbeUtc = now;
+        _capabilities = await _client.GetCapabilitiesAsync(statusAvailable, cancellationToken).ConfigureAwait(false);
     }
 }
