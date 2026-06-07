@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("2026.06.3", AppChangelog.CurrentVersion);
+        Assert.Equal("2026.06.4", AppChangelog.CurrentVersion);
         Assert.Matches(@"^\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 
@@ -17,8 +17,9 @@ public class AppChangelogTests
         var entry = AppChangelog.Entries.First();
 
         Assert.Equal(AppChangelog.CurrentVersion, entry.Version);
-        Assert.Contains(entry.Changes, change => change.Contains("duplicate", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change => change.Contains("compact status strip", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("status strip", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("Chart.js", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("actuators", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

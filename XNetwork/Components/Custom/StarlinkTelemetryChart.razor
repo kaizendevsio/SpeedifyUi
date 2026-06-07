@@ -1,36 +1,30 @@
 @using System.Globalization
+@using Microsoft.JSInterop
 @using XNetwork.Models
+@implements IAsyncDisposable
+@inject IJSRuntime JSRuntime
 
-<div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-    <div class="flex items-start justify-between gap-3 mb-2">
-        <div>
-            <p class="text-xs text-slate-400">@Title</p>
-            <p class="text-lg font-semibold text-white">@FormatValue(LatestValue)</p>
+<div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
+    <div class="p-4">
+        <div class="flex items-start justify-between gap-3">
+            <div>
+                <h3 class="font-semibold text-white">@Title</h3>
+                <p class="mt-1 text-lg font-semibold @ValueClass">@FormatValue(LatestValue)</p>
+            </div>
+            <span class="text-[11px] text-slate-500">@PointCount points</span>
         </div>
-        <span class="text-[11px] text-slate-500">@PointCount points</span>
     </div>
-
-    @if (PointCount < 2)
-    {
-        <div class="h-24 rounded-lg border border-dashed border-slate-800 flex items-center justify-center text-xs text-slate-500">
-            Waiting for samples
-        </div>
-    }
-    else
-    {
-        <svg viewBox="0 0 300 96" preserveAspectRatio="none" class="h-24 w-full overflow-visible" role="img" aria-label="@Title chart">
-            <line x1="0" y1="88" x2="300" y2="88" stroke="rgba(148,163,184,0.16)" stroke-width="1" />
-            <line x1="0" y1="12" x2="300" y2="12" stroke="rgba(148,163,184,0.10)" stroke-width="1" />
-            <polyline points="@BuildPolyline()" fill="none" stroke="@Stroke" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
-        </svg>
-        <div class="mt-1 flex justify-between text-[11px] text-slate-500">
-            <span>Min @FormatValue(MinValue)</span>
-            <span>Max @FormatValue(MaxValue)</span>
-        </div>
-    }
+    <div class="h-44 w-full px-2 pb-3">
+        <canvas id="@_chartId" aria-label="@Title chart"></canvas>
+    </div>
 </div>
 
 @code {
+    private readonly string _chartId = $"starlink-chart-{Guid.NewGuid():N}";
+    private IJSObjectReference? _chartModule;
+    private int _lastRenderedHash;
+    private bool _chartInitialized;
+
     [Parameter] public IReadOnlyList<StarlinkTelemetrySnapshot> Samples { get; set; } = Array.Empty<StarlinkTelemetrySnapshot>();
     [Parameter] public string Title { get; set; } = string.Empty;
     [Parameter] public string Metric { get; set; } = string.Empty;
@@ -50,13 +44,77 @@
         get
         {
             var values = Values;
-            return values.Count > 0 ? values[values.Count - 1] : null;
+            return values.Count > 0 ? values[^1] : null;
         }
     }
 
-    private double? MinValue => Values.Count > 0 ? Values.Min() : null;
+    private string ValueClass => Metric switch
+    {
+        "download" => "text-cyan-200",
+        "upload" => "text-pink-200",
+        "obstruction" => "text-amber-200",
+        _ => "text-white"
+    };
 
-    private double? MaxValue => Values.Count > 0 ? Values.Max() : null;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        await RenderChartAsync();
+    }
+
+    private async Task RenderChartAsync()
+    {
+        var values = Values;
+        var renderHash = HashCode.Combine(Samples.Count, LatestValue, Title, Metric, Unit);
+        if (_chartInitialized && renderHash == _lastRenderedHash)
+        {
+            return;
+        }
+
+        try
+        {
+            _chartModule ??= await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
+
+            if (!_chartInitialized)
+            {
+                _chartInitialized = await _chartModule.InvokeAsync<bool>(
+                    "initializeOrUpdateSingleSeriesChart",
+                    _chartId,
+                    FormatYAxisLabel(),
+                    Title,
+                    Stroke);
+            }
+
+            if (_chartInitialized)
+            {
+                await _chartModule.InvokeVoidAsync(
+                    "setSingleSeriesChartData",
+                    _chartId,
+                    BuildLabels(),
+                    values);
+
+                _lastRenderedHash = renderHash;
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // The dashboard can be torn down during a Blazor reconnect.
+        }
+    }
+
+    private string FormatYAxisLabel()
+    {
+        return string.IsNullOrWhiteSpace(Unit)
+            ? Title
+            : $"{Title} ({Unit})";
+    }
+
+    private IReadOnlyList<string> BuildLabels()
+    {
+        return Samples
+            .Where(sample => GetMetricValue(sample) is not null)
+            .Select(sample => sample.LastUpdatedUtc?.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture) ?? string.Empty)
+            .ToList();
+    }
 
     private double? GetMetricValue(StarlinkTelemetrySnapshot sample)
     {
@@ -69,33 +127,6 @@
             "alignment" => sample.AlignmentErrorDegrees,
             _ => null
         };
-    }
-
-    private string BuildPolyline()
-    {
-        var values = Values;
-        if (values.Count < 2)
-        {
-            return string.Empty;
-        }
-
-        var min = values.Min();
-        var max = values.Max();
-        if (Math.Abs(max - min) < 0.001)
-        {
-            max = min + 1;
-        }
-
-        var points = values.Select((value, index) =>
-        {
-            var x = values.Count == 1 ? 0 : index * 300.0 / (values.Count - 1);
-            var normalized = (value - min) / (max - min);
-            var y = 88 - (normalized * 76);
-
-            return string.Create(CultureInfo.InvariantCulture, $"{x:0.##},{y:0.##}");
-        });
-
-        return string.Join(" ", points);
     }
 
     private string FormatValue(double? value)
@@ -115,5 +146,23 @@
         return string.IsNullOrWhiteSpace(Unit)
             ? rounded.ToString(CultureInfo.InvariantCulture)
             : $"{rounded.ToString(CultureInfo.InvariantCulture)} {Unit}";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_chartModule is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _chartModule.InvokeVoidAsync("disposeChart", _chartId);
+            await _chartModule.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+            // Safe during reconnect/navigation disposal.
+        }
     }
 }

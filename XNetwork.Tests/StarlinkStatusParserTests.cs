@@ -17,11 +17,15 @@ public class StarlinkStatusParserTests
         var obstruction = Message(
             Fixed32Field(1, 0.025f),
             VarintField(5, 1));
-        var alerts = Message(VarintField(6, 1));
+        var alerts = Message(
+            VarintField(6, 1),
+            VarintField(19, 1));
         var gps = Message(
             VarintField(1, 1),
             VarintField(2, 15));
-        var alignment = Message(Fixed32Field(3, 16.5f));
+        var alignment = Message(
+            VarintField(1, 2),
+            Fixed32Field(3, 16.5f));
 
         var dishStatus = Message(
             BytesField(1, deviceInfo),
@@ -35,6 +39,7 @@ public class StarlinkStatusParserTests
             Fixed32Field(1011, 120.5f),
             Fixed32Field(1012, 75.25f),
             BytesField(1015, gps),
+            VarintField(1023, 2),
             BytesField(1027, alignment));
 
         var response = GrpcFrame(Message(BytesField(2004, dishStatus)));
@@ -57,7 +62,9 @@ public class StarlinkStatusParserTests
         Assert.Equal(120.5, snapshot.BoresightAzimuthDegrees!.Value, precision: 4);
         Assert.Equal(75.25, snapshot.BoresightElevationDegrees!.Value, precision: 4);
         Assert.Equal(16.5, snapshot.AlignmentErrorDegrees!.Value, precision: 4);
+        Assert.False(snapshot.HasActuators);
         Assert.Contains("Slow Ethernet", snapshot.ActiveAlerts);
+        Assert.Contains("Obstruction map reset", snapshot.ActiveAlerts);
         Assert.Contains("Obstructed", snapshot.ActiveAlerts);
     }
 

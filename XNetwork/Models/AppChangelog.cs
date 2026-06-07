@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.3";
+    public const string CurrentVersion = "2026.06.4";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-07",
+            Summary = "Cleaned up Starlink details, charts, alerts, and controls.",
+            Changes =
+            [
+                "Removed the compact Starlink live status strip so telemetry cards start the details view.",
+                "Changed Starlink detail graphs to use the same Chart.js visual style as the Analytics page.",
+                "Mapped Starlink alert 19 to a friendly obstruction-map-reset message with an explanation.",
+                "Changed slide-to-confirm so only dragging the left handle can advance an action.",
+                "Hides stow and unstow controls when Starlink telemetry reports that the terminal has no actuators."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.3",
             Date = "2026-06-07",
             Summary = "Polished Starlink details layout and actions.",
             Changes =

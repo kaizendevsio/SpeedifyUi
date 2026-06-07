@@ -226,6 +226,118 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
     }
 }
 
+export function initializeOrUpdateSingleSeriesChart(chartId, yAxisLabel, datasetLabel, color) {
+    const ctx = document.getElementById(chartId);
+    if (!ctx) {
+        console.error(`Chart canvas with ID ${chartId} not found during single-series initialization.`);
+        return false;
+    }
+
+    if (charts[chartId]) {
+        charts[chartId].destroy();
+        delete charts[chartId];
+    }
+
+    try {
+        charts[chartId] = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: datasetLabel,
+                    data: [],
+                    borderColor: color,
+                    backgroundColor: color,
+                    tension: 0.3,
+                    cubicInterpolationMode: 'monotone',
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    pointHitRadius: 10,
+                    borderWidth: 2.5,
+                    spanGaps: true,
+                    fill: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Time'
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: yAxisLabel
+                        }
+                    }
+                },
+                animation: {
+                    duration: LIVE_CHART_ANIMATION_DURATION,
+                    easing: 'easeOutCubic'
+                },
+                animations: {
+                    x: {
+                        duration: 0
+                    },
+                    y: {
+                        duration: LIVE_CHART_ANIMATION_DURATION,
+                        easing: 'easeOutCubic'
+                    }
+                },
+                transitions: {
+                    resize: {
+                        animation: {
+                            duration: 0
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.dataset.label || '';
+                                const axisLabel = context.chart.options.scales.y.title.text || '';
+                                return `${label}: ${formatValueForAxis(context.parsed.y, axisLabel)}`;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        return true;
+    } catch (error) {
+        console.error(`Error creating single-series chart ${chartId}:`, error);
+        return false;
+    }
+}
+
+export function setSingleSeriesChartData(chartId, labels, values) {
+    const chart = charts[chartId];
+    if (!chart) {
+        return;
+    }
+
+    chart.data.labels = Array.isArray(labels) ? labels : [];
+    chart.data.datasets[0].data = Array.isArray(values) ? values : [];
+
+    try {
+        chart.update('none');
+    } catch (error) {
+        console.error(`Error updating single-series chart ${chartId}:`, error);
+    }
+}
+
 // Function to dispose of a chart
 export function disposeChart(chartId) {
     if (charts[chartId]) {

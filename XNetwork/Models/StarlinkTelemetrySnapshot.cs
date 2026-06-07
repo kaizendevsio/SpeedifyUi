@@ -40,6 +40,8 @@ public sealed record StarlinkTelemetrySnapshot
 
     public double? AlignmentErrorDegrees { get; init; }
 
+    public bool? HasActuators { get; init; }
+
     public IReadOnlyList<string> ActiveAlerts { get; init; } = Array.Empty<string>();
 
     public bool IsStale(TimeSpan staleAfter)

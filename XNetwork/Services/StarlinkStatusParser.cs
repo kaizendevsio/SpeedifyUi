@@ -79,6 +79,7 @@ public static class StarlinkStatusParser
         double? boresightAzimuthDegrees = null;
         double? boresightElevationDegrees = null;
         double? alignmentErrorDegrees = null;
+        bool? hasActuators = null;
 
         var offset = 0;
         while (TryReadField(message, ref offset, out var fieldNumber, out var wireType, out var varint, out var bytes, out var float32))
@@ -121,8 +122,13 @@ public static class StarlinkStatusParser
                 case 1015 when wireType == 2:
                     (gpsValid, gpsSatellites) = ParseGpsStats(bytes);
                     break;
+                case 1023 when wireType == 0:
+                    hasActuators = ParseHasActuators(varint);
+                    break;
                 case 1027 when wireType == 2:
-                    alignmentErrorDegrees = ParseAlignmentError(bytes);
+                    var alignmentStats = ParseAlignmentStats(bytes);
+                    alignmentErrorDegrees = alignmentStats.AlignmentErrorDegrees;
+                    hasActuators ??= alignmentStats.HasActuators;
                     break;
             }
         }
@@ -152,6 +158,7 @@ public static class StarlinkStatusParser
             BoresightAzimuthDegrees = boresightAzimuthDegrees,
             BoresightElevationDegrees = boresightElevationDegrees,
             AlignmentErrorDegrees = alignmentErrorDegrees,
+            HasActuators = hasActuators,
             ActiveAlerts = activeAlerts
         };
     }
@@ -245,18 +252,36 @@ public static class StarlinkStatusParser
         return (gpsValid, gpsSatellites);
     }
 
-    private static double? ParseAlignmentError(ReadOnlySpan<byte> message)
+    private static (double? AlignmentErrorDegrees, bool? HasActuators) ParseAlignmentStats(ReadOnlySpan<byte> message)
     {
+        double? alignmentErrorDegrees = null;
+        bool? hasActuators = null;
+
         var offset = 0;
-        while (TryReadField(message, ref offset, out var fieldNumber, out var wireType, out _, out _, out var float32))
+        while (TryReadField(message, ref offset, out var fieldNumber, out var wireType, out var varint, out _, out var float32))
         {
-            if (fieldNumber == 3 && wireType == 5)
+            switch (fieldNumber)
             {
-                return float32;
+                case 1 when wireType == 0:
+                    hasActuators = ParseHasActuators(varint);
+                    break;
+                case 3 when wireType == 5:
+                    alignmentErrorDegrees = float32;
+                    break;
             }
         }
 
-        return null;
+        return (alignmentErrorDegrees, hasActuators);
+    }
+
+    private static bool? ParseHasActuators(ulong value)
+    {
+        return value switch
+        {
+            1 => true,
+            2 => false,
+            _ => null
+        };
     }
 
     private static IReadOnlyList<string> ParseAlerts(ReadOnlySpan<byte> message)
@@ -288,9 +313,14 @@ public static class StarlinkStatusParser
                 8 => "Install pending",
                 9 => "Heating",
                 10 => "Power thermal",
-                11 => "Low motor current",
-                12 => "Slow Ethernet 100",
-                13 => "Moving too fast",
+                11 => "Power save idle",
+                12 => "Moving while stationary",
+                14 => "Telemetry stale",
+                15 => "Moving too fast",
+                16 => "Low motor current",
+                17 => "Signal lower than expected",
+                18 => "Slow Ethernet 100",
+                19 => "Obstruction map reset",
                 _ => $"Alert {fieldNumber}"
             };
 

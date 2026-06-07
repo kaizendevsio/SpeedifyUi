@@ -488,37 +488,14 @@
         var starlinkSnapshot = StarlinkTelemetryService.GetSnapshot();
         var starlinkHistory = StarlinkTelemetryService.GetHistory();
         var starlinkCapabilities = StarlinkTelemetryService.GetCapabilities();
-        var selectedAdapter = _selectedStarlinkAdapter;
-        var selectedStats = selectedAdapter is null ? null : GetStatsForAdapter(selectedAdapter.AdapterId);
         var detectedCapabilities = starlinkCapabilities.Capabilities.Where(c => c.IsDetected).ToList();
         var openCapabilities = GetUniqueStarlinkOpenCapabilities(detectedCapabilities);
-        var commandCapabilities = detectedCapabilities.Where(c => !string.IsNullOrWhiteSpace(c.DirectCommand)).ToList();
+        var commandCapabilities = detectedCapabilities
+            .Where(c => !string.IsNullOrWhiteSpace(c.DirectCommand) && IsStarlinkCommandVisible(c, starlinkSnapshot))
+            .ToList();
     }
 
     <div class="space-y-4">
-        <section class="rounded-xl border @GetStarlinkAvailabilityBorderClass(starlinkSnapshot) bg-slate-950/60 px-3 py-2.5">
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-300">
-                <span class="@GetStarlinkAvailabilityPillClass(starlinkSnapshot) rounded-full px-2 py-0.5 font-semibold">
-                    @GetStarlinkAvailabilityLabel(starlinkSnapshot)
-                </span>
-                @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.DishState))
-                {
-                    <span class="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 font-semibold text-cyan-200">
-                        @starlinkSnapshot.DishState
-                    </span>
-                }
-                <span>Dish @FormatNullableMs(starlinkSnapshot.PopPingLatencyMs)</span>
-                <span>Speedify @FormatNullableMs(selectedStats?.LatencyMs)</span>
-                <span>Obstruction @FormatNullablePercent(starlinkSnapshot.ObstructionPercent)</span>
-                <span>Alignment @FormatNullableDegrees(starlinkSnapshot.AlignmentErrorDegrees)</span>
-                <span class="text-slate-500">Updated @FormatLastUpdated(starlinkSnapshot.LastUpdatedUtc)</span>
-            </div>
-            @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.Error))
-            {
-                <p class="mt-1.5 text-xs text-amber-200">@starlinkSnapshot.Error</p>
-            }
-        </section>
-
         <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
                 <p class="text-xs text-slate-400">Dish latency</p>
@@ -562,7 +539,14 @@
             </div>
         </section>
 
-        <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.Error))
+        {
+            <p class="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                @starlinkSnapshot.Error
+            </p>
+        }
+
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Latency" Metric="latency" Unit="ms" Stroke="#22d3ee" />
             <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Downlink" Metric="download" Unit="Mbps" Stroke="#38bdf8" />
             <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Uplink" Metric="upload" Unit="Mbps" Stroke="#f472b6" />
@@ -573,12 +557,13 @@
         {
             <section class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4">
                 <p class="text-sm font-semibold text-amber-100 mb-3">Active Alerts</p>
-                <div class="flex flex-wrap gap-2">
+                <div class="space-y-2">
                     @foreach (var alert in starlinkSnapshot.ActiveAlerts)
                     {
-                        <span class="px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-100 border border-amber-500/25 text-xs">
-                            @alert
-                        </span>
+                        <div class="rounded-lg border border-amber-500/20 bg-slate-950/35 px-3 py-2">
+                            <p class="text-sm font-semibold text-amber-100">@alert</p>
+                            <p class="mt-0.5 text-xs text-amber-100/75">@GetStarlinkAlertDescription(alert)</p>
+                        </div>
                     }
                 </div>
             </section>
@@ -1293,6 +1278,15 @@
         };
     }
 
+    private static bool IsStarlinkCommandVisible(StarlinkCapability capability, StarlinkTelemetrySnapshot snapshot)
+    {
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "stow" or "unstow" => snapshot.HasActuators != false,
+            _ => true
+        };
+    }
+
     private static string GetStarlinkCommandButtonLabel(StarlinkCapability capability)
     {
         return capability.DirectCommand?.Trim().ToLowerInvariant() switch
@@ -1302,6 +1296,26 @@
             "unstow" => "Unstow",
             "dish_clear_obstruction_map" => "Reset obstruction map",
             _ => capability.Label
+        };
+    }
+
+    private static string GetStarlinkAlertDescription(string alert)
+    {
+        return alert.Trim().ToLowerInvariant() switch
+        {
+            "obstruction map reset" => "The learned obstruction map was cleared and Starlink is rebuilding obstruction history.",
+            "slow ethernet" or "slow ethernet 100" => "The Starlink Ethernet path is negotiating below expected speed.",
+            "obstructed" => "The dish currently sees signal obstruction.",
+            "roaming" => "The terminal is operating away from its expected service location.",
+            "moving too fast" => "The terminal is moving faster than the current service policy allows.",
+            "moving while stationary" => "Starlink sees movement while the service plan expects a stationary terminal.",
+            "thermal shutdown" => "The terminal shut down radio operation because of temperature.",
+            "thermal throttle" => "The terminal is reducing performance because of temperature.",
+            "power thermal" => "The power supply is thermally throttling.",
+            "low motor current" => "Dish actuator current is lower than expected.",
+            "signal lower than expected" => "The terminal is receiving weaker signal than predicted.",
+            "telemetry stale" => "Starlink internal telemetry is stale.",
+            _ => "Starlink reported this condition from direct dish telemetry."
         };
     }
 

@@ -1,5 +1,14 @@
+@using System.Globalization
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime JSRuntime
+
 <div class="@GetRootClass()" style="@GetStyle()" aria-busy="@IsBusy">
-    <div class="slide-confirm-track">
+    <div id="@_trackId"
+         class="slide-confirm-track"
+         @onpointermove="HandlePointerMoveAsync"
+         @onpointerup="HandlePointerEndAsync"
+         @onpointercancel="HandlePointerEndAsync">
         <span class="slide-confirm-fill"></span>
         <span class="slide-confirm-label">
             @if (IsBusy)
@@ -13,15 +22,20 @@
                 <i class="fas fa-angles-right slide-confirm-chevrons"></i>
             }
         </span>
-        <input type="range"
-               min="0"
-               max="100"
-               step="1"
-               value="@_progress"
-               disabled="@(Disabled || IsBusy)"
-               aria-label="@Label"
-               @oninput="HandleInputAsync"
-               @onchange="HandleChange" />
+        <button id="@_handleId"
+                type="button"
+                class="slide-confirm-thumb"
+                style="@GetThumbStyle()"
+                disabled="@(Disabled || IsBusy)"
+                aria-label="@Label"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="@_progress"
+                @onpointerdown="HandlePointerStartAsync"
+                @onpointerdown:stopPropagation="true"
+                @onkeydown="HandleKeyDownAsync">
+            <i class="fas @IconClass text-xs"></i>
+        </button>
     </div>
 </div>
 
@@ -76,50 +90,36 @@
         font-size: 0.6875rem;
     }
 
-    .slide-confirm input[type="range"] {
+    .slide-confirm-thumb {
         position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
+        top: 0.275rem;
         z-index: 2;
-        appearance: none;
-        background: transparent;
+        display: inline-flex;
+        width: 2.2rem;
+        height: 2.2rem;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: var(--slide-thumb);
+        color: #020617;
+        box-shadow: 0 0.45rem 1rem rgba(0, 0, 0, 0.28);
         cursor: grab;
+        transition: left 120ms ease, transform 120ms ease;
     }
 
-    .slide-confirm input[type="range"]:active {
+    .slide-confirm-dragging .slide-confirm-thumb {
         cursor: grabbing;
+        transition: none;
     }
 
-    .slide-confirm input[type="range"]::-webkit-slider-runnable-track {
-        height: 2.75rem;
-        background: transparent;
+    .slide-confirm-dragging .slide-confirm-fill {
+        transition: none;
     }
 
-    .slide-confirm input[type="range"]::-webkit-slider-thumb {
-        appearance: none;
-        width: 2.2rem;
-        height: 2.2rem;
-        margin-top: 0.275rem;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 999px;
-        background: var(--slide-thumb) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23020617' d='M6.1 3.2a.8.8 0 0 1 1.13 0l4.2 4.2a.8.8 0 0 1 0 1.13l-4.2 4.2a.8.8 0 1 1-1.13-1.13L9.54 8 6.1 4.36a.8.8 0 0 1 0-1.16Z'/%3E%3C/svg%3E") center / 0.85rem no-repeat;
-        box-shadow: 0 0.45rem 1rem rgba(0, 0, 0, 0.28);
-    }
-
-    .slide-confirm input[type="range"]::-moz-range-track {
-        height: 2.75rem;
-        background: transparent;
-        border: 0;
-    }
-
-    .slide-confirm input[type="range"]::-moz-range-thumb {
-        width: 2.2rem;
-        height: 2.2rem;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 999px;
-        background: var(--slide-thumb) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23020617' d='M6.1 3.2a.8.8 0 0 1 1.13 0l4.2 4.2a.8.8 0 0 1 0 1.13l-4.2 4.2a.8.8 0 1 1-1.13-1.13L9.54 8 6.1 4.36a.8.8 0 0 1 0-1.16Z'/%3E%3C/svg%3E") center / 0.85rem no-repeat;
-        box-shadow: 0 0.45rem 1rem rgba(0, 0, 0, 0.28);
+    .slide-confirm-thumb:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--slide-thumb), white 24%);
+        outline-offset: 3px;
     }
 
     .slide-confirm-danger {
@@ -144,15 +144,22 @@
         opacity: 0.55;
     }
 
-    .slide-confirm-disabled input[type="range"] {
+    .slide-confirm-disabled .slide-confirm-thumb {
         cursor: not-allowed;
     }
 </style>
 
 @code {
     private const int ConfirmThreshold = 96;
+    private readonly string _trackId = $"slide-confirm-track-{Guid.NewGuid():N}";
+    private readonly string _handleId = $"slide-confirm-handle-{Guid.NewGuid():N}";
     private int _progress;
     private bool _confirmed;
+    private bool _dragging;
+    private double _dragStartX;
+    private int _dragStartProgress;
+    private double _dragTravelPx = 1;
+    private IJSObjectReference? _module;
 
     [Parameter] public string Label { get; set; } = "Slide to confirm";
 
@@ -176,32 +183,100 @@
         }
     }
 
-    private async Task HandleInputAsync(ChangeEventArgs args)
+    private async Task HandlePointerStartAsync(PointerEventArgs args)
     {
         if (Disabled || IsBusy || _confirmed)
         {
             return;
         }
 
-        _progress = ParseProgress(args.Value);
-        if (_progress < ConfirmThreshold)
+        _module ??= await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/slideToConfirm.js");
+        var metrics = await _module.InvokeAsync<SlideConfirmMetrics>("getSlideConfirmMetrics", _trackId, _handleId);
+
+        _dragging = true;
+        _dragStartX = args.ClientX;
+        _dragStartProgress = _progress;
+        _dragTravelPx = Math.Max(1, metrics.TrackWidth - metrics.ThumbWidth);
+
+        await _module.InvokeVoidAsync("captureSlideConfirmPointer", _handleId, args.PointerId);
+    }
+
+    private async Task HandlePointerMoveAsync(PointerEventArgs args)
+    {
+        if (!_dragging || Disabled || IsBusy || _confirmed)
         {
             return;
         }
 
-        _progress = 100;
-        _confirmed = true;
-        if (OnConfirmed.HasDelegate)
+        var delta = args.ClientX - _dragStartX;
+        var progress = _dragStartProgress + (int)Math.Round(delta / _dragTravelPx * 100);
+        _progress = Math.Clamp(progress, 0, 100);
+
+        if (_progress >= ConfirmThreshold)
         {
-            await OnConfirmed.InvokeAsync();
+            await ConfirmAsync();
         }
     }
 
-    private void HandleChange(ChangeEventArgs args)
+    private async Task HandlePointerEndAsync(PointerEventArgs args)
     {
+        if (!_dragging)
+        {
+            return;
+        }
+
+        _dragging = false;
+        if (_module is not null)
+        {
+            await _module.InvokeVoidAsync("releaseSlideConfirmPointer", _handleId, args.PointerId);
+        }
+
         if (!_confirmed)
         {
             Reset();
+        }
+    }
+
+    private async Task HandleKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (Disabled || IsBusy || _confirmed)
+        {
+            return;
+        }
+
+        switch (args.Key)
+        {
+            case "ArrowRight":
+            case "PageUp":
+                _progress = Math.Clamp(_progress + 12, 0, 100);
+                if (_progress >= ConfirmThreshold)
+                {
+                    await ConfirmAsync();
+                }
+                break;
+            case "ArrowLeft":
+            case "PageDown":
+                _progress = Math.Clamp(_progress - 12, 0, 100);
+                break;
+            case "Home":
+            case "Escape":
+                Reset();
+                break;
+            case "End":
+                _progress = 100;
+                await ConfirmAsync();
+                break;
+        }
+    }
+
+    private async Task ConfirmAsync()
+    {
+        _progress = 100;
+        _confirmed = true;
+        _dragging = false;
+        if (OnConfirmed.HasDelegate)
+        {
+            await OnConfirmed.InvokeAsync();
         }
     }
 
@@ -209,13 +284,7 @@
     {
         _progress = 0;
         _confirmed = false;
-    }
-
-    private static int ParseProgress(object? value)
-    {
-        return int.TryParse(value?.ToString(), out var progress)
-            ? Math.Clamp(progress, 0, 100)
-            : 0;
+        _dragging = false;
     }
 
     private string GetRootClass()
@@ -228,11 +297,42 @@
         };
 
         var disabled = Disabled || IsBusy ? " slide-confirm-disabled" : string.Empty;
-        return $"slide-confirm {tone}{disabled}";
+        var dragging = _dragging ? " slide-confirm-dragging" : string.Empty;
+        return $"slide-confirm {tone}{disabled}{dragging}";
     }
 
     private string GetStyle()
     {
-        return $"--slide-progress: {_progress}%;";
+        return $"--slide-progress: {_progress.ToString(CultureInfo.InvariantCulture)}%;";
+    }
+
+    private string GetThumbStyle()
+    {
+        var progress = _progress.ToString(CultureInfo.InvariantCulture);
+        return $"left: {progress}%; transform: translateX(-{progress}%);";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+            // Safe during reconnect/navigation disposal.
+        }
+    }
+
+    private sealed class SlideConfirmMetrics
+    {
+        public double TrackWidth { get; set; }
+
+        public double ThumbWidth { get; set; }
     }
 }
