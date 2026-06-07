@@ -13,13 +13,28 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.4";
+    public const string CurrentVersion = "2026.06.5";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-07",
+            Summary = "Refined dashboard adapter status, sorting, charts, and PWA theme.",
+            Changes =
+            [
+                "Added inset spacing to Starlink action sliders so the handle no longer touches the track edge.",
+                "Removed x-axis labels from dashboard detail charts, Starlink charts, and uptime charts.",
+                "In redundant mode, groups adapters actively used by live Speedify tunnel rows at the top of the dashboard list.",
+                "Removed the visible traffic-breakdown hint from the connection summary while keeping the card action available.",
+                "Changed dashboard adapter status pills into compact status dots with hover/tap popovers and a connecting spinner ring.",
+                "Updated the PWA theme color to match the app background and refreshed the service-worker cache."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.4",
             Date = "2026-06-07",
             Summary = "Cleaned up Starlink details, charts, alerts, and controls.",
             Changes =

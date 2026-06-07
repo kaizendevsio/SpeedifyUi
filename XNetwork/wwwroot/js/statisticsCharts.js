@@ -121,8 +121,11 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 scales: {
                     x: {
                         title: {
-                            display: true,
+                            display: false,
                             text: 'Time'
+                        },
+                        ticks: {
+                            display: false
                         }
                     },
                     y: {
@@ -264,8 +267,11 @@ export function initializeOrUpdateSingleSeriesChart(chartId, yAxisLabel, dataset
                 scales: {
                     x: {
                         title: {
-                            display: true,
+                            display: false,
                             text: 'Time'
+                        },
+                        ticks: {
+                            display: false
                         }
                     },
                     y: {

@@ -1,8 +1,8 @@
 // Service Worker for X Network PWA
 // Version 1.0.0
 
-const CACHE_NAME = 'xnetwork-cache-v5';
-const RUNTIME_CACHE = 'xnetwork-runtime-v5';
+const CACHE_NAME = 'xnetwork-cache-v6';
+const RUNTIME_CACHE = 'xnetwork-runtime-v6';
 
 // Assets to cache on install
 const PRECACHE_ASSETS = [
@@ -11,6 +11,7 @@ const PRECACHE_ASSETS = [
     '/manifest.json',
     '/js/animatedUi.js',
     '/js/blazorReconnect.js',
+    '/js/slideToConfirm.js',
     '/js/statisticsCharts.js',
     '/js/uptimeChart.js',
     '/vendor/auto-animate/index.min.js',

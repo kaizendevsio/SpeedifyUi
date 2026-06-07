@@ -61,13 +61,6 @@
                 <p class="text-white font-bold text-xl"><AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(Upload)" Decimals="@SpeedFormatter.GetDisplayDecimals(Upload)" AriaLabel="@SpeedFormatter.FormatSpeed(Upload)" /> <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Upload)</span></p>
             </div>
         </div>
-        @if (ShowTrafficDetailsHint)
-        {
-            <div class="mt-3 flex items-center gap-2 text-xs text-cyan-300">
-                <i class="fas fa-circle-info"></i>
-                <span>Tap for traffic breakdown</span>
-            </div>
-        }
     </div>
     <div class="w-full h-12">
         <canvas id="dashboardChart"></canvas>

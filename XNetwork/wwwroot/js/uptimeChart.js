@@ -107,6 +107,7 @@ export function initializeUptimeChart(canvasId) {
                             drawBorder: false
                         },
                         ticks: {
+                            display: false,
                             color: '#64748b', // slate-500
                             font: {
                                 size: 10

@@ -31,6 +31,112 @@ body {
     background: #0f172a;
 }
 
+.adapter-status-dot-button {
+    position: relative;
+    display: inline-flex;
+    width: 1.8rem;
+    height: 1.8rem;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.24);
+    color: inherit;
+    cursor: help;
+}
+
+.adapter-status-dot-button:focus-visible {
+    outline: 2px solid rgba(34, 211, 238, 0.5);
+    outline-offset: 3px;
+}
+
+.adapter-status-dot {
+    display: block;
+    width: 0.62rem;
+    height: 0.62rem;
+    border-radius: 999px;
+    box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.75);
+}
+
+.adapter-status-dot-connected {
+    background: #22c55e;
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12), 0 0 18px rgba(34, 197, 94, 0.32);
+}
+
+.adapter-status-dot-connecting-inner {
+    background: #facc15;
+    box-shadow: 0 0 0 4px rgba(250, 204, 21, 0.12), 0 0 18px rgba(250, 204, 21, 0.28);
+}
+
+.adapter-status-dot-disconnecting {
+    background: #fb923c;
+    box-shadow: 0 0 0 4px rgba(251, 146, 60, 0.12), 0 0 18px rgba(251, 146, 60, 0.28);
+}
+
+.adapter-status-dot-disconnected {
+    background: #ef4444;
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12), 0 0 18px rgba(239, 68, 68, 0.28);
+}
+
+.adapter-status-dot-unknown {
+    background: #94a3b8;
+    box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
+}
+
+.adapter-status-dot-connecting::before {
+    content: "";
+    position: absolute;
+    inset: 0.2rem;
+    border: 2px solid rgba(250, 204, 21, 0.24);
+    border-top-color: #facc15;
+    border-radius: 999px;
+    animation: adapter-status-spin 900ms linear infinite;
+}
+
+.adapter-status-popover {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.55rem);
+    z-index: 20;
+    min-width: max-content;
+    max-width: 12rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 0.55rem;
+    background: rgba(2, 6, 23, 0.95);
+    color: #e2e8f0;
+    font-size: 0.75rem;
+    font-weight: 700;
+    line-height: 1.1;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(0.25rem);
+    transition: opacity 140ms ease, transform 140ms ease;
+    box-shadow: 0 16px 40px rgba(2, 6, 23, 0.42);
+}
+
+.adapter-status-popover::after {
+    content: "";
+    position: absolute;
+    right: 0.7rem;
+    top: 100%;
+    border: 0.35rem solid transparent;
+    border-top-color: rgba(2, 6, 23, 0.95);
+}
+
+.adapter-status-dot-button:hover .adapter-status-popover,
+.adapter-status-dot-button:focus .adapter-status-popover,
+.adapter-status-dot-button:focus-visible .adapter-status-popover {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+@keyframes adapter-status-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 #components-reconnect-modal {
     position: fixed;
     inset: 0;

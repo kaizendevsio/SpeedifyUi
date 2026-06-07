@@ -259,9 +259,14 @@
                                          <span class="text-base">↗</span>
                                      </a>
                                  }
-                                 <span class="text-xs font-medium @GetStatusPillClass(adapter.State) px-2.5 py-1 rounded-full">
-                                     @adapter.State
-                                 </span>
+                                 <button type="button"
+                                         class="@GetStatusDotButtonClass(adapter.State)"
+                                         title="@GetAdapterStatusTooltip(adapter.State)"
+                                         aria-label="@GetAdapterStatusTooltip(adapter.State)"
+                                         @onclick:stopPropagation="true">
+                                     <span class="@GetStatusDotClass(adapter.State)" aria-hidden="true"></span>
+                                     <span class="adapter-status-popover" role="tooltip">@GetAdapterStatusTooltip(adapter.State)</span>
+                                 </button>
                             </div>
                         </div>
                         
@@ -1520,15 +1525,38 @@
                adapter.State.Equals("offline", StringComparison.OrdinalIgnoreCase);
     }
 
-    private string GetStatusPillClass(string state)
+    private static string GetAdapterStatusTooltip(string state)
+    {
+        return state.Trim().ToLowerInvariant() switch
+        {
+            "connected" => "Connected",
+            "connecting" => "Connecting",
+            "disconnecting" => "Disconnecting",
+            "disconnected" => "Disconnected",
+            "offline" => "Offline",
+            _ => string.IsNullOrWhiteSpace(state) ? "Status unknown" : state
+        };
+    }
+
+    private static string GetStatusDotButtonClass(string state)
+    {
+        var connecting = state.Equals("connecting", StringComparison.OrdinalIgnoreCase)
+            ? " adapter-status-dot-connecting"
+            : string.Empty;
+
+        return $"adapter-status-dot-button{connecting}";
+    }
+
+    private static string GetStatusDotClass(string state)
     {
         return state.ToLowerInvariant() switch
         {
-            "connected" => "bg-green-500/10 text-green-400",
-            "connecting" => "bg-yellow-500/10 text-yellow-400",
-            "disconnecting" => "bg-orange-500/10 text-orange-400",
-            "disconnected" => "bg-red-500/10 text-red-400",
-            _ => "bg-gray-500/10 text-gray-400"
+            "connected" => "adapter-status-dot adapter-status-dot-connected",
+            "connecting" => "adapter-status-dot adapter-status-dot-connecting-inner",
+            "disconnecting" => "adapter-status-dot adapter-status-dot-disconnecting",
+            "disconnected" => "adapter-status-dot adapter-status-dot-disconnected",
+            "offline" => "adapter-status-dot adapter-status-dot-disconnected",
+            _ => "adapter-status-dot adapter-status-dot-unknown"
         };
     }
 
@@ -1551,9 +1579,11 @@
         // Filter out pure "disconnected" adapters - only show connected, connecting, standby, offline states
         var visibleAdapters = _adapters.Where(a => a.State.ToLowerInvariant() != "disconnected");
         
-        // Sort by state first, then rolling adapter health for connected adapters.
+        // In redundant mode, put the adapters currently carrying Speedify tunnel rows first,
+        // then keep the rolling health order inside each group.
         return visibleAdapters
-            .OrderBy(a => GetSortOrderForState(a.State))
+            .OrderBy(GetRedundantActiveGroupSortOrder)
+            .ThenBy(a => GetSortOrderForState(a.State))
             .ThenBy(a => {
                 var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
                 var stats = GetStatsForAdapter(a.AdapterId);
@@ -1575,6 +1605,25 @@
                 return AdapterHealthPresenter.GetSortKey(health, stats).LatencyMs;
             })
             .ThenBy(GetProviderName);
+    }
+
+    private int GetRedundantActiveGroupSortOrder(Adapter adapter)
+    {
+        if (!IsRedundantMode())
+        {
+            return 0;
+        }
+
+        return IsActiveSpeedifyTunnelAdapter(adapter.AdapterId) ? 0 : 1;
+    }
+
+    private bool IsActiveSpeedifyTunnelAdapter(string adapterId)
+    {
+        var stats = GetStatsForAdapter(adapterId);
+        return stats is not null &&
+               stats.Connected &&
+               !IsSpeedifyAggregate(stats) &&
+               !IsAuxiliaryConnection(stats);
     }
 
     private string GetOverallConnectionStatus()
