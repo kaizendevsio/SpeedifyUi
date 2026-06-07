@@ -9,4 +9,6 @@ public interface IStarlinkTelemetryService
     IReadOnlyList<StarlinkTelemetrySnapshot> GetHistory();
 
     StarlinkCapabilitySnapshot GetCapabilities();
+
+    Task<StarlinkCommandResult> ExecuteCommandAsync(string command, CancellationToken cancellationToken = default);
 }

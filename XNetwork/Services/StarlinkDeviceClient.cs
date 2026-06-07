@@ -1,9 +1,10 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Sockets;
+using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.IO.Compression;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
@@ -88,6 +89,55 @@ public sealed class StarlinkDeviceClient : IDisposable
             error);
     }
 
+    public async Task<StarlinkCommandResult> ExecuteCommandAsync(string command, CancellationToken cancellationToken)
+    {
+        var normalizedCommand = NormalizeCommand(command);
+        var payload = StarlinkCommandPayloads.CreatePayload(normalizedCommand);
+
+        try
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                BuildUri(_settings.GrpcWebPort))
+            {
+                Version = HttpVersion.Version11,
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+                Content = CreateGrpcContent("application/grpc-web+proto", payload)
+            };
+
+            request.Headers.TryAddWithoutValidation("x-grpc-web", "1");
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/grpc-web+proto"));
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            StarlinkCommandResponseParser.EnsureSuccess(content);
+
+            return new StarlinkCommandResult
+            {
+                Command = normalizedCommand,
+                Success = true,
+                Message = $"{FormatCommand(normalizedCommand)} command sent to Starlink"
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Starlink command {Command} failed", normalizedCommand);
+
+            return new StarlinkCommandResult
+            {
+                Command = normalizedCommand,
+                Success = false,
+                Message = $"{FormatCommand(normalizedCommand)} command failed: {ex.Message}"
+            };
+        }
+    }
+
     private async Task<StarlinkTelemetrySnapshot> GetStatusOverGrpcAsync(CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(
@@ -96,7 +146,7 @@ public sealed class StarlinkDeviceClient : IDisposable
         {
             Version = HttpVersion.Version20,
             VersionPolicy = HttpVersionPolicy.RequestVersionExact,
-            Content = CreateGrpcContent("application/grpc")
+            Content = CreateGrpcContent("application/grpc", GetStatusPayload)
         };
 
         request.Headers.TryAddWithoutValidation("grpc-encoding", "identity");
@@ -117,7 +167,7 @@ public sealed class StarlinkDeviceClient : IDisposable
         {
             Version = HttpVersion.Version11,
             VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
-            Content = CreateGrpcContent("application/grpc-web+proto")
+            Content = CreateGrpcContent("application/grpc-web+proto", GetStatusPayload)
         };
 
         request.Headers.TryAddWithoutValidation("x-grpc-web", "1");
@@ -159,19 +209,32 @@ public sealed class StarlinkDeviceClient : IDisposable
         return Encoding.UTF8.GetString(bytes);
     }
 
-    private static ByteArrayContent CreateGrpcContent(string contentType)
+    private static ByteArrayContent CreateGrpcContent(string contentType, byte[] payload)
     {
-        var body = new byte[5 + GetStatusPayload.Length];
+        var body = new byte[5 + payload.Length];
         body[0] = 0;
-        body[1] = 0;
-        body[2] = 0;
-        body[3] = 0;
-        body[4] = (byte)GetStatusPayload.Length;
-        GetStatusPayload.CopyTo(body, 5);
+        BinaryPrimitives.WriteUInt32BigEndian(body.AsSpan(1, 4), (uint)payload.Length);
+        payload.CopyTo(body, 5);
 
         var content = new ByteArrayContent(body);
         content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
         return content;
+    }
+
+    private static string NormalizeCommand(string command)
+    {
+        return command.Trim().ToLowerInvariant();
+    }
+
+    private static string FormatCommand(string command)
+    {
+        return command switch
+        {
+            "reboot" => "Reboot",
+            "stow" => "Stow",
+            "unstow" => "Unstow",
+            _ => command
+        };
     }
 
     private static bool IsTransportFailure(Exception ex)

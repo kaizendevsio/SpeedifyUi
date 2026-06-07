@@ -18,25 +18,26 @@ public class StarlinkCapabilityDetectorTests
         Assert.Contains(snapshot.Capabilities, c => c.Key == "status" && c.IsDetected);
         Assert.Contains(snapshot.Capabilities, c => c.Key == "web-ui" && c.IsDetected && c.IsActionable);
         Assert.Contains(snapshot.Capabilities, c => c.Key == "diagnostics" && c.IsDetected);
-        Assert.Contains(snapshot.Capabilities, c => c.Key == "reboot" && c.IsDetected && c.IsDisruptive);
-        Assert.Contains(snapshot.Capabilities, c => c.Key == "stow" && c.IsDetected && c.IsDisruptive);
-        Assert.Contains(snapshot.Capabilities, c => c.Key == "unstow" && c.IsDetected && c.IsDisruptive);
+        Assert.Contains(snapshot.Capabilities, c => c.Key == "reboot" && c.IsDetected && c.IsDisruptive && c.DirectCommand == "reboot");
+        Assert.Contains(snapshot.Capabilities, c => c.Key == "stow" && c.IsDetected && c.IsDisruptive && c.DirectCommand == "stow");
+        Assert.Contains(snapshot.Capabilities, c => c.Key == "unstow" && c.IsDetected && c.IsDisruptive && c.DirectCommand == "unstow");
     }
 
     [Fact]
-    public void Detect_DoesNotExposeActionsWhenWebUiIsUnavailable()
+    public void Detect_ExposesDirectCommandsWhenFirmwareSymbolsArePresent()
     {
         var snapshot = StarlinkCapabilityDetector.Detect(
             "192.168.100.1",
             statusAvailable: true,
             webUiReachable: false,
             rootHtml: null,
-            scriptText: "Reboot Stow");
+            scriptText: "RebootRequest setReboot DishStowRequest setDishStow setUnstow");
 
         var reboot = Assert.Single(snapshot.Capabilities, c => c.Key == "reboot");
         Assert.True(reboot.IsDetected);
-        Assert.False(reboot.IsActionable);
+        Assert.True(reboot.IsActionable);
+        Assert.Equal("reboot", reboot.DirectCommand);
         Assert.Null(reboot.ActionUrl);
-        Assert.NotNull(reboot.DisabledReason);
+        Assert.Null(reboot.DisabledReason);
     }
 }

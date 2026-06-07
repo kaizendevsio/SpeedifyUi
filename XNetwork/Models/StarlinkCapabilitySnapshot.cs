@@ -34,6 +34,8 @@ public sealed record StarlinkCapability
 
     public bool IsDisruptive { get; init; }
 
+    public string? DirectCommand { get; init; }
+
     public string? ActionUrl { get; init; }
 
     public string? DisabledReason { get; init; }

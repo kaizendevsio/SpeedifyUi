@@ -8,6 +8,7 @@ public sealed class StarlinkTelemetryService : BackgroundService, IStarlinkTelem
     private readonly StarlinkDeviceClient _client;
     private readonly ILogger<StarlinkTelemetryService> _logger;
     private readonly StarlinkTelemetryHistory _history = new();
+    private readonly SemaphoreSlim _commandLock = new(1, 1);
     private StarlinkTelemetrySnapshot _snapshot = StarlinkTelemetrySnapshot.Unavailable();
     private StarlinkCapabilitySnapshot _capabilities = StarlinkCapabilitySnapshot.Unavailable();
     private DateTimeOffset _lastCapabilityProbeUtc = DateTimeOffset.MinValue;
@@ -45,6 +46,19 @@ public sealed class StarlinkTelemetryService : BackgroundService, IStarlinkTelem
     public StarlinkCapabilitySnapshot GetCapabilities()
     {
         return _capabilities;
+    }
+
+    public async Task<StarlinkCommandResult> ExecuteCommandAsync(string command, CancellationToken cancellationToken = default)
+    {
+        await _commandLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _client.ExecuteCommandAsync(command, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

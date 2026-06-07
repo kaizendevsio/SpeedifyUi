@@ -52,32 +52,32 @@ public static class StarlinkCapabilityDetector
                 Label = "Reboot",
                 Description = "Restart the Starlink terminal from the Starlink interface.",
                 IsDetected = ContainsAny(source, "Reboot"),
-                IsActionable = webUiReachable,
+                IsActionable = ContainsAny(source, "RebootRequest", "setReboot", "Reboot"),
                 IsDisruptive = true,
-                ActionUrl = webUiReachable ? webUiUrl : null,
-                DisabledReason = webUiReachable ? null : "Starlink web UI is not reachable"
+                DirectCommand = "reboot",
+                DisabledReason = ContainsAny(source, "RebootRequest", "setReboot", "Reboot") ? null : "Reboot command was not detected in this Starlink firmware"
             },
             new StarlinkCapability
             {
                 Key = "stow",
                 Label = "Stow",
                 Description = "Move the dish to stow position from the Starlink interface.",
-                IsDetected = ContainsAny(source, "Stow"),
-                IsActionable = webUiReachable,
+                IsDetected = ContainsAny(source, "DishStowRequest", "setDishStow", "Stow"),
+                IsActionable = ContainsAny(source, "DishStowRequest", "setDishStow", "Stow"),
                 IsDisruptive = true,
-                ActionUrl = webUiReachable ? webUiUrl : null,
-                DisabledReason = webUiReachable ? null : "Starlink web UI is not reachable"
+                DirectCommand = "stow",
+                DisabledReason = ContainsAny(source, "DishStowRequest", "setDishStow", "Stow") ? null : "Stow command was not detected in this Starlink firmware"
             },
             new StarlinkCapability
             {
                 Key = "unstow",
                 Label = "Unstow",
                 Description = "Return the dish from stow position from the Starlink interface.",
-                IsDetected = ContainsAny(source, "Unstow"),
-                IsActionable = webUiReachable,
+                IsDetected = ContainsAny(source, "DishStowRequest", "setUnstow", "Unstow"),
+                IsActionable = ContainsAny(source, "DishStowRequest", "setUnstow", "Unstow"),
                 IsDisruptive = true,
-                ActionUrl = webUiReachable ? webUiUrl : null,
-                DisabledReason = webUiReachable ? null : "Starlink web UI is not reachable"
+                DirectCommand = "unstow",
+                DisabledReason = ContainsAny(source, "DishStowRequest", "setUnstow", "Unstow") ? null : "Unstow command was not detected in this Starlink firmware"
             }
         };
 

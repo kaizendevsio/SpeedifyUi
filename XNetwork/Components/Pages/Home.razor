@@ -602,10 +602,23 @@
             <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
                 <div>
                     <h4 class="font-semibold text-white">Starlink API</h4>
-                    <p class="text-xs text-slate-400">Detected from the local Starlink dish interface.</p>
+                    <p class="text-xs text-slate-400">Detected from the local Starlink dish interface. Dish commands run directly from XNetwork after confirmation.</p>
                 </div>
                 <span class="text-xs text-slate-500">@FormatLastUpdated(starlinkCapabilities.LastUpdatedUtc)</span>
             </div>
+
+            @if (_lastStarlinkCommandResult is not null)
+            {
+                <div class="@GetStarlinkCommandResultClass(_lastStarlinkCommandResult) border-b border-slate-800 p-4 text-sm">
+                    <div class="flex items-start gap-3">
+                        <i class="fas @(_lastStarlinkCommandResult.Success ? "fa-check-circle" : "fa-triangle-exclamation") mt-0.5"></i>
+                        <div>
+                            <p class="font-semibold">@_lastStarlinkCommandResult.Message</p>
+                            <p class="text-xs opacity-80">@FormatLastUpdated(_lastStarlinkCommandResult.CompletedUtc)</p>
+                        </div>
+                    </div>
+                </div>
+            }
 
             @if (detectedCapabilities.Count == 0)
             {
@@ -638,7 +651,24 @@
                                     <p class="mt-1 text-xs text-amber-200">@capability.DisabledReason</p>
                                 }
                             </div>
-                            @if (!string.IsNullOrWhiteSpace(capability.ActionUrl))
+                            @if (!string.IsNullOrWhiteSpace(capability.DirectCommand))
+                            {
+                                <button type="button"
+                                        class="@GetStarlinkCommandButtonClass(capability)"
+                                        disabled="@(!capability.IsActionable || _starlinkCommandInProgress)"
+                                        @onclick="() => PromptStarlinkCommand(capability)">
+                                    @if (_starlinkCommandInProgress && string.Equals(_pendingStarlinkCommand?.DirectCommand, capability.DirectCommand, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        <i class="fas fa-spinner animate-spin text-xs"></i>
+                                    }
+                                    else
+                                    {
+                                        <i class="fas @GetStarlinkCommandIcon(capability.DirectCommand) text-xs"></i>
+                                    }
+                                    <span>@GetStarlinkCommandButtonLabel(capability)</span>
+                                </button>
+                            }
+                            else if (!string.IsNullOrWhiteSpace(capability.ActionUrl))
                             {
                                 <a href="@capability.ActionUrl"
                                    target="_blank"
@@ -686,6 +716,15 @@
     </div>
 </ActionSheet>
 
+<ConfirmationModal
+    IsVisible="_showStarlinkCommandConfirm"
+    Title="@GetStarlinkCommandConfirmTitle()"
+    Message="@GetStarlinkCommandConfirmMessage()"
+    ConfirmText="@GetStarlinkCommandConfirmText()"
+    CancelText="Cancel"
+    ConfirmButtonClass="@GetStarlinkCommandConfirmClass()"
+    OnConfirm="HandleStarlinkCommandConfirmAsync" />
+
 @code {
     private IReadOnlyList<Adapter>? _adapters;
     private List<ConnectionItem> _stats = new();
@@ -710,7 +749,11 @@
     private bool _routerTrafficLoading;
     private bool _showTrafficBreakdown;
     private bool _showStarlinkDetails;
+    private bool _showStarlinkCommandConfirm;
+    private bool _starlinkCommandInProgress;
     private Adapter? _selectedStarlinkAdapter;
+    private StarlinkCapability? _pendingStarlinkCommand;
+    private StarlinkCommandResult? _lastStarlinkCommandResult;
     private int _adapterRefreshInProgress;
     private int _serverInfoRefreshInProgress;
     private int _healthAlertRefreshInProgress;
@@ -909,7 +952,58 @@
     private Task CloseStarlinkDetailsAsync()
     {
         _showStarlinkDetails = false;
+        _showStarlinkCommandConfirm = false;
+        _pendingStarlinkCommand = null;
         return Task.CompletedTask;
+    }
+
+    private void PromptStarlinkCommand(StarlinkCapability capability)
+    {
+        if (!capability.IsActionable || string.IsNullOrWhiteSpace(capability.DirectCommand) || _starlinkCommandInProgress)
+        {
+            return;
+        }
+
+        _pendingStarlinkCommand = capability;
+        _showStarlinkCommandConfirm = true;
+    }
+
+    private async Task HandleStarlinkCommandConfirmAsync(bool confirmed)
+    {
+        var capability = _pendingStarlinkCommand;
+        _showStarlinkCommandConfirm = false;
+
+        if (!confirmed || capability is null || string.IsNullOrWhiteSpace(capability.DirectCommand))
+        {
+            _pendingStarlinkCommand = null;
+            return;
+        }
+
+        _starlinkCommandInProgress = true;
+        _lastStarlinkCommandResult = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _lastStarlinkCommandResult = await StarlinkTelemetryService.ExecuteCommandAsync(
+                capability.DirectCommand,
+                _statsCts?.Token ?? CancellationToken.None);
+        }
+        catch (OperationCanceledException)
+        {
+            _lastStarlinkCommandResult = new StarlinkCommandResult
+            {
+                Command = capability.DirectCommand,
+                Success = false,
+                Message = $"{capability.Label} command was canceled"
+            };
+        }
+        finally
+        {
+            _starlinkCommandInProgress = false;
+            _pendingStarlinkCommand = null;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task LoadRouterTrafficAsync(bool background)
@@ -1225,6 +1319,91 @@
         return capability.IsActionable
             ? "bg-emerald-500/10 text-emerald-200 border border-emerald-500/20"
             : "bg-cyan-500/10 text-cyan-200 border border-cyan-500/20";
+    }
+
+    private static string GetStarlinkCommandIcon(string? command)
+    {
+        return command?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => "fa-power-off",
+            "stow" => "fa-box-archive",
+            "unstow" => "fa-satellite-dish",
+            _ => "fa-terminal"
+        };
+    }
+
+    private static string GetStarlinkCommandButtonLabel(StarlinkCapability capability)
+    {
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => "Reboot",
+            "stow" => "Stow",
+            "unstow" => "Unstow",
+            _ => capability.Label
+        };
+    }
+
+    private static string GetStarlinkCommandButtonClass(StarlinkCapability capability)
+    {
+        var baseClass = "inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => $"{baseClass} border-red-500/30 bg-red-500/10 text-red-100 hover:bg-red-500/20",
+            "stow" => $"{baseClass} border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20",
+            "unstow" => $"{baseClass} border-cyan-500/30 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20",
+            _ => $"{baseClass} border-slate-600 bg-slate-700/40 text-slate-100 hover:bg-slate-700"
+        };
+    }
+
+    private string GetStarlinkCommandConfirmTitle()
+    {
+        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => "Reboot Starlink",
+            "stow" => "Stow Starlink",
+            "unstow" => "Unstow Starlink",
+            _ => "Run Starlink Command"
+        };
+    }
+
+    private string GetStarlinkCommandConfirmMessage()
+    {
+        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => "This will reboot the Starlink terminal and can interrupt the Starlink connection for several minutes. Continue?",
+            "stow" => "This will stow the Starlink dish and will interrupt Starlink service until you unstow it. Continue?",
+            "unstow" => "This will command the Starlink dish to unstow and resume service. Continue?",
+            _ => "Run this Starlink command now?"
+        };
+    }
+
+    private string GetStarlinkCommandConfirmText()
+    {
+        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => "Reboot",
+            "stow" => "Stow",
+            "unstow" => "Unstow",
+            _ => "Run"
+        };
+    }
+
+    private string GetStarlinkCommandConfirmClass()
+    {
+        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "reboot" => "btn-red",
+            "stow" => "btn-orange",
+            "unstow" => "btn-blue",
+            _ => "btn-blue"
+        };
+    }
+
+    private static string GetStarlinkCommandResultClass(StarlinkCommandResult result)
+    {
+        return result.Success
+            ? "bg-emerald-500/10 text-emerald-100"
+            : "bg-amber-500/10 text-amber-100";
     }
 
     private int GetSignalStrength(Adapter adapter, ConnectionItem? currentStats)
