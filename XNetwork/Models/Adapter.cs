@@ -7,4 +7,7 @@ public record Adapter(
     string State,
     string Priority,
     string WorkingPriority,
-    string Type);
+    string Type)
+{
+    public string? IspType { get; init; }
+}

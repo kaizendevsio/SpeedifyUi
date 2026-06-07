@@ -52,6 +52,14 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<CudyApControlServi
 builder.Services.AddSingleton<LocalProcessTrafficService>();
 builder.Services.AddSingleton<XRouterService>();
 
+// Add direct Starlink dish telemetry polling for Starlink adapters
+builder.Services.AddSingleton(sp =>
+    builder.Configuration.GetSection("StarlinkTelemetry").Get<StarlinkTelemetrySettings>() ?? new StarlinkTelemetrySettings());
+builder.Services.AddSingleton<StarlinkDeviceClient>();
+builder.Services.AddSingleton<StarlinkTelemetryService>();
+builder.Services.AddSingleton<IStarlinkTelemetryService>(sp => sp.GetRequiredService<StarlinkTelemetryService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StarlinkTelemetryService>());
+
 // Add connection health service (both as singleton and hosted service)
 builder.Services.AddSingleton<ConnectionHealthService>();
 builder.Services.AddSingleton<IConnectionHealthService>(sp => sp.GetRequiredService<ConnectionHealthService>());

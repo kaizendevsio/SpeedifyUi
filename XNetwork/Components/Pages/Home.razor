@@ -10,6 +10,7 @@
 @inject AutoServerSwitchService AutoServerSwitchService
 @inject CudyApControlService CudyApControlService
 @inject LocalProcessTrafficService LocalProcessTrafficService
+@inject IStarlinkTelemetryService StarlinkTelemetryService
 @inject IJSRuntime JSRuntime
 @implements IAsyncDisposable
 
@@ -201,6 +202,8 @@
                     var bgClass = GetAdapterBackgroundClass(adapter, currentStats);
                     var signalStrength = !isOffline ? GetSignalStrength(adapter, currentStats) : 0;
                     var signalColor = !isOffline ? GetSignalColor(adapter.State, signalStrength) : "slate-700";
+                    var isStarlink = IsStarlinkAdapter(adapter);
+                    var starlinkTelemetry = isStarlink ? StarlinkTelemetryService.GetSnapshot() : null;
 
                     <div @key="adapter.AdapterId"
                          class="@bgClass border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative cursor-pointer hover:bg-slate-700/30 transition-colors"
@@ -280,6 +283,76 @@
                                     <AnimatedNumber Value="@currentStats.LatencyMs" Decimals="0" CssClass="text-white font-semibold" AriaLabel="@($"{currentStats.LatencyMs} milliseconds")" />
                                     <span class="text-xs text-slate-400">ms</span>
                                 </div>
+                            </div>
+                        }
+
+                        @if (!isOffline && isStarlink)
+                        {
+                            <div class="mt-3 border-t border-slate-700/60 pt-3">
+                                @if (starlinkTelemetry?.IsAvailable == true)
+                                {
+                                    var alertPreview = starlinkTelemetry.ActiveAlerts.Take(2).ToList();
+                                    var hiddenAlertCount = Math.Max(0, starlinkTelemetry.ActiveAlerts.Count - alertPreview.Count);
+
+                                    <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-300">
+                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish latency">
+                                            <i class="fas fa-satellite-dish text-cyan-300"></i>
+                                            <span>Dish @FormatNullableMs(starlinkTelemetry.PopPingLatencyMs)</span>
+                                        </span>
+                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish throughput">
+                                            <i class="fas fa-arrow-down text-cyan-300"></i>
+                                            <span>@FormatNullableSpeed(starlinkTelemetry.DownlinkMbps)</span>
+                                        </span>
+                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish upstream throughput">
+                                            <i class="fas fa-arrow-up text-pink-300"></i>
+                                            <span>@FormatNullableSpeed(starlinkTelemetry.UplinkMbps)</span>
+                                        </span>
+                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink obstruction estimate">
+                                            <i class="fas fa-ban text-amber-300"></i>
+                                            <span>Obs @FormatNullablePercent(starlinkTelemetry.ObstructionPercent)</span>
+                                        </span>
+                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink alignment error">
+                                            <i class="fas fa-crosshairs text-emerald-300"></i>
+                                            <span>Align @FormatNullableDegrees(starlinkTelemetry.AlignmentErrorDegrees)</span>
+                                        </span>
+                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish uptime">
+                                            <i class="far fa-hourglass-half text-slate-400"></i>
+                                            <span>Up @FormatDuration(starlinkTelemetry.UptimeSeconds)</span>
+                                        </span>
+                                        @if (starlinkTelemetry.GpsSatellites is not null)
+                                        {
+                                            <span class="inline-flex items-center gap-1.5" title="Direct Starlink GPS satellites">
+                                                <i class="fas fa-location-crosshairs text-slate-400"></i>
+                                                <span>GPS @starlinkTelemetry.GpsSatellites</span>
+                                            </span>
+                                        }
+                                    </div>
+
+                                    @if (alertPreview.Count > 0)
+                                    {
+                                        <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                                            @foreach (var alert in alertPreview)
+                                            {
+                                                <span class="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-200 border border-amber-500/20 text-[11px]">
+                                                    @alert
+                                                </span>
+                                            }
+                                            @if (hiddenAlertCount > 0)
+                                            {
+                                                <span class="px-2 py-0.5 rounded-full bg-slate-700/50 text-slate-300 border border-slate-600/40 text-[11px]">
+                                                    +@hiddenAlertCount
+                                                </span>
+                                            }
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="inline-flex items-center gap-2 text-xs text-amber-200" title="@starlinkTelemetry?.Error">
+                                        <i class="fas fa-satellite-dish"></i>
+                                        <span>Starlink stats unavailable</span>
+                                    </div>
+                                }
                             </div>
                         }
                     </div>
@@ -731,18 +804,66 @@
         return adapter.Type;
     }
 
+    private static bool IsStarlinkAdapter(Adapter adapter)
+    {
+        return ContainsStarlink(adapter.Isp) ||
+               ContainsStarlink(adapter.Name) ||
+               ContainsStarlink(adapter.Type) ||
+               ContainsStarlink(adapter.IspType) ||
+               string.Equals(adapter.IspType, "Satellite", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsStarlink(string? value)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+               value.Contains("Starlink", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatNullableMs(double? milliseconds)
+    {
+        return milliseconds is > 0 ? $"{Math.Round(milliseconds.Value)} ms" : "--";
+    }
+
+    private static string FormatNullableSpeed(double? speedMbps)
+    {
+        return speedMbps is >= 0 ? SpeedFormatter.FormatSpeed(speedMbps.Value) : "--";
+    }
+
+    private static string FormatNullablePercent(double? percent)
+    {
+        return percent is >= 0 ? $"{Math.Round(percent.Value, percent.Value < 1 ? 2 : 1)}%" : "--";
+    }
+
+    private static string FormatNullableDegrees(double? degrees)
+    {
+        return degrees is >= 0 ? $"{Math.Round(degrees.Value, 1)} deg" : "--";
+    }
+
+    private static string FormatDuration(long? totalSeconds)
+    {
+        if (totalSeconds is null or < 0)
+        {
+            return "--";
+        }
+
+        var duration = TimeSpan.FromSeconds(totalSeconds.Value);
+        if (duration.TotalDays >= 1)
+        {
+            return $"{(int)duration.TotalDays}d {duration.Hours}h";
+        }
+
+        if (duration.TotalHours >= 1)
+        {
+            return $"{(int)duration.TotalHours}h {duration.Minutes}m";
+        }
+
+        return $"{duration.Minutes}m";
+    }
+
     private int GetSignalStrength(Adapter adapter, ConnectionItem? currentStats)
     {
-        // Return 0-4 bars based on latency and packet loss
-        if (currentStats == null) return 0;
-        
-        var avgLoss = currentStats.AverageLossPercent;
-        
-        if (currentStats.LatencyMs < 50 && avgLoss < 1) return 4;   // All 4 bars - Excellent
-        if (currentStats.LatencyMs < 100 && avgLoss < 3) return 3;  // 3 bars - Good
-        if (currentStats.LatencyMs < 200 && avgLoss < 5) return 2;  // 2 bars - Fair
-        if (currentStats.LatencyMs < 300 && avgLoss < 10) return 1; // 1 bar - Poor
-        return 0; // No bars - Very poor/disconnected
+        var health = ConnectionHealthService.GetAdapterHealth(adapter.AdapterId);
+        return AdapterHealthPresenter.GetSignalStrength(health, currentStats);
     }
 
     private string GetSignalColor(string state, int strength)
@@ -797,17 +918,30 @@
         // Filter out pure "disconnected" adapters - only show connected, connecting, standby, offline states
         var visibleAdapters = _adapters.Where(a => a.State.ToLowerInvariant() != "disconnected");
         
-        // Sort by state first, then by latency (for connected adapters)
+        // Sort by state first, then rolling adapter health for connected adapters.
         return visibleAdapters
             .OrderBy(a => GetSortOrderForState(a.State))
             .ThenBy(a => {
+                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
                 var stats = GetStatsForAdapter(a.AdapterId);
-                return stats?.LatencyMs ?? int.MaxValue;
+                return AdapterHealthPresenter.GetSortKey(health, stats).Rank;
             })
             .ThenBy(a => {
+                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
                 var stats = GetStatsForAdapter(a.AdapterId);
-                return stats?.AverageLossPercent ?? double.MaxValue;
-            });
+                return AdapterHealthPresenter.GetSortKey(health, stats).PacketLossPercent;
+            })
+            .ThenBy(a => {
+                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
+                var stats = GetStatsForAdapter(a.AdapterId);
+                return AdapterHealthPresenter.GetSortKey(health, stats).JitterMs;
+            })
+            .ThenBy(a => {
+                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
+                var stats = GetStatsForAdapter(a.AdapterId);
+                return AdapterHealthPresenter.GetSortKey(health, stats).LatencyMs;
+            })
+            .ThenBy(GetProviderName);
     }
 
     private string GetOverallConnectionStatus()
@@ -865,21 +999,11 @@
 
     private string GetAdapterBackgroundClass(Adapter adapter, ConnectionItem? currentStats)
     {
-        // If offline or no stats, use default background
         var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
-        if (isOffline || currentStats == null) return "bg-slate-800/50";
-        
-        // Calculate quality based on latency and packet loss
-        var avgLoss = currentStats.AverageLossPercent;
-        
-        if (currentStats.LatencyMs < 50 && avgLoss < 1)
-            return "bg-green-900/20 border-green-900/30";
-        else if (currentStats.LatencyMs < 100 && avgLoss < 3)
-            return "bg-slate-800/50";
-        else if (currentStats.LatencyMs < 200 && avgLoss < 5)
-            return "bg-yellow-900/20 border-yellow-900/30";
-        else
-            return "bg-red-900/20 border-red-900/30";
+        if (isOffline) return "bg-slate-800/50";
+
+        var health = ConnectionHealthService.GetAdapterHealth(adapter.AdapterId);
+        return AdapterHealthPresenter.GetBackgroundClass(health, currentStats);
     }
 
     private int GetAverageLatency()
