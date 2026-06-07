@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.7";
+    public const string CurrentVersion = "2026.06.8";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-08",
+            Summary = "Refined actively redundant adapter detection.",
+            Changes =
+            [
+                "Uses current nonzero tunnel throughput as the primary signal for Actively Redundant membership.",
+                "Selects adapters carrying the dominant current traffic direction before falling back to total tunnel traffic.",
+                "Prevents idle connected adapters with zero current throughput from filling the active redundant group.",
+                "Batches Speedify stats renders so dashboard adapter speed animations do not flicker on partial stat-row updates."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.7",
             Date = "2026-06-08",
             Summary = "Corrected active redundant adapter grouping.",
             Changes =

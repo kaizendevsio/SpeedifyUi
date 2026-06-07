@@ -749,6 +749,7 @@
     private int _serverInfoRefreshInProgress;
     private int _healthAlertRefreshInProgress;
     private int _routerTrafficRefreshInProgress;
+    private int _statsRenderQueued;
     private ElementReference _adapterListElement;
     private IJSObjectReference? _animatedUiModule;
     private bool _adapterListAnimationEnabled;
@@ -757,6 +758,7 @@
     private DateTime _lastStarlinkAdapterProbeUtc = DateTime.MinValue;
     private int _starlinkAdapterProbeInProgress;
     private static readonly TimeSpan RedundantActivityHoldTime = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan StatsRenderDelay = TimeSpan.FromMilliseconds(150);
 
     private bool _initialLoadComplete = false;
     private bool _isProcessingAction = false;
@@ -1034,7 +1036,7 @@
                 if (IsSpeedifyAggregate(statEntry))
                 {
                     _aggregateStats = statEntry;
-                    await InvokeAsync(StateHasChanged);
+                    QueueStatsRender();
                     continue;
                 }
 
@@ -1044,7 +1046,7 @@
                 if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
                 else _stats.Add(statEntry);
                 
-                await InvokeAsync(StateHasChanged);
+                QueueStatsRender();
             }
         }
         catch (SpeedifyException ex)
@@ -1064,6 +1066,30 @@
     private ConnectionItem? GetStatsForAdapter(string adapterId)
     {
         return _stats.FirstOrDefault(x => x.AdapterId == adapterId);
+    }
+
+    private void QueueStatsRender()
+    {
+        if (Interlocked.Exchange(ref _statsRenderQueued, 1) == 1)
+        {
+            return;
+        }
+
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                await Task.Delay(StatsRenderDelay, _statsCts?.Token ?? CancellationToken.None);
+                StateHasChanged();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _statsRenderQueued, 0);
+            }
+        });
     }
 
     private static bool IsSpeedifyAggregate(ConnectionItem statEntry)
@@ -1722,14 +1748,67 @@
 
         PruneRedundantAdapterActivity(now, visibleAdapterIds);
 
+        var currentMembers = GetCurrentRedundantTrafficCandidates(visibleAdapterIds).ToList();
+        if (currentMembers.Count > 0)
+        {
+            return currentMembers
+                .Select(candidate => candidate.AdapterId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
         return _redundantAdapterActivity.Values
             .Where(activity => visibleAdapterIds.Contains(activity.AdapterId))
-            .Where(activity => activity.IsRecentlyActive(now, RedundantActivityHoldTime))
-            .OrderByDescending(activity => activity.LastActiveUtc)
-            .ThenByDescending(activity => activity.LastActivityScore)
+            .Where(activity => activity.IsRecentlyActive(now, TimeSpan.FromSeconds(3)))
+            .OrderByDescending(activity => activity.LastActivityScore)
+            .ThenByDescending(activity => activity.LastActiveUtc)
             .Take(GetMaxRedundantConnections())
             .Select(activity => activity.AdapterId)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private IReadOnlyList<RedundantTrafficCandidate> GetCurrentRedundantTrafficCandidates(IReadOnlySet<string> visibleAdapterIds)
+    {
+        var maxRedundant = GetMaxRedundantConnections();
+        var candidates = _stats
+            .Where(IsRealTunnelConnection)
+            .Where(stat => visibleAdapterIds.Contains(stat.AdapterId))
+            .Select(stat => new RedundantTrafficCandidate(
+                stat.AdapterId,
+                Math.Max(0, stat.ReceiveBps),
+                Math.Max(0, stat.SendBps),
+                Math.Max(stat.TotalBps, stat.ReceiveBps + stat.SendBps)))
+            .Where(candidate => candidate.TotalBps > 0)
+            .ToList();
+
+        if (candidates.Count == 0)
+        {
+            return [];
+        }
+
+        var dominantDirection = candidates.Sum(candidate => candidate.ReceiveBps) >= candidates.Sum(candidate => candidate.SendBps)
+            ? RedundantTrafficDirection.Receive
+            : RedundantTrafficDirection.Send;
+
+        var selected = candidates
+            .Where(candidate => candidate.GetDirectionalBps(dominantDirection) > 0)
+            .OrderByDescending(candidate => candidate.GetDirectionalBps(dominantDirection))
+            .ThenByDescending(candidate => candidate.TotalBps)
+            .Take(maxRedundant)
+            .ToList();
+
+        if (selected.Count < maxRedundant)
+        {
+            var selectedIds = selected
+                .Select(candidate => candidate.AdapterId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            selected.AddRange(candidates
+                .Where(candidate => !selectedIds.Contains(candidate.AdapterId))
+                .OrderByDescending(candidate => candidate.TotalBps)
+                .Take(maxRedundant - selected.Count));
+        }
+
+        return selected;
     }
 
     private void TrackRedundantAdapterActivity(ConnectionItem stat)
@@ -1785,6 +1864,22 @@
     {
         public static DashboardAdapterGroup Ungrouped(IReadOnlyList<Adapter> adapters) =>
             new("Adapters", string.Empty, string.Empty, adapters, IsRedundantGroup: false, ShowHeader: false);
+    }
+
+    private sealed record RedundantTrafficCandidate(
+        string AdapterId,
+        double ReceiveBps,
+        double SendBps,
+        double TotalBps)
+    {
+        public double GetDirectionalBps(RedundantTrafficDirection direction) =>
+            direction == RedundantTrafficDirection.Receive ? ReceiveBps : SendBps;
+    }
+
+    private enum RedundantTrafficDirection
+    {
+        Receive,
+        Send
     }
 
     private sealed class RedundantAdapterActivity(string adapterId)
