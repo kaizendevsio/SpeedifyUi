@@ -11,6 +11,7 @@
 @inject CudyApControlService CudyApControlService
 @inject LocalProcessTrafficService LocalProcessTrafficService
 @inject IStarlinkTelemetryService StarlinkTelemetryService
+@inject StarlinkTelemetrySettings StarlinkTelemetrySettings
 @inject IJSRuntime JSRuntime
 @implements IAsyncDisposable
 
@@ -804,19 +805,33 @@
         return adapter.Type;
     }
 
-    private static bool IsStarlinkAdapter(Adapter adapter)
+    private bool IsStarlinkAdapter(Adapter adapter)
     {
         return ContainsStarlink(adapter.Isp) ||
                ContainsStarlink(adapter.Name) ||
                ContainsStarlink(adapter.Type) ||
                ContainsStarlink(adapter.IspType) ||
-               string.Equals(adapter.IspType, "Satellite", StringComparison.OrdinalIgnoreCase);
+               string.Equals(adapter.IspType, "Satellite", StringComparison.OrdinalIgnoreCase) ||
+               StarlinkTelemetrySettings.AdapterIdHints.Any(hint =>
+                   string.Equals(hint, adapter.AdapterId, StringComparison.OrdinalIgnoreCase)) ||
+               StarlinkTelemetrySettings.AdapterNameHints.Any(hint =>
+                   ContainsHint(adapter.Isp, hint) ||
+                   ContainsHint(adapter.Name, hint) ||
+                   ContainsHint(adapter.Type, hint) ||
+                   ContainsHint(adapter.IspType, hint));
     }
 
     private static bool ContainsStarlink(string? value)
     {
         return !string.IsNullOrWhiteSpace(value) &&
                value.Contains("Starlink", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsHint(string? value, string hint)
+    {
+        return !string.IsNullOrWhiteSpace(value) &&
+               !string.IsNullOrWhiteSpace(hint) &&
+               value.Contains(hint, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FormatNullableMs(double? milliseconds)

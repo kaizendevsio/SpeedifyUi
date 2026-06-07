@@ -18,6 +18,10 @@ public sealed class StarlinkTelemetrySettings
 
     public int StaleAfterSeconds { get; set; } = 30;
 
+    public List<string> AdapterIdHints { get; set; } = new();
+
+    public List<string> AdapterNameHints { get; set; } = new() { "Starlink" };
+
     public TimeSpan PollInterval => TimeSpan.FromSeconds(Math.Clamp(PollIntervalSeconds, 2, 300));
 
     public TimeSpan RequestTimeout => TimeSpan.FromSeconds(Math.Clamp(RequestTimeoutSeconds, 1, 30));
