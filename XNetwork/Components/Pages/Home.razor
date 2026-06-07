@@ -505,6 +505,9 @@
     private ElementReference _adapterListElement;
     private IJSObjectReference? _animatedUiModule;
     private bool _adapterListAnimationEnabled;
+    private readonly Dictionary<string, bool> _starlinkAdapterProbeCache = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _lastStarlinkAdapterProbeUtc = DateTime.MinValue;
+    private int _starlinkAdapterProbeInProgress;
 
     private bool _initialLoadComplete = false;
     private bool _isProcessingAction = false;
@@ -623,6 +626,8 @@
                         }
                     }
                 }
+
+                await RefreshStarlinkAdapterDetectionAsync(_adapters);
             }
 
             await InvokeAsync(StateHasChanged);
@@ -807,31 +812,18 @@
 
     private bool IsStarlinkAdapter(Adapter adapter)
     {
-        return ContainsStarlink(adapter.Isp) ||
-               ContainsStarlink(adapter.Name) ||
-               ContainsStarlink(adapter.Type) ||
-               ContainsStarlink(adapter.IspType) ||
-               string.Equals(adapter.IspType, "Satellite", StringComparison.OrdinalIgnoreCase) ||
-               StarlinkTelemetrySettings.AdapterIdHints.Any(hint =>
-                   string.Equals(hint, adapter.AdapterId, StringComparison.OrdinalIgnoreCase)) ||
-               StarlinkTelemetrySettings.AdapterNameHints.Any(hint =>
-                   ContainsHint(adapter.Isp, hint) ||
-                   ContainsHint(adapter.Name, hint) ||
-                   ContainsHint(adapter.Type, hint) ||
-                   ContainsHint(adapter.IspType, hint));
-    }
+        if (StarlinkAdapterDetector.HasStarlinkMetadata(adapter, StarlinkTelemetrySettings.AdapterNameHints))
+        {
+            return true;
+        }
 
-    private static bool ContainsStarlink(string? value)
-    {
-        return !string.IsNullOrWhiteSpace(value) &&
-               value.Contains("Starlink", StringComparison.OrdinalIgnoreCase);
-    }
+        var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
+        if (StarlinkAdapterDetector.MatchesManagementGateway(gateway, StarlinkTelemetrySettings.Host))
+        {
+            return true;
+        }
 
-    private static bool ContainsHint(string? value, string hint)
-    {
-        return !string.IsNullOrWhiteSpace(value) &&
-               !string.IsNullOrWhiteSpace(hint) &&
-               value.Contains(hint, StringComparison.OrdinalIgnoreCase);
+        return _starlinkAdapterProbeCache.TryGetValue(adapter.AdapterId, out var canReachStarlink) && canReachStarlink;
     }
 
     private static string FormatNullableMs(double? milliseconds)
@@ -881,6 +873,63 @@
         return AdapterHealthPresenter.GetSignalStrength(health, currentStats);
     }
 
+    private async Task RefreshStarlinkAdapterDetectionAsync(IReadOnlyList<Adapter> adapters)
+    {
+        if (!StarlinkTelemetrySettings.Enabled ||
+            !StarlinkTelemetrySettings.AdapterProbeEnabled ||
+            Interlocked.Exchange(ref _starlinkAdapterProbeInProgress, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            var now = DateTime.UtcNow;
+            if (now - _lastStarlinkAdapterProbeUtc < StarlinkTelemetrySettings.AdapterProbeInterval)
+            {
+                return;
+            }
+
+            _lastStarlinkAdapterProbeUtc = now;
+
+            var activeAdapterIds = adapters
+                .Select(a => a.AdapterId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var staleAdapterId in _starlinkAdapterProbeCache.Keys.Where(id => !activeAdapterIds.Contains(id)).ToList())
+            {
+                _starlinkAdapterProbeCache.Remove(staleAdapterId);
+            }
+
+            foreach (var adapter in adapters.Where(a => !IsAdapterOffline(a)))
+            {
+                if (StarlinkAdapterDetector.HasStarlinkMetadata(adapter, StarlinkTelemetrySettings.AdapterNameHints))
+                {
+                    _starlinkAdapterProbeCache[adapter.AdapterId] = true;
+                    continue;
+                }
+
+                var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
+                if (StarlinkAdapterDetector.MatchesManagementGateway(gateway, StarlinkTelemetrySettings.Host))
+                {
+                    _starlinkAdapterProbeCache[adapter.AdapterId] = true;
+                    continue;
+                }
+
+                _starlinkAdapterProbeCache[adapter.AdapterId] =
+                    await NetworkMonitorService.CanReachHttpHostViaInterfaceAsync(
+                        adapter.Name,
+                        StarlinkTelemetrySettings.Host,
+                        port: 80,
+                        timeout: StarlinkTelemetrySettings.RequestTimeout);
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _starlinkAdapterProbeInProgress, 0);
+        }
+    }
+
     private string GetSignalColor(string state, int strength)
     {
         // Show yellow for connecting state
@@ -900,6 +949,12 @@
     private void OnAdapterClick(Adapter adapter)
     {
         // Future: Open priority modal or navigate to adapter details
+    }
+
+    private static bool IsAdapterOffline(Adapter adapter)
+    {
+        return adapter.State.Equals("disconnected", StringComparison.OrdinalIgnoreCase) ||
+               adapter.State.Equals("offline", StringComparison.OrdinalIgnoreCase);
     }
 
     private string GetStatusPillClass(string state)

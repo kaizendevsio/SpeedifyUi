@@ -18,9 +18,13 @@ public sealed class StarlinkTelemetrySettings
 
     public int StaleAfterSeconds { get; set; } = 30;
 
-    public List<string> AdapterIdHints { get; set; } = new();
-
     public List<string> AdapterNameHints { get; set; } = new() { "Starlink" };
+
+    public bool AdapterProbeEnabled { get; set; } = true;
+
+    public int AdapterProbeIntervalSeconds { get; set; } = 30;
+
+    public TimeSpan AdapterProbeInterval => TimeSpan.FromSeconds(Math.Clamp(AdapterProbeIntervalSeconds, 5, 300));
 
     public TimeSpan PollInterval => TimeSpan.FromSeconds(Math.Clamp(PollIntervalSeconds, 2, 300));
 

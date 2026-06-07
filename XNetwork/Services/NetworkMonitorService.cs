@@ -492,6 +492,76 @@ public class NetworkMonitorService : BackgroundService
     }
 
     /// <summary>
+    /// Checks whether an HTTP host is reachable when traffic is explicitly bound to a Linux interface.
+    /// </summary>
+    public async Task<bool> CanReachHttpHostViaInterfaceAsync(
+        string interfaceName,
+        string host,
+        int port = 80,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux() ||
+            string.IsNullOrWhiteSpace(interfaceName) ||
+            string.IsNullOrWhiteSpace(host))
+        {
+            return false;
+        }
+
+        var boundedTimeout = timeout ?? TimeSpan.FromSeconds(2);
+        var timeoutSeconds = Math.Max(1, (int)Math.Ceiling(boundedTimeout.TotalSeconds));
+        var uri = $"http://{host}:{port}/";
+
+        try
+        {
+            using var process = new Process();
+            process.StartInfo.FileName = "curl";
+            process.StartInfo.ArgumentList.Add("--interface");
+            process.StartInfo.ArgumentList.Add(interfaceName);
+            process.StartInfo.ArgumentList.Add("--connect-timeout");
+            process.StartInfo.ArgumentList.Add(timeoutSeconds.ToString());
+            process.StartInfo.ArgumentList.Add("--max-time");
+            process.StartInfo.ArgumentList.Add(timeoutSeconds.ToString());
+            process.StartInfo.ArgumentList.Add("--silent");
+            process.StartInfo.ArgumentList.Add("--output");
+            process.StartInfo.ArgumentList.Add("/dev/null");
+            process.StartInfo.ArgumentList.Add("--write-out");
+            process.StartInfo.ArgumentList.Add("%{http_code}");
+            process.StartInfo.ArgumentList.Add(uri);
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            process.StartInfo.UseShellExecute = false;
+
+            process.Start();
+
+            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+
+            var statusCodeText = (await outputTask).Trim();
+            _ = await errorTask;
+
+            return process.ExitCode == 0 &&
+                   int.TryParse(statusCodeText, out var statusCode) &&
+                   statusCode is >= 200 and < 400;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(
+                ex,
+                "HTTP probe to {Host}:{Port} via {InterfaceName} failed",
+                host,
+                port,
+                interfaceName);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Set a specific adapter as the primary default route for bypass mode.
     /// This makes the specified adapter the preferred route when Speedify is disconnected.
     /// </summary>
