@@ -723,6 +723,7 @@
     ConfirmText="@GetStarlinkCommandConfirmText()"
     CancelText="Cancel"
     ConfirmButtonClass="@GetStarlinkCommandConfirmClass()"
+    RequiredConfirmationText="@GetStarlinkCommandRequiredConfirmationText()"
     OnConfirm="HandleStarlinkCommandConfirmAsync" />
 
 @code {
@@ -1328,6 +1329,7 @@
             "reboot" => "fa-power-off",
             "stow" => "fa-box-archive",
             "unstow" => "fa-satellite-dish",
+            "dish_clear_obstruction_map" => "fa-map-location-dot",
             _ => "fa-terminal"
         };
     }
@@ -1339,6 +1341,7 @@
             "reboot" => "Reboot",
             "stow" => "Stow",
             "unstow" => "Unstow",
+            "dish_clear_obstruction_map" => "Reset map",
             _ => capability.Label
         };
     }
@@ -1351,6 +1354,7 @@
             "reboot" => $"{baseClass} border-red-500/30 bg-red-500/10 text-red-100 hover:bg-red-500/20",
             "stow" => $"{baseClass} border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20",
             "unstow" => $"{baseClass} border-cyan-500/30 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20",
+            "dish_clear_obstruction_map" => $"{baseClass} border-red-500/40 bg-red-500/10 text-red-100 hover:bg-red-500/20",
             _ => $"{baseClass} border-slate-600 bg-slate-700/40 text-slate-100 hover:bg-slate-700"
         };
     }
@@ -1362,6 +1366,7 @@
             "reboot" => "Reboot Starlink",
             "stow" => "Stow Starlink",
             "unstow" => "Unstow Starlink",
+            "dish_clear_obstruction_map" => "Reset Starlink Obstruction Map",
             _ => "Run Starlink Command"
         };
     }
@@ -1373,6 +1378,7 @@
             "reboot" => "This will reboot the Starlink terminal and can interrupt the Starlink connection for several minutes. Continue?",
             "stow" => "This will stow the Starlink dish and will interrupt Starlink service until you unstow it. Continue?",
             "unstow" => "This will command the Starlink dish to unstow and resume service. Continue?",
+            "dish_clear_obstruction_map" => "This clears the learned Starlink obstruction map. The dish may take hours or days to rebuild accurate obstruction history. Type the confirmation phrase before continuing.",
             _ => "Run this Starlink command now?"
         };
     }
@@ -1384,6 +1390,7 @@
             "reboot" => "Reboot",
             "stow" => "Stow",
             "unstow" => "Unstow",
+            "dish_clear_obstruction_map" => "Reset Map",
             _ => "Run"
         };
     }
@@ -1395,7 +1402,17 @@
             "reboot" => "btn-red",
             "stow" => "btn-orange",
             "unstow" => "btn-blue",
+            "dish_clear_obstruction_map" => "btn-red",
             _ => "btn-blue"
+        };
+    }
+
+    private string? GetStarlinkCommandRequiredConfirmationText()
+    {
+        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        {
+            "dish_clear_obstruction_map" => "CLEAR MAP",
+            _ => null
         };
     }
 

@@ -4,7 +4,7 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_NAME="xnetwork.service"
 PUBLISH_DIR="$APP_DIR/XNetwork/bin/Release/net9.0/publish"
-DEPLOY_VERSION_FILE="$APP_DIR/.xnetwork-deploy-version"
+VERSION_STATE_FILE="$APP_DIR/.xnetwork-version"
 PRESERVE_DIR=""
 
 cd "$APP_DIR"
@@ -29,23 +29,24 @@ shopt -u dotglob nullglob
 echo "Publishing XNetwork..."
 dotnet publish XNetwork/XNetwork.csproj -c Release
 
-LAST_DEPLOY_NUMBER=0
-if [[ -f "$DEPLOY_VERSION_FILE" ]]; then
-  LAST_DEPLOY_NUMBER="$(<"$DEPLOY_VERSION_FILE")"
+VERSION_MONTH="$(date +"%Y.%m")"
+VERSION_REVISION=1
+LAST_VERSION=""
+if [[ -f "$VERSION_STATE_FILE" ]]; then
+  LAST_VERSION="$(<"$VERSION_STATE_FILE")"
 fi
-if ! [[ "$LAST_DEPLOY_NUMBER" =~ ^[0-9]+$ ]]; then
-  LAST_DEPLOY_NUMBER=0
+if [[ "$LAST_VERSION" =~ ^([0-9]{4}\.[0-9]{2})\.([0-9]+)$ && "${BASH_REMATCH[1]}" == "$VERSION_MONTH" ]]; then
+  VERSION_REVISION=$((BASH_REMATCH[2] + 1))
 fi
-DEPLOY_NUMBER=$((LAST_DEPLOY_NUMBER + 1))
+APP_VERSION="$VERSION_MONTH.$VERSION_REVISION"
 
 GIT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 BUILD_TIME_UTC="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-printf '%s\n' "$DEPLOY_NUMBER" > "$DEPLOY_VERSION_FILE"
+printf '%s\n' "$APP_VERSION" > "$VERSION_STATE_FILE"
 cat > "$PUBLISH_DIR/build-info.json" <<EOF
 {
-  "version": "v$DEPLOY_NUMBER",
-  "deployNumber": $DEPLOY_NUMBER,
+  "version": "$APP_VERSION",
   "commit": "$GIT_COMMIT",
   "branch": "$GIT_BRANCH",
   "builtAtUtc": "$BUILD_TIME_UTC"

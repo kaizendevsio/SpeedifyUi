@@ -5,11 +5,23 @@
         <div class="modal-content" @onclick:stopPropagation="true">
             <h3 class="modal-title">@Title</h3>
             <p class="modal-message">@Message</p>
+            @if (RequiresTypedConfirmation)
+            {
+                <label class="modal-confirm-label" for="@_confirmationInputId">
+                    Type <span>@RequiredConfirmationText</span> to continue
+                </label>
+                <input id="@_confirmationInputId"
+                       class="modal-confirm-input"
+                       value="@_confirmationInput"
+                       @oninput="HandleConfirmationInput"
+                       autocomplete="off"
+                       spellcheck="false" />
+            }
             <div class="modal-buttons">
                 <button class="modal-button-cancel" @onclick="HandleCancel">
                     @CancelText
                 </button>
-                <button class="modal-button-confirm @ConfirmButtonClass" @onclick="HandleConfirm">
+                <button class="modal-button-confirm @ConfirmButtonClass" @onclick="HandleConfirm" disabled="@IsConfirmDisabled">
                     @ConfirmText
                 </button>
             </div>
@@ -63,8 +75,38 @@
 
     .modal-message {
         color: #cbd5e1; /* slate-300 */
-        margin: 0 0 1.5rem 0;
+        margin: 0 0 1.25rem 0;
         line-height: 1.5;
+    }
+
+    .modal-confirm-label {
+        display: block;
+        color: #cbd5e1; /* slate-300 */
+        font-size: 0.8125rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+    }
+
+    .modal-confirm-label span {
+        color: #f8fafc; /* slate-50 */
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    .modal-confirm-input {
+        width: 100%;
+        border: 1px solid #475569; /* slate-600 */
+        border-radius: 0.5rem;
+        background-color: #0f172a; /* slate-900 */
+        color: #f8fafc; /* slate-50 */
+        font-size: 0.9375rem;
+        margin-bottom: 1.5rem;
+        outline: none;
+        padding: 0.75rem 0.875rem;
+    }
+
+    .modal-confirm-input:focus {
+        border-color: #38bdf8; /* sky-400 */
+        box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.16);
     }
 
     .modal-buttons {
@@ -95,6 +137,11 @@
 
     .modal-button-confirm {
         color: white;
+    }
+
+    .modal-button-confirm:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
     }
 
     /* Confirm button variants */
@@ -169,18 +216,52 @@
     public string ConfirmButtonClass { get; set; } = "btn-blue";
 
     /// <summary>
+    /// Optional text the user must type before the confirm button is enabled
+    /// </summary>
+    [Parameter]
+    public string? RequiredConfirmationText { get; set; }
+
+    /// <summary>
     /// Callback invoked when user confirms (true) or cancels (false)
     /// </summary>
     [Parameter]
     public EventCallback<bool> OnConfirm { get; set; }
 
+    private readonly string _confirmationInputId = $"confirmation-input-{Guid.NewGuid():N}";
+    private string _confirmationInput = string.Empty;
+    private bool _wasVisible;
+    private string? _lastRequiredConfirmationText;
+
+    private bool RequiresTypedConfirmation => !string.IsNullOrWhiteSpace(RequiredConfirmationText);
+
+    private bool IsConfirmDisabled =>
+        RequiresTypedConfirmation &&
+        !string.Equals(_confirmationInput, RequiredConfirmationText, StringComparison.Ordinal);
+
+    protected override void OnParametersSet()
+    {
+        if (IsVisible && (!_wasVisible || _lastRequiredConfirmationText != RequiredConfirmationText))
+        {
+            _confirmationInput = string.Empty;
+        }
+
+        _wasVisible = IsVisible;
+        _lastRequiredConfirmationText = RequiredConfirmationText;
+    }
+
     private async Task HandleConfirm()
     {
+        if (IsConfirmDisabled)
+        {
+            return;
+        }
+
         await OnConfirm.InvokeAsync(true);
     }
 
     private async Task HandleCancel()
     {
+        _confirmationInput = string.Empty;
         await OnConfirm.InvokeAsync(false);
     }
 
@@ -188,5 +269,10 @@
     {
         // Clicking the backdrop acts as cancel
         await HandleCancel();
+    }
+
+    private void HandleConfirmationInput(ChangeEventArgs args)
+    {
+        _confirmationInput = args.Value?.ToString() ?? string.Empty;
     }
 }

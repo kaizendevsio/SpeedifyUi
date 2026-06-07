@@ -14,5 +14,5 @@ public class BuildInfo
 
     public string ShortCommit => Commit.Length > 7 ? Commit[..7] : Commit;
 
-    public string DisplayVersion => DeployNumber is > 0 ? $"v{DeployNumber.Value}" : Version;
+    public string DisplayVersion => string.IsNullOrWhiteSpace(Version) ? AppChangelog.CurrentVersion : Version;
 }

@@ -233,6 +233,7 @@ public sealed class StarlinkDeviceClient : IDisposable
             "reboot" => "Reboot",
             "stow" => "Stow",
             "unstow" => "Unstow",
+            "dish_clear_obstruction_map" => "Reset obstruction map",
             _ => command
         };
     }

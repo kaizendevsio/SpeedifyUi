@@ -25,6 +25,16 @@ public class StarlinkCommandResponseParserTests
         Assert.Contains("command failed", exception.Message);
     }
 
+    [Fact]
+    public void EnsureSuccess_AllowsDataFrameBeforeSuccessTrailer()
+    {
+        var response = DataFrame([0x0a, 0x00])
+            .Concat(TrailerFrame("grpc-status: 0\r\n"))
+            .ToArray();
+
+        StarlinkCommandResponseParser.EnsureSuccess(response);
+    }
+
     private static byte[] TrailerFrame(string trailer)
     {
         var bytes = Encoding.ASCII.GetBytes(trailer);
@@ -32,6 +42,15 @@ public class StarlinkCommandResponseParserTests
         frame[0] = 0x80;
         BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(1, 4), (uint)bytes.Length);
         bytes.CopyTo(frame.AsSpan(5));
+        return frame;
+    }
+
+    private static byte[] DataFrame(byte[] payload)
+    {
+        var frame = new byte[5 + payload.Length];
+        frame[0] = 0x00;
+        BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(1, 4), (uint)payload.Length);
+        payload.CopyTo(frame.AsSpan(5));
         return frame;
     }
 }

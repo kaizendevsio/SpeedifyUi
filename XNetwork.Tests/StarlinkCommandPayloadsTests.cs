@@ -27,4 +27,12 @@ public class StarlinkCommandPayloadsTests
 
         Assert.Equal([0x92, 0x7d, 0x02, 0x08, 0x01], payload);
     }
+
+    [Fact]
+    public void CreatePayload_BuildsClearObstructionMapRequest()
+    {
+        var payload = StarlinkCommandPayloads.CreatePayload("dish_clear_obstruction_map");
+
+        Assert.Equal([0x8a, 0x7e, 0x00], payload);
+    }
 }

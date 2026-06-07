@@ -7,6 +7,7 @@ public static class StarlinkCommandPayloads
     private const int RebootField = 1001;
     private const int DishStowField = 2002;
     private const int DishStowUnstowField = 1;
+    private const int DishClearObstructionMapField = 2017;
 
     public static byte[] CreatePayload(string command)
     {
@@ -15,6 +16,7 @@ public static class StarlinkCommandPayloads
             "reboot" => CreateMessageField(RebootField, Array.Empty<byte>()),
             "stow" => CreateMessageField(DishStowField, Array.Empty<byte>()),
             "unstow" => CreateMessageField(DishStowField, CreateBoolField(DishStowUnstowField, true)),
+            "dish_clear_obstruction_map" => CreateMessageField(DishClearObstructionMapField, Array.Empty<byte>()),
             _ => throw new ArgumentOutOfRangeException(nameof(command), command, "Unsupported Starlink command")
         };
     }

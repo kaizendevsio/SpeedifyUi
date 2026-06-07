@@ -78,6 +78,17 @@ public static class StarlinkCapabilityDetector
                 IsDisruptive = true,
                 DirectCommand = "unstow",
                 DisabledReason = ContainsAny(source, "DishStowRequest", "setUnstow", "Unstow") ? null : "Unstow command was not detected in this Starlink firmware"
+            },
+            new StarlinkCapability
+            {
+                Key = "dish-clear-obstruction-map",
+                Label = "Reset obstruction map",
+                Description = "Clear the learned obstruction map. Starlink may take hours or days to rebuild obstruction history.",
+                IsDetected = statusAvailable || webUiReachable || ContainsAny(source, "DishClearObstructionMapRequest", "dish_clear_obstruction_map"),
+                IsActionable = statusAvailable || webUiReachable,
+                IsDisruptive = true,
+                DirectCommand = "dish_clear_obstruction_map",
+                DisabledReason = statusAvailable || webUiReachable ? null : "Starlink local API was not reachable"
             }
         };
 
