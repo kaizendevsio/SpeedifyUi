@@ -9,10 +9,10 @@ public class BuildInfoTests
     {
         var buildInfo = new BuildInfo
         {
-            Version = "2026.06.6",
+            Version = "2026.06.7",
             DeployNumber = 23
         };
 
-        Assert.Equal("2026.06.6", buildInfo.DisplayVersion);
+        Assert.Equal("2026.06.7", buildInfo.DisplayVersion);
     }
 }

@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("2026.06.6", AppChangelog.CurrentVersion);
+        Assert.Equal("2026.06.7", AppChangelog.CurrentVersion);
         Assert.Matches(@"^\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 
@@ -17,9 +17,9 @@ public class AppChangelogTests
         var entry = AppChangelog.Entries.First();
 
         Assert.Equal(AppChangelog.CurrentVersion, entry.Version);
-        Assert.Contains(entry.Changes, change => change.Contains("Redundant group", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change => change.Contains("Other adapters", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change => change.Contains("live Speedify tunnel rows", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("Actively Redundant", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("non-proxy tunnel traffic", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("max redundant", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

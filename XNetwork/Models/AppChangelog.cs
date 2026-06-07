@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.6";
+    public const string CurrentVersion = "2026.06.7";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-08",
+            Summary = "Corrected active redundant adapter grouping.",
+            Changes =
+            [
+                "Changed the dashboard group title to Actively Redundant and removed the group subtitle.",
+                "Detects active redundant adapters from live non-proxy tunnel traffic instead of connected Speedify rows.",
+                "Caps the active group by the Speedify max redundant setting so standby adapters stay outside the group."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.6",
             Date = "2026-06-07",
             Summary = "Made redundant adapter membership visible on the dashboard.",
             Changes =
