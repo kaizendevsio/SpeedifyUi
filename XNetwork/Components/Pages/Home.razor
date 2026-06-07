@@ -491,6 +491,8 @@
         var selectedAdapter = _selectedStarlinkAdapter;
         var selectedStats = selectedAdapter is null ? null : GetStatsForAdapter(selectedAdapter.AdapterId);
         var detectedCapabilities = starlinkCapabilities.Capabilities.Where(c => c.IsDetected).ToList();
+        var openCapabilities = detectedCapabilities.Where(c => !string.IsNullOrWhiteSpace(c.ActionUrl)).ToList();
+        var commandCapabilities = detectedCapabilities.Where(c => !string.IsNullOrWhiteSpace(c.DirectCommand)).ToList();
     }
 
     <div class="space-y-5">
@@ -601,8 +603,8 @@
         <section class="rounded-xl border border-slate-800 bg-slate-950/55 overflow-hidden">
             <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
                 <div>
-                    <h4 class="font-semibold text-white">Starlink API</h4>
-                    <p class="text-xs text-slate-400">Detected from the local Starlink dish interface. Dish commands run directly from XNetwork after confirmation.</p>
+                    <h4 class="font-semibold text-white">Starlink Actions</h4>
+                    <p class="text-xs text-slate-400">Swipe an action fully to the right to run it from XNetwork.</p>
                 </div>
                 <span class="text-xs text-slate-500">@FormatLastUpdated(starlinkCapabilities.LastUpdatedUtc)</span>
             </div>
@@ -620,7 +622,7 @@
                 </div>
             }
 
-            @if (detectedCapabilities.Count == 0)
+            @if (openCapabilities.Count == 0 && commandCapabilities.Count == 0)
             {
                 <div class="p-4 text-sm text-slate-400">
                     No Starlink controls detected yet.
@@ -628,56 +630,55 @@
             }
             else
             {
-                <div class="divide-y divide-slate-800">
-                    @foreach (var capability in detectedCapabilities)
+                <div class="space-y-3 p-4">
+                    @foreach (var capability in openCapabilities)
                     {
-                        <div class="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div class="min-w-0">
-                                <div class="flex flex-wrap items-center gap-2">
-                                    <p class="font-semibold text-white">@capability.Label</p>
-                                    @if (capability.IsDisruptive)
-                                    {
-                                        <span class="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-200 border border-amber-500/20 text-[11px]">
-                                            Disruptive
-                                        </span>
-                                    }
-                                    <span class="@GetCapabilityStatusClass(capability) px-2 py-0.5 rounded-full text-[11px] font-semibold">
-                                        @GetCapabilityStatusLabel(capability)
-                                    </span>
+                        <a href="@capability.ActionUrl"
+                           target="_blank"
+                           rel="noopener noreferrer"
+                           class="flex items-center justify-between gap-3 rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition-colors hover:bg-cyan-500/20">
+                            <span class="inline-flex min-w-0 items-center gap-3">
+                                <i class="fas fa-external-link-alt text-xs"></i>
+                                <span class="truncate">@GetStarlinkOpenActionLabel(capability)</span>
+                            </span>
+                            <span class="text-xs text-cyan-200/80">@StarlinkTelemetrySettings.Host</span>
+                        </a>
+                    }
+
+                    @foreach (var capability in commandCapabilities)
+                    {
+                        <div class="@GetStarlinkActionCardClass(capability)">
+                            <div class="flex items-start gap-3">
+                                <div class="@GetStarlinkActionIconClass(capability)">
+                                    <i class="fas @GetStarlinkCommandIcon(capability.DirectCommand) text-xs"></i>
                                 </div>
-                                <p class="mt-1 text-sm text-slate-400">@capability.Description</p>
-                                @if (!string.IsNullOrWhiteSpace(capability.DisabledReason))
-                                {
-                                    <p class="mt-1 text-xs text-amber-200">@capability.DisabledReason</p>
-                                }
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <p class="font-semibold text-white">@GetStarlinkCommandButtonLabel(capability)</p>
+                                        @if (!capability.IsActionable)
+                                        {
+                                            <span class="shrink-0 rounded-full bg-slate-700/60 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                                                Unavailable
+                                            </span>
+                                        }
+                                    </div>
+                                    <p class="mt-1 text-sm text-slate-400">@GetStarlinkCommandShortDescription(capability)</p>
+                                    @if (!string.IsNullOrWhiteSpace(capability.DisabledReason))
+                                    {
+                                        <p class="mt-2 text-xs text-amber-200">@capability.DisabledReason</p>
+                                    }
+                                </div>
                             </div>
-                            @if (!string.IsNullOrWhiteSpace(capability.DirectCommand))
-                            {
-                                <button type="button"
-                                        class="@GetStarlinkCommandButtonClass(capability)"
-                                        disabled="@(!capability.IsActionable || _starlinkCommandInProgress)"
-                                        @onclick="() => PromptStarlinkCommand(capability)">
-                                    @if (_starlinkCommandInProgress && string.Equals(_pendingStarlinkCommand?.DirectCommand, capability.DirectCommand, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        <i class="fas fa-spinner animate-spin text-xs"></i>
-                                    }
-                                    else
-                                    {
-                                        <i class="fas @GetStarlinkCommandIcon(capability.DirectCommand) text-xs"></i>
-                                    }
-                                    <span>@GetStarlinkCommandButtonLabel(capability)</span>
-                                </button>
-                            }
-                            else if (!string.IsNullOrWhiteSpace(capability.ActionUrl))
-                            {
-                                <a href="@capability.ActionUrl"
-                                   target="_blank"
-                                   rel="noopener noreferrer"
-                                   class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20 transition-colors">
-                                    <i class="fas fa-external-link-alt text-xs"></i>
-                                    <span>Open</span>
-                                </a>
-                            }
+
+                            <div class="mt-3">
+                                <SlideToConfirm Label="@GetStarlinkCommandSlideLabel(capability)"
+                                                BusyLabel="@GetStarlinkCommandBusyLabel(capability)"
+                                                IconClass="@GetStarlinkCommandIcon(capability.DirectCommand)"
+                                                Tone="@GetStarlinkCommandTone(capability)"
+                                                Disabled="@(!capability.IsActionable || _starlinkCommandInProgress)"
+                                                IsBusy="@IsStarlinkCommandBusy(capability)"
+                                                OnConfirmed="() => ExecuteStarlinkCommandAsync(capability)" />
+                            </div>
                         </div>
                     }
                 </div>
@@ -716,16 +717,6 @@
     </div>
 </ActionSheet>
 
-<ConfirmationModal
-    IsVisible="_showStarlinkCommandConfirm"
-    Title="@GetStarlinkCommandConfirmTitle()"
-    Message="@GetStarlinkCommandConfirmMessage()"
-    ConfirmText="@GetStarlinkCommandConfirmText()"
-    CancelText="Cancel"
-    ConfirmButtonClass="@GetStarlinkCommandConfirmClass()"
-    RequiredConfirmationText="@GetStarlinkCommandRequiredConfirmationText()"
-    OnConfirm="HandleStarlinkCommandConfirmAsync" />
-
 @code {
     private IReadOnlyList<Adapter>? _adapters;
     private List<ConnectionItem> _stats = new();
@@ -750,7 +741,6 @@
     private bool _routerTrafficLoading;
     private bool _showTrafficBreakdown;
     private bool _showStarlinkDetails;
-    private bool _showStarlinkCommandConfirm;
     private bool _starlinkCommandInProgress;
     private Adapter? _selectedStarlinkAdapter;
     private StarlinkCapability? _pendingStarlinkCommand;
@@ -953,12 +943,11 @@
     private Task CloseStarlinkDetailsAsync()
     {
         _showStarlinkDetails = false;
-        _showStarlinkCommandConfirm = false;
         _pendingStarlinkCommand = null;
         return Task.CompletedTask;
     }
 
-    private void PromptStarlinkCommand(StarlinkCapability capability)
+    private async Task ExecuteStarlinkCommandAsync(StarlinkCapability capability)
     {
         if (!capability.IsActionable || string.IsNullOrWhiteSpace(capability.DirectCommand) || _starlinkCommandInProgress)
         {
@@ -966,20 +955,6 @@
         }
 
         _pendingStarlinkCommand = capability;
-        _showStarlinkCommandConfirm = true;
-    }
-
-    private async Task HandleStarlinkCommandConfirmAsync(bool confirmed)
-    {
-        var capability = _pendingStarlinkCommand;
-        _showStarlinkCommandConfirm = false;
-
-        if (!confirmed || capability is null || string.IsNullOrWhiteSpace(capability.DirectCommand))
-        {
-            _pendingStarlinkCommand = null;
-            return;
-        }
-
         _starlinkCommandInProgress = true;
         _lastStarlinkCommandResult = null;
         await InvokeAsync(StateHasChanged);
@@ -1341,79 +1316,96 @@
             "reboot" => "Reboot",
             "stow" => "Stow",
             "unstow" => "Unstow",
-            "dish_clear_obstruction_map" => "Reset map",
+            "dish_clear_obstruction_map" => "Reset obstruction map",
             _ => capability.Label
         };
     }
 
-    private static string GetStarlinkCommandButtonClass(StarlinkCapability capability)
+    private static string GetStarlinkOpenActionLabel(StarlinkCapability capability)
     {
-        var baseClass = "inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+        return string.Equals(capability.Key, "web-ui", StringComparison.OrdinalIgnoreCase)
+            ? "Open Starlink app"
+            : capability.Label;
+    }
+
+    private static string GetStarlinkCommandShortDescription(StarlinkCapability capability)
+    {
         return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
-            "reboot" => $"{baseClass} border-red-500/30 bg-red-500/10 text-red-100 hover:bg-red-500/20",
-            "stow" => $"{baseClass} border-amber-500/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/20",
-            "unstow" => $"{baseClass} border-cyan-500/30 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20",
-            "dish_clear_obstruction_map" => $"{baseClass} border-red-500/40 bg-red-500/10 text-red-100 hover:bg-red-500/20",
-            _ => $"{baseClass} border-slate-600 bg-slate-700/40 text-slate-100 hover:bg-slate-700"
+            "reboot" => "Restart the terminal. Starlink may be offline for a few minutes.",
+            "stow" => "Move the dish into stow position.",
+            "unstow" => "Return the dish from stow position.",
+            "dish_clear_obstruction_map" => "Clear learned obstruction history. It can take hours or days to rebuild.",
+            _ => capability.Description
         };
     }
 
-    private string GetStarlinkCommandConfirmTitle()
+    private static string GetStarlinkCommandSlideLabel(StarlinkCapability capability)
     {
-        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
-            "reboot" => "Reboot Starlink",
-            "stow" => "Stow Starlink",
-            "unstow" => "Unstow Starlink",
-            "dish_clear_obstruction_map" => "Reset Starlink Obstruction Map",
-            _ => "Run Starlink Command"
+            "reboot" => "Slide to reboot",
+            "stow" => "Slide to stow",
+            "unstow" => "Slide to unstow",
+            "dish_clear_obstruction_map" => "Slide to reset map",
+            _ => $"Slide to run {capability.Label}"
         };
     }
 
-    private string GetStarlinkCommandConfirmMessage()
+    private static string GetStarlinkCommandBusyLabel(StarlinkCapability capability)
     {
-        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
-            "reboot" => "This will reboot the Starlink terminal and can interrupt the Starlink connection for several minutes. Continue?",
-            "stow" => "This will stow the Starlink dish and will interrupt Starlink service until you unstow it. Continue?",
-            "unstow" => "This will command the Starlink dish to unstow and resume service. Continue?",
-            "dish_clear_obstruction_map" => "This clears the learned Starlink obstruction map. The dish may take hours or days to rebuild accurate obstruction history. Type the confirmation phrase before continuing.",
-            _ => "Run this Starlink command now?"
+            "reboot" => "Rebooting...",
+            "stow" => "Stowing...",
+            "unstow" => "Unstowing...",
+            "dish_clear_obstruction_map" => "Resetting map...",
+            _ => "Running..."
         };
     }
 
-    private string GetStarlinkCommandConfirmText()
+    private static string GetStarlinkCommandTone(StarlinkCapability capability)
     {
-        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
-            "reboot" => "Reboot",
-            "stow" => "Stow",
-            "unstow" => "Unstow",
-            "dish_clear_obstruction_map" => "Reset Map",
-            _ => "Run"
+            "reboot" => "danger",
+            "stow" => "warning",
+            "dish_clear_obstruction_map" => "danger",
+            _ => "info"
         };
     }
 
-    private string GetStarlinkCommandConfirmClass()
+    private static string GetStarlinkActionCardClass(StarlinkCapability capability)
     {
-        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        var baseClass = "rounded-xl border p-3";
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
-            "reboot" => "btn-red",
-            "stow" => "btn-orange",
-            "unstow" => "btn-blue",
-            "dish_clear_obstruction_map" => "btn-red",
-            _ => "btn-blue"
+            "reboot" => $"{baseClass} border-red-500/20 bg-red-500/5",
+            "stow" => $"{baseClass} border-amber-500/20 bg-amber-500/5",
+            "dish_clear_obstruction_map" => $"{baseClass} border-red-500/20 bg-red-500/5",
+            _ => $"{baseClass} border-slate-800 bg-slate-900/35"
         };
     }
 
-    private string? GetStarlinkCommandRequiredConfirmationText()
+    private static string GetStarlinkActionIconClass(StarlinkCapability capability)
     {
-        return _pendingStarlinkCommand?.DirectCommand?.Trim().ToLowerInvariant() switch
+        var baseClass = "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg";
+        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
-            "dish_clear_obstruction_map" => "CLEAR MAP",
-            _ => null
+            "reboot" => $"{baseClass} bg-red-500/15 text-red-200",
+            "stow" => $"{baseClass} bg-amber-500/15 text-amber-200",
+            "dish_clear_obstruction_map" => $"{baseClass} bg-red-500/15 text-red-200",
+            _ => $"{baseClass} bg-cyan-500/15 text-cyan-200"
         };
+    }
+
+    private bool IsStarlinkCommandBusy(StarlinkCapability capability)
+    {
+        return _starlinkCommandInProgress &&
+            string.Equals(
+                _pendingStarlinkCommand?.DirectCommand,
+                capability.DirectCommand,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetStarlinkCommandResultClass(StarlinkCommandResult result)
