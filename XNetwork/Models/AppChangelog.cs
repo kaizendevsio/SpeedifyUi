@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.5";
+    public const string CurrentVersion = "2026.06.6";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-07",
+            Summary = "Made redundant adapter membership visible on the dashboard.",
+            Changes =
+            [
+                "Added a dedicated Redundant group section that lists the adapters currently carrying protected Speedify tunnel traffic.",
+                "Separated connected or connecting adapters that are not currently selected for redundant traffic into an Other adapters section.",
+                "Kept the group membership based on live Speedify tunnel rows, so it follows actual adapter usage instead of adapter names or USB positions."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.5",
             Date = "2026-06-07",
             Summary = "Refined dashboard adapter status, sorting, charts, and PWA theme.",
             Changes =
