@@ -491,48 +491,32 @@
         var selectedAdapter = _selectedStarlinkAdapter;
         var selectedStats = selectedAdapter is null ? null : GetStatsForAdapter(selectedAdapter.AdapterId);
         var detectedCapabilities = starlinkCapabilities.Capabilities.Where(c => c.IsDetected).ToList();
-        var openCapabilities = detectedCapabilities.Where(c => !string.IsNullOrWhiteSpace(c.ActionUrl)).ToList();
+        var openCapabilities = GetUniqueStarlinkOpenCapabilities(detectedCapabilities);
         var commandCapabilities = detectedCapabilities.Where(c => !string.IsNullOrWhiteSpace(c.DirectCommand)).ToList();
     }
 
-    <div class="space-y-5">
-        <section class="rounded-xl border @GetStarlinkAvailabilityBorderClass(starlinkSnapshot) bg-slate-950/60 p-4">
-            <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="@GetStarlinkAvailabilityPillClass(starlinkSnapshot) px-2.5 py-1 rounded-full text-xs font-semibold">
-                            @GetStarlinkAvailabilityLabel(starlinkSnapshot)
-                        </span>
-                        @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.DishState))
-                        {
-                            <span class="px-2.5 py-1 rounded-full bg-cyan-500/10 text-cyan-200 border border-cyan-500/20 text-xs font-semibold">
-                                @starlinkSnapshot.DishState
-                            </span>
-                        }
-                    </div>
-                    <p class="mt-3 text-sm text-slate-300">
-                        @GetStarlinkStatusSummary(starlinkSnapshot)
-                    </p>
-                    @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.Error))
-                    {
-                        <p class="mt-2 text-xs text-amber-200">@starlinkSnapshot.Error</p>
-                    }
-                </div>
-                <div class="grid grid-cols-2 gap-3 text-right sm:grid-cols-3 md:flex-shrink-0">
-                    <div>
-                        <p class="text-xs text-slate-500">Adapter</p>
-                        <p class="text-sm font-semibold text-white">@selectedAdapter?.Name</p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-slate-500">Speedify RTT</p>
-                        <p class="text-sm font-semibold text-white">@FormatNullableMs(selectedStats?.LatencyMs)</p>
-                    </div>
-                    <div>
-                        <p class="text-xs text-slate-500">Updated</p>
-                        <p class="text-sm font-semibold text-white">@FormatLastUpdated(starlinkSnapshot.LastUpdatedUtc)</p>
-                    </div>
-                </div>
+    <div class="space-y-4">
+        <section class="rounded-xl border @GetStarlinkAvailabilityBorderClass(starlinkSnapshot) bg-slate-950/60 px-3 py-2.5">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-slate-300">
+                <span class="@GetStarlinkAvailabilityPillClass(starlinkSnapshot) rounded-full px-2 py-0.5 font-semibold">
+                    @GetStarlinkAvailabilityLabel(starlinkSnapshot)
+                </span>
+                @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.DishState))
+                {
+                    <span class="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-2 py-0.5 font-semibold text-cyan-200">
+                        @starlinkSnapshot.DishState
+                    </span>
+                }
+                <span>Dish @FormatNullableMs(starlinkSnapshot.PopPingLatencyMs)</span>
+                <span>Speedify @FormatNullableMs(selectedStats?.LatencyMs)</span>
+                <span>Obstruction @FormatNullablePercent(starlinkSnapshot.ObstructionPercent)</span>
+                <span>Alignment @FormatNullableDegrees(starlinkSnapshot.AlignmentErrorDegrees)</span>
+                <span class="text-slate-500">Updated @FormatLastUpdated(starlinkSnapshot.LastUpdatedUtc)</span>
             </div>
+            @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.Error))
+            {
+                <p class="mt-1.5 text-xs text-amber-200">@starlinkSnapshot.Error</p>
+            }
         </section>
 
         <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -630,7 +614,7 @@
             }
             else
             {
-                <div class="space-y-3 p-4">
+                <div class="space-y-2.5 p-3">
                     @foreach (var capability in openCapabilities)
                     {
                         <a href="@capability.ActionUrl"
@@ -648,13 +632,13 @@
                     @foreach (var capability in commandCapabilities)
                     {
                         <div class="@GetStarlinkActionCardClass(capability)">
-                            <div class="flex items-start gap-3">
+                            <div class="flex items-start gap-2.5">
                                 <div class="@GetStarlinkActionIconClass(capability)">
                                     <i class="fas @GetStarlinkCommandIcon(capability.DirectCommand) text-xs"></i>
                                 </div>
                                 <div class="min-w-0 flex-1">
                                     <div class="flex items-center justify-between gap-3">
-                                        <p class="font-semibold text-white">@GetStarlinkCommandButtonLabel(capability)</p>
+                                        <p class="text-sm font-semibold text-white">@GetStarlinkCommandButtonLabel(capability)</p>
                                         @if (!capability.IsActionable)
                                         {
                                             <span class="shrink-0 rounded-full bg-slate-700/60 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
@@ -662,7 +646,7 @@
                                             </span>
                                         }
                                     </div>
-                                    <p class="mt-1 text-sm text-slate-400">@GetStarlinkCommandShortDescription(capability)</p>
+                                    <p class="mt-0.5 text-xs text-slate-400">@GetStarlinkCommandShortDescription(capability)</p>
                                     @if (!string.IsNullOrWhiteSpace(capability.DisabledReason))
                                     {
                                         <p class="mt-2 text-xs text-amber-200">@capability.DisabledReason</p>
@@ -670,7 +654,7 @@
                                 </div>
                             </div>
 
-                            <div class="mt-3">
+                            <div class="mt-2.5">
                                 <SlideToConfirm Label="@GetStarlinkCommandSlideLabel(capability)"
                                                 BusyLabel="@GetStarlinkCommandBusyLabel(capability)"
                                                 IconClass="@GetStarlinkCommandIcon(capability.DirectCommand)"
@@ -1328,6 +1312,17 @@
             : capability.Label;
     }
 
+    private static IReadOnlyList<StarlinkCapability> GetUniqueStarlinkOpenCapabilities(IReadOnlyList<StarlinkCapability> capabilities)
+    {
+        return capabilities
+            .Where(c => !string.IsNullOrWhiteSpace(c.ActionUrl))
+            .GroupBy(c => c.ActionUrl!, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+                group.FirstOrDefault(c => string.Equals(c.Key, "web-ui", StringComparison.OrdinalIgnoreCase)) ??
+                group.First())
+            .ToList();
+    }
+
     private static string GetStarlinkCommandShortDescription(StarlinkCapability capability)
     {
         return capability.DirectCommand?.Trim().ToLowerInvariant() switch
@@ -1377,7 +1372,7 @@
 
     private static string GetStarlinkActionCardClass(StarlinkCapability capability)
     {
-        var baseClass = "rounded-xl border p-3";
+        var baseClass = "rounded-xl border p-2.5";
         return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
             "reboot" => $"{baseClass} border-red-500/20 bg-red-500/5",
@@ -1389,7 +1384,7 @@
 
     private static string GetStarlinkActionIconClass(StarlinkCapability capability)
     {
-        var baseClass = "mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg";
+        var baseClass = "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg";
         return capability.DirectCommand?.Trim().ToLowerInvariant() switch
         {
             "reboot" => $"{baseClass} bg-red-500/15 text-red-200",

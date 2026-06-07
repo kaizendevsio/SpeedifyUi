@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.2";
+    public const string CurrentVersion = "2026.06.3";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-07",
+            Summary = "Polished Starlink details layout and actions.",
+            Changes =
+            [
+                "Combined duplicate Starlink local app and diagnostics links when they point to the same URL.",
+                "Collapsed the Starlink live summary into a compact status strip.",
+                "Reduced the visual weight of Starlink action rows and refined slide-to-confirm controls."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.2",
             Date = "2026-06-07",
             Summary = "Simplified Starlink actions with slide confirmation.",
             Changes =
