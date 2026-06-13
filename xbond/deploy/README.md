@@ -17,6 +17,7 @@ systemctl disable --now xbond-client.service
 ```
 
 `/etc/xbond/client.env` must define `XBOND_PSK`. Do not commit that value.
+Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
 
