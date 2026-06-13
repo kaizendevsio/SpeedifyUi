@@ -8,6 +8,9 @@ namespace XNetwork.Models;
 /// </summary>
 public class StreamingBypassSettings
 {
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
     /// <summary>
     /// Whether domain watchlist bypass is enabled.
     /// </summary>

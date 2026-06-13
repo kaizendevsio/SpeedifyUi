@@ -56,6 +56,7 @@ builder.Services.AddSingleton<XRouterService>();
 builder.Services.AddSingleton(sp =>
     builder.Configuration.GetSection("XBond").Get<XBondSettings>() ?? new XBondSettings());
 builder.Services.AddSingleton<XBondStatusService>();
+builder.Services.AddSingleton<XBondLabService>();
 
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>

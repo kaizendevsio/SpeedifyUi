@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.10";
+    public const string CurrentVersion = "2026.06.11";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Added XBond public heartbeat lab controls.",
+            Changes =
+            [
+                "Added an XBond Lab public test button that temporarily bypasses UDP 8444 through Speedify.",
+                "Shows XBond heartbeat packet loss, RTT, client bind address, and bypass cleanup status in the dashboard.",
+                "Keeps XBond in shadow-test mode without routing production traffic."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.10",
             Date = "2026-06-14",
             Summary = "Added disabled XBond live-test deployment support.",
             Changes =
