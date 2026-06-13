@@ -63,6 +63,15 @@
 - 2026-06-05: User switched back to UDP because Moonlight feels smoother on UDP. Practical interpretation: UDP is the preferred realtime/Moonlight transport when healthy, while `tcp-multi` remains the fallback for longer-term stability if UDP latency creep becomes worse than the smoothness benefit.
 - Large `Estimated VPN / Overhead` in the traffic modal is not necessarily pure protocol overhead; it can include redundant-mode duplication, retransmits/loss recovery, forwarded client packets that process attribution cannot map, and timing mismatch between data sources.
 
+## XBond Prototype
+- 2026-06-13: `XBondImplementationPlan.md` defines the Rust dataplane / Blazor control-plane plan for a side-by-side reliability tunnel prototype. The key invariant is that XBond must not perform worse than the best currently working adapter because a weaker redundant adapter is present.
+- 2026-06-13: The first XBond prototype lives under `xbond/` as a Rust workspace with `xbond-core`, `xbond-client`, and `xbond-server`. It is not deployed and does not route real traffic yet.
+- 2026-06-13: `xbond-core` currently includes protocol framing, ChaCha20-Poly1305 sealed frame helpers, duplicate-window and deadline receiver accounting, finite JSON-safe path scoring, dynamic health-based anchor/backup role selection, and scheduler modes `AnchorOnly`, `AnchorDuplicate1`, `AnchorFec`, and `FullDuplicateDebug`.
+- 2026-06-13: `xbond-client status --json --config <path>` emits XBond status for XNetwork. It uses config-derived path health until an optional runtime status file, default `/run/xbond/client-status.json`, exists; runtime status can provide observed path health and packet counters.
+- 2026-06-13: `xbond-server` listens on UDP, requires a pre-shared key from the `XBOND_PSK` environment variable by default, decodes sealed frames, drops duplicates/late packets through `FrameReceiver`, and ACKs sealed heartbeat/control frames.
+- 2026-06-13: XNetwork version `2026.06.9` adds read-only XBond observability at `/xbond`, desktop and mobile navigation entries, `XBondStatusService`, `XBond` config defaults, and changelog/test coverage. `XBond` is disabled by default and XNetwork does not start or stop tunnel services.
+- 2026-06-13: XBond live-test preflight found `xeon-network` is `aarch64` and `xeon-speedify-vultr-01` is `x86_64`; neither host currently has `cargo` or `rustc` in PATH, so host testing requires uploaded release binaries/cross-compilation or a temporary Rust toolchain install.
+
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.
 - Do not write the probe API key into repo files; it belongs in runtime config only.

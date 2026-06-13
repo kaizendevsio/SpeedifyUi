@@ -13,13 +13,37 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.8";
+    public const string CurrentVersion = "2026.06.10";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Added disabled XBond live-test deployment support.",
+            Changes =
+            [
+                "Added an XBond client heartbeat ping command for sealed UDP server/client smoke tests.",
+                "Fixed XBond duplicate detection so separate sessions can reuse packet sequence numbers safely.",
+                "Prepared XBond for disabled deployment on the router and private server without routing production traffic."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.9",
+            Date = "2026-06-13",
+            Summary = "Added XBond prototype planning and observability.",
+            Changes =
+            [
+                "Saved the XBond Rust dataplane and Blazor control-plane implementation plan in the repository.",
+                "Added a Rust XBond workspace with protocol framing, duplicate detection, path-health scoring, and scheduler foundations.",
+                "Added a read-only XBond page in XNetwork for prototype status, anchor path, packet counters, and path roles."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.8",
             Date = "2026-06-08",
             Summary = "Refined actively redundant adapter detection.",
             Changes =

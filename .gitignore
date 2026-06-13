@@ -4,3 +4,4 @@ obj/
 riderModule.iml
 /_ReSharper.Caches/
 /.xnetwork-deploy-version
+/xbond/target/

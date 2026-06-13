@@ -487,7 +487,7 @@ body {
     bottom: calc(0.75rem + env(safe-area-inset-bottom));
     z-index: 50;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0.25rem;
     width: min(calc(100vw - 1rem), 30rem);
     padding: 0.35rem;

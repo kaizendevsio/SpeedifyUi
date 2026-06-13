@@ -52,6 +52,11 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<CudyApControlServi
 builder.Services.AddSingleton<LocalProcessTrafficService>();
 builder.Services.AddSingleton<XRouterService>();
 
+// Add XBond prototype observability. Disabled by default; no tunnel process is started by XNetwork.
+builder.Services.AddSingleton(sp =>
+    builder.Configuration.GetSection("XBond").Get<XBondSettings>() ?? new XBondSettings());
+builder.Services.AddSingleton<XBondStatusService>();
+
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>
     builder.Configuration.GetSection("StarlinkTelemetry").Get<StarlinkTelemetrySettings>() ?? new StarlinkTelemetrySettings());
