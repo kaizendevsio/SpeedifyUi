@@ -4,6 +4,7 @@
 @using XNetwork.Services
 @inject XBondStatusService XBondStatusService
 @inject XBondLabService XBondLabService
+@inject XBondTrafficEngineService XBondTrafficEngineService
 
 <PageTitle>XBond - XNetwork</PageTitle>
 
@@ -48,10 +49,67 @@
                 <div class="grid grid-cols-2 gap-3 text-sm md:min-w-80">
                     @Metric("Server", DisplayValue(_status.ServerAddress))
                     @Metric("Anchor", GetAnchorLabel())
+                    @Metric("Tunnel", FormatTunnelState(_status.Tunnel))
+                    @Metric("Data sent", _status.DataPacketsSent.ToString("N0"))
+                    @Metric("Data received", _status.DataPacketsReceived.ToString("N0"))
+                    @Metric("Duplicates sent", _status.DuplicatePacketsSent.ToString("N0"))
                     @Metric("Duplicates dropped", _status.DuplicatePacketsDropped.ToString("N0"))
                     @Metric("Late dropped", _status.LatePacketsDropped.ToString("N0"))
-                    @Metric("FEC recovered", _status.FecPacketsRecovered.ToString("N0"))
+                    @Metric("FEC", GetFecLabel(_status.Fec))
                     @Metric("Updated", FormatAge(_status.UpdatedAtUtc))
+                </div>
+            </div>
+        </section>
+
+        <section class="mb-6 rounded-xl border border-indigo-500/20 bg-slate-800/50 shadow-lg">
+            <div class="flex flex-col gap-4 border-b border-slate-700 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
+                <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="@GetEngineBadgeClass()">@GetEngineModeLabel(_trafficEngineStatus?.Mode)</span>
+                        @if (_trafficEngineStatus?.ClientServiceRunning == true)
+                        {
+                            <span class="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200">
+                                Service active
+                            </span>
+                        }
+                        else
+                        {
+                            <span class="rounded-full border border-slate-700 bg-slate-950/60 px-2.5 py-1 text-xs font-semibold text-slate-400">
+                                Service @_trafficEngineStatus?.ClientServiceState
+                            </span>
+                        }
+                    </div>
+                    <h3 class="mt-3 text-xl font-semibold text-white">Traffic engine</h3>
+                    <p class="mt-2 text-sm text-slate-400">@(_trafficEngineStatus?.HasError == true ? _trafficEngineStatus.Error : _trafficEngineStatus?.Message)</p>
+                </div>
+                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:min-w-[34rem]">
+                    @EngineModeButton(XBondTrafficEngineModes.SpeedifyPrimary, "Speedify", "Primary")
+                    @EngineModeButton(XBondTrafficEngineModes.XBondCanary, "XBond", "Canary")
+                    @EngineModeButton(XBondTrafficEngineModes.XBondPrimary, "XBond", "Primary")
+                </div>
+            </div>
+            <div class="grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
+                <div class="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                    @Metric("Mode", GetEngineModeLabel(_trafficEngineStatus?.Mode))
+                    @Metric("Client service", DisplayValue(_trafficEngineStatus?.ClientServiceName))
+                    @Metric("Service state", DisplayValue(_trafficEngineStatus?.ClientServiceState))
+                    @Metric("Control", _trafficEngineStatus?.ServiceControlAllowed == true ? "Unlocked" : "Locked")
+                </div>
+                <div class="flex flex-col gap-2 sm:flex-row">
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@(!CanStartCanary() || _isChangingTrafficEngine)"
+                            @onclick="StartXBondCanaryAsync">
+                        <i class="fas fa-play @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
+                        Start Canary
+                    </button>
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@(!CanStopCanary() || _isChangingTrafficEngine)"
+                            @onclick="StopXBondCanaryAsync">
+                        <i class="fas fa-stop @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
+                        Stop XBond
+                    </button>
                 </div>
             </div>
         </section>
@@ -70,7 +128,7 @@
             <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
                 <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">FEC paths</p>
                 <p class="mt-2 text-2xl font-bold text-white">@FormatPathList(_status.Schedule.FecPathIds)</p>
-                <p class="mt-1 text-sm text-slate-400">Backup links carry recovery traffic in AnchorFec mode.</p>
+                <p class="mt-1 text-sm text-slate-400">@_status.Fec.Message</p>
             </div>
         </section>
 
@@ -248,11 +306,12 @@
                                 <div class="flex flex-wrap items-center gap-2">
                                     <p class="font-semibold text-white">@path.Name</p>
                                     <span class="@GetRoleBadgeClass(path.Role)">@FormatRole(path.Role)</span>
+                                    <span class="@GetIsolationBadgeClass(path.PathIsolation)">@GetIsolationLabel(path.PathIsolation)</span>
                                     <span class="rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-xs font-semibold text-slate-400">
                                         ID @path.PathId
                                     </span>
                                 </div>
-                                <p class="mt-1 text-sm text-slate-400">@DisplayValue(path.InterfaceName)</p>
+                                <p class="mt-1 text-sm text-slate-400">@DisplayPathBinding(path)</p>
                             </div>
                             <div class="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 lg:grid-cols-8">
                                 @Metric("Score", path.Score.ToString("N0"))
@@ -274,11 +333,13 @@
 
 @code {
     private XBondStatus? _status;
+    private XBondTrafficEngineStatus? _trafficEngineStatus;
     private XBondPublicTestResult? _publicTestResult;
     private XBondProbeResult? _multiPathTestResult;
     private bool _isLoading;
     private bool _isRunningPublicTest;
     private bool _isRunningMultiPathTest;
+    private bool _isChangingTrafficEngine;
 
     protected override async Task OnInitializedAsync()
     {
@@ -290,7 +351,11 @@
         _isLoading = true;
         try
         {
-            _status = await XBondStatusService.GetStatusAsync();
+            var statusTask = XBondStatusService.GetStatusAsync();
+            var trafficTask = XBondTrafficEngineService.GetStatusAsync();
+            await Task.WhenAll(statusTask, trafficTask);
+            _status = await statusTask;
+            _trafficEngineStatus = await trafficTask;
         }
         finally
         {
@@ -323,6 +388,52 @@
             _isRunningMultiPathTest = false;
         }
     }
+
+    private async Task SetTrafficEngineModeAsync(string mode)
+    {
+        _isChangingTrafficEngine = true;
+        try
+        {
+            _trafficEngineStatus = await XBondTrafficEngineService.SetModeAsync(mode);
+            _status = await XBondStatusService.GetStatusAsync();
+        }
+        finally
+        {
+            _isChangingTrafficEngine = false;
+        }
+    }
+
+    private async Task StartXBondCanaryAsync()
+    {
+        _isChangingTrafficEngine = true;
+        try
+        {
+            _trafficEngineStatus = await XBondTrafficEngineService.StartCanaryAsync();
+            _status = await XBondStatusService.GetStatusAsync();
+        }
+        finally
+        {
+            _isChangingTrafficEngine = false;
+        }
+    }
+
+    private async Task StopXBondCanaryAsync()
+    {
+        _isChangingTrafficEngine = true;
+        try
+        {
+            _trafficEngineStatus = await XBondTrafficEngineService.StopCanaryAsync();
+            _status = await XBondStatusService.GetStatusAsync();
+        }
+        finally
+        {
+            _isChangingTrafficEngine = false;
+        }
+    }
+
+    private bool CanStartCanary() => _trafficEngineStatus?.CanStartCanary == true;
+
+    private bool CanStopCanary() => _trafficEngineStatus?.CanStopCanary == true;
 
     private string GetStateLabel()
     {
@@ -394,6 +505,26 @@
         };
     }
 
+    private static string GetEngineModeLabel(string? mode)
+    {
+        return XBondTrafficEngineModes.Normalize(mode) switch
+        {
+            XBondTrafficEngineModes.XBondCanary => "XBond Canary",
+            XBondTrafficEngineModes.XBondPrimary => "XBond Primary",
+            _ => "Speedify Primary"
+        };
+    }
+
+    private string GetEngineBadgeClass()
+    {
+        return XBondTrafficEngineModes.Normalize(_trafficEngineStatus?.Mode) switch
+        {
+            XBondTrafficEngineModes.XBondCanary => "rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-200",
+            XBondTrafficEngineModes.XBondPrimary => "rounded-full border border-fuchsia-500/40 bg-fuchsia-500/10 px-2.5 py-1 text-xs font-semibold text-fuchsia-200",
+            _ => "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+        };
+    }
+
     private static string FormatRole(string role)
     {
         return role switch
@@ -405,6 +536,74 @@
             "unavailable" => "Unavailable",
             _ => role
         };
+    }
+
+    private static string FormatTunnelState(XBondTunnelStatus tunnel)
+    {
+        if (!string.IsNullOrWhiteSpace(tunnel.DeviceName))
+        {
+            return $"{FormatStateLabel(tunnel.State)} ({tunnel.DeviceName})";
+        }
+
+        return FormatStateLabel(tunnel.State);
+    }
+
+    private static string GetFecLabel(XBondFecStatus fec)
+    {
+        if (!fec.Configured)
+        {
+            return "Not configured";
+        }
+
+        return fec.ProductionReady ? "Ready" : "Canary stub";
+    }
+
+    private static string GetIsolationLabel(XBondPathIsolationStatus isolation)
+    {
+        if (isolation.Active)
+        {
+            return "Isolated";
+        }
+
+        return isolation.Requested ? "Isolation pending" : "No isolation";
+    }
+
+    private static string GetIsolationBadgeClass(XBondPathIsolationStatus isolation)
+    {
+        if (isolation.Active)
+        {
+            return "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200";
+        }
+
+        if (isolation.Requested)
+        {
+            return "rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-200";
+        }
+
+        return "rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-xs font-semibold text-slate-400";
+    }
+
+    private static string DisplayPathBinding(XBondPathStatus path)
+    {
+        var parts = new[]
+        {
+            path.InterfaceName,
+            string.IsNullOrWhiteSpace(path.BindAddress) ? null : $"bind {path.BindAddress}",
+            string.IsNullOrWhiteSpace(path.PathIsolation.Message) ? null : path.PathIsolation.Message
+        }.Where(part => !string.IsNullOrWhiteSpace(part));
+
+        return string.Join(" - ", parts);
+    }
+
+    private static string FormatStateLabel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "--";
+        }
+
+        return string.Join(' ', value.Split('-', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
     }
 
     private static string GetRoleBadgeClass(string role)
@@ -580,6 +779,33 @@
         builder.OpenElement(5, "p");
         builder.AddAttribute(6, "class", "mt-1 break-words font-semibold text-white");
         builder.AddContent(7, value);
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+
+    private RenderFragment EngineModeButton(string mode, string title, string detail) => builder =>
+    {
+        var normalizedCurrent = XBondTrafficEngineModes.Normalize(_trafficEngineStatus?.Mode);
+        var selected = normalizedCurrent == mode;
+        var disabled = _isChangingTrafficEngine ||
+                       (mode == XBondTrafficEngineModes.XBondPrimary &&
+                        _trafficEngineStatus?.PrimaryModeAllowed != true);
+        var css = selected
+            ? "rounded-lg border border-cyan-400/60 bg-cyan-500/20 px-3 py-3 text-left shadow-lg shadow-cyan-950/30"
+            : "rounded-lg border border-slate-700/80 bg-slate-950/40 px-3 py-3 text-left transition-colors hover:border-cyan-500/50 hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-50";
+
+        builder.OpenElement(0, "button");
+        builder.AddAttribute(1, "type", "button");
+        builder.AddAttribute(2, "class", css);
+        builder.AddAttribute(3, "disabled", disabled);
+        builder.AddAttribute(4, "onclick", EventCallback.Factory.Create(this, () => SetTrafficEngineModeAsync(mode)));
+        builder.OpenElement(5, "p");
+        builder.AddAttribute(6, "class", "text-sm font-semibold text-white");
+        builder.AddContent(7, title);
+        builder.CloseElement();
+        builder.OpenElement(8, "p");
+        builder.AddAttribute(9, "class", selected ? "mt-1 text-xs font-semibold text-cyan-100" : "mt-1 text-xs font-semibold text-slate-400");
+        builder.AddContent(10, detail);
         builder.CloseElement();
         builder.CloseElement();
     };

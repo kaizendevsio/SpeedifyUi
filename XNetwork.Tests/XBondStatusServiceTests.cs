@@ -31,6 +31,12 @@ public class XBondStatusServiceTests
               "running": true,
               "mode": "anchor-fec",
               "server_addr": "45.77.241.247:8444",
+              "tunnel": {
+                "state": "canary-running",
+                "device_name": "xbond0",
+                "mtu": 1400,
+                "message": "Canary tunnel is open"
+              },
               "anchor_path_id": 1,
               "schedule": {
                 "mode": "anchor-fec",
@@ -44,6 +50,14 @@ public class XBondStatusServiceTests
                   "path_id": 1,
                   "name": "fiber",
                   "interface_name": "eth0",
+                  "bind_addr": "0.0.0.0:0",
+                  "bind_device": "eth0",
+                  "path_isolation": {
+                    "requested": true,
+                    "active": true,
+                    "method": "so-bindtodevice",
+                    "message": "socket is isolated to interface eth0"
+                  },
                   "role": "anchor",
                   "score": 980.5,
                   "rtt_ms": 12.4,
@@ -56,8 +70,18 @@ public class XBondStatusServiceTests
                   "in_cooldown": false
                 }
               ],
+              "data_packets_sent": 8,
+              "duplicate_packets_sent": 4,
               "duplicate_packets_dropped": 4,
+              "data_packets_received": 7,
+              "fec_packets_sent": 0,
               "fec_packets_recovered": 2,
+              "fec_packets_skipped": 3,
+              "fec": {
+                "configured": true,
+                "production_ready": false,
+                "message": "FEC is a canary stub"
+              },
               "late_packets_dropped": 1,
               "message": "live"
             }
@@ -68,13 +92,25 @@ public class XBondStatusServiceTests
         Assert.Equal(1, status.AnchorPathId);
         Assert.Equal([1], status.Schedule.DataPathIds);
         Assert.Equal([2], status.Schedule.FecPathIds);
+        Assert.Equal("canary-running", status.Tunnel.State);
+        Assert.Equal("xbond0", status.Tunnel.DeviceName);
+        Assert.Equal((ulong)8, status.DataPacketsSent);
+        Assert.Equal((ulong)4, status.DuplicatePacketsSent);
         Assert.Equal((ulong)4, status.DuplicatePacketsDropped);
+        Assert.Equal((ulong)7, status.DataPacketsReceived);
         Assert.Equal((ulong)2, status.FecPacketsRecovered);
+        Assert.Equal((ulong)3, status.FecPacketsSkipped);
+        Assert.True(status.Fec.Configured);
+        Assert.False(status.Fec.ProductionReady);
         Assert.Equal((ulong)1, status.LatePacketsDropped);
 
         var path = Assert.Single(status.Paths);
         Assert.Equal("fiber", path.Name);
         Assert.Equal("anchor", path.Role);
+        Assert.Equal("0.0.0.0:0", path.BindAddress);
+        Assert.Equal("eth0", path.BindDevice);
+        Assert.True(path.PathIsolation.Requested);
+        Assert.True(path.PathIsolation.Active);
         Assert.Equal(1.2, path.JitterMs);
         Assert.Equal(3, path.QueueDepth);
         Assert.Equal((ulong)12_000_000, path.ThroughputBps);

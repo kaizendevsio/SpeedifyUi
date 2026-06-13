@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.13";
+    public const string CurrentVersion = "2026.06.14";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Added XBond traffic-engine controls.",
+            Changes =
+            [
+                "Added a persisted XBond traffic-engine mode so Speedify can remain primary while XBond is tested as a canary.",
+                "Added guarded XBond service controls that stay locked unless explicitly enabled in configuration.",
+                "Locks XBond primary mode behind a separate configuration flag so production routing cannot change by accident."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.13",
             Date = "2026-06-14",
             Summary = "Added XBond multi-path shadow probing.",
             Changes =
