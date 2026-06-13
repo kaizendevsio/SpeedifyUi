@@ -6,6 +6,7 @@ use crate::health::{PathRole, ScoredPath};
 #[serde(rename_all = "kebab-case")]
 pub enum ScheduleMode {
     AnchorOnly,
+    #[serde(rename = "anchor-duplicate-1", alias = "anchor-duplicate1")]
     AnchorDuplicate1,
     AnchorFec,
     FullDuplicateDebug,
@@ -122,5 +123,30 @@ mod tests {
 
         assert_eq!(plan.data_path_ids, vec![1]);
         assert_eq!(plan.duplicate_path_ids, vec![2]);
+    }
+
+    #[test]
+    fn duplicate_mode_serde_accepts_legacy_and_preferred_names() {
+        #[derive(serde::Deserialize)]
+        struct ModeWrapper {
+            mode: ScheduleMode,
+        }
+
+        assert_eq!(
+            toml::from_str::<ModeWrapper>("mode = \"anchor-duplicate-1\"")
+                .unwrap()
+                .mode,
+            ScheduleMode::AnchorDuplicate1
+        );
+        assert_eq!(
+            toml::from_str::<ModeWrapper>("mode = \"anchor-duplicate1\"")
+                .unwrap()
+                .mode,
+            ScheduleMode::AnchorDuplicate1
+        );
+        assert_eq!(
+            serde_json::to_string(&ScheduleMode::AnchorDuplicate1).unwrap(),
+            "\"anchor-duplicate-1\""
+        );
     }
 }
