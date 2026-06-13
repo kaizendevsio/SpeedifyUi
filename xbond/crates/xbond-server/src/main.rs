@@ -16,6 +16,9 @@ struct Args {
 
     #[arg(long, default_value_t = 120)]
     realtime_deadline_ms: u64,
+
+    #[arg(long)]
+    json_events: bool,
 }
 
 #[tokio::main]
@@ -27,24 +30,52 @@ async fn main() -> Result<()> {
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let mut buf = vec![0u8; 2048];
 
-    println!("xbond-server listening on {}", args.bind);
+    if args.json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "listening",
+                "bind": args.bind,
+            })
+        );
+    } else {
+        println!("xbond-server listening on {}", args.bind);
+    }
     loop {
         let (len, peer) = socket.recv_from(&mut buf).await?;
         let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
             continue;
         };
 
-        if receiver.observe(&frame, now_micros()) != ReceiveOutcome::Accepted {
-            continue;
-        }
-
-        if matches!(
+        let should_ack = matches!(
             frame.header.kind,
             PacketKind::Heartbeat | PacketKind::Control
-        ) {
+        );
+        let outcome = receiver.observe(&frame, now_micros());
+        let ack_sent = should_ack
+            && matches!(
+                outcome,
+                ReceiveOutcome::Accepted | ReceiveOutcome::Duplicate
+            );
+        if ack_sent {
             let reply = build_ack_frame(&frame);
             let encoded = reply.encode_sealed(&key)?;
             socket.send_to(&encoded, peer).await?;
+        }
+
+        if args.json_events {
+            print_packet_event(
+                event_name(outcome),
+                outcome,
+                &frame,
+                &peer.to_string(),
+                ack_sent,
+                &receiver,
+            );
+        }
+
+        if outcome != ReceiveOutcome::Accepted {
+            continue;
         }
     }
 }
@@ -60,6 +91,43 @@ fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
         ),
         b"ack".to_vec(),
     )
+}
+
+fn event_name(outcome: ReceiveOutcome) -> &'static str {
+    match outcome {
+        ReceiveOutcome::Accepted => "first-arrival",
+        ReceiveOutcome::Duplicate => "duplicate-dropped",
+        ReceiveOutcome::Expired => "late-dropped",
+    }
+}
+
+fn print_packet_event(
+    event: &str,
+    outcome: ReceiveOutcome,
+    frame: &XBondFrame,
+    peer: &str,
+    ack_sent: bool,
+    receiver: &FrameReceiver,
+) {
+    let stats = receiver.stats();
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": event,
+            "outcome": format!("{outcome:?}"),
+            "session_id": frame.header.session_id,
+            "sequence": frame.header.sequence,
+            "path_id": frame.header.path_id,
+            "packet_kind": frame.header.kind,
+            "peer": peer,
+            "ack_sent": ack_sent,
+            "counters": {
+                "first_arrivals": stats.accepted_packets,
+                "duplicates_dropped": stats.duplicate_packets_dropped,
+                "late_packets_dropped": stats.late_packets_dropped,
+            }
+        })
+    );
 }
 
 fn now_micros() -> u64 {

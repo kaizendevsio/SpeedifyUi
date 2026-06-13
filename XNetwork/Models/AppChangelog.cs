@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.12";
+    public const string CurrentVersion = "2026.06.13";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Added XBond multi-path shadow probing.",
+            Changes =
+            [
+                "Added an XBond multi-path probe command that duplicates heartbeat packets across configured paths.",
+                "Shows first-arrival, ACK, packet loss, and route-verification details for each XBond path.",
+                "Added structured XBond server packet events for first arrivals and duplicate or late drops."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.12",
             Date = "2026-06-14",
             Summary = "Stabilized the XBond public lab test.",
             Changes =

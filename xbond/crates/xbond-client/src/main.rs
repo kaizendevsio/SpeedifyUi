@@ -1,13 +1,19 @@
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::Command as ProcessCommand;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
+};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use tokio::net::UdpSocket;
 use tokio::time;
 use xbond_core::{
-    build_schedule, select_path_roles, ClientConfig, PacketKind, PathHealthSnapshot, XBondFrame,
-    XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus, XBondStatus,
+    build_schedule, select_path_roles, ClientConfig, PacketKind, PathHealthSnapshot,
+    ProbeAggregate, ProbePathStats, RouteVerification, XBondFrame, XBondHeader, XBondKey,
+    XBondPathStatus, XBondRuntimeStatus, XBondStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -37,6 +43,28 @@ enum Command {
         bind: String,
         #[arg(long, default_value_t = 1)]
         path_id: u16,
+        #[arg(long)]
+        session_id: Option<u64>,
+        #[arg(long, default_value_t = 10)]
+        count: u32,
+        #[arg(long, default_value_t = 250)]
+        interval_ms: u64,
+        #[arg(long, default_value_t = 1000)]
+        timeout_ms: u64,
+        #[arg(long, default_value = "XBOND_PSK")]
+        key_env: String,
+        #[arg(long)]
+        json: bool,
+    },
+    MultiPing {
+        #[arg(long, default_value = "/etc/xbond/client.toml")]
+        config: PathBuf,
+        #[arg(long)]
+        server: Option<String>,
+        #[arg(long = "path-id")]
+        path_ids: Vec<u16>,
+        #[arg(long = "bind")]
+        binds: Vec<String>,
         #[arg(long)]
         session_id: Option<u64>,
         #[arg(long, default_value_t = 10)]
@@ -96,6 +124,36 @@ async fn main() -> Result<()> {
                 print_ping_result(&result);
             }
         }
+        Command::MultiPing {
+            config,
+            server,
+            path_ids,
+            binds,
+            session_id,
+            count,
+            interval_ms,
+            timeout_ms,
+            key_env,
+            json,
+        } => {
+            let result = run_multi_ping(MultiPingOptions {
+                config,
+                server,
+                path_ids,
+                binds,
+                session_id: session_id.unwrap_or_else(now_micros),
+                count,
+                interval_ms,
+                timeout_ms,
+                key_env,
+            })
+            .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print_multi_ping_result(&result);
+            }
+        }
     }
     Ok(())
 }
@@ -110,6 +168,33 @@ struct PingOptions {
     interval_ms: u64,
     timeout_ms: u64,
     key_env: String,
+}
+
+#[derive(Debug)]
+struct MultiPingOptions {
+    config: PathBuf,
+    server: Option<String>,
+    path_ids: Vec<u16>,
+    binds: Vec<String>,
+    session_id: u64,
+    count: u32,
+    interval_ms: u64,
+    timeout_ms: u64,
+    key_env: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProbePathSpec {
+    path_id: u16,
+    name: String,
+    interface_name: Option<String>,
+    bind_addr: String,
+}
+
+struct ActiveProbePath {
+    spec: ProbePathSpec,
+    socket: UdpSocket,
+    stats: ProbePathStats,
 }
 
 #[derive(Debug, Clone)]
@@ -251,6 +336,381 @@ async fn run_ping(options: PingOptions) -> Result<PingResult> {
     })
 }
 
+async fn run_multi_ping(options: MultiPingOptions) -> Result<ProbeAggregate> {
+    let config = read_config(&options.config)?;
+    let server = options.server.clone().unwrap_or(config.server_addr.clone());
+    let specs = select_probe_paths(&config, &options.path_ids, &options.binds)?;
+    let schedule = build_schedule(
+        config.mode,
+        &select_path_roles(&config_health(&config), config.max_active_backups),
+    );
+    let selected_ids: HashSet<u16> = specs.iter().map(|path| path.path_id).collect();
+    let anchor_path_id = schedule
+        .anchor_path_id
+        .filter(|path_id| selected_ids.contains(path_id))
+        .or_else(|| specs.first().map(|path| path.path_id));
+    let duplicate_path_ids = specs
+        .iter()
+        .map(|path| path.path_id)
+        .filter(|path_id| Some(*path_id) != anchor_path_id)
+        .collect::<Vec<_>>();
+
+    let key_text = std::env::var(&options.key_env)
+        .with_context(|| format!("{} environment variable is required", options.key_env))?;
+    let key = XBondKey::from_passphrase(&key_text);
+    let target_ip = resolve_server_ip(&server);
+    let started_at = now_micros();
+    let mut active_paths = Vec::with_capacity(specs.len());
+
+    for spec in specs {
+        let socket = UdpSocket::bind(&spec.bind_addr).await.with_context(|| {
+            format!("failed to bind path {} to {}", spec.path_id, spec.bind_addr)
+        })?;
+        socket.connect(&server).await.with_context(|| {
+            format!(
+                "failed to connect path {} UDP socket to {}",
+                spec.path_id, server
+            )
+        })?;
+        let local_addr = socket.local_addr()?;
+        let source = source_ip(local_addr);
+        let route_verification =
+            verify_route(target_ip, local_addr, spec.interface_name.as_deref());
+        let stats = ProbePathStats::new(
+            spec.path_id,
+            Some(spec.name.clone()),
+            spec.interface_name.clone(),
+            local_addr.to_string(),
+            source.map(|ip| ip.to_string()),
+            route_verification,
+        );
+        active_paths.push(ActiveProbePath {
+            spec,
+            socket,
+            stats,
+        });
+    }
+
+    let timeout = Duration::from_millis(options.timeout_ms);
+    let mut buf = vec![0u8; 2048];
+    for sequence in 1..=u64::from(options.count) {
+        let send_micros = now_micros();
+        for path in &mut active_paths {
+            let frame = XBondFrame::new(
+                XBondHeader::new(
+                    PacketKind::Heartbeat,
+                    options.session_id,
+                    sequence,
+                    send_micros,
+                    path.spec.path_id,
+                ),
+                b"multi-ping".to_vec(),
+            );
+            path.socket.send(&frame.encode_sealed(&key)?).await?;
+            path.stats.record_sent();
+        }
+
+        collect_multi_ping_replies(
+            &mut active_paths,
+            &mut buf,
+            &key,
+            options.session_id,
+            sequence,
+            timeout,
+        )
+        .await?;
+
+        if sequence < u64::from(options.count) && options.interval_ms > 0 {
+            time::sleep(Duration::from_millis(options.interval_ms)).await;
+        }
+    }
+
+    for path in &mut active_paths {
+        path.stats
+            .set_duplicates_dropped(path.stats.acks.saturating_sub(path.stats.first_arrivals));
+    }
+
+    Ok(ProbeAggregate {
+        mode: config.mode,
+        anchor_path_id,
+        duplicate_path_ids,
+        started_at,
+        completed_at: now_micros(),
+        paths: active_paths
+            .into_iter()
+            .map(|path| path.stats)
+            .collect::<Vec<_>>(),
+    })
+}
+
+async fn collect_multi_ping_replies(
+    active_paths: &mut [ActiveProbePath],
+    buf: &mut [u8],
+    key: &XBondKey,
+    session_id: u64,
+    sequence: u64,
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    let mut first_arrival_seen = false;
+    let mut acked_paths = HashSet::new();
+
+    while Instant::now() < deadline {
+        for (index, path) in active_paths.iter_mut().enumerate() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            let wait = remaining.min(Duration::from_millis(10));
+            if wait.is_zero() {
+                break;
+            }
+
+            match time::timeout(wait, path.socket.recv(buf)).await {
+                Ok(Ok(len)) => {
+                    let Ok(reply) = XBondFrame::decode_sealed(&buf[..len], key) else {
+                        continue;
+                    };
+                    if is_expected_ack(&reply, session_id, sequence) && acked_paths.insert(index) {
+                        let rtt_ms =
+                            now_micros().saturating_sub(reply.header.send_micros) as f64 / 1_000.0;
+                        let first_arrival = !first_arrival_seen;
+                        first_arrival_seen = true;
+                        path.stats.record_ack(rtt_ms, first_arrival);
+                    }
+                }
+                Ok(Err(error)) => return Err(error.into()),
+                Err(_) => {}
+            }
+        }
+
+        if acked_paths.len() == active_paths.len() {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_expected_ack(frame: &XBondFrame, session_id: u64, sequence: u64) -> bool {
+    frame.header.kind == PacketKind::Heartbeat
+        && frame.header.session_id == session_id
+        && frame.header.sequence == sequence
+        && frame.payload == b"ack"
+}
+
+fn select_probe_paths(
+    config: &ClientConfig,
+    path_ids: &[u16],
+    binds: &[String],
+) -> Result<Vec<ProbePathSpec>> {
+    let mut paths = Vec::new();
+    if path_ids.is_empty() {
+        for path in config.paths.iter().filter(|path| path.enabled) {
+            paths.push(ProbePathSpec {
+                path_id: path.id,
+                name: path.name.clone(),
+                interface_name: path.interface_name.clone(),
+                bind_addr: path.bind_addr.clone().with_context(|| {
+                    format!(
+                        "path id {} ({}) must set bind_addr for multi-ping route isolation",
+                        path.id, path.name
+                    )
+                })?,
+            });
+        }
+    } else {
+        for path_id in path_ids {
+            let Some(path) = config.paths.iter().find(|path| path.id == *path_id) else {
+                bail!("path id {path_id} is not present in the client config");
+            };
+            paths.push(ProbePathSpec {
+                path_id: path.id,
+                name: path.name.clone(),
+                interface_name: path.interface_name.clone(),
+                bind_addr: path.bind_addr.clone().with_context(|| {
+                    format!(
+                        "path id {} ({}) must set bind_addr for multi-ping route isolation",
+                        path.id, path.name
+                    )
+                })?,
+            });
+        }
+    }
+
+    let next_path_id = paths
+        .iter()
+        .map(|path| path.path_id)
+        .max()
+        .unwrap_or(999)
+        .saturating_add(1);
+    for (index, bind) in binds.iter().enumerate() {
+        paths.push(parse_explicit_probe_bind(bind, next_path_id, index)?);
+    }
+
+    if paths.is_empty() {
+        bail!("multi-ping requires at least one enabled configured path, --path-id, or --bind");
+    }
+
+    let mut seen = HashSet::new();
+    for path in &paths {
+        if !seen.insert(path.path_id) {
+            bail!("duplicate multi-ping path id {}", path.path_id);
+        }
+    }
+
+    Ok(paths)
+}
+
+fn parse_explicit_probe_bind(
+    value: &str,
+    next_path_id: u16,
+    index: usize,
+) -> Result<ProbePathSpec> {
+    let (path_id, bind_addr) = if let Some((left, right)) = value.split_once('=') {
+        (
+            left.parse::<u16>()
+                .with_context(|| format!("failed to parse path id in --bind {value}"))?,
+            right.to_string(),
+        )
+    } else {
+        (
+            next_path_id.saturating_add(u16::try_from(index).unwrap_or(u16::MAX)),
+            value.to_string(),
+        )
+    };
+
+    if bind_addr.trim().is_empty() {
+        bail!("--bind value cannot be empty");
+    }
+
+    Ok(ProbePathSpec {
+        path_id,
+        name: format!("explicit-bind-{path_id}"),
+        interface_name: None,
+        bind_addr,
+    })
+}
+
+fn resolve_server_ip(server: &str) -> Option<IpAddr> {
+    if let Ok(addr) = server.parse::<SocketAddr>() {
+        return Some(addr.ip());
+    }
+
+    server
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .map(|addr| addr.ip())
+}
+
+fn source_ip(addr: SocketAddr) -> Option<IpAddr> {
+    if addr.ip().is_unspecified() {
+        None
+    } else {
+        Some(addr.ip())
+    }
+}
+
+fn verify_route(
+    target_ip: Option<IpAddr>,
+    local_addr: SocketAddr,
+    interface_name: Option<&str>,
+) -> RouteVerification {
+    let Some(target_ip) = target_ip else {
+        return RouteVerification::failed(
+            "ip-route-get",
+            "server address did not resolve to an IP",
+        );
+    };
+    let Some(source_ip) = source_ip(local_addr) else {
+        return RouteVerification::failed(
+            "ip-route-get",
+            "local source address is unspecified after bind/connect",
+        );
+    };
+    if let Some(interface_name) = interface_name {
+        if is_speedify_interface(interface_name) {
+            return RouteVerification::failed(
+                "ip-route-get",
+                format!("configured interface {interface_name} is a Speedify interface"),
+            );
+        }
+    }
+    if !cfg!(target_os = "linux") {
+        return RouteVerification::failed(
+            "ip-route-get",
+            "route verification is only implemented for Linux iproute2",
+        );
+    }
+
+    let target_ip = target_ip.to_string();
+    let source_ip = source_ip.to_string();
+    let output = ProcessCommand::new("ip")
+        .args(["route", "get", &target_ip, "from", &source_ip])
+        .output();
+    let Ok(output) = output else {
+        return RouteVerification::failed("ip-route-get", "failed to run ip route get");
+    };
+    if !output.status.success() {
+        return RouteVerification::failed(
+            "ip-route-get",
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let route_dev = token_after(&stdout, "dev");
+    let route_src = token_after(&stdout, "src");
+    let Some(route_dev) = route_dev else {
+        return RouteVerification::failed("ip-route-get", "route output did not include dev");
+    };
+    if is_speedify_interface(&route_dev) {
+        return RouteVerification::failed(
+            "ip-route-get",
+            format!("route leaves through Speedify interface {route_dev}"),
+        );
+    }
+    if let Some(interface_name) = interface_name {
+        if route_dev != interface_name {
+            return RouteVerification::failed(
+                "ip-route-get",
+                format!(
+                    "route dev {route_dev} does not match configured interface {interface_name}"
+                ),
+            );
+        }
+    }
+    if route_src.as_deref() != Some(source_ip.as_str()) {
+        return RouteVerification::failed(
+            "ip-route-get",
+            format!(
+                "route source {:?} does not match bound source {source_ip}",
+                route_src
+            ),
+        );
+    }
+
+    RouteVerification::verified(
+        "ip-route-get",
+        format!("route uses dev {route_dev} with source {source_ip}"),
+    )
+}
+
+fn token_after(text: &str, token: &str) -> Option<String> {
+    let mut parts = text.split_whitespace();
+    while let Some(part) = parts.next() {
+        if part == token {
+            return parts.next().map(ToString::to_string);
+        }
+    }
+    None
+}
+
+fn is_speedify_interface(interface_name: &str) -> bool {
+    let name = interface_name.to_ascii_lowercase();
+    name.contains("speedify") || name == "connectify0"
+}
+
 fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
     let config = read_config(config_path)?;
     let runtime = read_runtime_status(&config)?;
@@ -374,6 +834,30 @@ fn print_ping_result(result: &PingResult) {
     }
 }
 
+fn print_multi_ping_result(result: &ProbeAggregate) {
+    println!("XBond multi-ping mode: {:?}", result.mode);
+    println!("Anchor path: {:?}", result.anchor_path_id);
+    println!("Duplicate paths: {:?}", result.duplicate_path_ids);
+    for path in &result.paths {
+        println!(
+            "- path {} {:?} bind={} source={:?} sent={} acks={} first={} loss={:.1}% avg_rtt={:?} route_verified={}",
+            path.path_id,
+            path.interface_name,
+            path.bind,
+            path.source,
+            path.sent,
+            path.acks,
+            path.first_arrivals,
+            path.loss_rate * 100.0,
+            path.avg_rtt_ms,
+            path.route_verified
+        );
+        if !path.route_verified {
+            println!("  route: {}", path.route_verification.reason);
+        }
+    }
+}
+
 fn finite_min(values: &[f64]) -> Option<f64> {
     values
         .iter()
@@ -462,5 +946,72 @@ mod tests {
         assert_eq!(result.min_rtt_ms(), Some(10.0));
         assert_eq!(result.avg_rtt_ms(), Some(15.0));
         assert_eq!(result.max_rtt_ms(), Some(20.0));
+    }
+
+    #[test]
+    fn multi_ping_selects_enabled_paths_and_explicit_binds() {
+        let config = ClientConfig {
+            paths: vec![
+                xbond_core::PathConfig {
+                    id: 1,
+                    name: "primary".to_string(),
+                    interface_name: Some("eth0".to_string()),
+                    bind_addr: Some("192.0.2.10:0".to_string()),
+                    enabled: true,
+                },
+                xbond_core::PathConfig {
+                    id: 2,
+                    name: "disabled".to_string(),
+                    interface_name: Some("wwan0".to_string()),
+                    bind_addr: Some("192.0.2.11:0".to_string()),
+                    enabled: false,
+                },
+            ],
+            ..ClientConfig::default()
+        };
+
+        let paths = select_probe_paths(&config, &[], &["9=198.51.100.10:0".to_string()]).unwrap();
+
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].path_id, 1);
+        assert_eq!(paths[0].interface_name.as_deref(), Some("eth0"));
+        assert_eq!(paths[1].path_id, 9);
+        assert_eq!(paths[1].bind_addr, "198.51.100.10:0");
+    }
+
+    #[test]
+    fn route_parser_reads_tokens_from_ip_route_output() {
+        let text = "45.77.241.247 from 192.0.2.10 dev eth0 src 192.0.2.10 uid 1000";
+
+        assert_eq!(token_after(text, "dev").as_deref(), Some("eth0"));
+        assert_eq!(token_after(text, "src").as_deref(), Some("192.0.2.10"));
+        assert_eq!(token_after(text, "missing"), None);
+    }
+
+    #[test]
+    fn speedify_interface_detection_rejects_connectify0() {
+        assert!(is_speedify_interface("connectify0"));
+        assert!(is_speedify_interface("speedify0"));
+        assert!(!is_speedify_interface("eth0"));
+    }
+
+    #[test]
+    fn multi_ping_requires_configured_bind_addresses() {
+        let config = ClientConfig {
+            paths: vec![xbond_core::PathConfig {
+                id: 1,
+                name: "primary".to_string(),
+                interface_name: Some("eth0".to_string()),
+                bind_addr: None,
+                enabled: true,
+            }],
+            ..ClientConfig::default()
+        };
+
+        let error = select_probe_paths(&config, &[], &[]).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("must set bind_addr for multi-ping route isolation"));
     }
 }

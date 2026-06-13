@@ -114,6 +114,143 @@ public class XBondStatusServiceTests
     }
 
     [Fact]
+    public void ParseMultiPingJson_MapsPerPathProbeResultAndRouteVerification()
+    {
+        var result = XBondLabService.ParseMultiPingJson(
+            """
+            {
+              "mode": "anchor-duplicate-1",
+              "anchor_path_id": 1,
+              "duplicate_path_ids": [2],
+              "started_at": 1781369695905869,
+              "completed_at": 1781369696105869,
+              "paths": [
+                {
+                  "path_id": 1,
+                  "adapter": "Stable primary",
+                  "interface_name": "eth0",
+                  "bind": "192.0.2.10:34100",
+                  "source": "192.0.2.10",
+                  "sent": 10,
+                  "received": 10,
+                  "acks": 10,
+                  "first_arrivals": 10,
+                  "duplicates_dropped": null,
+                  "loss_rate": 0.0,
+                  "avg_rtt_ms": 42.5,
+                  "route_verified": true,
+                  "route_verification": {
+                    "verified": true,
+                    "method": "ip-route-get",
+                    "reason": "route uses dev eth0 with source 192.0.2.10"
+                  }
+                },
+                {
+                  "path_id": 2,
+                  "adapter": "Backup modem",
+                  "interface_name": "wwan0",
+                  "bind": "192.0.2.11:34101",
+                  "source": "192.0.2.11",
+                  "sent": 10,
+                  "received": 10,
+                  "acks": 10,
+                  "first_arrivals": 0,
+                  "duplicates_dropped": 10,
+                  "loss_rate": 0.0,
+                  "avg_rtt_ms": 60.0,
+                  "route_verified": false,
+                  "route_verification": {
+                    "verified": false,
+                    "method": "ip-route-get",
+                    "reason": "route leaves through Speedify interface connectify0"
+                  }
+                }
+              ]
+            }
+            """);
+
+        Assert.True(result.Succeeded);
+        Assert.False(result.FullyVerified);
+        Assert.True(result.HasRouteWarnings);
+        Assert.Equal("anchor-duplicate-1", result.Mode);
+        Assert.Equal(1, result.AnchorPathId);
+        Assert.Equal([2], result.DuplicatePathIds);
+        Assert.Equal(20, result.TotalSent);
+        Assert.Equal(20, result.TotalAcks);
+        Assert.Equal(10, result.TotalFirstArrivals);
+        Assert.Equal(10, result.ExpectedSequences);
+
+        var backup = result.Paths[1];
+        Assert.Equal("Backup modem", backup.Adapter);
+        Assert.Equal(10, backup.Acks);
+        Assert.Equal(10, backup.DuplicatesDropped);
+        Assert.False(backup.RouteVerified);
+        Assert.Contains("connectify0", backup.RouteVerification.Reason);
+    }
+
+    [Fact]
+    public void ParseMultiPingJson_DeadBackupPathDoesNotPassOverallProbe()
+    {
+        var result = XBondLabService.ParseMultiPingJson(
+            """
+            {
+              "mode": "anchor-duplicate-1",
+              "anchor_path_id": 1,
+              "duplicate_path_ids": [2],
+              "started_at": 1781369695905869,
+              "completed_at": 1781369696105869,
+              "paths": [
+                {
+                  "path_id": 1,
+                  "adapter": "Stable primary",
+                  "interface_name": "eth0",
+                  "bind": "192.0.2.10:34100",
+                  "source": "192.0.2.10",
+                  "sent": 10,
+                  "received": 10,
+                  "acks": 10,
+                  "first_arrivals": 10,
+                  "duplicates_dropped": 0,
+                  "loss_rate": 0.0,
+                  "avg_rtt_ms": 42.5,
+                  "route_verified": true,
+                  "route_verification": {
+                    "verified": true,
+                    "method": "ip-route-get",
+                    "reason": "route uses dev eth0 with source 192.0.2.10"
+                  }
+                },
+                {
+                  "path_id": 2,
+                  "adapter": "Dead backup",
+                  "interface_name": "wwan0",
+                  "bind": "192.0.2.11:34101",
+                  "source": "192.0.2.11",
+                  "sent": 10,
+                  "received": 0,
+                  "acks": 0,
+                  "first_arrivals": 0,
+                  "duplicates_dropped": 0,
+                  "loss_rate": 1.0,
+                  "avg_rtt_ms": null,
+                  "route_verified": true,
+                  "route_verification": {
+                    "verified": true,
+                    "method": "ip-route-get",
+                    "reason": "route uses dev wwan0 with source 192.0.2.11"
+                  }
+                }
+              ]
+            }
+            """);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.FullyVerified);
+        Assert.True(result.HasPathLoss);
+        Assert.True(result.HasAnyPathResponse);
+    }
+
+    [Fact]
     public void HasBypassPort_TreatsZeroRangeEndAsSinglePort()
     {
         var settings = new StreamingBypassSettings

@@ -18,6 +18,10 @@ public class XBondSettings
 
     public int PublicTestPathId { get; set; } = 1;
 
+    public List<int> PublicTestPathIds { get; set; } = new();
+
+    public List<string> PublicTestBinds { get; set; } = new();
+
     public int PublicTestCount { get; set; } = 10;
 
     public int PublicTestIntervalMs { get; set; } = 100;
