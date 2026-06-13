@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.11";
+    public const string CurrentVersion = "2026.06.12";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Stabilized the XBond public lab test.",
+            Changes =
+            [
+                "Added a short settle window after creating the temporary Speedify bypass before sending XBond heartbeat packets.",
+                "Keeps the public lab test cleanup behavior unchanged after the run completes."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.11",
             Date = "2026-06-14",
             Summary = "Added XBond public heartbeat lab controls.",
             Changes =

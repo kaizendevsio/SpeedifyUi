@@ -60,6 +60,12 @@ public class XBondLabService(
                 result.BypassAdded = true;
             }
 
+            if (settings.PublicTestBypassSettleMs > 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(settings.PublicTestBypassSettleMs), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             var key = ReadPsk();
             var ping = await RunPingAsync(key, cancellationToken).ConfigureAwait(false);
             CopyPingResult(ping, result);
