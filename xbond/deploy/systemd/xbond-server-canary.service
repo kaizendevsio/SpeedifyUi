@@ -1,0 +1,15 @@
+[Unit]
+Description=XBond server canary endpoint
+Documentation=man:systemd.service(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/xbond/server.env
+ExecStart=/usr/local/bin/xbond-server --bind 0.0.0.0:8444 --json-events
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -53,10 +53,16 @@ builder.Services.AddSingleton<LocalProcessTrafficService>();
 builder.Services.AddSingleton<XRouterService>();
 
 // Add XBond prototype observability. Disabled by default; no tunnel process is started by XNetwork.
+builder.Services.AddSingleton<XBondSettingsStore>();
 builder.Services.AddSingleton(sp =>
-    builder.Configuration.GetSection("XBond").Get<XBondSettings>() ?? new XBondSettings());
+{
+    var settings = builder.Configuration.GetSection("XBond").Get<XBondSettings>() ?? new XBondSettings();
+    sp.GetRequiredService<XBondSettingsStore>().Load(settings);
+    return settings;
+});
 builder.Services.AddSingleton<XBondStatusService>();
 builder.Services.AddSingleton<XBondLabService>();
+builder.Services.AddSingleton<XBondTrafficEngineService>();
 
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>

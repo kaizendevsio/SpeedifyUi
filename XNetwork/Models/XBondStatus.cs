@@ -16,6 +16,9 @@ public class XBondStatus
     [JsonPropertyName("server_addr")]
     public string ServerAddress { get; set; } = "";
 
+    [JsonPropertyName("tunnel")]
+    public XBondTunnelStatus Tunnel { get; set; } = new();
+
     [JsonPropertyName("anchor_path_id")]
     public int? AnchorPathId { get; set; }
 
@@ -25,11 +28,29 @@ public class XBondStatus
     [JsonPropertyName("paths")]
     public List<XBondPathStatus> Paths { get; set; } = new();
 
+    [JsonPropertyName("data_packets_sent")]
+    public ulong DataPacketsSent { get; set; }
+
+    [JsonPropertyName("duplicate_packets_sent")]
+    public ulong DuplicatePacketsSent { get; set; }
+
     [JsonPropertyName("duplicate_packets_dropped")]
     public ulong DuplicatePacketsDropped { get; set; }
 
+    [JsonPropertyName("data_packets_received")]
+    public ulong DataPacketsReceived { get; set; }
+
+    [JsonPropertyName("fec_packets_sent")]
+    public ulong FecPacketsSent { get; set; }
+
     [JsonPropertyName("fec_packets_recovered")]
     public ulong FecPacketsRecovered { get; set; }
+
+    [JsonPropertyName("fec_packets_skipped")]
+    public ulong FecPacketsSkipped { get; set; }
+
+    [JsonPropertyName("fec")]
+    public XBondFecStatus Fec { get; set; } = new();
 
     [JsonPropertyName("late_packets_dropped")]
     public ulong LatePacketsDropped { get; set; }
@@ -65,6 +86,33 @@ public class XBondSchedulePlan
     public List<int> FecPathIds { get; set; } = new();
 }
 
+public class XBondTunnelStatus
+{
+    [JsonPropertyName("state")]
+    public string State { get; set; } = "disabled";
+
+    [JsonPropertyName("device_name")]
+    public string? DeviceName { get; set; }
+
+    [JsonPropertyName("mtu")]
+    public int? Mtu { get; set; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = "Canary tunnel is disabled by default.";
+}
+
+public class XBondFecStatus
+{
+    [JsonPropertyName("configured")]
+    public bool Configured { get; set; }
+
+    [JsonPropertyName("production_ready")]
+    public bool ProductionReady { get; set; }
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = "FEC is not configured for the current schedule.";
+}
+
 public class XBondPathStatus
 {
     [JsonPropertyName("path_id")]
@@ -75,6 +123,15 @@ public class XBondPathStatus
 
     [JsonPropertyName("interface_name")]
     public string? InterfaceName { get; set; }
+
+    [JsonPropertyName("bind_addr")]
+    public string? BindAddress { get; set; }
+
+    [JsonPropertyName("bind_device")]
+    public string? BindDevice { get; set; }
+
+    [JsonPropertyName("path_isolation")]
+    public XBondPathIsolationStatus PathIsolation { get; set; } = new();
 
     [JsonPropertyName("role")]
     public string Role { get; set; } = "probe";
@@ -105,4 +162,19 @@ public class XBondPathStatus
 
     [JsonPropertyName("in_cooldown")]
     public bool InCooldown { get; set; }
+}
+
+public class XBondPathIsolationStatus
+{
+    [JsonPropertyName("requested")]
+    public bool Requested { get; set; }
+
+    [JsonPropertyName("active")]
+    public bool Active { get; set; }
+
+    [JsonPropertyName("method")]
+    public string Method { get; set; } = "none";
+
+    [JsonPropertyName("message")]
+    public string Message { get; set; } = "No bind-device isolation requested.";
 }

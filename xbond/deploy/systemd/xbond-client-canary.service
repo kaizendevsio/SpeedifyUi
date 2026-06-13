@@ -1,0 +1,22 @@
+[Unit]
+Description=XBond client canary tunnel
+Documentation=man:systemd.service(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/xbond/client.env
+ExecStart=/usr/local/bin/xbond-client canary-tunnel --config /etc/xbond/client.toml --tun-name xbond0 --tun-mtu 1400 --json-events
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=xbond
+RuntimeDirectoryMode=0750
+
+# The canary tunnel opens /dev/net/tun and pins sockets to physical devices.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

@@ -1,19 +1,20 @@
+use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::{
-    collections::HashSet,
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
-};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::time;
 use xbond_core::{
-    build_schedule, select_path_roles, ClientConfig, PacketKind, PathHealthSnapshot,
-    ProbeAggregate, ProbePathStats, RouteVerification, XBondFrame, XBondHeader, XBondKey,
-    XBondPathStatus, XBondRuntimeStatus, XBondStatus,
+    build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, CanaryTun,
+    ClientConfig, PacketKind, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate,
+    ProbePathStats, RouteVerification, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
+    XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -41,6 +42,8 @@ enum Command {
         server: String,
         #[arg(long, default_value = "0.0.0.0:0")]
         bind: String,
+        #[arg(long)]
+        interface: Option<String>,
         #[arg(long, default_value_t = 1)]
         path_id: u16,
         #[arg(long)]
@@ -78,6 +81,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    CanaryTunnel {
+        #[arg(long, default_value = "/etc/xbond/client.toml")]
+        config: PathBuf,
+        #[arg(long, default_value = "xbond0")]
+        tun_name: String,
+        #[arg(long, default_value_t = 1400)]
+        tun_mtu: u16,
+        #[arg(long, default_value = "XBOND_PSK")]
+        key_env: String,
+        #[arg(long)]
+        packet_limit: Option<u64>,
+        #[arg(long)]
+        json_events: bool,
+    },
 }
 
 #[tokio::main]
@@ -99,6 +116,7 @@ async fn main() -> Result<()> {
         Command::Ping {
             server,
             bind,
+            interface,
             path_id,
             session_id,
             count,
@@ -110,6 +128,7 @@ async fn main() -> Result<()> {
             let result = run_ping(PingOptions {
                 server,
                 bind,
+                bind_device: interface,
                 path_id,
                 session_id: session_id.unwrap_or_else(now_micros),
                 count,
@@ -154,6 +173,24 @@ async fn main() -> Result<()> {
                 print_multi_ping_result(&result);
             }
         }
+        Command::CanaryTunnel {
+            config,
+            tun_name,
+            tun_mtu,
+            key_env,
+            packet_limit,
+            json_events,
+        } => {
+            run_canary_tunnel(CanaryTunnelOptions {
+                config,
+                tun_name,
+                tun_mtu,
+                key_env,
+                packet_limit,
+                json_events,
+            })
+            .await?;
+        }
     }
     Ok(())
 }
@@ -162,6 +199,7 @@ async fn main() -> Result<()> {
 struct PingOptions {
     server: String,
     bind: String,
+    bind_device: Option<String>,
     path_id: u16,
     session_id: u64,
     count: u32,
@@ -183,18 +221,34 @@ struct MultiPingOptions {
     key_env: String,
 }
 
+#[derive(Debug)]
+struct CanaryTunnelOptions {
+    config: PathBuf,
+    tun_name: String,
+    tun_mtu: u16,
+    key_env: String,
+    packet_limit: Option<u64>,
+    json_events: bool,
+}
+
 #[derive(Debug, Clone)]
 struct ProbePathSpec {
     path_id: u16,
     name: String,
     interface_name: Option<String>,
     bind_addr: String,
+    bind_device: Option<String>,
 }
 
 struct ActiveProbePath {
     spec: ProbePathSpec,
     socket: UdpSocket,
     stats: ProbePathStats,
+}
+
+struct PreparedProbePath {
+    active: Option<ActiveProbePath>,
+    inactive_stats: Option<ProbePathStats>,
 }
 
 #[derive(Debug, Clone)]
@@ -275,9 +329,8 @@ async fn run_ping(options: PingOptions) -> Result<PingResult> {
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
-    let socket = UdpSocket::bind(&options.bind)
-        .await
-        .with_context(|| format!("failed to bind {}", options.bind))?;
+    let (socket, _isolation) =
+        create_isolated_udp_socket(&options.bind, options.bind_device.as_deref())?;
     socket
         .connect(&options.server)
         .await
@@ -361,34 +414,16 @@ async fn run_multi_ping(options: MultiPingOptions) -> Result<ProbeAggregate> {
     let target_ip = resolve_server_ip(&server);
     let started_at = now_micros();
     let mut active_paths = Vec::with_capacity(specs.len());
+    let mut inactive_stats = Vec::new();
 
     for spec in specs {
-        let socket = UdpSocket::bind(&spec.bind_addr).await.with_context(|| {
-            format!("failed to bind path {} to {}", spec.path_id, spec.bind_addr)
-        })?;
-        socket.connect(&server).await.with_context(|| {
-            format!(
-                "failed to connect path {} UDP socket to {}",
-                spec.path_id, server
-            )
-        })?;
-        let local_addr = socket.local_addr()?;
-        let source = source_ip(local_addr);
-        let route_verification =
-            verify_route(target_ip, local_addr, spec.interface_name.as_deref());
-        let stats = ProbePathStats::new(
-            spec.path_id,
-            Some(spec.name.clone()),
-            spec.interface_name.clone(),
-            local_addr.to_string(),
-            source.map(|ip| ip.to_string()),
-            route_verification,
-        );
-        active_paths.push(ActiveProbePath {
-            spec,
-            socket,
-            stats,
-        });
+        let prepared = prepare_probe_path(spec, &server, target_ip).await?;
+        if let Some(active) = prepared.active {
+            active_paths.push(active);
+        }
+        if let Some(stats) = prepared.inactive_stats {
+            inactive_stats.push(stats);
+        }
     }
 
     let timeout = Duration::from_millis(options.timeout_ms);
@@ -439,7 +474,254 @@ async fn run_multi_ping(options: MultiPingOptions) -> Result<ProbeAggregate> {
         paths: active_paths
             .into_iter()
             .map(|path| path.stats)
+            .chain(inactive_stats)
             .collect::<Vec<_>>(),
+    })
+}
+
+async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
+    let config = read_config(&options.config)?;
+    let key_text = std::env::var(&options.key_env)
+        .with_context(|| format!("{} environment variable is required", options.key_env))?;
+    let key = XBondKey::from_passphrase(&key_text);
+    let health = config_health(&config);
+    let roles = select_path_roles(&health, config.max_active_backups);
+    let schedule = build_schedule(config.mode, &roles);
+    let transmissions = build_transmission_plan(&schedule);
+    if transmissions.is_empty() {
+        bail!("canary tunnel has no schedulable paths");
+    }
+
+    let specs = select_probe_paths(&config, &[], &[])?;
+    let specs_by_id = specs
+        .into_iter()
+        .map(|spec| (spec.path_id, spec))
+        .collect::<HashMap<_, _>>();
+    let mut sockets = HashMap::new();
+    for transmission in transmissions
+        .iter()
+        .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
+    {
+        if sockets.contains_key(&transmission.path_id) {
+            continue;
+        }
+        let spec = specs_by_id.get(&transmission.path_id).with_context(|| {
+            format!(
+                "scheduled path {} is not enabled in client config",
+                transmission.path_id
+            )
+        })?;
+        let (socket, _isolation) =
+            create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref()).with_context(
+                || {
+                    format!(
+                        "failed to open isolated canary socket for path {} ({})",
+                        spec.path_id, spec.name
+                    )
+                },
+            )?;
+        socket.connect(&config.server_addr).await.with_context(|| {
+            format!(
+                "failed to connect canary path {} to {}",
+                spec.path_id, config.server_addr
+            )
+        })?;
+        sockets.insert(transmission.path_id, socket);
+    }
+
+    let mut tun = CanaryTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
+        format!(
+            "failed to open canary TUN {}; run as root or grant CAP_NET_ADMIN",
+            options.tun_name
+        )
+    })?;
+    write_runtime_status(
+        &config,
+        XBondRuntimeStatus {
+            running: true,
+            tunnel: XBondTunnelStatus {
+                state: "canary-running".to_string(),
+                device_name: Some(tun.name().to_string()),
+                mtu: Some(options.tun_mtu),
+                message: "Canary tunnel is open; XBond does not install routes automatically."
+                    .to_string(),
+            },
+            fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
+            message: Some("Canary tunnel is running.".to_string()),
+            ..XBondRuntimeStatus::default()
+        },
+    )?;
+
+    if options.json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "canary-tunnel-started",
+                "tun": tun.name(),
+                "server": config.server_addr,
+                "mode": config.mode,
+                "schedule": schedule,
+            })
+        );
+    } else {
+        println!(
+            "xbond canary tunnel opened {} -> {} ({:?}); no routes were changed",
+            tun.name(),
+            config.server_addr,
+            config.mode
+        );
+    }
+
+    let mut sequence = 0u64;
+    let mut data_packets_sent = 0u64;
+    let mut duplicate_packets_sent = 0u64;
+    let mut fec_packets_skipped = 0u64;
+    let mut buf = vec![0u8; usize::from(options.tun_mtu).max(2048)];
+
+    loop {
+        if options
+            .packet_limit
+            .is_some_and(|packet_limit| sequence >= packet_limit)
+        {
+            break;
+        }
+
+        let len = tun.read_packet(&mut buf).with_context(|| {
+            format!("failed to read IPv4 packet from canary TUN {}", tun.name())
+        })?;
+        if !is_ipv4_packet(&buf[..len]) {
+            if options.json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "non-ipv4-packet-skipped",
+                        "bytes": len,
+                    })
+                );
+            }
+            continue;
+        }
+
+        sequence += 1;
+        let send_micros = now_micros();
+        for transmission in &transmissions {
+            if transmission.packet_kind == PacketKind::Fec {
+                fec_packets_skipped += 1;
+                continue;
+            }
+
+            let Some(socket) = sockets.get(&transmission.path_id) else {
+                continue;
+            };
+            let frame = XBondFrame::new(
+                XBondHeader::new(
+                    transmission.packet_kind,
+                    config.session_id,
+                    sequence,
+                    send_micros,
+                    transmission.path_id,
+                ),
+                buf[..len].to_vec(),
+            );
+            socket.send(&frame.encode_sealed(&key)?).await?;
+            match transmission.packet_kind {
+                PacketKind::Data => data_packets_sent += 1,
+                PacketKind::Duplicate => duplicate_packets_sent += 1,
+                _ => {}
+            }
+        }
+
+        write_runtime_status(
+            &config,
+            XBondRuntimeStatus {
+                running: true,
+                tunnel: XBondTunnelStatus {
+                    state: "canary-running".to_string(),
+                    device_name: Some(tun.name().to_string()),
+                    mtu: Some(options.tun_mtu),
+                    message: "Canary tunnel is open; XBond does not install routes automatically."
+                        .to_string(),
+                },
+                data_packets_sent,
+                duplicate_packets_sent,
+                fec_packets_skipped,
+                fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
+                message: Some("Canary tunnel is running.".to_string()),
+                ..XBondRuntimeStatus::default()
+            },
+        )?;
+
+        if options.json_events {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "packet-sent",
+                    "sequence": sequence,
+                    "bytes": len,
+                    "data_packets_sent": data_packets_sent,
+                    "duplicate_packets_sent": duplicate_packets_sent,
+                    "fec_packets_skipped": fec_packets_skipped,
+                })
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn prepare_probe_path(
+    spec: ProbePathSpec,
+    server: &str,
+    target_ip: Option<IpAddr>,
+) -> Result<PreparedProbePath> {
+    let socket = match create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref()) {
+        Ok((socket, _isolation)) => socket,
+        Err(error) => {
+            let route_verification = RouteVerification::failed("bind-device", error.to_string());
+            let stats = ProbePathStats::new(
+                spec.path_id,
+                Some(spec.name),
+                spec.interface_name,
+                spec.bind_addr,
+                None,
+                route_verification,
+            );
+            return Ok(PreparedProbePath {
+                active: None,
+                inactive_stats: Some(stats),
+            });
+        }
+    };
+
+    socket.connect(server).await.with_context(|| {
+        format!(
+            "failed to connect path {} UDP socket to {}",
+            spec.path_id, server
+        )
+    })?;
+    let local_addr = socket.local_addr()?;
+    let source = source_ip(local_addr);
+    let route_verification = verify_route(
+        target_ip,
+        local_addr,
+        spec.interface_name.as_deref(),
+        spec.bind_device.as_deref(),
+    );
+    let stats = ProbePathStats::new(
+        spec.path_id,
+        Some(spec.name.clone()),
+        spec.interface_name.clone(),
+        local_addr.to_string(),
+        source.map(|ip| ip.to_string()),
+        route_verification,
+    );
+    Ok(PreparedProbePath {
+        active: Some(ActiveProbePath {
+            spec,
+            socket,
+            stats,
+        }),
+        inactive_stats: None,
     })
 }
 
@@ -510,12 +792,8 @@ fn select_probe_paths(
                 path_id: path.id,
                 name: path.name.clone(),
                 interface_name: path.interface_name.clone(),
-                bind_addr: path.bind_addr.clone().with_context(|| {
-                    format!(
-                        "path id {} ({}) must set bind_addr for multi-ping route isolation",
-                        path.id, path.name
-                    )
-                })?,
+                bind_addr: configured_or_default_bind_addr(path)?,
+                bind_device: path.interface_name.clone(),
             });
         }
     } else {
@@ -527,12 +805,8 @@ fn select_probe_paths(
                 path_id: path.id,
                 name: path.name.clone(),
                 interface_name: path.interface_name.clone(),
-                bind_addr: path.bind_addr.clone().with_context(|| {
-                    format!(
-                        "path id {} ({}) must set bind_addr for multi-ping route isolation",
-                        path.id, path.name
-                    )
-                })?,
+                bind_addr: configured_or_default_bind_addr(path)?,
+                bind_device: path.interface_name.clone(),
             });
         }
     }
@@ -559,6 +833,22 @@ fn select_probe_paths(
     }
 
     Ok(paths)
+}
+
+fn configured_or_default_bind_addr(path: &xbond_core::PathConfig) -> Result<String> {
+    if let Some(bind_addr) = &path.bind_addr {
+        return Ok(bind_addr.clone());
+    }
+
+    if path.interface_name.is_some() {
+        return Ok("0.0.0.0:0".to_string());
+    }
+
+    bail!(
+        "path id {} ({}) must set bind_addr or interface_name for route isolation",
+        path.id,
+        path.name
+    );
 }
 
 fn parse_explicit_probe_bind(
@@ -588,6 +878,7 @@ fn parse_explicit_probe_bind(
         name: format!("explicit-bind-{path_id}"),
         interface_name: None,
         bind_addr,
+        bind_device: None,
     })
 }
 
@@ -603,6 +894,64 @@ fn resolve_server_ip(server: &str) -> Option<IpAddr> {
         .map(|addr| addr.ip())
 }
 
+fn create_isolated_udp_socket(
+    bind_addr: &str,
+    bind_device: Option<&str>,
+) -> Result<(UdpSocket, PathIsolationStatus)> {
+    let bind_addr = bind_addr
+        .parse::<SocketAddr>()
+        .with_context(|| format!("failed to parse bind address {bind_addr}"))?;
+    let socket = Socket::new(
+        Domain::for_address(bind_addr),
+        Type::DGRAM,
+        Some(Protocol::UDP),
+    )?;
+    let isolation = apply_bind_device(&socket, bind_device)?;
+    socket
+        .bind(&bind_addr.into())
+        .with_context(|| format!("failed to bind UDP socket to {bind_addr}"))?;
+    socket.set_nonblocking(true)?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    Ok((UdpSocket::from_std(std_socket)?, isolation))
+}
+
+fn apply_bind_device(socket: &Socket, bind_device: Option<&str>) -> Result<PathIsolationStatus> {
+    let Some(bind_device) = bind_device.filter(|value| !value.trim().is_empty()) else {
+        return Ok(PathIsolationStatus::default());
+    };
+
+    if is_speedify_interface(bind_device) {
+        bail!("refusing to bind XBond path to Speedify interface {bind_device}");
+    }
+
+    apply_platform_bind_device(socket, bind_device)?;
+    Ok(PathIsolationStatus::active(
+        "so-bindtodevice",
+        format!("socket is isolated to interface {bind_device}"),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn apply_platform_bind_device(socket: &Socket, bind_device: &str) -> Result<()> {
+    socket
+        .bind_device(Some(bind_device.as_bytes()))
+        .map_err(|error| {
+            if matches!(error.kind(), ErrorKind::PermissionDenied) {
+                anyhow::anyhow!(
+                    "SO_BINDTODEVICE for {bind_device} requires root or CAP_NET_RAW/CAP_NET_ADMIN"
+                )
+            } else {
+                anyhow::anyhow!("failed to apply SO_BINDTODEVICE for {bind_device}: {error}")
+            }
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_platform_bind_device(_socket: &Socket, bind_device: &str) -> Result<()> {
+    let _ = ErrorKind::Unsupported;
+    bail!("bind-device isolation for {bind_device} is only implemented on Linux");
+}
+
 fn source_ip(addr: SocketAddr) -> Option<IpAddr> {
     if addr.ip().is_unspecified() {
         None
@@ -615,6 +964,7 @@ fn verify_route(
     target_ip: Option<IpAddr>,
     local_addr: SocketAddr,
     interface_name: Option<&str>,
+    bind_device: Option<&str>,
 ) -> RouteVerification {
     let Some(target_ip) = target_ip else {
         return RouteVerification::failed(
@@ -633,6 +983,14 @@ fn verify_route(
             return RouteVerification::failed(
                 "ip-route-get",
                 format!("configured interface {interface_name} is a Speedify interface"),
+            );
+        }
+    }
+    if let Some(bind_device) = bind_device {
+        if is_speedify_interface(bind_device) {
+            return RouteVerification::failed(
+                "bind-device",
+                format!("configured bind device {bind_device} is a Speedify interface"),
             );
         }
     }
@@ -665,6 +1023,14 @@ fn verify_route(
         return RouteVerification::failed("ip-route-get", "route output did not include dev");
     };
     if is_speedify_interface(&route_dev) {
+        if let Some(bind_device) = bind_device {
+            return RouteVerification::verified(
+                "bind-device+ip-route-get",
+                format!(
+                    "SO_BINDTODEVICE isolates socket to {bind_device}; ip route get still reports {route_dev}"
+                ),
+            );
+        }
         return RouteVerification::failed(
             "ip-route-get",
             format!("route leaves through Speedify interface {route_dev}"),
@@ -672,6 +1038,14 @@ fn verify_route(
     }
     if let Some(interface_name) = interface_name {
         if route_dev != interface_name {
+            if bind_device == Some(interface_name) {
+                return RouteVerification::verified(
+                    "bind-device+ip-route-get",
+                    format!(
+                        "SO_BINDTODEVICE isolates socket to {interface_name}; ip route get reports {route_dev}"
+                    ),
+                );
+            }
             return RouteVerification::failed(
                 "ip-route-get",
                 format!(
@@ -721,18 +1095,41 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
     };
     let roles = select_path_roles(&health, config.max_active_backups);
     let schedule = build_schedule(config.mode, &roles);
-    let paths = roles.into_iter().map(XBondPathStatus::from).collect();
+    let config_by_id = config
+        .paths
+        .iter()
+        .map(|path| (path.id, path))
+        .collect::<HashMap<_, _>>();
+    let paths = roles
+        .into_iter()
+        .map(|role| {
+            let mut status = XBondPathStatus::from(role);
+            if let Some(path_config) = config_by_id.get(&status.path_id) {
+                status.bind_addr = path_config.bind_addr.clone();
+                status.bind_device = path_config.interface_name.clone();
+                status.path_isolation = path_isolation_from_config(path_config);
+            }
+            status
+        })
+        .collect();
 
     Ok(XBondStatus {
         enabled: config.enabled,
         running: runtime.running,
         mode: config.mode,
         server_addr: config.server_addr,
+        tunnel: runtime.tunnel,
         anchor_path_id: schedule.anchor_path_id,
         schedule,
         paths,
+        data_packets_sent: runtime.data_packets_sent,
+        duplicate_packets_sent: runtime.duplicate_packets_sent,
         duplicate_packets_dropped: runtime.duplicate_packets_dropped,
+        data_packets_received: runtime.data_packets_received,
+        fec_packets_sent: runtime.fec_packets_sent,
         fec_packets_recovered: runtime.fec_packets_recovered,
+        fec_packets_skipped: runtime.fec_packets_skipped,
+        fec: fec_status_for_mode(config.mode, runtime.fec),
         late_packets_dropped: runtime.late_packets_dropped,
         message: runtime.message.unwrap_or_else(|| {
             if config.runtime_status_path.is_some() {
@@ -744,6 +1141,41 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
             }
         }),
     })
+}
+
+fn path_isolation_from_config(path: &xbond_core::PathConfig) -> PathIsolationStatus {
+    match path.interface_name.as_deref() {
+        Some(interface_name) if is_speedify_interface(interface_name) => {
+            PathIsolationStatus::failed(
+                "so-bindtodevice",
+                format!("refusing to isolate path to Speedify interface {interface_name}"),
+            )
+        }
+        Some(interface_name) => PathIsolationStatus::requested(
+            "so-bindtodevice",
+            format!(
+                "will request bind-device isolation on {interface_name} when the path socket opens"
+            ),
+        ),
+        None => PathIsolationStatus::default(),
+    }
+}
+
+fn fec_status_for_mode(mode: xbond_core::ScheduleMode, runtime: XBondFecStatus) -> XBondFecStatus {
+    if matches!(mode, xbond_core::ScheduleMode::AnchorFec) {
+        return XBondFecStatus {
+            configured: true,
+            production_ready: false,
+            message: "AnchorFec is configured, but FEC parity generation is a canary stub and is not production-ready."
+                .to_string(),
+        };
+    }
+
+    if runtime.configured || runtime.production_ready {
+        runtime
+    } else {
+        XBondFecStatus::default()
+    }
 }
 
 fn read_config(config_path: &PathBuf) -> Result<ClientConfig> {
@@ -769,6 +1201,20 @@ fn read_runtime_status(config: &ClientConfig) -> Result<XBondRuntimeStatus> {
         .with_context(|| format!("failed to read {}", runtime_path.display()))?;
     toml_or_json_runtime_status(&text)
         .with_context(|| format!("failed to parse {}", runtime_path.display()))
+}
+
+fn write_runtime_status(config: &ClientConfig, status: XBondRuntimeStatus) -> Result<()> {
+    let Some(path) = &config.runtime_status_path else {
+        return Ok(());
+    };
+    let runtime_path = PathBuf::from(path);
+    if let Some(parent) = runtime_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&status)?;
+    std::fs::write(&runtime_path, text)
+        .with_context(|| format!("failed to write {}", runtime_path.display()))
 }
 
 fn toml_or_json_runtime_status(text: &str) -> Result<XBondRuntimeStatus> {
@@ -1001,7 +1447,7 @@ mod tests {
             paths: vec![xbond_core::PathConfig {
                 id: 1,
                 name: "primary".to_string(),
-                interface_name: Some("eth0".to_string()),
+                interface_name: None,
                 bind_addr: None,
                 enabled: true,
             }],
@@ -1012,6 +1458,25 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("must set bind_addr for multi-ping route isolation"));
+            .contains("must set bind_addr or interface_name for route isolation"));
+    }
+
+    #[test]
+    fn multi_ping_can_use_interface_name_for_bind_device_isolation() {
+        let config = ClientConfig {
+            paths: vec![xbond_core::PathConfig {
+                id: 1,
+                name: "primary".to_string(),
+                interface_name: Some("eth0".to_string()),
+                bind_addr: None,
+                enabled: true,
+            }],
+            ..ClientConfig::default()
+        };
+
+        let paths = select_probe_paths(&config, &[], &[]).unwrap();
+
+        assert_eq!(paths[0].bind_addr, "0.0.0.0:0");
+        assert_eq!(paths[0].bind_device.as_deref(), Some("eth0"));
     }
 }

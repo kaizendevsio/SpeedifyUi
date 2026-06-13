@@ -84,9 +84,43 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledTransmission {
+    pub path_id: u16,
+    pub packet_kind: crate::protocol::PacketKind,
+}
+
+pub fn build_transmission_plan(schedule: &SchedulePlan) -> Vec<ScheduledTransmission> {
+    let mut transmissions = Vec::new();
+
+    for path_id in &schedule.data_path_ids {
+        transmissions.push(ScheduledTransmission {
+            path_id: *path_id,
+            packet_kind: crate::protocol::PacketKind::Data,
+        });
+    }
+
+    for path_id in &schedule.duplicate_path_ids {
+        transmissions.push(ScheduledTransmission {
+            path_id: *path_id,
+            packet_kind: crate::protocol::PacketKind::Duplicate,
+        });
+    }
+
+    for path_id in &schedule.fec_path_ids {
+        transmissions.push(ScheduledTransmission {
+            path_id: *path_id,
+            packet_kind: crate::protocol::PacketKind::Fec,
+        });
+    }
+
+    transmissions
+}
+
 #[cfg(test)]
 mod tests {
     use crate::health::{select_path_roles, PathHealthSnapshot};
+    use crate::protocol::PacketKind;
 
     use super::*;
 
@@ -148,5 +182,49 @@ mod tests {
             serde_json::to_string(&ScheduleMode::AnchorDuplicate1).unwrap(),
             "\"anchor-duplicate-1\""
         );
+    }
+
+    #[test]
+    fn duplicate_transmission_plan_marks_anchor_data_and_backup_duplicate() {
+        let plan = SchedulePlan {
+            mode: ScheduleMode::AnchorDuplicate1,
+            anchor_path_id: Some(1),
+            data_path_ids: vec![1],
+            duplicate_path_ids: vec![2],
+            fec_path_ids: Vec::new(),
+        };
+
+        let transmissions = build_transmission_plan(&plan);
+
+        assert_eq!(
+            transmissions,
+            vec![
+                ScheduledTransmission {
+                    path_id: 1,
+                    packet_kind: PacketKind::Data,
+                },
+                ScheduledTransmission {
+                    path_id: 2,
+                    packet_kind: PacketKind::Duplicate,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn fec_transmission_plan_is_explicit_about_fec_paths() {
+        let plan = SchedulePlan {
+            mode: ScheduleMode::AnchorFec,
+            anchor_path_id: Some(1),
+            data_path_ids: vec![1],
+            duplicate_path_ids: Vec::new(),
+            fec_path_ids: vec![2, 3],
+        };
+
+        let transmissions = build_transmission_plan(&plan);
+
+        assert_eq!(transmissions[0].packet_kind, PacketKind::Data);
+        assert_eq!(transmissions[1].packet_kind, PacketKind::Fec);
+        assert_eq!(transmissions[2].packet_kind, PacketKind::Fec);
     }
 }

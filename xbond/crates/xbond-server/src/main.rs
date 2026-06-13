@@ -2,7 +2,10 @@ use anyhow::Result;
 use clap::Parser;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
-use xbond_core::{FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader, XBondKey};
+use xbond_core::{
+    is_ipv4_packet, CanaryTun, FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader,
+    XBondKey,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -19,6 +22,12 @@ struct Args {
 
     #[arg(long)]
     json_events: bool,
+
+    #[arg(long)]
+    tun_name: Option<String>,
+
+    #[arg(long, default_value_t = 1400)]
+    tun_mtu: u16,
 }
 
 #[tokio::main]
@@ -28,6 +37,13 @@ async fn main() -> Result<()> {
     let key = XBondKey::from_passphrase(&key_text);
     let socket = UdpSocket::bind(&args.bind).await?;
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
+    let mut tun = match args.tun_name.as_deref() {
+        Some(name) => Some(CanaryTun::open(name, args.tun_mtu)?),
+        None => None,
+    };
+    let mut data_packets_received = 0u64;
+    let mut data_packets_forwarded = 0u64;
+    let mut non_ipv4_packets_dropped = 0u64;
     let mut buf = vec![0u8; 2048];
 
     if args.json_events {
@@ -36,6 +52,7 @@ async fn main() -> Result<()> {
             serde_json::json!({
                 "event": "listening",
                 "bind": args.bind,
+                "tun": tun.as_ref().map(|tun| tun.name()),
             })
         );
     } else {
@@ -74,6 +91,33 @@ async fn main() -> Result<()> {
             );
         }
 
+        let mut forwarded = false;
+        let mut dropped_reason = None;
+        if outcome == ReceiveOutcome::Accepted && is_data_like(frame.header.kind) {
+            data_packets_received += 1;
+            if is_ipv4_packet(&frame.payload) {
+                if let Some(tun) = &mut tun {
+                    tun.write_packet(&frame.payload)?;
+                    data_packets_forwarded += 1;
+                    forwarded = true;
+                }
+            } else {
+                non_ipv4_packets_dropped += 1;
+                dropped_reason = Some("payload is not an IPv4 packet");
+            }
+        }
+
+        if args.json_events && is_data_like(frame.header.kind) {
+            print_data_event(
+                &frame,
+                forwarded,
+                dropped_reason,
+                data_packets_received,
+                data_packets_forwarded,
+                non_ipv4_packets_dropped,
+            );
+        }
+
         if outcome != ReceiveOutcome::Accepted {
             continue;
         }
@@ -101,6 +145,10 @@ fn event_name(outcome: ReceiveOutcome) -> &'static str {
     }
 }
 
+fn is_data_like(kind: PacketKind) -> bool {
+    matches!(kind, PacketKind::Data | PacketKind::Duplicate)
+}
+
 fn print_packet_event(
     event: &str,
     outcome: ReceiveOutcome,
@@ -125,6 +173,34 @@ fn print_packet_event(
                 "first_arrivals": stats.accepted_packets,
                 "duplicates_dropped": stats.duplicate_packets_dropped,
                 "late_packets_dropped": stats.late_packets_dropped,
+            }
+        })
+    );
+}
+
+fn print_data_event(
+    frame: &XBondFrame,
+    forwarded: bool,
+    dropped_reason: Option<&str>,
+    data_packets_received: u64,
+    data_packets_forwarded: u64,
+    non_ipv4_packets_dropped: u64,
+) {
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "data-decapsulated",
+            "session_id": frame.header.session_id,
+            "sequence": frame.header.sequence,
+            "path_id": frame.header.path_id,
+            "packet_kind": frame.header.kind,
+            "bytes": frame.payload.len(),
+            "forwarded_to_tun": forwarded,
+            "dropped_reason": dropped_reason,
+            "counters": {
+                "data_packets_received": data_packets_received,
+                "data_packets_forwarded": data_packets_forwarded,
+                "non_ipv4_packets_dropped": non_ipv4_packets_dropped,
             }
         })
     );
@@ -165,5 +241,13 @@ mod tests {
         assert!(XBondFrame::decode(&encoded).is_ok());
         assert!(!encoded.windows(9).any(|window| window == b"heartbeat"));
         assert_eq!(XBondFrame::decode_sealed(&encoded, &key).unwrap(), frame);
+    }
+
+    #[test]
+    fn data_and_duplicate_are_tunnel_payload_kinds() {
+        assert!(is_data_like(PacketKind::Data));
+        assert!(is_data_like(PacketKind::Duplicate));
+        assert!(!is_data_like(PacketKind::Heartbeat));
+        assert!(!is_data_like(PacketKind::Fec));
     }
 }
