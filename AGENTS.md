@@ -71,6 +71,10 @@
 - 2026-06-13: `xbond-server` listens on UDP, requires a pre-shared key from the `XBOND_PSK` environment variable by default, decodes sealed frames, drops duplicates/late packets through `FrameReceiver`, and ACKs sealed heartbeat/control frames.
 - 2026-06-13: XNetwork version `2026.06.9` adds read-only XBond observability at `/xbond`, desktop and mobile navigation entries, `XBondStatusService`, `XBond` config defaults, and changelog/test coverage. `XBond` is disabled by default and XNetwork does not start or stop tunnel services.
 - 2026-06-13: XBond live-test preflight found `xeon-network` is `aarch64` and `xeon-speedify-vultr-01` is `x86_64`; neither host currently has `cargo` or `rustc` in PATH, so host testing requires uploaded release binaries/cross-compilation or a temporary Rust toolchain install.
+- 2026-06-14: XNetwork version `2026.06.10` was committed as `15d6a99` and deployed to `xeon-network`; `/xbond` returned HTTP 200 and XBond remains disabled/not routing traffic by default.
+- 2026-06-14: XBond static Linux binaries were deployed manually without systemd services: `/usr/local/bin/xbond-server` and `/usr/local/bin/xbond-client` on `xeon-speedify-vultr-01`, and `/usr/local/bin/xbond-client` on `xeon-network`.
+- 2026-06-14: XBond live heartbeat test over Tailscale succeeded from `xeon-network` to `xeon-speedify-vultr-01` on `100.112.116.83:8444`: 10 sent, 10 received, 0% loss, about 55.7 ms average RTT. The server process was temporary and stopped after testing.
+- 2026-06-14: Temporary public XBond heartbeat test to `45.77.241.247:8444/udp` failed 10/10 while Speedify was connected because `xeon-network` routed the server public IP through `connectify0` (`10.202.0.2`) instead of a physical WAN adapter. The temporary public UFW allow rule was removed after the test.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.
