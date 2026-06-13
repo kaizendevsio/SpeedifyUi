@@ -91,6 +91,8 @@ enum Command {
         tun_name: String,
         #[arg(long, default_value_t = 1400)]
         tun_mtu: u16,
+        #[arg(long)]
+        session_id: Option<u64>,
         #[arg(long, default_value = "XBOND_PSK")]
         key_env: String,
         #[arg(long)]
@@ -180,6 +182,7 @@ async fn main() -> Result<()> {
             config,
             tun_name,
             tun_mtu,
+            session_id,
             key_env,
             packet_limit,
             json_events,
@@ -188,6 +191,7 @@ async fn main() -> Result<()> {
                 config,
                 tun_name,
                 tun_mtu,
+                session_id,
                 key_env,
                 packet_limit,
                 json_events,
@@ -229,6 +233,7 @@ struct CanaryTunnelOptions {
     config: PathBuf,
     tun_name: String,
     tun_mtu: u16,
+    session_id: Option<u64>,
     key_env: String,
     packet_limit: Option<u64>,
     json_events: bool,
@@ -492,6 +497,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
+    let session_id = options.session_id.unwrap_or_else(now_micros);
     let health = config_health(&config);
     let roles = select_path_roles(&health, config.max_active_backups);
     let schedule = build_schedule(config.mode, &roles);
@@ -614,6 +620,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                 "tun": tun.name(),
                 "server": config.server_addr,
                 "mode": config.mode,
+                "session_id": session_id,
                 "schedule": schedule,
             })
         );
@@ -672,7 +679,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     let frame = XBondFrame::new(
                         XBondHeader::new(
                             transmission.packet_kind,
-                            config.session_id,
+                            session_id,
                             sequence,
                             send_micros,
                             transmission.path_id,
@@ -705,7 +712,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                             let frame = XBondFrame::new(
                                 XBondHeader::new(
                                     PacketKind::Fec,
-                                    config.session_id,
+                                    session_id,
                                     base_sequence,
                                     send_micros,
                                     transmission.path_id,

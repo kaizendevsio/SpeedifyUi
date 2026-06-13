@@ -39,6 +39,7 @@ The server unit listens on `8444/udp`, opens `xbonds0`, and can send return pack
 ## Canary Limits
 
 - `xbond-client canary-tunnel` opens a TUN and encapsulates IPv4 packets, but it does not change default routes.
+- Each `xbond-client canary-tunnel` process uses a fresh runtime session id by default so service restarts are not treated as duplicate old packets by the server. Use `--session-id` only for deterministic diagnostics.
 - `xbond-server --tun-name <name>` writes first-arrival IPv4 payloads to a TUN and reads return packets from the server TUN for encapsulation back to the client.
 - `AnchorFec` uses canary XOR parity blocks and can recover one missing packet per two-packet block when the paired packet and parity arrive.
 - Keep Speedify as primary until a separate lab route and rollback script are tested.
