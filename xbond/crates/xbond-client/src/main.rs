@@ -3,18 +3,21 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
     build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, CanaryTun,
-    ClientConfig, PacketKind, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate,
-    ProbePathStats, RouteVerification, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus, XorFecBlock,
+    ClientConfig, FrameReceiver, PacketKind, PathHealthSnapshot, PathIsolationStatus,
+    ProbeAggregate, ProbePathStats, ReceiveOutcome, RouteVerification, XBondFecStatus, XBondFrame,
+    XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
+    XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -249,6 +252,11 @@ struct ActiveProbePath {
 struct PreparedProbePath {
     active: Option<ActiveProbePath>,
     inactive_stats: Option<ProbePathStats>,
+}
+
+#[derive(Debug)]
+struct InboundCanaryFrame {
+    frame: XBondFrame,
 }
 
 #[derive(Debug, Clone)]
@@ -497,7 +505,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
         .into_iter()
         .map(|spec| (spec.path_id, spec))
         .collect::<HashMap<_, _>>();
-    let mut sockets = HashMap::new();
+    let mut sockets: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
     for transmission in &transmissions {
         if sockets.contains_key(&transmission.path_id) {
             continue;
@@ -523,7 +531,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                 spec.path_id, config.server_addr
             )
         })?;
-        sockets.insert(transmission.path_id, socket);
+        sockets.insert(transmission.path_id, Arc::new(socket));
     }
 
     let mut tun = CanaryTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
@@ -532,6 +540,55 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
             options.tun_name
         )
     })?;
+    let tun_reader = tun.try_clone().with_context(|| {
+        format!(
+            "failed to clone canary TUN {} for packet reader",
+            tun.name()
+        )
+    })?;
+    let (tun_packet_tx, mut tun_packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let tun_name = tun.name().to_string();
+    let tun_read_mtu = usize::from(options.tun_mtu).max(2048);
+    tokio::task::spawn_blocking(move || {
+        let mut tun_reader = tun_reader;
+        let mut buf = vec![0u8; tun_read_mtu];
+        loop {
+            match tun_reader.read_packet(&mut buf) {
+                Ok(len) => {
+                    if tun_packet_tx.send(buf[..len].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    eprintln!("xbond canary TUN reader for {tun_name} stopped: {error}");
+                    break;
+                }
+            }
+        }
+    });
+
+    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<InboundCanaryFrame>();
+    for socket in sockets.values().cloned() {
+        let inbound_tx = inbound_tx.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                let Ok(len) = socket.recv(&mut buf).await else {
+                    break;
+                };
+                let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
+                    continue;
+                };
+                if inbound_tx.send(InboundCanaryFrame { frame }).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    drop(inbound_tx);
+
     write_runtime_status(
         &config,
         XBondRuntimeStatus {
@@ -540,7 +597,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                 state: "canary-running".to_string(),
                 device_name: Some(tun.name().to_string()),
                 mtu: Some(options.tun_mtu),
-                message: "Canary tunnel is open; XBond does not install routes automatically."
+                message: "Bidirectional canary tunnel is open; XBond does not install routes automatically."
                     .to_string(),
             },
             fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
@@ -574,93 +631,145 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
     let mut duplicate_packets_sent = 0u64;
     let mut fec_packets_sent = 0u64;
     let mut fec_packets_skipped = 0u64;
+    let mut data_packets_received = 0u64;
+    let mut late_packets_dropped = 0u64;
+    let mut duplicate_packets_dropped = 0u64;
     let mut pending_fec_source: Option<(u64, Vec<u8>)> = None;
-    let mut buf = vec![0u8; usize::from(options.tun_mtu).max(2048)];
+    let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
 
     loop {
-        if options
-            .packet_limit
-            .is_some_and(|packet_limit| sequence >= packet_limit)
-        {
-            break;
-        }
+        tokio::select! {
+            Some(packet) = tun_packet_rx.recv() => {
+                if options
+                    .packet_limit
+                    .is_some_and(|packet_limit| sequence >= packet_limit)
+                {
+                    break;
+                }
 
-        let len = tun.read_packet(&mut buf).with_context(|| {
-            format!("failed to read IPv4 packet from canary TUN {}", tun.name())
-        })?;
-        if !is_ipv4_packet(&buf[..len]) {
-            if options.json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "non-ipv4-packet-skipped",
-                        "bytes": len,
-                    })
-                );
-            }
-            continue;
-        }
+                if !is_ipv4_packet(&packet) {
+                    if options.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "non-ipv4-packet-skipped",
+                                "bytes": packet.len(),
+                            })
+                        );
+                    }
+                    continue;
+                }
 
-        sequence += 1;
-        let send_micros = now_micros();
-        let current_payload = buf[..len].to_vec();
-        for transmission in transmissions
-            .iter()
-            .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
-        {
-            let Some(socket) = sockets.get(&transmission.path_id) else {
-                continue;
-            };
-            let frame = XBondFrame::new(
-                XBondHeader::new(
-                    transmission.packet_kind,
-                    config.session_id,
-                    sequence,
-                    send_micros,
-                    transmission.path_id,
-                ),
-                current_payload.clone(),
-            );
-            socket.send(&frame.encode_sealed(&key)?).await?;
-            match transmission.packet_kind {
-                PacketKind::Data => data_packets_sent += 1,
-                PacketKind::Duplicate => duplicate_packets_sent += 1,
-                _ => {}
-            }
-        }
-
-        let fec_transmissions = transmissions
-            .iter()
-            .filter(|transmission| transmission.packet_kind == PacketKind::Fec);
-        if transmissions
-            .iter()
-            .any(|transmission| transmission.packet_kind == PacketKind::Fec)
-        {
-            if let Some((base_sequence, first_payload)) = pending_fec_source.take() {
-                let fec_payload =
-                    XorFecBlock::encode(base_sequence, &first_payload, &current_payload)?;
-                for transmission in fec_transmissions {
+                sequence += 1;
+                let send_micros = now_micros();
+                for transmission in transmissions
+                    .iter()
+                    .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
+                {
                     let Some(socket) = sockets.get(&transmission.path_id) else {
-                        fec_packets_skipped += 1;
                         continue;
                     };
                     let frame = XBondFrame::new(
                         XBondHeader::new(
-                            PacketKind::Fec,
+                            transmission.packet_kind,
                             config.session_id,
-                            base_sequence,
+                            sequence,
                             send_micros,
                             transmission.path_id,
                         ),
-                        fec_payload.clone(),
+                        packet.clone(),
                     );
                     socket.send(&frame.encode_sealed(&key)?).await?;
-                    fec_packets_sent += 1;
+                    match transmission.packet_kind {
+                        PacketKind::Data => data_packets_sent += 1,
+                        PacketKind::Duplicate => duplicate_packets_sent += 1,
+                        _ => {}
+                    }
                 }
-            } else {
-                pending_fec_source = Some((sequence, current_payload));
+
+                let fec_transmissions = transmissions
+                    .iter()
+                    .filter(|transmission| transmission.packet_kind == PacketKind::Fec);
+                if transmissions
+                    .iter()
+                    .any(|transmission| transmission.packet_kind == PacketKind::Fec)
+                {
+                    if let Some((base_sequence, first_payload)) = pending_fec_source.take() {
+                        let fec_payload =
+                            XorFecBlock::encode(base_sequence, &first_payload, &packet)?;
+                        for transmission in fec_transmissions {
+                            let Some(socket) = sockets.get(&transmission.path_id) else {
+                                fec_packets_skipped += 1;
+                                continue;
+                            };
+                            let frame = XBondFrame::new(
+                                XBondHeader::new(
+                                    PacketKind::Fec,
+                                    config.session_id,
+                                    base_sequence,
+                                    send_micros,
+                                    transmission.path_id,
+                                ),
+                                fec_payload.clone(),
+                            );
+                            socket.send(&frame.encode_sealed(&key)?).await?;
+                            fec_packets_sent += 1;
+                        }
+                    } else {
+                        pending_fec_source = Some((sequence, packet.clone()));
+                    }
+                }
+
+                if options.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "packet-sent",
+                            "sequence": sequence,
+                            "bytes": packet.len(),
+                            "data_packets_sent": data_packets_sent,
+                            "duplicate_packets_sent": duplicate_packets_sent,
+                            "fec_packets_sent": fec_packets_sent,
+                            "fec_packets_skipped": fec_packets_skipped,
+                        })
+                    );
+                }
             }
-        }
+
+            Some(inbound) = inbound_rx.recv() => {
+                let outcome = inbound_receiver.observe(&inbound.frame, now_micros());
+                match outcome {
+                    ReceiveOutcome::Accepted if is_data_like(inbound.frame.header.kind) => {
+                        if is_ipv4_packet(&inbound.frame.payload) {
+                            tun.write_packet(&inbound.frame.payload).with_context(|| {
+                                format!("failed to write return packet to canary TUN {}", tun.name())
+                            })?;
+                            data_packets_received += 1;
+                            if options.json_events {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "packet-received",
+                                        "sequence": inbound.frame.header.sequence,
+                                        "bytes": inbound.frame.payload.len(),
+                                        "data_packets_received": data_packets_received,
+                                    })
+                                );
+                            }
+                        }
+                    }
+                    ReceiveOutcome::Duplicate => {
+                        duplicate_packets_dropped += 1;
+                    }
+                    ReceiveOutcome::Expired => {
+                        late_packets_dropped += 1;
+                    }
+                    _ => {}
+                }
+            }
+
+            else => break,
+        };
 
         write_runtime_status(
             &config,
@@ -670,36 +779,28 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     state: "canary-running".to_string(),
                     device_name: Some(tun.name().to_string()),
                     mtu: Some(options.tun_mtu),
-                    message: "Canary tunnel is open; XBond does not install routes automatically."
+                    message: "Bidirectional canary tunnel is open; XBond does not install routes automatically."
                         .to_string(),
                 },
                 data_packets_sent,
                 duplicate_packets_sent,
+                duplicate_packets_dropped,
+                data_packets_received,
                 fec_packets_sent,
                 fec_packets_skipped,
                 fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
+                late_packets_dropped,
                 message: Some("Canary tunnel is running.".to_string()),
                 ..XBondRuntimeStatus::default()
             },
         )?;
-
-        if options.json_events {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "event": "packet-sent",
-                    "sequence": sequence,
-                    "bytes": len,
-                    "data_packets_sent": data_packets_sent,
-                    "duplicate_packets_sent": duplicate_packets_sent,
-                    "fec_packets_sent": fec_packets_sent,
-                    "fec_packets_skipped": fec_packets_skipped,
-                })
-            );
-        }
     }
 
     Ok(())
+}
+
+fn is_data_like(kind: PacketKind) -> bool {
+    matches!(kind, PacketKind::Data | PacketKind::Duplicate)
 }
 
 async fn prepare_probe_path(

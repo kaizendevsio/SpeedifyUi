@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.15";
+    public const string CurrentVersion = "2026.06.16";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Made XBond canary tunnel bidirectional.",
+            Changes =
+            [
+                "The XBond client now writes return packets from the server back into the client TUN.",
+                "The XBond server now reads its TUN and sends return packets back to the latest known client path peers.",
+                "This enables a real canary TUN ping test without changing the router default route."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.15",
             Date = "2026-06-14",
             Summary = "Added canary XBond FEC recovery.",
             Changes =

@@ -33,11 +33,11 @@ systemctl daemon-reload
 systemctl enable --now xbond-server-canary.service
 ```
 
-The server unit listens on `8444/udp` and decapsulates only when started with an explicit TUN option. The committed unit keeps the current lab heartbeat behavior and does not install NAT or routes.
+The server unit listens on `8444/udp`, opens `xbonds0`, and can send return packets back to the latest client path peers. It still does not install NAT or routes.
 
 ## Canary Limits
 
 - `xbond-client canary-tunnel` opens a TUN and encapsulates IPv4 packets, but it does not change default routes.
-- `xbond-server --tun-name <name>` can write first-arrival IPv4 payloads to a TUN, but it does not configure NAT.
-- FEC is represented in status as a canary stub. Duplicate mode is implemented; parity generation is not production-ready.
+- `xbond-server --tun-name <name>` writes first-arrival IPv4 payloads to a TUN and reads return packets from the server TUN for encapsulation back to the client.
+- `AnchorFec` uses canary XOR parity blocks and can recover one missing packet per two-packet block when the paired packet and parity arrive.
 - Keep Speedify as primary until a separate lab route and rollback script are tested.

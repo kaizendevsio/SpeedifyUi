@@ -7,9 +7,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/xbond/server.env
-ExecStart=/usr/local/bin/xbond-server --bind 0.0.0.0:8444 --json-events
+ExecStart=/usr/local/bin/xbond-server --bind 0.0.0.0:8444 --tun-name xbonds0 --tun-mtu 1400 --json-events
 Restart=on-failure
 RestartSec=3
+
+# The canary endpoint opens /dev/net/tun when --tun-name is present.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=false
 
 [Install]
 WantedBy=multi-user.target

@@ -1,8 +1,12 @@
 use anyhow::Result;
 use clap::Parser;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::ErrorKind;
+use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use xbond_core::{
     is_ipv4_packet, CanaryTun, FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader,
     XBondKey, XorFecBlock,
@@ -31,12 +35,18 @@ struct Args {
     tun_mtu: u16,
 }
 
+#[derive(Debug)]
+struct InboundServerFrame {
+    frame: XBondFrame,
+    peer: SocketAddr,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let key_text = std::env::var(&args.key_env)?;
     let key = XBondKey::from_passphrase(&key_text);
-    let socket = UdpSocket::bind(&args.bind).await?;
+    let socket = Arc::new(UdpSocket::bind(&args.bind).await?);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let mut tun = match args.tun_name.as_deref() {
         Some(name) => Some(CanaryTun::open(name, args.tun_mtu)?),
@@ -49,7 +59,56 @@ async fn main() -> Result<()> {
     let mut invalid_fec_packets_dropped = 0u64;
     let mut non_ipv4_packets_dropped = 0u64;
     let mut fec_recovery = FecRecovery::new(8192);
-    let mut buf = vec![0u8; 2048];
+    let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
+    let mut reverse_sequence = 0u64;
+    let mut last_session_id = 0u64;
+
+    let (udp_frame_tx, mut udp_frame_rx) = mpsc::unbounded_channel::<InboundServerFrame>();
+    let recv_socket = socket.clone();
+    let recv_key = key.clone();
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let Ok((len, peer)) = recv_socket.recv_from(&mut buf).await else {
+                break;
+            };
+            let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &recv_key) else {
+                continue;
+            };
+            if udp_frame_tx
+                .send(InboundServerFrame { frame, peer })
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let (tun_packet_tx, mut tun_packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    if let Some(tun_ref) = &tun {
+        let mut tun_reader = tun_ref.try_clone()?;
+        let tun_name = tun_ref.name().to_string();
+        let tun_mtu = usize::from(args.tun_mtu).max(2048);
+        tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0u8; tun_mtu];
+            loop {
+                match tun_reader.read_packet(&mut buf) {
+                    Ok(len) => {
+                        if tun_packet_tx.send(buf[..len].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        eprintln!("xbond server TUN reader for {tun_name} stopped: {error}");
+                        break;
+                    }
+                }
+            }
+        });
+    } else {
+        drop(tun_packet_tx);
+    }
 
     if args.json_events {
         println!(
@@ -64,82 +123,66 @@ async fn main() -> Result<()> {
         println!("xbond-server listening on {}", args.bind);
     }
     loop {
-        let (len, peer) = socket.recv_from(&mut buf).await?;
-        let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
-            continue;
-        };
+        tokio::select! {
+            Some(inbound) = udp_frame_rx.recv() => {
+                let frame = inbound.frame;
+                let peer = inbound.peer;
+                last_session_id = frame.header.session_id;
+                if frame.header.path_id != 0 {
+                    peers.insert(frame.header.path_id, peer);
+                }
 
-        let should_ack = matches!(
-            frame.header.kind,
-            PacketKind::Heartbeat | PacketKind::Control
-        );
-        let outcome = receiver.observe(&frame, now_micros());
-        let ack_sent = should_ack
-            && matches!(
-                outcome,
-                ReceiveOutcome::Accepted | ReceiveOutcome::Duplicate
-            );
-        if ack_sent {
-            let reply = build_ack_frame(&frame);
-            let encoded = reply.encode_sealed(&key)?;
-            socket.send_to(&encoded, peer).await?;
-        }
+                let should_ack = matches!(
+                    frame.header.kind,
+                    PacketKind::Heartbeat | PacketKind::Control
+                );
+                let outcome = receiver.observe(&frame, now_micros());
+                let ack_sent = should_ack
+                    && matches!(
+                        outcome,
+                        ReceiveOutcome::Accepted | ReceiveOutcome::Duplicate
+                    );
+                if ack_sent {
+                    let reply = build_ack_frame(&frame);
+                    let encoded = reply.encode_sealed(&key)?;
+                    socket.send_to(&encoded, peer).await?;
+                }
 
-        if args.json_events {
-            print_packet_event(
-                event_name(outcome),
-                outcome,
-                &frame,
-                &peer.to_string(),
-                ack_sent,
-                &receiver,
-            );
-        }
+                if args.json_events {
+                    print_packet_event(
+                        event_name(outcome),
+                        outcome,
+                        &frame,
+                        &peer.to_string(),
+                        ack_sent,
+                        &receiver,
+                    );
+                }
 
-        let mut forwarded_packets = 0u64;
-        let mut dropped_reason = None;
-        if outcome == ReceiveOutcome::Accepted && is_data_like(frame.header.kind) {
-            data_packets_received += 1;
-            let recovered_packets = fec_recovery.observe_data(
-                frame.header.session_id,
-                frame.header.sequence,
-                frame.payload.clone(),
-            );
-            if fec_recovery.mark_delivered(frame.header.session_id, frame.header.sequence) {
-                if is_ipv4_packet(&frame.payload) {
-                    if let Some(tun) = &mut tun {
-                        tun.write_packet(&frame.payload)?;
-                        data_packets_forwarded += 1;
-                        forwarded_packets += 1;
+                let mut forwarded_packets = 0u64;
+                let mut dropped_reason = None;
+                if outcome == ReceiveOutcome::Accepted && is_data_like(frame.header.kind) {
+                    data_packets_received += 1;
+                    let recovered_packets = fec_recovery.observe_data(
+                        frame.header.session_id,
+                        frame.header.sequence,
+                        frame.payload.clone(),
+                    );
+                    if fec_recovery.mark_delivered(frame.header.session_id, frame.header.sequence) {
+                        if is_ipv4_packet(&frame.payload) {
+                            if let Some(tun) = &mut tun {
+                                tun.write_packet(&frame.payload)?;
+                                data_packets_forwarded += 1;
+                                forwarded_packets += 1;
+                            }
+                        } else {
+                            non_ipv4_packets_dropped += 1;
+                            dropped_reason = Some("payload is not an IPv4 packet");
+                        }
                     }
-                } else {
-                    non_ipv4_packets_dropped += 1;
-                    dropped_reason = Some("payload is not an IPv4 packet");
-                }
-            }
 
-            for recovered in recovered_packets {
-                if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence) {
-                    continue;
-                }
-                if is_ipv4_packet(&recovered.payload) {
-                    if let Some(tun) = &mut tun {
-                        tun.write_packet(&recovered.payload)?;
-                    }
-                    data_packets_forwarded += 1;
-                    fec_packets_recovered += 1;
-                    forwarded_packets += 1;
-                } else {
-                    non_ipv4_packets_dropped += 1;
-                }
-            }
-        } else if outcome == ReceiveOutcome::Accepted && frame.header.kind == PacketKind::Fec {
-            fec_packets_received += 1;
-            match XorFecBlock::decode(&frame.payload) {
-                Ok(block) => {
-                    for recovered in fec_recovery.observe_fec(frame.header.session_id, block) {
-                        if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence)
-                        {
+                    for recovered in recovered_packets {
+                        if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence) {
                             continue;
                         }
                         if is_ipv4_packet(&recovered.payload) {
@@ -153,34 +196,96 @@ async fn main() -> Result<()> {
                             non_ipv4_packets_dropped += 1;
                         }
                     }
+                } else if outcome == ReceiveOutcome::Accepted && frame.header.kind == PacketKind::Fec {
+                    fec_packets_received += 1;
+                    match XorFecBlock::decode(&frame.payload) {
+                        Ok(block) => {
+                            for recovered in fec_recovery.observe_fec(frame.header.session_id, block) {
+                                if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence)
+                                {
+                                    continue;
+                                }
+                                if is_ipv4_packet(&recovered.payload) {
+                                    if let Some(tun) = &mut tun {
+                                        tun.write_packet(&recovered.payload)?;
+                                    }
+                                    data_packets_forwarded += 1;
+                                    fec_packets_recovered += 1;
+                                    forwarded_packets += 1;
+                                } else {
+                                    non_ipv4_packets_dropped += 1;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            invalid_fec_packets_dropped += 1;
+                            dropped_reason = Some("invalid FEC payload");
+                        }
+                    }
                 }
-                Err(_) => {
-                    invalid_fec_packets_dropped += 1;
-                    dropped_reason = Some("invalid FEC payload");
+
+                if args.json_events && is_tunnel_payload(frame.header.kind) {
+                    print_data_event(
+                        &frame,
+                        forwarded_packets,
+                        dropped_reason,
+                        TunnelCounters {
+                            data_packets_received,
+                            data_packets_forwarded,
+                            fec_packets_received,
+                            fec_packets_recovered,
+                            invalid_fec_packets_dropped,
+                            non_ipv4_packets_dropped,
+                        },
+                    );
                 }
             }
-        }
 
-        if args.json_events && is_tunnel_payload(frame.header.kind) {
-            print_data_event(
-                &frame,
-                forwarded_packets,
-                dropped_reason,
-                TunnelCounters {
-                    data_packets_received,
-                    data_packets_forwarded,
-                    fec_packets_received,
-                    fec_packets_recovered,
-                    invalid_fec_packets_dropped,
-                    non_ipv4_packets_dropped,
-                },
-            );
-        }
+            Some(packet) = tun_packet_rx.recv() => {
+                if !is_ipv4_packet(&packet) || peers.is_empty() || last_session_id == 0 {
+                    continue;
+                }
 
-        if outcome != ReceiveOutcome::Accepted {
-            continue;
+                reverse_sequence += 1;
+                let send_micros = now_micros();
+                let mut known_peers = peers.iter().collect::<Vec<_>>();
+                known_peers.sort_by_key(|(path_id, _)| **path_id);
+                for (index, (path_id, peer)) in known_peers.into_iter().enumerate() {
+                    let kind = if index == 0 {
+                        PacketKind::Data
+                    } else {
+                        PacketKind::Duplicate
+                    };
+                    let mut header = XBondHeader::new(
+                        kind,
+                        last_session_id,
+                        reverse_sequence,
+                        send_micros,
+                        *path_id,
+                    );
+                    header.flags = 1;
+                    let frame = XBondFrame::new(header, packet.clone());
+                    socket.send_to(&frame.encode_sealed(&key)?, *peer).await?;
+                }
+
+                if args.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "return-packet-sent",
+                            "sequence": reverse_sequence,
+                            "bytes": packet.len(),
+                            "paths": peers.len(),
+                        })
+                    );
+                }
+            }
+
+            else => break,
         }
     }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
