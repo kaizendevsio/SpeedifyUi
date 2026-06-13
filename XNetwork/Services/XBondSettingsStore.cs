@@ -120,6 +120,7 @@ public class XBondSettingsStore
         target.PublicTestBypassSettleMs = source.PublicTestBypassSettleMs < 0
             ? target.PublicTestBypassSettleMs
             : source.PublicTestBypassSettleMs;
+        target.MultiPathUseSpeedifyBypass = source.MultiPathUseSpeedifyBypass;
         target.PublicTestCommandTimeoutSeconds = source.PublicTestCommandTimeoutSeconds <= 0
             ? target.PublicTestCommandTimeoutSeconds
             : source.PublicTestCommandTimeoutSeconds;

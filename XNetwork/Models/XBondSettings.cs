@@ -42,6 +42,8 @@ public class XBondSettings
 
     public int PublicTestBypassSettleMs { get; set; } = 2000;
 
+    public bool MultiPathUseSpeedifyBypass { get; set; }
+
     public int PublicTestCommandTimeoutSeconds { get; set; } = 45;
 
     public string PublicTestKeyEnvironmentVariable { get; set; } = "XBOND_PSK";

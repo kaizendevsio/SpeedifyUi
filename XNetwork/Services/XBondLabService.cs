@@ -125,45 +125,50 @@ public class XBondLabService(
         {
             StartedAtUtc = DateTime.UtcNow,
             Server = settings.PublicTestServerAddress,
-            BypassRule = $"{settings.PublicTestBypassPort}/{settings.PublicTestBypassProtocol}"
+            BypassRule = settings.MultiPathUseSpeedifyBypass
+                ? $"{settings.PublicTestBypassPort}/{settings.PublicTestBypassProtocol}"
+                : "Not used"
         };
 
         var shouldRestoreBypassEnabled = false;
         try
         {
-            var before = await speedifyService.GetStreamingBypassSettingsAsync(cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("Unable to read Speedify streaming bypass settings.");
-
-            result.BypassWasAlreadyPresent = HasBypassPort(before, settings.PublicTestBypassPort, settings.PublicTestBypassProtocol);
-
-            if (!before.Enabled)
+            if (settings.MultiPathUseSpeedifyBypass)
             {
-                if (!await speedifyService.SetStreamingBypassEnabledAsync(true, cancellationToken).ConfigureAwait(false))
+                var before = await speedifyService.GetStreamingBypassSettingsAsync(cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("Unable to read Speedify streaming bypass settings.");
+
+                result.BypassWasAlreadyPresent = HasBypassPort(before, settings.PublicTestBypassPort, settings.PublicTestBypassProtocol);
+
+                if (!before.Enabled)
                 {
-                    throw new InvalidOperationException("Unable to enable Speedify streaming bypass for the test.");
+                    if (!await speedifyService.SetStreamingBypassEnabledAsync(true, cancellationToken).ConfigureAwait(false))
+                    {
+                        throw new InvalidOperationException("Unable to enable Speedify streaming bypass for the test.");
+                    }
+
+                    result.BypassEnabledChanged = true;
+                    shouldRestoreBypassEnabled = true;
                 }
 
-                result.BypassEnabledChanged = true;
-                shouldRestoreBypassEnabled = true;
-            }
-
-            if (!result.BypassWasAlreadyPresent)
-            {
-                if (!await speedifyService.SetStreamingBypassPortsAsync(
-                        "add",
-                        [new PortRule { Port = settings.PublicTestBypassPort, Protocol = settings.PublicTestBypassProtocol }],
-                        cancellationToken).ConfigureAwait(false))
+                if (!result.BypassWasAlreadyPresent)
                 {
-                    throw new InvalidOperationException($"Unable to add temporary bypass rule {result.BypassRule}.");
+                    if (!await speedifyService.SetStreamingBypassPortsAsync(
+                            "add",
+                            [new PortRule { Port = settings.PublicTestBypassPort, Protocol = settings.PublicTestBypassProtocol }],
+                            cancellationToken).ConfigureAwait(false))
+                    {
+                        throw new InvalidOperationException($"Unable to add temporary bypass rule {result.BypassRule}.");
+                    }
+
+                    result.BypassAdded = true;
                 }
 
-                result.BypassAdded = true;
-            }
-
-            if (settings.PublicTestBypassSettleMs > 0)
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(settings.PublicTestBypassSettleMs), cancellationToken)
-                    .ConfigureAwait(false);
+                if (settings.PublicTestBypassSettleMs > 0)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(settings.PublicTestBypassSettleMs), cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             var key = ReadPsk();

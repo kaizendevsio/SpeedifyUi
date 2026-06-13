@@ -26,7 +26,8 @@ public static class AppChangelog
             [
                 "Added a persisted XBond traffic-engine mode so Speedify can remain primary while XBond is tested as a canary.",
                 "Added guarded XBond service controls that stay locked unless explicitly enabled in configuration.",
-                "Locks XBond primary mode behind a separate configuration flag so production routing cannot change by accident."
+                "Locks XBond primary mode behind a separate configuration flag so production routing cannot change by accident.",
+                "Changed multi-path XBond probes to use bind-device physical path isolation instead of the Speedify bypass by default."
             ]
         },
         new ChangelogEntry
