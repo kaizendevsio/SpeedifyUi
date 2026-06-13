@@ -686,11 +686,27 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                         ),
                         packet.clone(),
                     );
-                    socket.send(&frame.encode_sealed(&key)?).await?;
-                    match transmission.packet_kind {
-                        PacketKind::Data => data_packets_sent += 1,
-                        PacketKind::Duplicate => duplicate_packets_sent += 1,
-                        _ => {}
+                    let encoded = frame.encode_sealed(&key)?;
+                    match socket.send(&encoded).await {
+                        Ok(_) => match transmission.packet_kind {
+                            PacketKind::Data => data_packets_sent += 1,
+                            PacketKind::Duplicate => duplicate_packets_sent += 1,
+                            _ => {}
+                        },
+                        Err(error) => {
+                            if options.json_events {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "packet-send-failed",
+                                        "sequence": sequence,
+                                        "path_id": transmission.path_id,
+                                        "packet_kind": transmission.packet_kind,
+                                        "error": error.to_string(),
+                                    })
+                                );
+                            }
+                        }
                     }
                 }
 
@@ -719,8 +735,24 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                                 ),
                                 fec_payload.clone(),
                             );
-                            socket.send(&frame.encode_sealed(&key)?).await?;
-                            fec_packets_sent += 1;
+                            let encoded = frame.encode_sealed(&key)?;
+                            match socket.send(&encoded).await {
+                                Ok(_) => fec_packets_sent += 1,
+                                Err(error) => {
+                                    fec_packets_skipped += 1;
+                                    if options.json_events {
+                                        println!(
+                                            "{}",
+                                            serde_json::json!({
+                                                "event": "fec-send-failed",
+                                                "sequence": base_sequence,
+                                                "path_id": transmission.path_id,
+                                                "error": error.to_string(),
+                                            })
+                                        );
+                                    }
+                                }
+                            }
                         }
                     } else {
                         pending_fec_source = Some((sequence, packet.clone()));

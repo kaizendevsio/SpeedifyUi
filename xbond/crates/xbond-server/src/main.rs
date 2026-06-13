@@ -145,7 +145,20 @@ async fn main() -> Result<()> {
                 if ack_sent {
                     let reply = build_ack_frame(&frame);
                     let encoded = reply.encode_sealed(&key)?;
-                    socket.send_to(&encoded, peer).await?;
+                    if let Err(error) = socket.send_to(&encoded, peer).await {
+                        if args.json_events {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "ack-send-failed",
+                                    "peer": peer.to_string(),
+                                    "path_id": frame.header.path_id,
+                                    "sequence": frame.header.sequence,
+                                    "error": error.to_string(),
+                                })
+                            );
+                        }
+                    }
                 }
 
                 if args.json_events {
@@ -250,6 +263,7 @@ async fn main() -> Result<()> {
                 let send_micros = now_micros();
                 let mut known_peers = peers.iter().collect::<Vec<_>>();
                 known_peers.sort_by_key(|(path_id, _)| **path_id);
+                let mut sent_paths = 0usize;
                 for (index, (path_id, peer)) in known_peers.into_iter().enumerate() {
                     let kind = if index == 0 {
                         PacketKind::Data
@@ -265,7 +279,24 @@ async fn main() -> Result<()> {
                     );
                     header.flags = 1;
                     let frame = XBondFrame::new(header, packet.clone());
-                    socket.send_to(&frame.encode_sealed(&key)?, *peer).await?;
+                    let encoded = frame.encode_sealed(&key)?;
+                    match socket.send_to(&encoded, *peer).await {
+                        Ok(_) => sent_paths += 1,
+                        Err(error) => {
+                            if args.json_events {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "return-packet-send-failed",
+                                        "peer": peer.to_string(),
+                                        "path_id": path_id,
+                                        "sequence": reverse_sequence,
+                                        "error": error.to_string(),
+                                    })
+                                );
+                            }
+                        }
+                    }
                 }
 
                 if args.json_events {
@@ -275,7 +306,7 @@ async fn main() -> Result<()> {
                             "event": "return-packet-sent",
                             "sequence": reverse_sequence,
                             "bytes": packet.len(),
-                            "paths": peers.len(),
+                            "paths": sent_paths,
                         })
                     );
                 }
