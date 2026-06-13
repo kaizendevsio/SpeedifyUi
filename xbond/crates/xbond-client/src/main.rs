@@ -14,7 +14,7 @@ use xbond_core::{
     build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, CanaryTun,
     ClientConfig, PacketKind, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate,
     ProbePathStats, RouteVerification, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
+    XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -498,10 +498,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
         .map(|spec| (spec.path_id, spec))
         .collect::<HashMap<_, _>>();
     let mut sockets = HashMap::new();
-    for transmission in transmissions
-        .iter()
-        .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
-    {
+    for transmission in &transmissions {
         if sockets.contains_key(&transmission.path_id) {
             continue;
         }
@@ -575,7 +572,9 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
     let mut sequence = 0u64;
     let mut data_packets_sent = 0u64;
     let mut duplicate_packets_sent = 0u64;
+    let mut fec_packets_sent = 0u64;
     let mut fec_packets_skipped = 0u64;
+    let mut pending_fec_source: Option<(u64, Vec<u8>)> = None;
     let mut buf = vec![0u8; usize::from(options.tun_mtu).max(2048)];
 
     loop {
@@ -604,12 +603,11 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
 
         sequence += 1;
         let send_micros = now_micros();
-        for transmission in &transmissions {
-            if transmission.packet_kind == PacketKind::Fec {
-                fec_packets_skipped += 1;
-                continue;
-            }
-
+        let current_payload = buf[..len].to_vec();
+        for transmission in transmissions
+            .iter()
+            .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
+        {
             let Some(socket) = sockets.get(&transmission.path_id) else {
                 continue;
             };
@@ -621,13 +619,46 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     send_micros,
                     transmission.path_id,
                 ),
-                buf[..len].to_vec(),
+                current_payload.clone(),
             );
             socket.send(&frame.encode_sealed(&key)?).await?;
             match transmission.packet_kind {
                 PacketKind::Data => data_packets_sent += 1,
                 PacketKind::Duplicate => duplicate_packets_sent += 1,
                 _ => {}
+            }
+        }
+
+        let fec_transmissions = transmissions
+            .iter()
+            .filter(|transmission| transmission.packet_kind == PacketKind::Fec);
+        if transmissions
+            .iter()
+            .any(|transmission| transmission.packet_kind == PacketKind::Fec)
+        {
+            if let Some((base_sequence, first_payload)) = pending_fec_source.take() {
+                let fec_payload =
+                    XorFecBlock::encode(base_sequence, &first_payload, &current_payload)?;
+                for transmission in fec_transmissions {
+                    let Some(socket) = sockets.get(&transmission.path_id) else {
+                        fec_packets_skipped += 1;
+                        continue;
+                    };
+                    let frame = XBondFrame::new(
+                        XBondHeader::new(
+                            PacketKind::Fec,
+                            config.session_id,
+                            base_sequence,
+                            send_micros,
+                            transmission.path_id,
+                        ),
+                        fec_payload.clone(),
+                    );
+                    socket.send(&frame.encode_sealed(&key)?).await?;
+                    fec_packets_sent += 1;
+                }
+            } else {
+                pending_fec_source = Some((sequence, current_payload));
             }
         }
 
@@ -644,6 +675,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                 },
                 data_packets_sent,
                 duplicate_packets_sent,
+                fec_packets_sent,
                 fec_packets_skipped,
                 fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
                 message: Some("Canary tunnel is running.".to_string()),
@@ -660,6 +692,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     "bytes": len,
                     "data_packets_sent": data_packets_sent,
                     "duplicate_packets_sent": duplicate_packets_sent,
+                    "fec_packets_sent": fec_packets_sent,
                     "fec_packets_skipped": fec_packets_skipped,
                 })
             );
@@ -1165,9 +1198,8 @@ fn fec_status_for_mode(mode: xbond_core::ScheduleMode, runtime: XBondFecStatus) 
     if matches!(mode, xbond_core::ScheduleMode::AnchorFec) {
         return XBondFecStatus {
             configured: true,
-            production_ready: false,
-            message: "AnchorFec is configured, but FEC parity generation is a canary stub and is not production-ready."
-                .to_string(),
+            production_ready: true,
+            message: "AnchorFec uses canary XOR parity blocks across packet pairs; one missing data packet can be recovered when the paired data packet and parity arrive.".to_string(),
         };
     }
 

@@ -202,8 +202,8 @@ pub enum DuplicateOutcome {
 #[derive(Debug)]
 pub struct DuplicateWindow {
     capacity: usize,
-    order: VecDeque<(u64, u64)>,
-    seen: HashSet<(u64, u64)>,
+    order: VecDeque<(u64, u64, u8)>,
+    seen: HashSet<(u64, u64, u8)>,
 }
 
 impl DuplicateWindow {
@@ -220,7 +220,16 @@ impl DuplicateWindow {
     }
 
     pub fn observe_key(&mut self, session_id: u64, sequence: u64) -> DuplicateOutcome {
-        let key = (session_id, sequence);
+        self.observe_key_class(session_id, sequence, 0)
+    }
+
+    pub fn observe_key_class(
+        &mut self,
+        session_id: u64,
+        sequence: u64,
+        class: u8,
+    ) -> DuplicateOutcome {
+        let key = (session_id, sequence, class);
         if self.seen.contains(&key) {
             return DuplicateOutcome::Duplicate;
         }
@@ -267,10 +276,15 @@ impl FrameReceiver {
     }
 
     pub fn observe(&mut self, frame: &XBondFrame, now_micros: u64) -> ReceiveOutcome {
-        if self
-            .duplicate_window
-            .observe_key(frame.header.session_id, frame.header.sequence)
-            == DuplicateOutcome::Duplicate
+        let duplicate_class = match frame.header.kind {
+            PacketKind::Fec => 1,
+            _ => 0,
+        };
+        if self.duplicate_window.observe_key_class(
+            frame.header.session_id,
+            frame.header.sequence,
+            duplicate_class,
+        ) == DuplicateOutcome::Duplicate
         {
             self.stats.duplicate_packets_dropped += 1;
             return ReceiveOutcome::Duplicate;
@@ -389,6 +403,24 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_window_distinguishes_classes() {
+        let mut window = DuplicateWindow::new(4);
+
+        assert_eq!(
+            window.observe_key_class(1, 10, 0),
+            DuplicateOutcome::FirstArrival
+        );
+        assert_eq!(
+            window.observe_key_class(1, 10, 1),
+            DuplicateOutcome::FirstArrival
+        );
+        assert_eq!(
+            window.observe_key_class(1, 10, 0),
+            DuplicateOutcome::Duplicate
+        );
+    }
+
+    #[test]
     fn header_deadline_does_not_block_newer_packets() {
         let header = XBondHeader::new(PacketKind::Data, 1, 1, 1_000, 1);
 
@@ -427,5 +459,21 @@ mod tests {
                 late_packets_dropped: 1,
             }
         );
+    }
+
+    #[test]
+    fn frame_receiver_accepts_fec_for_same_sequence_as_data() {
+        let mut receiver = FrameReceiver::new(100, 16);
+        let data = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 1, 10, 1_000, 1),
+            b"data".to_vec(),
+        );
+        let fec = XBondFrame::new(
+            XBondHeader::new(PacketKind::Fec, 1, 10, 1_000, 2),
+            b"fec".to_vec(),
+        );
+
+        assert_eq!(receiver.observe(&data, 1_050), ReceiveOutcome::Accepted);
+        assert_eq!(receiver.observe(&fec, 1_060), ReceiveOutcome::Accepted);
     }
 }

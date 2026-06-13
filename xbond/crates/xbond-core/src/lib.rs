@@ -1,5 +1,6 @@
 pub mod config;
 pub mod crypto;
+pub mod fec;
 pub mod health;
 pub mod probe;
 pub mod protocol;
@@ -9,6 +10,7 @@ pub mod tun;
 
 pub use config::{ClientConfig, PathConfig};
 pub use crypto::XBondKey;
+pub use fec::{FecError, XorFecBlock};
 pub use health::{select_path_roles, PathHealthSnapshot, PathRole, ScoredPath};
 pub use probe::{ProbeAggregate, ProbePathStats, RouteVerification};
 pub use protocol::{

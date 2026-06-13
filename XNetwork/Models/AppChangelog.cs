@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.14";
+    public const string CurrentVersion = "2026.06.15";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Added canary XBond FEC recovery.",
+            Changes =
+            [
+                "Added XOR parity FEC blocks for XBond AnchorFec canary traffic.",
+                "The XBond server can recover one missing packet from each two-packet parity block when the paired data packet and parity arrive.",
+                "Keeps FEC in the canary tunnel path only; production routing is still disabled by default."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.14",
             Date = "2026-06-14",
             Summary = "Added XBond traffic-engine controls.",
             Changes =

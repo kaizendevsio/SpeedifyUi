@@ -1,10 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use xbond_core::{
     is_ipv4_packet, CanaryTun, FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader,
-    XBondKey,
+    XBondKey, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -43,7 +44,11 @@ async fn main() -> Result<()> {
     };
     let mut data_packets_received = 0u64;
     let mut data_packets_forwarded = 0u64;
+    let mut fec_packets_received = 0u64;
+    let mut fec_packets_recovered = 0u64;
+    let mut invalid_fec_packets_dropped = 0u64;
     let mut non_ipv4_packets_dropped = 0u64;
+    let mut fec_recovery = FecRecovery::new(8192);
     let mut buf = vec![0u8; 2048];
 
     if args.json_events {
@@ -91,30 +96,84 @@ async fn main() -> Result<()> {
             );
         }
 
-        let mut forwarded = false;
+        let mut forwarded_packets = 0u64;
         let mut dropped_reason = None;
         if outcome == ReceiveOutcome::Accepted && is_data_like(frame.header.kind) {
             data_packets_received += 1;
-            if is_ipv4_packet(&frame.payload) {
-                if let Some(tun) = &mut tun {
-                    tun.write_packet(&frame.payload)?;
-                    data_packets_forwarded += 1;
-                    forwarded = true;
+            let recovered_packets = fec_recovery.observe_data(
+                frame.header.session_id,
+                frame.header.sequence,
+                frame.payload.clone(),
+            );
+            if fec_recovery.mark_delivered(frame.header.session_id, frame.header.sequence) {
+                if is_ipv4_packet(&frame.payload) {
+                    if let Some(tun) = &mut tun {
+                        tun.write_packet(&frame.payload)?;
+                        data_packets_forwarded += 1;
+                        forwarded_packets += 1;
+                    }
+                } else {
+                    non_ipv4_packets_dropped += 1;
+                    dropped_reason = Some("payload is not an IPv4 packet");
                 }
-            } else {
-                non_ipv4_packets_dropped += 1;
-                dropped_reason = Some("payload is not an IPv4 packet");
+            }
+
+            for recovered in recovered_packets {
+                if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence) {
+                    continue;
+                }
+                if is_ipv4_packet(&recovered.payload) {
+                    if let Some(tun) = &mut tun {
+                        tun.write_packet(&recovered.payload)?;
+                    }
+                    data_packets_forwarded += 1;
+                    fec_packets_recovered += 1;
+                    forwarded_packets += 1;
+                } else {
+                    non_ipv4_packets_dropped += 1;
+                }
+            }
+        } else if outcome == ReceiveOutcome::Accepted && frame.header.kind == PacketKind::Fec {
+            fec_packets_received += 1;
+            match XorFecBlock::decode(&frame.payload) {
+                Ok(block) => {
+                    for recovered in fec_recovery.observe_fec(frame.header.session_id, block) {
+                        if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence)
+                        {
+                            continue;
+                        }
+                        if is_ipv4_packet(&recovered.payload) {
+                            if let Some(tun) = &mut tun {
+                                tun.write_packet(&recovered.payload)?;
+                            }
+                            data_packets_forwarded += 1;
+                            fec_packets_recovered += 1;
+                            forwarded_packets += 1;
+                        } else {
+                            non_ipv4_packets_dropped += 1;
+                        }
+                    }
+                }
+                Err(_) => {
+                    invalid_fec_packets_dropped += 1;
+                    dropped_reason = Some("invalid FEC payload");
+                }
             }
         }
 
-        if args.json_events && is_data_like(frame.header.kind) {
+        if args.json_events && is_tunnel_payload(frame.header.kind) {
             print_data_event(
                 &frame,
-                forwarded,
+                forwarded_packets,
                 dropped_reason,
-                data_packets_received,
-                data_packets_forwarded,
-                non_ipv4_packets_dropped,
+                TunnelCounters {
+                    data_packets_received,
+                    data_packets_forwarded,
+                    fec_packets_received,
+                    fec_packets_recovered,
+                    invalid_fec_packets_dropped,
+                    non_ipv4_packets_dropped,
+                },
             );
         }
 
@@ -122,6 +181,149 @@ async fn main() -> Result<()> {
             continue;
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveredPacket {
+    sequence: u64,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct FecRecovery {
+    capacity: usize,
+    data: HashMap<(u64, u64), Vec<u8>>,
+    fec: HashMap<(u64, u64), XorFecBlock>,
+    delivered: HashSet<(u64, u64)>,
+    data_order: VecDeque<(u64, u64)>,
+    fec_order: VecDeque<(u64, u64)>,
+    delivered_order: VecDeque<(u64, u64)>,
+}
+
+impl FecRecovery {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            data: HashMap::new(),
+            fec: HashMap::new(),
+            delivered: HashSet::new(),
+            data_order: VecDeque::new(),
+            fec_order: VecDeque::new(),
+            delivered_order: VecDeque::new(),
+        }
+    }
+
+    fn observe_data(
+        &mut self,
+        session_id: u64,
+        sequence: u64,
+        payload: Vec<u8>,
+    ) -> Vec<RecoveredPacket> {
+        self.remember_data(session_id, sequence, payload);
+        let base_sequence = fec_base_sequence(sequence);
+        self.try_recover(session_id, base_sequence)
+            .into_iter()
+            .collect()
+    }
+
+    fn observe_fec(&mut self, session_id: u64, block: XorFecBlock) -> Vec<RecoveredPacket> {
+        let base_sequence = block.base_sequence;
+        let key = (session_id, base_sequence);
+        if !self.fec.contains_key(&key) {
+            self.fec_order.push_back(key);
+        }
+        self.fec.insert(key, block);
+        self.prune_fec();
+        self.try_recover(session_id, base_sequence)
+            .into_iter()
+            .collect()
+    }
+
+    fn mark_delivered(&mut self, session_id: u64, sequence: u64) -> bool {
+        let key = (session_id, sequence);
+        if !self.delivered.insert(key) {
+            return false;
+        }
+        self.delivered_order.push_back(key);
+        self.prune_delivered();
+        true
+    }
+
+    fn remember_data(&mut self, session_id: u64, sequence: u64, payload: Vec<u8>) {
+        let key = (session_id, sequence);
+        if !self.data.contains_key(&key) {
+            self.data_order.push_back(key);
+        }
+        self.data.insert(key, payload);
+        self.prune_data();
+    }
+
+    fn try_recover(&self, session_id: u64, base_sequence: u64) -> Option<RecoveredPacket> {
+        let block = self.fec.get(&(session_id, base_sequence))?;
+        let first_key = (session_id, base_sequence);
+        let second_key = (session_id, base_sequence + 1);
+
+        let first = self.data.get(&first_key);
+        let second = self.data.get(&second_key);
+
+        if second.is_none() && !self.delivered.contains(&second_key) {
+            if let Some(first) = first {
+                let (sequence, payload) = block.recover_missing(base_sequence, first)?;
+                return Some(RecoveredPacket { sequence, payload });
+            }
+        }
+
+        if first.is_none() && !self.delivered.contains(&first_key) {
+            if let Some(second) = second {
+                let (sequence, payload) = block.recover_missing(base_sequence + 1, second)?;
+                return Some(RecoveredPacket { sequence, payload });
+            }
+        }
+
+        None
+    }
+
+    fn prune_data(&mut self) {
+        while self.data_order.len() > self.capacity {
+            if let Some(key) = self.data_order.pop_front() {
+                self.data.remove(&key);
+            }
+        }
+    }
+
+    fn prune_fec(&mut self) {
+        while self.fec_order.len() > self.capacity {
+            if let Some(key) = self.fec_order.pop_front() {
+                self.fec.remove(&key);
+            }
+        }
+    }
+
+    fn prune_delivered(&mut self) {
+        while self.delivered_order.len() > self.capacity {
+            if let Some(key) = self.delivered_order.pop_front() {
+                self.delivered.remove(&key);
+            }
+        }
+    }
+}
+
+fn fec_base_sequence(sequence: u64) -> u64 {
+    if sequence % 2 == 0 {
+        sequence.saturating_sub(1)
+    } else {
+        sequence
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TunnelCounters {
+    data_packets_received: u64,
+    data_packets_forwarded: u64,
+    fec_packets_received: u64,
+    fec_packets_recovered: u64,
+    invalid_fec_packets_dropped: u64,
+    non_ipv4_packets_dropped: u64,
 }
 
 fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
@@ -147,6 +349,13 @@ fn event_name(outcome: ReceiveOutcome) -> &'static str {
 
 fn is_data_like(kind: PacketKind) -> bool {
     matches!(kind, PacketKind::Data | PacketKind::Duplicate)
+}
+
+fn is_tunnel_payload(kind: PacketKind) -> bool {
+    matches!(
+        kind,
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Fec
+    )
 }
 
 fn print_packet_event(
@@ -180,11 +389,9 @@ fn print_packet_event(
 
 fn print_data_event(
     frame: &XBondFrame,
-    forwarded: bool,
+    forwarded_packets: u64,
     dropped_reason: Option<&str>,
-    data_packets_received: u64,
-    data_packets_forwarded: u64,
-    non_ipv4_packets_dropped: u64,
+    counters: TunnelCounters,
 ) {
     println!(
         "{}",
@@ -195,12 +402,16 @@ fn print_data_event(
             "path_id": frame.header.path_id,
             "packet_kind": frame.header.kind,
             "bytes": frame.payload.len(),
-            "forwarded_to_tun": forwarded,
+            "forwarded_to_tun": forwarded_packets > 0,
+            "forwarded_packets": forwarded_packets,
             "dropped_reason": dropped_reason,
             "counters": {
-                "data_packets_received": data_packets_received,
-                "data_packets_forwarded": data_packets_forwarded,
-                "non_ipv4_packets_dropped": non_ipv4_packets_dropped,
+                "data_packets_received": counters.data_packets_received,
+                "data_packets_forwarded": counters.data_packets_forwarded,
+                "fec_packets_received": counters.fec_packets_received,
+                "fec_packets_recovered": counters.fec_packets_recovered,
+                "invalid_fec_packets_dropped": counters.invalid_fec_packets_dropped,
+                "non_ipv4_packets_dropped": counters.non_ipv4_packets_dropped,
             }
         })
     );
@@ -249,5 +460,55 @@ mod tests {
         assert!(is_data_like(PacketKind::Duplicate));
         assert!(!is_data_like(PacketKind::Heartbeat));
         assert!(!is_data_like(PacketKind::Fec));
+    }
+
+    #[test]
+    fn fec_recovery_recovers_missing_first_packet() {
+        let first = vec![0x45, 0, 0, 20];
+        let second = vec![0x45, 1, 2, 3, 4, 5];
+        let block =
+            XorFecBlock::decode(&XorFecBlock::encode(11, &first, &second).unwrap()).unwrap();
+        let mut recovery = FecRecovery::new(16);
+
+        recovery.mark_delivered(1, 12);
+        assert!(recovery.observe_data(1, 12, second.clone()).is_empty());
+        let recovered = recovery.observe_fec(1, block);
+
+        assert_eq!(
+            recovered,
+            vec![RecoveredPacket {
+                sequence: 11,
+                payload: first
+            }]
+        );
+    }
+
+    #[test]
+    fn fec_recovery_recovers_missing_second_packet() {
+        let first = vec![0x45, 0, 0, 20];
+        let second = vec![0x45, 1, 2, 3, 4, 5];
+        let block =
+            XorFecBlock::decode(&XorFecBlock::encode(21, &first, &second).unwrap()).unwrap();
+        let mut recovery = FecRecovery::new(16);
+
+        assert!(recovery.observe_fec(1, block).is_empty());
+        recovery.mark_delivered(1, 21);
+        let recovered = recovery.observe_data(1, 21, first.clone());
+
+        assert_eq!(
+            recovered,
+            vec![RecoveredPacket {
+                sequence: 22,
+                payload: second
+            }]
+        );
+    }
+
+    #[test]
+    fn fec_base_sequence_pairs_odd_even_packets() {
+        assert_eq!(fec_base_sequence(1), 1);
+        assert_eq!(fec_base_sequence(2), 1);
+        assert_eq!(fec_base_sequence(3), 3);
+        assert_eq!(fec_base_sequence(4), 3);
     }
 }
