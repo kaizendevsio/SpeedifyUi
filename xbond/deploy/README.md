@@ -20,6 +20,7 @@ systemctl disable --now xbond-client.service
 Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
+The canary client unit reapplies `10.250.0.2/30` to `xbond0` after each service start.
 
 ## Server
 
@@ -35,6 +36,7 @@ systemctl enable --now xbond-server-canary.service
 ```
 
 The server unit listens on `8444/udp`, opens `xbonds0`, and can send return packets back to the latest client path peers. It still does not install NAT or routes.
+The canary server unit reapplies `10.250.0.1/30` to `xbonds0` after each service start.
 
 ## Canary Limits
 
