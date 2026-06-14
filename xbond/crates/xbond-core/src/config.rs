@@ -22,7 +22,7 @@ impl Default for ClientConfig {
             server_addr: "127.0.0.1:8444".to_string(),
             mode: ScheduleMode::AnchorDuplicate1,
             max_active_backups: 1,
-            realtime_deadline_ms: 120,
+            realtime_deadline_ms: 500,
             runtime_status_path: Some("/run/xbond/client-status.json".to_string()),
             paths: Vec::new(),
         }

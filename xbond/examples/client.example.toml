@@ -3,7 +3,7 @@ session_id = 1
 server_addr = "45.77.241.247:8444"
 mode = "anchor-duplicate-1"
 max_active_backups = 1
-realtime_deadline_ms = 120
+realtime_deadline_ms = 500
 runtime_status_path = "/run/xbond/client-status.json"
 
 [[paths]]

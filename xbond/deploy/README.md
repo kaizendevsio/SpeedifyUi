@@ -12,8 +12,10 @@ install -d -m 0750 /etc/xbond
 install -m 0644 /tmp/client.toml /etc/xbond/client.toml
 install -m 0600 /tmp/client.env /etc/xbond/client.env
 install -m 0644 xbond-client.service /etc/systemd/system/xbond-client.service
+install -m 0755 scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
 install -m 0755 scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 systemctl daemon-reload
+systemctl disable --now speedify.service speedify-sharing.service
 systemctl enable --now xbond-client.service
 ```
 
@@ -21,7 +23,7 @@ systemctl enable --now xbond-client.service
 Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
-The XBond client unit reapplies `10.250.0.2/30` to `xbond0` after each service start.
+The XBond client unit conflicts with `speedify.service` and `speedify-sharing.service`, reapplies `10.250.0.2/30` to `xbond0`, pins the XBond server IPv4 endpoint to the best physical default route, and installs the IPv4 default route through `xbond0` after each service start.
 Use `xbond-client-rollback [target-ip]` to remove one scoped `/32` route, or run it without arguments to remove all `/32` routes on `xbond0`.
 
 ## Server
@@ -49,7 +51,7 @@ Run `systemctl stop xbond-server-nat.service` to remove the NAT rules through `E
 ## XBond Limits
 
 - `xbond-client tunnel` opens a TUN and encapsulates IPv4 packets.
-- XNetwork keeps manual `/32` route diagnostics. Default-route ownership by `xbond0` is an explicit operator action; no automatic rollback is implemented in this branch.
+- XNetwork keeps manual `/32` route diagnostics, while `xbond-client.service` owns the IPv4 default route through `xbond0` in this branch. No automatic rollback to Speedify is implemented.
 - Each `xbond-client tunnel` process uses a fresh runtime session id by default so service restarts are not treated as duplicate old packets by the server. Use `--session-id` only for deterministic diagnostics.
 - `xbond-server --tun-name <name>` writes first-arrival IPv4 payloads to a TUN and reads return packets from the server TUN for encapsulation back to the client.
 - `AnchorFec` uses XBond XOR parity blocks and can recover one missing packet per two-packet block when the paired packet and parity arrive.
