@@ -14,6 +14,10 @@ public class XBondSettings
 
     public string ServiceManagerPath { get; set; } = "systemctl";
 
+    public bool UseSudoForServiceManager { get; set; } = true;
+
+    public string SudoPath { get; set; } = "sudo";
+
     public int ServiceCommandTimeoutSeconds { get; set; } = 10;
 
     public string ClientBinaryPath { get; set; } = "xbond-client";
@@ -49,6 +53,22 @@ public class XBondSettings
     public string PublicTestKeyEnvironmentVariable { get; set; } = "XBOND_PSK";
 
     public string PublicTestKeyFilePath { get; set; } = "/home/xeon-network/.config/XNetwork/xbond-psk";
+
+    public string CanaryTunnelDevice { get; set; } = "xbond0";
+
+    public string CanaryTunnelSource { get; set; } = "10.250.0.2";
+
+    public string RouteCommandPath { get; set; } = "ip";
+
+    public string PingCommandPath { get; set; } = "ping";
+
+    public string ScopedRouteDefaultTarget { get; set; } = "1.1.1.1";
+
+    public int ScopedRouteTestCount { get; set; } = 10;
+
+    public int ScopedRoutePacketTimeoutSeconds { get; set; } = 2;
+
+    public int ScopedRouteCommandTimeoutSeconds { get; set; } = 45;
 }
 
 public static class XBondTrafficEngineModes
@@ -94,9 +114,18 @@ public class XBondTrafficEngineStatus
 
     public bool ClientServiceRunning { get; set; }
 
-    public bool CanStartCanary => ServiceControlAllowed && Mode == XBondTrafficEngineModes.XBondCanary && !ClientServiceRunning;
+    public string ClientServiceEnableState { get; set; } = "unknown";
+
+    public bool ClientServiceEnabled { get; set; }
+
+    public bool CanStartCanary => ServiceControlAllowed && !ClientServiceRunning &&
+                                  (Mode != XBondTrafficEngineModes.XBondPrimary || PrimaryModeAllowed);
 
     public bool CanStopCanary => ServiceControlAllowed && ClientServiceRunning;
+
+    public bool CanEnableAtBoot => ServiceControlAllowed && !ClientServiceEnabled;
+
+    public bool CanDisableAtBoot => ServiceControlAllowed && ClientServiceEnabled;
 
     public string Message { get; set; } = "";
 

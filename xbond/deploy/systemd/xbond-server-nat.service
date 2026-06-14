@@ -1,0 +1,14 @@
+[Unit]
+Description=XBond server canary NAT and forwarding
+Documentation=man:systemd.service(5)
+After=network-online.target xbond-server-canary.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/xbond-server-nat-apply
+ExecStop=/usr/local/sbin/xbond-server-nat-rollback
+
+[Install]
+WantedBy=multi-user.target

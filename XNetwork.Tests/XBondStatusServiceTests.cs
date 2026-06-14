@@ -305,4 +305,43 @@ public class XBondStatusServiceTests
         Assert.True(XBondLabService.HasBypassPort(settings, 8444, "UDP"));
         Assert.False(XBondLabService.HasBypassPort(settings, 8445, "udp"));
     }
+
+    [Theory]
+    [InlineData("1.1.1.1", "1.1.1.1")]
+    [InlineData(" 8.8.8.8 ", "8.8.8.8")]
+    public void NormalizeTarget_AcceptsSingleIpv4AddressOnly(string input, string expected)
+    {
+        Assert.Equal(expected, XBondScopedRouteService.NormalizeTarget(input));
+    }
+
+    [Theory]
+    [InlineData("0.0.0.0")]
+    [InlineData("255.255.255.255")]
+    [InlineData("1.1.1.1/32")]
+    [InlineData("cloudflare-dns.com")]
+    public void NormalizeTarget_RejectsUnsafeScopedRouteTargets(string input)
+    {
+        Assert.Throws<ArgumentException>(() => XBondScopedRouteService.NormalizeTarget(input));
+    }
+
+    [Fact]
+    public void ApplyPingOutput_ParsesLinuxPingSummary()
+    {
+        var result = new XBondScopedRouteTestResult();
+
+        XBondScopedRouteService.ApplyPingOutput(
+            result,
+            """
+            10 packets transmitted, 10 received, 0% packet loss, time 9012ms
+            rtt min/avg/max/mdev = 60.660/70.169/101.037/12.360 ms
+            """);
+
+        Assert.Equal(10, result.Sent);
+        Assert.Equal(10, result.Received);
+        Assert.Equal(0, result.Lost);
+        Assert.Equal(0, result.LossRate);
+        Assert.Equal(60.660, result.MinRttMs);
+        Assert.Equal(70.169, result.AvgRttMs);
+        Assert.Equal(101.037, result.MaxRttMs);
+    }
 }

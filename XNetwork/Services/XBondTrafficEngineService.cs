@@ -28,6 +28,15 @@ public class XBondTrafficEngineService(
             ? "active"
             : NormalizeServiceState(serviceState.Output);
         status.ClientServiceRunning = status.ClientServiceState == "active";
+
+        var enableState = await RunServiceManagerAsync(
+            ["is-enabled", settings.ClientServiceName],
+            cancellationToken).ConfigureAwait(false);
+        status.ClientServiceEnableState = enableState.ExitCode == 0
+            ? "enabled"
+            : NormalizeServiceState(enableState.Output);
+        status.ClientServiceEnabled = status.ClientServiceEnableState == "enabled";
+
         status.Message = BuildStatusMessage(status);
         return status;
     }
@@ -56,6 +65,16 @@ public class XBondTrafficEngineService(
         return RunServiceActionAsync("stop", cancellationToken);
     }
 
+    public Task<XBondTrafficEngineStatus> EnableAtBootAsync(CancellationToken cancellationToken = default)
+    {
+        return RunServiceActionAsync("enable", cancellationToken);
+    }
+
+    public Task<XBondTrafficEngineStatus> DisableAtBootAsync(CancellationToken cancellationToken = default)
+    {
+        return RunServiceActionAsync("disable", cancellationToken);
+    }
+
     private async Task<XBondTrafficEngineStatus> RunServiceActionAsync(string action, CancellationToken cancellationToken)
     {
         if (!settings.AllowServiceControl)
@@ -66,11 +85,6 @@ public class XBondTrafficEngineService(
         if (!OperatingSystem.IsLinux())
         {
             return ErrorStatus("XBond service control is only available on Linux.");
-        }
-
-        if (settings.TrafficEngineMode == XBondTrafficEngineModes.SpeedifyPrimary && action == "start")
-        {
-            return ErrorStatus("Select XBond Canary before starting the XBond client service.");
         }
 
         if (settings.TrafficEngineMode == XBondTrafficEngineModes.XBondPrimary && !settings.AllowPrimaryMode)
@@ -92,7 +106,7 @@ public class XBondTrafficEngineService(
             if (result.ExitCode != 0)
             {
                 status.Error = string.IsNullOrWhiteSpace(result.Output)
-                    ? $"{settings.ServiceManagerPath} {action} exited with code {result.ExitCode}."
+                    ? $"{ServiceCommandLabel(action)} exited with code {result.ExitCode}."
                     : result.Output;
                 status.Message = $"XBond service {action} failed.";
             }
@@ -137,12 +151,22 @@ public class XBondTrafficEngineService(
 
         var startInfo = new ProcessStartInfo
         {
-            FileName = settings.ServiceManagerPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
+
+        if (settings.UseSudoForServiceManager && OperatingSystem.IsLinux())
+        {
+            startInfo.FileName = settings.SudoPath;
+            startInfo.ArgumentList.Add("-n");
+            startInfo.ArgumentList.Add(settings.ServiceManagerPath);
+        }
+        else
+        {
+            startInfo.FileName = settings.ServiceManagerPath;
+        }
 
         foreach (var argument in arguments)
         {
@@ -174,7 +198,7 @@ public class XBondTrafficEngineService(
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
             TryKill(process);
-            throw new TimeoutException($"{settings.ServiceManagerPath} timed out after {settings.ServiceCommandTimeoutSeconds} seconds.");
+            throw new TimeoutException($"{ServiceCommandLabel(arguments.FirstOrDefault() ?? "")} timed out after {settings.ServiceCommandTimeoutSeconds} seconds.");
         }
         catch
         {
@@ -208,9 +232,16 @@ public class XBondTrafficEngineService(
                 ? "XBond primary mode is selected and the client service is running."
                 : "XBond primary mode is selected but the client service is stopped.",
             _ => status.ClientServiceRunning
-                ? "Speedify primary is selected; XBond client service is still running."
+                ? "Speedify remains primary; XBond canary service is running."
                 : "Speedify primary is selected."
         };
+    }
+
+    private string ServiceCommandLabel(string action)
+    {
+        return settings.UseSudoForServiceManager && OperatingSystem.IsLinux()
+            ? $"{settings.SudoPath} -n {settings.ServiceManagerPath} {action}"
+            : $"{settings.ServiceManagerPath} {action}";
     }
 
     private static void TryKill(Process process)

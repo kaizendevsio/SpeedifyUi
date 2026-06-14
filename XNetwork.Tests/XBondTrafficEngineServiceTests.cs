@@ -77,4 +77,37 @@ public class XBondTrafficEngineServiceTests
     {
         Assert.Equal(expected, XBondTrafficEngineModes.Normalize(input));
     }
+
+    [Fact]
+    public void TrafficEngineStatus_AllowsCanaryServiceWhileSpeedifyRemainsPrimary()
+    {
+        var status = new XBondTrafficEngineStatus
+        {
+            Mode = XBondTrafficEngineModes.SpeedifyPrimary,
+            ServiceControlAllowed = true,
+            ClientServiceRunning = false
+        };
+
+        Assert.True(status.CanStartCanary);
+    }
+
+    [Fact]
+    public void TrafficEngineStatus_ExposesBootEnablementActions()
+    {
+        var disabled = new XBondTrafficEngineStatus
+        {
+            ServiceControlAllowed = true,
+            ClientServiceEnabled = false
+        };
+        var enabled = new XBondTrafficEngineStatus
+        {
+            ServiceControlAllowed = true,
+            ClientServiceEnabled = true
+        };
+
+        Assert.True(disabled.CanEnableAtBoot);
+        Assert.False(disabled.CanDisableAtBoot);
+        Assert.False(enabled.CanEnableAtBoot);
+        Assert.True(enabled.CanDisableAtBoot);
+    }
 }

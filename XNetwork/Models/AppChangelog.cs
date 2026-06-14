@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.16";
+    public const string CurrentVersion = "2026.06.17";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-14",
+            Summary = "Added boot-safe XBond canary controls.",
+            Changes =
+            [
+                "Shows XBond service boot enablement and allows guarded service enable/disable from the XBond page.",
+                "Adds scoped /32 route controls so one IPv4 host can be tested through XBond without changing the router default route.",
+                "Adds deployment scripts for persistent Vultr XBond NAT and rollback helpers."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "2026.06.16",
             Date = "2026-06-14",
             Summary = "Made XBond canary tunnel bidirectional.",
             Changes =

@@ -5,6 +5,7 @@
 @inject XBondStatusService XBondStatusService
 @inject XBondLabService XBondLabService
 @inject XBondTrafficEngineService XBondTrafficEngineService
+@inject XBondScopedRouteService XBondScopedRouteService
 
 <PageTitle>XBond - XNetwork</PageTitle>
 
@@ -93,6 +94,7 @@
                     @Metric("Mode", GetEngineModeLabel(_trafficEngineStatus?.Mode))
                     @Metric("Client service", DisplayValue(_trafficEngineStatus?.ClientServiceName))
                     @Metric("Service state", DisplayValue(_trafficEngineStatus?.ClientServiceState))
+                    @Metric("Boot", GetBootStateLabel())
                     @Metric("Control", _trafficEngineStatus?.ServiceControlAllowed == true ? "Unlocked" : "Locked")
                 </div>
                 <div class="flex flex-col gap-2 sm:flex-row">
@@ -109,6 +111,20 @@
                             @onclick="StopXBondCanaryAsync">
                         <i class="fas fa-stop @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
                         Stop XBond
+                    </button>
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@(!CanEnableAtBoot() || _isChangingTrafficEngine)"
+                            @onclick="EnableXBondAtBootAsync">
+                        <i class="fas fa-power-off @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
+                        Enable Boot
+                    </button>
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-600 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@(!CanDisableAtBoot() || _isChangingTrafficEngine)"
+                            @onclick="DisableXBondAtBootAsync">
+                        <i class="fas fa-ban @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
+                        Disable Boot
                     </button>
                 </div>
             </div>
@@ -129,6 +145,93 @@
                 <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">FEC paths</p>
                 <p class="mt-2 text-2xl font-bold text-white">@FormatPathList(_status.Schedule.FecPathIds)</p>
                 <p class="mt-1 text-sm text-slate-400">@_status.Fec.Message</p>
+            </div>
+        </section>
+
+        <section class="mb-6 rounded-xl border border-sky-500/20 bg-slate-800/50 shadow-lg">
+            <div class="flex flex-col gap-4 border-b border-slate-700 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                    <h3 class="text-lg font-semibold text-white">Scoped route canary</h3>
+                    <p class="mt-1 text-sm text-slate-400">Route one IPv4 host through XBond for a bounded test or a manual app trial.</p>
+                </div>
+                <div class="flex flex-col gap-2 sm:flex-row lg:min-w-[34rem]">
+                    <input class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-white outline-none transition-colors placeholder:text-slate-600 focus:border-sky-400"
+                           value="@_scopedRouteTarget"
+                           @oninput="OnScopedRouteTargetChanged"
+                           placeholder="1.1.1.1" />
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@_isRunningScopedRouteAction"
+                            @onclick="RunScopedRouteTestAsync">
+                        <i class="fas fa-vial @(_isRunningScopedRouteAction ? "animate-pulse" : "")"></i>
+                        Test
+                    </button>
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@_isRunningScopedRouteAction"
+                            @onclick="ApplyScopedRouteAsync">
+                        <i class="fas fa-route @(_isRunningScopedRouteAction ? "animate-pulse" : "")"></i>
+                        Enable Route
+                    </button>
+                    <button type="button"
+                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled="@_isRunningScopedRouteAction"
+                            @onclick="ClearScopedRouteAsync">
+                        <i class="fas fa-eraser @(_isRunningScopedRouteAction ? "animate-pulse" : "")"></i>
+                        Clear
+                    </button>
+                </div>
+            </div>
+            <div class="grid gap-4 p-4 lg:grid-cols-[1fr_1.2fr]">
+                <div class="grid grid-cols-2 gap-3 text-sm md:grid-cols-4 lg:grid-cols-2">
+                    @Metric("Target", DisplayValue(_scopedRouteStatus?.TargetCidr))
+                    @Metric("Device", XBondScopedRouteService.Settings.CanaryTunnelDevice)
+                    @Metric("Source", XBondScopedRouteService.Settings.CanaryTunnelSource)
+                    @Metric("Route", GetScopedRouteLabel())
+                </div>
+                <div class="rounded-xl border border-slate-700/70 bg-slate-950/40 p-4">
+                    @if (_isRunningScopedRouteAction)
+                    {
+                        <div class="flex items-center gap-3 text-sky-100">
+                            <i class="fas fa-circle-notch animate-spin"></i>
+                            <span class="text-sm font-semibold">Running scoped route operation...</span>
+                        </div>
+                    }
+                    else if (_scopedRouteTestResult != null)
+                    {
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="@GetScopedTestBadgeClass(_scopedRouteTestResult)">
+                                @(_scopedRouteTestResult.Succeeded ? "Passed" : "Check")
+                            </span>
+                            <span class="text-sm text-slate-400">@_scopedRouteTestResult.Message</span>
+                        </div>
+
+                        @if (_scopedRouteTestResult.HasError)
+                        {
+                            <p class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                                @_scopedRouteTestResult.Error
+                            </p>
+                        }
+
+                        <div class="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
+                            @Metric("Sent", _scopedRouteTestResult.Sent.ToString("N0"))
+                            @Metric("Received", _scopedRouteTestResult.Received.ToString("N0"))
+                            @Metric("Loss", $"{_scopedRouteTestResult.LossRate:P1}")
+                            @Metric("Avg RTT", FormatNullableMs(_scopedRouteTestResult.AvgRttMs))
+                            @Metric("Cleanup", _scopedRouteTestResult.RouteRemoved ? "Removed" : "Check")
+                        </div>
+                    }
+                    else
+                    {
+                        <p class="text-sm text-slate-400">@(_scopedRouteStatus?.HasError == true ? _scopedRouteStatus.Error : _scopedRouteStatus?.Message)</p>
+                        @if (!string.IsNullOrWhiteSpace(_scopedRouteStatus?.RouteOutput))
+                        {
+                            <p class="mt-3 break-words rounded-lg border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-xs text-slate-400">
+                                @_scopedRouteStatus.RouteOutput
+                            </p>
+                        }
+                    }
+                </div>
             </div>
         </section>
 
@@ -337,13 +440,18 @@
     private XBondTrafficEngineStatus? _trafficEngineStatus;
     private XBondPublicTestResult? _publicTestResult;
     private XBondProbeResult? _multiPathTestResult;
+    private XBondScopedRouteStatus? _scopedRouteStatus;
+    private XBondScopedRouteTestResult? _scopedRouteTestResult;
+    private string _scopedRouteTarget = "";
     private bool _isLoading;
     private bool _isRunningPublicTest;
     private bool _isRunningMultiPathTest;
     private bool _isChangingTrafficEngine;
+    private bool _isRunningScopedRouteAction;
 
     protected override async Task OnInitializedAsync()
     {
+        _scopedRouteTarget = XBondScopedRouteService.Settings.ScopedRouteDefaultTarget;
         await RefreshAsync();
     }
 
@@ -354,9 +462,11 @@
         {
             var statusTask = XBondStatusService.GetStatusAsync();
             var trafficTask = XBondTrafficEngineService.GetStatusAsync();
-            await Task.WhenAll(statusTask, trafficTask);
+            var scopedRouteTask = XBondScopedRouteService.GetStatusAsync(_scopedRouteTarget);
+            await Task.WhenAll(statusTask, trafficTask, scopedRouteTask);
             _status = await statusTask;
             _trafficEngineStatus = await trafficTask;
+            _scopedRouteStatus = await scopedRouteTask;
         }
         finally
         {
@@ -432,9 +542,87 @@
         }
     }
 
+    private async Task EnableXBondAtBootAsync()
+    {
+        _isChangingTrafficEngine = true;
+        try
+        {
+            _trafficEngineStatus = await XBondTrafficEngineService.EnableAtBootAsync();
+        }
+        finally
+        {
+            _isChangingTrafficEngine = false;
+        }
+    }
+
+    private async Task DisableXBondAtBootAsync()
+    {
+        _isChangingTrafficEngine = true;
+        try
+        {
+            _trafficEngineStatus = await XBondTrafficEngineService.DisableAtBootAsync();
+        }
+        finally
+        {
+            _isChangingTrafficEngine = false;
+        }
+    }
+
+    private async Task RunScopedRouteTestAsync()
+    {
+        _isRunningScopedRouteAction = true;
+        try
+        {
+            _scopedRouteTestResult = await XBondScopedRouteService.RunScopedRouteTestAsync(_scopedRouteTarget);
+            _scopedRouteStatus = await XBondScopedRouteService.GetStatusAsync(_scopedRouteTarget);
+        }
+        finally
+        {
+            _isRunningScopedRouteAction = false;
+        }
+    }
+
+    private async Task ApplyScopedRouteAsync()
+    {
+        _isRunningScopedRouteAction = true;
+        try
+        {
+            _scopedRouteTestResult = null;
+            _scopedRouteStatus = await XBondScopedRouteService.ApplyScopedRouteAsync(_scopedRouteTarget);
+        }
+        finally
+        {
+            _isRunningScopedRouteAction = false;
+        }
+    }
+
+    private async Task ClearScopedRouteAsync()
+    {
+        _isRunningScopedRouteAction = true;
+        try
+        {
+            _scopedRouteTestResult = null;
+            _scopedRouteStatus = await XBondScopedRouteService.ClearScopedRouteAsync(_scopedRouteTarget);
+        }
+        finally
+        {
+            _isRunningScopedRouteAction = false;
+        }
+    }
+
+    private void OnScopedRouteTargetChanged(ChangeEventArgs args)
+    {
+        _scopedRouteTarget = args.Value?.ToString() ?? "";
+        _scopedRouteTestResult = null;
+    }
+
     private bool CanStartCanary() => _trafficEngineStatus?.CanStartCanary == true;
 
     private bool CanStopCanary() => _trafficEngineStatus?.CanStopCanary == true;
+
+    private bool CanEnableAtBoot() => _trafficEngineStatus?.CanEnableAtBoot == true;
+
+    private bool CanDisableAtBoot() => _trafficEngineStatus?.CanDisableAtBoot == true;
 
     private string GetStateLabel()
     {
@@ -524,6 +712,33 @@
             XBondTrafficEngineModes.XBondPrimary => "rounded-full border border-fuchsia-500/40 bg-fuchsia-500/10 px-2.5 py-1 text-xs font-semibold text-fuchsia-200",
             _ => "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
         };
+    }
+
+    private string GetBootStateLabel()
+    {
+        if (_trafficEngineStatus == null)
+        {
+            return "--";
+        }
+
+        return _trafficEngineStatus.ClientServiceEnabled
+            ? "Enabled"
+            : FormatStateLabel(_trafficEngineStatus.ClientServiceEnableState);
+    }
+
+    private string GetScopedRouteLabel()
+    {
+        if (_scopedRouteStatus == null)
+        {
+            return "--";
+        }
+
+        if (_scopedRouteStatus.HasError)
+        {
+            return "Error";
+        }
+
+        return _scopedRouteStatus.RouteUsesXBond ? "XBond" : "Normal";
     }
 
     private static string FormatRole(string role)
@@ -624,6 +839,13 @@
         return result.Succeeded
             ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
             : "rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-semibold text-red-200";
+    }
+
+    private static string GetScopedTestBadgeClass(XBondScopedRouteTestResult result)
+    {
+        return result.Succeeded
+            ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+            : "rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200";
     }
 
     private static string GetProbeBadgeClass(XBondProbeResult result)

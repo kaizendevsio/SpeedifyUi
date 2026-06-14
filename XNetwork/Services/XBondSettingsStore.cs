@@ -90,6 +90,10 @@ public class XBondSettingsStore
         target.ServiceManagerPath = string.IsNullOrWhiteSpace(source.ServiceManagerPath)
             ? target.ServiceManagerPath
             : source.ServiceManagerPath;
+        target.UseSudoForServiceManager = source.UseSudoForServiceManager;
+        target.SudoPath = string.IsNullOrWhiteSpace(source.SudoPath)
+            ? target.SudoPath
+            : source.SudoPath;
         target.ServiceCommandTimeoutSeconds = source.ServiceCommandTimeoutSeconds <= 0
             ? target.ServiceCommandTimeoutSeconds
             : source.ServiceCommandTimeoutSeconds;
@@ -130,6 +134,30 @@ public class XBondSettingsStore
         target.PublicTestKeyFilePath = string.IsNullOrWhiteSpace(source.PublicTestKeyFilePath)
             ? target.PublicTestKeyFilePath
             : source.PublicTestKeyFilePath;
+        target.CanaryTunnelDevice = string.IsNullOrWhiteSpace(source.CanaryTunnelDevice)
+            ? target.CanaryTunnelDevice
+            : source.CanaryTunnelDevice;
+        target.CanaryTunnelSource = string.IsNullOrWhiteSpace(source.CanaryTunnelSource)
+            ? target.CanaryTunnelSource
+            : source.CanaryTunnelSource;
+        target.RouteCommandPath = string.IsNullOrWhiteSpace(source.RouteCommandPath)
+            ? target.RouteCommandPath
+            : source.RouteCommandPath;
+        target.PingCommandPath = string.IsNullOrWhiteSpace(source.PingCommandPath)
+            ? target.PingCommandPath
+            : source.PingCommandPath;
+        target.ScopedRouteDefaultTarget = string.IsNullOrWhiteSpace(source.ScopedRouteDefaultTarget)
+            ? target.ScopedRouteDefaultTarget
+            : source.ScopedRouteDefaultTarget;
+        target.ScopedRouteTestCount = source.ScopedRouteTestCount <= 0
+            ? target.ScopedRouteTestCount
+            : source.ScopedRouteTestCount;
+        target.ScopedRoutePacketTimeoutSeconds = source.ScopedRoutePacketTimeoutSeconds <= 0
+            ? target.ScopedRoutePacketTimeoutSeconds
+            : source.ScopedRoutePacketTimeoutSeconds;
+        target.ScopedRouteCommandTimeoutSeconds = source.ScopedRouteCommandTimeoutSeconds <= 0
+            ? target.ScopedRouteCommandTimeoutSeconds
+            : source.ScopedRouteCommandTimeoutSeconds;
     }
 
     private static string GetAppDataDirectory(IHostEnvironment environment)
