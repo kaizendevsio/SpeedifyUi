@@ -1,5 +1,5 @@
 [Unit]
-Description=XBond server canary endpoint
+Description=XBond server endpoint
 Documentation=man:systemd.service(5)
 After=network-online.target
 Wants=network-online.target
@@ -12,7 +12,7 @@ ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do /usr/sbin/ip link sh
 Restart=on-failure
 RestartSec=3
 
-# The canary endpoint opens /dev/net/tun when --tun-name is present.
+# The XBond endpoint opens /dev/net/tun when --tun-name is present.
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
 NoNewPrivileges=false

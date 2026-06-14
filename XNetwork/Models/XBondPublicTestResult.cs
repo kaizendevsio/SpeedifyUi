@@ -47,24 +47,6 @@ public class XBondPublicTestResult
     public List<XBondPingReply> Replies { get; set; } = new();
 
     [JsonIgnore]
-    public string BypassRule { get; set; } = "";
-
-    [JsonIgnore]
-    public bool BypassWasAlreadyPresent { get; set; }
-
-    [JsonIgnore]
-    public bool BypassAdded { get; set; }
-
-    [JsonIgnore]
-    public bool BypassRemoved { get; set; }
-
-    [JsonIgnore]
-    public bool BypassEnabledChanged { get; set; }
-
-    [JsonIgnore]
-    public bool BypassEnabledRestored { get; set; }
-
-    [JsonIgnore]
     public string Message { get; set; } = "";
 
     [JsonIgnore]
@@ -114,24 +96,6 @@ public class XBondProbeResult
 
     [JsonIgnore]
     public string Server { get; set; } = "";
-
-    [JsonIgnore]
-    public string BypassRule { get; set; } = "";
-
-    [JsonIgnore]
-    public bool BypassWasAlreadyPresent { get; set; }
-
-    [JsonIgnore]
-    public bool BypassAdded { get; set; }
-
-    [JsonIgnore]
-    public bool BypassRemoved { get; set; }
-
-    [JsonIgnore]
-    public bool BypassEnabledChanged { get; set; }
-
-    [JsonIgnore]
-    public bool BypassEnabledRestored { get; set; }
 
     [JsonIgnore]
     public string Message { get; set; } = "";

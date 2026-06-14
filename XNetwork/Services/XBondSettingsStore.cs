@@ -83,7 +83,6 @@ public class XBondSettingsStore
         target.Enabled = source.Enabled;
         target.TrafficEngineMode = XBondTrafficEngineModes.Normalize(source.TrafficEngineMode);
         target.AllowServiceControl = source.AllowServiceControl;
-        target.AllowPrimaryMode = source.AllowPrimaryMode;
         target.ClientServiceName = string.IsNullOrWhiteSpace(source.ClientServiceName)
             ? target.ClientServiceName
             : source.ClientServiceName;
@@ -109,10 +108,6 @@ public class XBondSettingsStore
         target.PublicTestServerAddress = string.IsNullOrWhiteSpace(source.PublicTestServerAddress)
             ? target.PublicTestServerAddress
             : source.PublicTestServerAddress;
-        target.PublicTestBypassPort = source.PublicTestBypassPort <= 0 ? target.PublicTestBypassPort : source.PublicTestBypassPort;
-        target.PublicTestBypassProtocol = string.IsNullOrWhiteSpace(source.PublicTestBypassProtocol)
-            ? target.PublicTestBypassProtocol
-            : source.PublicTestBypassProtocol;
         target.PublicTestPathId = source.PublicTestPathId <= 0 ? target.PublicTestPathId : source.PublicTestPathId;
         target.PublicTestPathIds = source.PublicTestPathIds ?? new List<int>();
         target.PublicTestBinds = source.PublicTestBinds ?? new List<string>();
@@ -121,10 +116,6 @@ public class XBondSettingsStore
         target.PublicTestPacketTimeoutMs = source.PublicTestPacketTimeoutMs <= 0
             ? target.PublicTestPacketTimeoutMs
             : source.PublicTestPacketTimeoutMs;
-        target.PublicTestBypassSettleMs = source.PublicTestBypassSettleMs < 0
-            ? target.PublicTestBypassSettleMs
-            : source.PublicTestBypassSettleMs;
-        target.MultiPathUseSpeedifyBypass = source.MultiPathUseSpeedifyBypass;
         target.PublicTestCommandTimeoutSeconds = source.PublicTestCommandTimeoutSeconds <= 0
             ? target.PublicTestCommandTimeoutSeconds
             : source.PublicTestCommandTimeoutSeconds;
@@ -134,12 +125,12 @@ public class XBondSettingsStore
         target.PublicTestKeyFilePath = string.IsNullOrWhiteSpace(source.PublicTestKeyFilePath)
             ? target.PublicTestKeyFilePath
             : source.PublicTestKeyFilePath;
-        target.CanaryTunnelDevice = string.IsNullOrWhiteSpace(source.CanaryTunnelDevice)
-            ? target.CanaryTunnelDevice
-            : source.CanaryTunnelDevice;
-        target.CanaryTunnelSource = string.IsNullOrWhiteSpace(source.CanaryTunnelSource)
-            ? target.CanaryTunnelSource
-            : source.CanaryTunnelSource;
+        target.TunnelDevice = string.IsNullOrWhiteSpace(source.TunnelDevice)
+            ? target.TunnelDevice
+            : source.TunnelDevice;
+        target.TunnelSource = string.IsNullOrWhiteSpace(source.TunnelSource)
+            ? target.TunnelSource
+            : source.TunnelSource;
         target.RouteCommandPath = string.IsNullOrWhiteSpace(source.RouteCommandPath)
             ? target.RouteCommandPath
             : source.RouteCommandPath;

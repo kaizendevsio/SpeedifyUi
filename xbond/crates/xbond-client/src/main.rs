@@ -13,11 +13,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, CanaryTun,
+    build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, XBondTun,
     ClientConfig, FrameReceiver, PacketKind, PathHealthSnapshot, PathIsolationStatus,
     ProbeAggregate, ProbePathStats, ReceiveOutcome, RouteVerification, XBondFecStatus, XBondFrame,
     XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
-    XorFecBlock,
+    ScheduledTransmission, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -84,7 +84,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    CanaryTunnel {
+    Tunnel {
         #[arg(long, default_value = "/etc/xbond/client.toml")]
         config: PathBuf,
         #[arg(long, default_value = "xbond0")]
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
                 print_multi_ping_result(&result);
             }
         }
-        Command::CanaryTunnel {
+        Command::Tunnel {
             config,
             tun_name,
             tun_mtu,
@@ -187,7 +187,7 @@ async fn main() -> Result<()> {
             packet_limit,
             json_events,
         } => {
-            run_canary_tunnel(CanaryTunnelOptions {
+            run_tunnel(TunnelOptions {
                 config,
                 tun_name,
                 tun_mtu,
@@ -229,7 +229,7 @@ struct MultiPingOptions {
 }
 
 #[derive(Debug)]
-struct CanaryTunnelOptions {
+struct TunnelOptions {
     config: PathBuf,
     tun_name: String,
     tun_mtu: u16,
@@ -260,8 +260,33 @@ struct PreparedProbePath {
 }
 
 #[derive(Debug)]
-struct InboundCanaryFrame {
+struct InboundTunnelFrame {
     frame: XBondFrame,
+}
+
+#[derive(Debug, Default)]
+struct TunnelPathRuntime {
+    send_failures: u32,
+    bytes_sent: u64,
+    last_bytes_sent: u64,
+    throughput_bps: u64,
+}
+
+#[derive(Debug, Default)]
+struct TunnelCounters {
+    data_packets_sent: u64,
+    duplicate_packets_sent: u64,
+    fec_packets_sent: u64,
+    fec_packets_skipped: u64,
+    data_packets_received: u64,
+    late_packets_dropped: u64,
+    duplicate_packets_dropped: u64,
+    data_bytes_sent: u64,
+    data_bytes_received: u64,
+    last_data_bytes_sent: u64,
+    last_data_bytes_received: u64,
+    outbound_throughput_bps: u64,
+    inbound_throughput_bps: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -492,19 +517,12 @@ async fn run_multi_ping(options: MultiPingOptions) -> Result<ProbeAggregate> {
     })
 }
 
-async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
+async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let config = read_config(&options.config)?;
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
     let session_id = options.session_id.unwrap_or_else(now_micros);
-    let health = config_health(&config);
-    let roles = select_path_roles(&health, config.max_active_backups);
-    let schedule = build_schedule(config.mode, &roles);
-    let transmissions = build_transmission_plan(&schedule);
-    if transmissions.is_empty() {
-        bail!("canary tunnel has no schedulable paths");
-    }
 
     let specs = select_probe_paths(&config, &[], &[])?;
     let specs_by_id = specs
@@ -512,43 +530,17 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
         .map(|spec| (spec.path_id, spec))
         .collect::<HashMap<_, _>>();
     let mut sockets: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
-    for transmission in &transmissions {
-        if sockets.contains_key(&transmission.path_id) {
-            continue;
-        }
-        let spec = specs_by_id.get(&transmission.path_id).with_context(|| {
-            format!(
-                "scheduled path {} is not enabled in client config",
-                transmission.path_id
-            )
-        })?;
-        let (socket, _isolation) =
-            create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref()).with_context(
-                || {
-                    format!(
-                        "failed to open isolated canary socket for path {} ({})",
-                        spec.path_id, spec.name
-                    )
-                },
-            )?;
-        socket.connect(&config.server_addr).await.with_context(|| {
-            format!(
-                "failed to connect canary path {} to {}",
-                spec.path_id, config.server_addr
-            )
-        })?;
-        sockets.insert(transmission.path_id, Arc::new(socket));
-    }
+    let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
 
-    let mut tun = CanaryTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
+    let mut tun = XBondTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
         format!(
-            "failed to open canary TUN {}; run as root or grant CAP_NET_ADMIN",
+            "failed to open XBond TUN {}; run as root or grant CAP_NET_ADMIN",
             options.tun_name
         )
     })?;
     let tun_reader = tun.try_clone().with_context(|| {
         format!(
-            "failed to clone canary TUN {} for packet reader",
+            "failed to clone XBond TUN {} for packet reader",
             tun.name()
         )
     })?;
@@ -567,56 +559,38 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                 }
                 Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                 Err(error) => {
-                    eprintln!("xbond canary TUN reader for {tun_name} stopped: {error}");
+                    eprintln!("xbond XBond TUN reader for {tun_name} stopped: {error}");
                     break;
                 }
             }
         }
     });
 
-    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<InboundCanaryFrame>();
-    for socket in sockets.values().cloned() {
-        let inbound_tx = inbound_tx.clone();
-        let key = key.clone();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 4096];
-            loop {
-                let Ok(len) = socket.recv(&mut buf).await else {
-                    break;
-                };
-                let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
-                    continue;
-                };
-                if inbound_tx.send(InboundCanaryFrame { frame }).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-    drop(inbound_tx);
-
-    write_runtime_status(
+    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<InboundTunnelFrame>();
+    ensure_tunnel_sockets(
         &config,
-        XBondRuntimeStatus {
-            running: true,
-            tunnel: XBondTunnelStatus {
-                state: "canary-running".to_string(),
-                device_name: Some(tun.name().to_string()),
-                mtu: Some(options.tun_mtu),
-                message: "Bidirectional canary tunnel is open; XBond does not install routes automatically."
-                    .to_string(),
-            },
-            fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
-            message: Some("Canary tunnel is running.".to_string()),
-            ..XBondRuntimeStatus::default()
-        },
-    )?;
+        &specs_by_id,
+        &mut sockets,
+        &mut path_runtime,
+        &inbound_tx,
+        &key,
+        options.json_events,
+    )
+    .await?;
+    let mut schedule = build_schedule(
+        config.mode,
+        &select_path_roles(
+            &tunnel_health(&config, &path_runtime, &sockets),
+            config.max_active_backups,
+        ),
+    );
+    let mut transmissions = build_transmission_plan(&schedule);
 
     if options.json_events {
         println!(
             "{}",
             serde_json::json!({
-                "event": "canary-tunnel-started",
+                "event": "tunnel-started",
                 "tun": tun.name(),
                 "server": config.server_addr,
                 "mode": config.mode,
@@ -626,26 +600,69 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
         );
     } else {
         println!(
-            "xbond canary tunnel opened {} -> {} ({:?}); no routes were changed",
+            "xbond XBond tunnel opened {} -> {} ({:?}); no routes were changed",
             tun.name(),
             config.server_addr,
             config.mode
         );
     }
 
-    let mut sequence = 0u64;
-    let mut data_packets_sent = 0u64;
-    let mut duplicate_packets_sent = 0u64;
-    let mut fec_packets_sent = 0u64;
-    let mut fec_packets_skipped = 0u64;
-    let mut data_packets_received = 0u64;
-    let mut late_packets_dropped = 0u64;
-    let mut duplicate_packets_dropped = 0u64;
+    let mut counters = TunnelCounters::default();
     let mut pending_fec_source: Option<(u64, Vec<u8>)> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
+    let mut sequence = 0u64;
+    let mut scheduler_tick = time::interval(Duration::from_secs(1));
+    let mut last_throughput_sample = Instant::now();
+
+    update_tunnel_throughput(
+        &mut path_runtime,
+        &mut counters,
+        &mut last_throughput_sample,
+    );
+    write_tunnel_runtime_status(
+        &config,
+        &tun,
+        options.tun_mtu,
+        &path_runtime,
+        &sockets,
+        &counters,
+    )?;
 
     loop {
         tokio::select! {
+            _ = scheduler_tick.tick() => {
+                ensure_tunnel_sockets(
+                    &config,
+                    &specs_by_id,
+                    &mut sockets,
+                    &mut path_runtime,
+                    &inbound_tx,
+                    &key,
+                    options.json_events,
+                ).await?;
+                update_tunnel_throughput(
+                    &mut path_runtime,
+                    &mut counters,
+                    &mut last_throughput_sample,
+                );
+                schedule = build_schedule(
+                    config.mode,
+                    &select_path_roles(
+                        &tunnel_health(&config, &path_runtime, &sockets),
+                        config.max_active_backups,
+                    ),
+                );
+                transmissions = build_transmission_plan(&schedule);
+                write_tunnel_runtime_status(
+                    &config,
+                    &tun,
+                    options.tun_mtu,
+                    &path_runtime,
+                    &sockets,
+                    &counters,
+                )?;
+            }
+
             Some(packet) = tun_packet_rx.recv() => {
                 if options
                     .packet_limit
@@ -667,7 +684,23 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     continue;
                 }
 
+                if transmissions.is_empty() {
+                    if options.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "packet-dropped-no-live-path",
+                                "bytes": packet.len(),
+                            })
+                        );
+                    }
+                    continue;
+                }
+
                 sequence += 1;
+                counters.data_bytes_sent = counters
+                    .data_bytes_sent
+                    .saturating_add(packet.len() as u64);
                 let send_micros = now_micros();
                 for transmission in transmissions
                     .iter()
@@ -688,12 +721,16 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     );
                     let encoded = frame.encode_sealed(&key)?;
                     match socket.send(&encoded).await {
-                        Ok(_) => match transmission.packet_kind {
-                            PacketKind::Data => data_packets_sent += 1,
-                            PacketKind::Duplicate => duplicate_packets_sent += 1,
-                            _ => {}
-                        },
+                        Ok(_) => {
+                            record_tunnel_send_success(
+                                &mut path_runtime,
+                                transmission,
+                                encoded.len() as u64,
+                                &mut counters,
+                            );
+                        }
                         Err(error) => {
+                            record_tunnel_send_failure(&mut path_runtime, transmission.path_id);
                             if options.json_events {
                                 println!(
                                     "{}",
@@ -722,7 +759,7 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                             XorFecBlock::encode(base_sequence, &first_payload, &packet)?;
                         for transmission in fec_transmissions {
                             let Some(socket) = sockets.get(&transmission.path_id) else {
-                                fec_packets_skipped += 1;
+                                counters.fec_packets_skipped += 1;
                                 continue;
                             };
                             let frame = XBondFrame::new(
@@ -737,9 +774,17 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                             );
                             let encoded = frame.encode_sealed(&key)?;
                             match socket.send(&encoded).await {
-                                Ok(_) => fec_packets_sent += 1,
+                                Ok(_) => {
+                                    record_tunnel_send_success(
+                                        &mut path_runtime,
+                                        transmission,
+                                        encoded.len() as u64,
+                                        &mut counters,
+                                    );
+                                }
                                 Err(error) => {
-                                    fec_packets_skipped += 1;
+                                    counters.fec_packets_skipped += 1;
+                                    record_tunnel_send_failure(&mut path_runtime, transmission.path_id);
                                     if options.json_events {
                                         println!(
                                             "{}",
@@ -766,10 +811,11 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                             "event": "packet-sent",
                             "sequence": sequence,
                             "bytes": packet.len(),
-                            "data_packets_sent": data_packets_sent,
-                            "duplicate_packets_sent": duplicate_packets_sent,
-                            "fec_packets_sent": fec_packets_sent,
-                            "fec_packets_skipped": fec_packets_skipped,
+                            "data_packets_sent": counters.data_packets_sent,
+                            "duplicate_packets_sent": counters.duplicate_packets_sent,
+                            "fec_packets_sent": counters.fec_packets_sent,
+                            "fec_packets_skipped": counters.fec_packets_skipped,
+                            "schedule": schedule,
                         })
                     );
                 }
@@ -781,9 +827,12 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                     ReceiveOutcome::Accepted if is_data_like(inbound.frame.header.kind) => {
                         if is_ipv4_packet(&inbound.frame.payload) {
                             tun.write_packet(&inbound.frame.payload).with_context(|| {
-                                format!("failed to write return packet to canary TUN {}", tun.name())
+                                format!("failed to write return packet to XBond TUN {}", tun.name())
                             })?;
-                            data_packets_received += 1;
+                            counters.data_packets_received += 1;
+                            counters.data_bytes_received = counters
+                                .data_bytes_received
+                                .saturating_add(inbound.frame.payload.len() as u64);
                             if options.json_events {
                                 println!(
                                     "{}",
@@ -791,17 +840,17 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
                                         "event": "packet-received",
                                         "sequence": inbound.frame.header.sequence,
                                         "bytes": inbound.frame.payload.len(),
-                                        "data_packets_received": data_packets_received,
+                                        "data_packets_received": counters.data_packets_received,
                                     })
                                 );
                             }
                         }
                     }
                     ReceiveOutcome::Duplicate => {
-                        duplicate_packets_dropped += 1;
+                        counters.duplicate_packets_dropped += 1;
                     }
                     ReceiveOutcome::Expired => {
-                        late_packets_dropped += 1;
+                        counters.late_packets_dropped += 1;
                     }
                     _ => {}
                 }
@@ -810,32 +859,216 @@ async fn run_canary_tunnel(options: CanaryTunnelOptions) -> Result<()> {
             else => break,
         };
 
-        write_runtime_status(
+        write_tunnel_runtime_status(
             &config,
-            XBondRuntimeStatus {
-                running: true,
-                tunnel: XBondTunnelStatus {
-                    state: "canary-running".to_string(),
-                    device_name: Some(tun.name().to_string()),
-                    mtu: Some(options.tun_mtu),
-                    message: "Bidirectional canary tunnel is open; XBond does not install routes automatically."
-                        .to_string(),
-                },
-                data_packets_sent,
-                duplicate_packets_sent,
-                duplicate_packets_dropped,
-                data_packets_received,
-                fec_packets_sent,
-                fec_packets_skipped,
-                fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
-                late_packets_dropped,
-                message: Some("Canary tunnel is running.".to_string()),
-                ..XBondRuntimeStatus::default()
-            },
+            &tun,
+            options.tun_mtu,
+            &path_runtime,
+            &sockets,
+            &counters,
         )?;
     }
 
     Ok(())
+}
+
+async fn ensure_tunnel_sockets(
+    config: &ClientConfig,
+    specs_by_id: &HashMap<u16, ProbePathSpec>,
+    sockets: &mut HashMap<u16, Arc<UdpSocket>>,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    inbound_tx: &mpsc::UnboundedSender<InboundTunnelFrame>,
+    key: &XBondKey,
+    json_events: bool,
+) -> Result<()> {
+    for (path_id, spec) in specs_by_id {
+        path_runtime.entry(*path_id).or_default();
+
+        if !interface_is_live(spec.interface_name.as_deref()) {
+            sockets.remove(path_id);
+            continue;
+        }
+
+        if sockets.contains_key(path_id) {
+            continue;
+        }
+
+        let socket = match create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref()) {
+            Ok((socket, _isolation)) => socket,
+            Err(error) => {
+                record_tunnel_send_failure(path_runtime, *path_id);
+                if json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "path-socket-open-failed",
+                            "path_id": path_id,
+                            "error": error.to_string(),
+                        })
+                    );
+                }
+                continue;
+            }
+        };
+
+        if let Err(error) = socket.connect(&config.server_addr).await {
+            record_tunnel_send_failure(path_runtime, *path_id);
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "path-socket-connect-failed",
+                        "path_id": path_id,
+                        "server": config.server_addr,
+                        "error": error.to_string(),
+                    })
+                );
+            }
+            continue;
+        }
+
+        let socket = Arc::new(socket);
+        spawn_tunnel_receiver(socket.clone(), inbound_tx.clone(), key.clone());
+        sockets.insert(*path_id, socket);
+    }
+
+    Ok(())
+}
+
+fn spawn_tunnel_receiver(
+    socket: Arc<UdpSocket>,
+    inbound_tx: mpsc::UnboundedSender<InboundTunnelFrame>,
+    key: XBondKey,
+) {
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 4096];
+        loop {
+            let Ok(len) = socket.recv(&mut buf).await else {
+                break;
+            };
+            let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
+                continue;
+            };
+            if inbound_tx.send(InboundTunnelFrame { frame }).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+fn tunnel_health(
+    config: &ClientConfig,
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+) -> Vec<PathHealthSnapshot> {
+    config_health(config)
+        .into_iter()
+        .map(|mut path| {
+            if !sockets.contains_key(&path.path_id) && path.interface_up {
+                path.in_cooldown = true;
+                path.loss_rate = 1.0;
+            }
+
+            if let Some(runtime) = path_runtime.get(&path.path_id) {
+                path.throughput_bps = runtime.throughput_bps;
+                if runtime.send_failures >= 2 {
+                    path.in_cooldown = true;
+                    path.loss_rate = 1.0;
+                }
+            }
+
+            path
+        })
+        .collect()
+}
+
+fn record_tunnel_send_success(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    transmission: &ScheduledTransmission,
+    bytes: u64,
+    counters: &mut TunnelCounters,
+) {
+    let runtime = path_runtime.entry(transmission.path_id).or_default();
+    runtime.send_failures = 0;
+    runtime.bytes_sent = runtime.bytes_sent.saturating_add(bytes);
+
+    match transmission.packet_kind {
+        PacketKind::Data => counters.data_packets_sent += 1,
+        PacketKind::Duplicate => counters.duplicate_packets_sent += 1,
+        PacketKind::Fec => counters.fec_packets_sent += 1,
+        _ => {}
+    }
+}
+
+fn record_tunnel_send_failure(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    path_id: u16,
+) {
+    let runtime = path_runtime.entry(path_id).or_default();
+    runtime.send_failures = runtime.send_failures.saturating_add(1);
+}
+
+fn update_tunnel_throughput(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    counters: &mut TunnelCounters,
+    last_sample: &mut Instant,
+) {
+    let elapsed = last_sample.elapsed().as_secs_f64().max(0.001);
+    for runtime in path_runtime.values_mut() {
+        let delta = runtime.bytes_sent.saturating_sub(runtime.last_bytes_sent);
+        runtime.throughput_bps = ((delta as f64 * 8.0) / elapsed) as u64;
+        runtime.last_bytes_sent = runtime.bytes_sent;
+    }
+    let outbound_delta = counters
+        .data_bytes_sent
+        .saturating_sub(counters.last_data_bytes_sent);
+    let inbound_delta = counters
+        .data_bytes_received
+        .saturating_sub(counters.last_data_bytes_received);
+    counters.outbound_throughput_bps = ((outbound_delta as f64 * 8.0) / elapsed) as u64;
+    counters.inbound_throughput_bps = ((inbound_delta as f64 * 8.0) / elapsed) as u64;
+    counters.last_data_bytes_sent = counters.data_bytes_sent;
+    counters.last_data_bytes_received = counters.data_bytes_received;
+    *last_sample = Instant::now();
+}
+
+fn write_tunnel_runtime_status(
+    config: &ClientConfig,
+    tun: &XBondTun,
+    tun_mtu: u16,
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    counters: &TunnelCounters,
+) -> Result<()> {
+    let paths = tunnel_health(config, path_runtime, sockets);
+
+    write_runtime_status(
+        config,
+        XBondRuntimeStatus {
+            running: true,
+            tunnel: XBondTunnelStatus {
+                state: "running".to_string(),
+                device_name: Some(tun.name().to_string()),
+                mtu: Some(tun_mtu),
+                message: "Bidirectional XBond tunnel is open.".to_string(),
+            },
+            paths,
+            data_packets_sent: counters.data_packets_sent,
+            duplicate_packets_sent: counters.duplicate_packets_sent,
+            duplicate_packets_dropped: counters.duplicate_packets_dropped,
+            data_packets_received: counters.data_packets_received,
+            data_bytes_sent: counters.data_bytes_sent,
+            data_bytes_received: counters.data_bytes_received,
+            outbound_throughput_bps: counters.outbound_throughput_bps,
+            inbound_throughput_bps: counters.inbound_throughput_bps,
+            fec_packets_sent: counters.fec_packets_sent,
+            fec_packets_skipped: counters.fec_packets_skipped,
+            fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
+            late_packets_dropped: counters.late_packets_dropped,
+            message: Some("XBond tunnel is running.".to_string()),
+            ..XBondRuntimeStatus::default()
+        },
+    )
 }
 
 fn is_data_like(kind: PacketKind) -> bool {
@@ -1093,8 +1326,8 @@ fn apply_bind_device(socket: &Socket, bind_device: Option<&str>) -> Result<PathI
         return Ok(PathIsolationStatus::default());
     };
 
-    if is_speedify_interface(bind_device) {
-        bail!("refusing to bind XBond path to Speedify interface {bind_device}");
+    if is_tunnel_interface(bind_device) {
+        bail!("refusing to bind XBond path to tunnel interface {bind_device}");
     }
 
     apply_platform_bind_device(socket, bind_device)?;
@@ -1152,18 +1385,18 @@ fn verify_route(
         );
     };
     if let Some(interface_name) = interface_name {
-        if is_speedify_interface(interface_name) {
+        if is_tunnel_interface(interface_name) {
             return RouteVerification::failed(
                 "ip-route-get",
-                format!("configured interface {interface_name} is a Speedify interface"),
+                format!("configured interface {interface_name} is a tunnel interface"),
             );
         }
     }
     if let Some(bind_device) = bind_device {
-        if is_speedify_interface(bind_device) {
+        if is_tunnel_interface(bind_device) {
             return RouteVerification::failed(
                 "bind-device",
-                format!("configured bind device {bind_device} is a Speedify interface"),
+                format!("configured bind device {bind_device} is a tunnel interface"),
             );
         }
     }
@@ -1195,7 +1428,7 @@ fn verify_route(
     let Some(route_dev) = route_dev else {
         return RouteVerification::failed("ip-route-get", "route output did not include dev");
     };
-    if is_speedify_interface(&route_dev) {
+    if is_tunnel_interface(&route_dev) {
         if let Some(bind_device) = bind_device {
             return RouteVerification::verified(
                 "bind-device+ip-route-get",
@@ -1206,7 +1439,7 @@ fn verify_route(
         }
         return RouteVerification::failed(
             "ip-route-get",
-            format!("route leaves through Speedify interface {route_dev}"),
+            format!("route leaves through tunnel interface {route_dev}"),
         );
     }
     if let Some(interface_name) = interface_name {
@@ -1253,9 +1486,9 @@ fn token_after(text: &str, token: &str) -> Option<String> {
     None
 }
 
-fn is_speedify_interface(interface_name: &str) -> bool {
+fn is_tunnel_interface(interface_name: &str) -> bool {
     let name = interface_name.to_ascii_lowercase();
-    name.contains("speedify") || name == "connectify0"
+    name == "connectify0" || name == "xbond0" || name.starts_with("xbond")
 }
 
 fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
@@ -1299,6 +1532,10 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         duplicate_packets_sent: runtime.duplicate_packets_sent,
         duplicate_packets_dropped: runtime.duplicate_packets_dropped,
         data_packets_received: runtime.data_packets_received,
+        data_bytes_sent: runtime.data_bytes_sent,
+        data_bytes_received: runtime.data_bytes_received,
+        outbound_throughput_bps: runtime.outbound_throughput_bps,
+        inbound_throughput_bps: runtime.inbound_throughput_bps,
         fec_packets_sent: runtime.fec_packets_sent,
         fec_packets_recovered: runtime.fec_packets_recovered,
         fec_packets_skipped: runtime.fec_packets_skipped,
@@ -1318,10 +1555,10 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
 
 fn path_isolation_from_config(path: &xbond_core::PathConfig) -> PathIsolationStatus {
     match path.interface_name.as_deref() {
-        Some(interface_name) if is_speedify_interface(interface_name) => {
+        Some(interface_name) if is_tunnel_interface(interface_name) => {
             PathIsolationStatus::failed(
                 "so-bindtodevice",
-                format!("refusing to isolate path to Speedify interface {interface_name}"),
+                format!("refusing to isolate path to tunnel interface {interface_name}"),
             )
         }
         Some(interface_name) => PathIsolationStatus::requested(
@@ -1339,7 +1576,7 @@ fn fec_status_for_mode(mode: xbond_core::ScheduleMode, runtime: XBondFecStatus) 
         return XBondFecStatus {
             configured: true,
             production_ready: true,
-            message: "AnchorFec uses canary XOR parity blocks across packet pairs; one missing data packet can be recovered when the paired data packet and parity arrive.".to_string(),
+            message: "AnchorFec uses XBond XOR parity blocks across packet pairs; one missing data packet can be recovered when the paired data packet and parity arrive.".to_string(),
         };
     }
 
@@ -1411,10 +1648,51 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             late_rate: 0.0,
             queue_depth: 0,
             throughput_bps: 0,
-            interface_up: path.enabled,
+            interface_up: path.enabled && interface_is_live(path.interface_name.as_deref()),
             in_cooldown: false,
         })
         .collect()
+}
+
+fn interface_is_live(interface_name: Option<&str>) -> bool {
+    let Some(interface_name) = interface_name.filter(|value| !value.trim().is_empty()) else {
+        return true;
+    };
+
+    read_interface_state(interface_name).is_live
+}
+
+#[derive(Debug, Clone)]
+struct InterfaceState {
+    is_live: bool,
+}
+
+fn read_interface_state(interface_name: &str) -> InterfaceState {
+    #[cfg(target_os = "linux")]
+    {
+        let base = PathBuf::from("/sys/class/net").join(interface_name);
+        if !base.exists() {
+            return InterfaceState { is_live: false };
+        }
+
+        let operstate = std::fs::read_to_string(base.join("operstate"))
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let carrier = std::fs::read_to_string(base.join("carrier"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        let live = matches!(operstate.as_str(), "up" | "unknown") && carrier != "0";
+        return InterfaceState { is_live: live };
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = interface_name;
+        InterfaceState { is_live: true }
+    }
 }
 
 fn print_human_status(status: &XBondStatus) {
@@ -1607,10 +1885,11 @@ mod tests {
     }
 
     #[test]
-    fn speedify_interface_detection_rejects_connectify0() {
-        assert!(is_speedify_interface("connectify0"));
-        assert!(is_speedify_interface("speedify0"));
-        assert!(!is_speedify_interface("eth0"));
+    fn tunnel_interface_detection_rejects_tunnel_paths() {
+        assert!(is_tunnel_interface("connectify0"));
+        assert!(is_tunnel_interface("xbond0"));
+        assert!(is_tunnel_interface("xbond-primary"));
+        assert!(!is_tunnel_interface("eth0"));
     }
 
     #[test]

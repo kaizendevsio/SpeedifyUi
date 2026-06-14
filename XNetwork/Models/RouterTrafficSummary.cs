@@ -2,9 +2,9 @@ namespace XNetwork.Models;
 
 public class RouterTrafficSummary
 {
-    public double SpeedifyDownloadMbps { get; init; }
+    public double XBondDownloadMbps { get; init; }
 
-    public double SpeedifyUploadMbps { get; init; }
+    public double XBondUploadMbps { get; init; }
 
     public double CudyClientDownloadMbps { get; init; }
 
@@ -14,9 +14,9 @@ public class RouterTrafficSummary
 
     public LocalProcessTrafficSnapshot LocalProcessTraffic { get; init; } = LocalProcessTrafficSnapshot.Unsupported("Local process attribution has not been sampled yet.");
 
-    public double OtherDownloadMbps => Math.Max(0, SpeedifyDownloadMbps - CudyClientDownloadMbps);
+    public double OtherDownloadMbps => Math.Max(0, XBondDownloadMbps - CudyClientDownloadMbps);
 
-    public double OtherUploadMbps => Math.Max(0, SpeedifyUploadMbps - CudyClientUploadMbps);
+    public double OtherUploadMbps => Math.Max(0, XBondUploadMbps - CudyClientUploadMbps);
 
     public double OtherTotalMbps => OtherDownloadMbps + OtherUploadMbps;
 

@@ -1,971 +1,174 @@
 @page "/details"
-@inject XNetwork.Services.SpeedifyService SpeedifyService
-@inject XNetwork.Services.IConnectionHealthService ConnectionHealthService
-@inject IJSRuntime JSRuntime
-@using System.Collections
 @using XNetwork.Models
-@using XNetwork.Components.Custom
+@using XNetwork.Services
 @using XNetwork.Utils
 @implements IAsyncDisposable
+@inject XBondStatsService XBondStatsService
 
-<PageTitle>Analytics - XNetwork</PageTitle>
+<PageTitle>XBond Analytics</PageTitle>
 
-<div class="p-4 md:p-6">
-    <div class="hidden md:block mb-6">
-        <h2 class="text-3xl font-bold text-white mb-1">Analytics</h2>
-        <p class="text-slate-400">Monitor connection health, ping success, and real-time performance.</p>
-    </div>
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
+    <section>
+        <h1 class="text-2xl font-bold text-white">XBond Analytics</h1>
+        <p class="mt-1 text-sm text-slate-400">Live tunnel and path telemetry from XBond runtime status.</p>
+    </section>
 
-    @if (!ConnectionHealthService.IsInitialized())
-    {
-        <div class="bg-blue-500/10 border border-blue-500/50 text-blue-400 px-4 py-3 rounded-lg mb-6">
-            <strong class="font-bold">Initializing...</strong>
-            <span class="block sm:inline">Connection health monitoring is starting up, please wait.</span>
+    <section class="grid gap-3 md:grid-cols-4">
+        @MetricCard("State", _snapshot?.State ?? "Loading")
+        @MetricCard("Active paths", (_snapshot?.ActivePaths.Count ?? 0).ToString())
+        @MetricCard("Download", SpeedFormatter.FormatSpeed(_snapshot?.DownloadMbps ?? 0))
+        @MetricCard("Upload", SpeedFormatter.FormatSpeed(_snapshot?.UploadMbps ?? 0))
+    </section>
+
+    <section class="grid gap-4 lg:grid-cols-2">
+        @ChartPanel("Download", _downloadHistory, "Mbps", "text-cyan-300")
+        @ChartPanel("Upload", _uploadHistory, "Mbps", "text-pink-300")
+        @ChartPanel("Average RTT", _latencyHistory, "ms", "text-emerald-300")
+        @ChartPanel("Path Loss", _lossHistory, "%", "text-amber-300")
+    </section>
+
+    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-4">
+        <div class="mb-4 flex items-center justify-between gap-3">
+            <h2 class="text-lg font-semibold text-white">Paths</h2>
+            <span class="text-xs text-slate-500">Updated @FormatUpdated()</span>
         </div>
-        <div class="space-y-6" aria-label="Loading analytics health data">
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <SkeletonBlock CssClass="h-7 w-48" />
-                    <SkeletonBlock CssClass="h-7 w-24 rounded-full" />
-                </div>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                    @for (var i = 0; i < 4; i++)
+        <div class="overflow-x-auto">
+            <table class="min-w-full divide-y divide-slate-800 text-sm">
+                <thead class="text-left text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                        <th class="py-2 pr-4">Path</th>
+                        <th class="py-2 pr-4">Role</th>
+                        <th class="py-2 pr-4">State</th>
+                        <th class="py-2 pr-4">RTT</th>
+                        <th class="py-2 pr-4">Loss</th>
+                        <th class="py-2 pr-4">Late</th>
+                        <th class="py-2 pr-4">Throughput</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-800/70 text-slate-300">
+                    @foreach (var path in _snapshot?.Paths ?? [])
                     {
-                        <div class="bg-slate-900/50 rounded-lg p-4 space-y-3">
-                            <SkeletonBlock CssClass="h-4 w-24" />
-                            <SkeletonBlock CssClass="h-8 w-20" />
-                            <SkeletonBlock CssClass="h-3 w-28" />
-                        </div>
+                        <tr>
+                            <td class="py-3 pr-4">
+                                <div class="font-semibold text-white">@path.Name</div>
+                                <div class="text-xs text-slate-500">@path.InterfaceName</div>
+                            </td>
+                            <td class="py-3 pr-4">@path.Role</td>
+                            <td class="py-3 pr-4">@path.StateText</td>
+                            <td class="py-3 pr-4">@FormatLatency(path.RttMs)</td>
+                            <td class="py-3 pr-4">@FormatPercent(path.LossPercent)</td>
+                            <td class="py-3 pr-4">@FormatPercent(path.LatePercent)</td>
+                            <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.ThroughputMbps)</td>
+                        </tr>
                     }
-                </div>
-                <div class="pt-4 border-t border-slate-700">
-                    <SkeletonBlock CssClass="h-4 w-4/5" />
-                </div>
-            </div>
+                </tbody>
+            </table>
         </div>
-    }
-    else
-    {
-        <!-- Overall Connection Health Card -->
-        <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-6">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-xl font-semibold text-white">Connection Health</h3>
-                <span class="px-3 py-1 text-sm font-medium rounded-full @GetStatusBadgeClass(_overallHealth.Status)">
-                    @GetStatusText(_overallHealth.Status)
-                </span>
-            </div>
-
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                <!-- Ping Success -->
-                <div class="bg-slate-900/50 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-check-circle @GetUptimeIconColor(_overallHealth.SuccessRate)"></i>
-                        <span class="text-xs text-slate-400">Ping Success</span>
-                    </div>
-                    <div class="flex items-baseline gap-1">
-                        <AnimatedNumber Value="@_overallHealth.SuccessRate" Decimals="1" CssClass="@($"text-2xl font-bold {GetUptimeTextColor(_overallHealth.SuccessRate)}")" AriaLabel="@($"{_overallHealth.SuccessRate:F1}% ping success")" />
-                        <span class="text-sm text-slate-400">%</span>
-                    </div>
-                    <p class="text-xs text-slate-500 mt-1">Last <AnimatedNumber Value="@_overallHealth.SampleCount" Decimals="0" AriaLabel="@($"{_overallHealth.SampleCount} pings")" /> pings</p>
-                </div>
-
-                <!-- Latency -->
-                <div class="bg-slate-900/50 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="far fa-clock text-slate-400"></i>
-                        <span class="text-xs text-slate-400">Avg Latency</span>
-                    </div>
-                    <div class="flex items-baseline gap-1">
-                        <AnimatedNumber Value="@Math.Round(_overallHealth.AverageLatency)" Decimals="0" CssClass="@($"text-2xl font-bold {GetLatencyTextColor(_overallHealth.AverageLatency)}")" AriaLabel="@($"{Math.Round(_overallHealth.AverageLatency)} milliseconds average latency")" />
-                        <span class="text-sm text-slate-400">ms</span>
-                    </div>
-                    <p class="text-xs text-slate-500 mt-1">Response time</p>
-                </div>
-
-                <!-- Jitter -->
-                <div class="bg-slate-900/50 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-signal text-slate-400"></i>
-                        <span class="text-xs text-slate-400">Jitter</span>
-                    </div>
-                    <div class="flex items-baseline gap-1">
-                        <AnimatedNumber Value="@Math.Round(_overallHealth.Jitter, 1)" Decimals="1" CssClass="@($"text-2xl font-bold {GetJitterTextColor(_overallHealth.Jitter)}")" AriaLabel="@($"{Math.Round(_overallHealth.Jitter, 1):F1} milliseconds jitter")" />
-                        <span class="text-sm text-slate-400">ms</span>
-                    </div>
-                    <p class="text-xs text-slate-500 mt-1">Variation</p>
-                </div>
-
-                <!-- Stability -->
-                <div class="bg-slate-900/50 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-chart-line text-slate-400"></i>
-                        <span class="text-xs text-slate-400">Stability</span>
-                    </div>
-                    <div class="flex items-baseline gap-1">
-                        <AnimatedNumber Value="@(Math.Round(_overallHealth.StabilityScore * 100))" Decimals="0" CssClass="@($"text-2xl font-bold {GetStabilityTextColor(_overallHealth.StabilityScore)}")" AriaLabel="@($"{Math.Round(_overallHealth.StabilityScore * 100)}% stability")" />
-                        <span class="text-sm text-slate-400">%</span>
-                    </div>
-                    <p class="text-xs text-slate-500 mt-1">Consistency</p>
-                </div>
-            </div>
-
-            <!-- Connection Quality Indicator -->
-            <div class="mt-4 pt-4 border-t border-slate-700">
-                <div class="flex items-center gap-3">
-                    <div class="flex-shrink-0">
-                        <div class="w-3 h-3 rounded-full @GetStatusIndicatorClass(_overallHealth.Status) animate-pulse"></div>
-                    </div>
-                    <div class="flex-grow">
-                        <p class="text-sm text-slate-300">@GetStatusDescription(_overallHealth.Status)</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Ping Success Chart -->
-        @if (_uptimeChartModuleLoaded)
-        {
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-6">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <h3 class="text-xl font-semibold text-white">Ping Success History</h3>
-                        <button @onclick="() => _showQualityInfo = !_showQualityInfo"
-                                class="w-6 h-6 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-400 hover:text-white transition-colors text-xs"
-                                title="@(_showQualityInfo ? "Hide" : "View") Quality Thresholds">
-                            <i class="fas fa-info"></i>
-                        </button>
-                    </div>
-                    <span class="text-sm text-slate-400">Live pings</span>
-                </div>
-                
-                <div class="bg-slate-900/50 rounded-lg p-4">
-                    <canvas id="uptimeChart" class="w-full" style="height: 300px;"></canvas>
-                </div>
-                
-                <div class="mt-4 flex items-center justify-center gap-4 text-sm">
-                    <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 bg-green-500 rounded-full"></div>
-                        <span class="text-slate-300">Successful pings</span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <div class="w-3 h-3 bg-red-500 rounded-full"></div>
-                        <span class="text-slate-300">Failed pings</span>
-                    </div>
-                </div>
-            </div>
-        }
-
-        <!-- Quality Thresholds Info (Collapsible) -->
-        @if (_showQualityInfo)
-        {
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                <div class="bg-green-900/20 border border-green-900/30 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-star text-green-400"></i>
-                        <h4 class="font-semibold text-green-300">Excellent</h4>
-                    </div>
-                    <p class="text-xs text-slate-400">Latency &lt; 30ms<br/>Jitter &lt; 5ms<br/>Ping success &gt; 98%</p>
-                </div>
-                
-                <div class="bg-cyan-900/20 border border-cyan-900/30 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-check text-cyan-400"></i>
-                        <h4 class="font-semibold text-cyan-300">Good</h4>
-                    </div>
-                    <p class="text-xs text-slate-400">Latency &lt; 80ms<br/>Jitter &lt; 15ms<br/>Ping success &gt; 95%</p>
-                </div>
-                
-                <div class="bg-yellow-900/20 border border-yellow-900/30 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-exclamation-triangle text-yellow-400"></i>
-                        <h4 class="font-semibold text-yellow-300">Fair</h4>
-                    </div>
-                    <p class="text-xs text-slate-400">Latency &lt; 150ms<br/>Jitter &lt; 30ms<br/>Ping success &gt; 90%</p>
-                </div>
-                
-                <div class="bg-red-900/20 border border-red-900/30 rounded-lg p-4">
-                    <div class="flex items-center gap-2 mb-2">
-                        <i class="fas fa-times-circle text-red-400"></i>
-                        <h4 class="font-semibold text-red-300">Poor/Critical</h4>
-                    </div>
-                    <p class="text-xs text-slate-400">High latency<br/>High jitter<br/>Low ping success</p>
-                </div>
-            </div>
-        }
-    }
-
-    <!-- Traffic Charts Section -->
-    <div class="mb-6">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
-            <div>
-                <h3 class="text-xl font-semibold text-white mb-1">Traffic Statistics</h3>
-                <p class="text-sm text-slate-400">Real-time adapter performance over the last @_chartPeriod seconds.</p>
-            </div>
-            <div class="flex gap-1 bg-slate-800/50 p-1 rounded-lg border border-slate-700">
-                <button @onclick="() => ChangePeriod(15)"
-                        class="px-3 py-1.5 text-sm font-medium rounded transition-colors @(_chartPeriod == 15 ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white hover:bg-slate-700")">
-                    15s
-                </button>
-                <button @onclick="() => ChangePeriod(30)"
-                        class="px-3 py-1.5 text-sm font-medium rounded transition-colors @(_chartPeriod == 30 ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white hover:bg-slate-700")">
-                    30s
-                </button>
-                <button @onclick="() => ChangePeriod(60)"
-                        class="px-3 py-1.5 text-sm font-medium rounded transition-colors @(_chartPeriod == 60 ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white hover:bg-slate-700")">
-                    1m
-                </button>
-                <button @onclick="() => ChangePeriod(300)"
-                        class="px-3 py-1.5 text-sm font-medium rounded transition-colors @(_chartPeriod == 300 ? "bg-blue-600 text-white" : "text-slate-400 hover:text-white hover:bg-slate-700")">
-                    5m
-                </button>
-            </div>
-        </div>
-    </div>
-
-    @if (_isInitialLoading && !_isStreaming)
-    {
-        <div class="bg-blue-500/10 border border-blue-500/50 text-blue-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
-            <strong class="font-bold">Loading...</strong>
-            <span class="block sm:inline">Fetching initial data and preparing charts, please wait.</span>
-        </div>
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6" aria-label="Loading traffic charts">
-            @for (var i = 0; i < 4; i++)
-            {
-                <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg overflow-hidden">
-                    <div class="p-4 space-y-2">
-                        <SkeletonBlock CssClass="h-5 w-40" />
-                        <div class="flex gap-4">
-                            <SkeletonBlock CssClass="h-3 w-24" />
-                            <SkeletonBlock CssClass="h-3 w-24" />
-                        </div>
-                    </div>
-                    <div class="h-64 w-full p-4">
-                        <SkeletonBlock CssClass="h-full w-full" />
-                    </div>
-                </div>
-            }
-        </div>
-    }
-    else if (!string.IsNullOrEmpty(_errorMessage))
-    {
-        <div class="bg-red-500/10 border border-red-500/50 text-red-400 px-4 py-3 rounded-lg relative mb-4" role="alert">
-            <strong class="font-bold">Error!</strong>
-            <span class="block sm:inline">@_errorMessage</span>
-        </div>
-    }
-
-    @if (_jsModuleLoaded && _adapters.Any())
-    {
-        @if (!_chartsSuccessfullyInitialized && _attemptedChartInitialization && !_isInitialLoading) 
-        {
-            <p class="text-orange-400 font-semibold mb-4">
-                Charts could not be initialized. Please ensure Speedify is active and check the browser console for errors.
-                @if(!string.IsNullOrEmpty(_chartInitializationErrorMessage)) { <br /><span class="text-sm">Details: @_chartInitializationErrorMessage</span> }
-            </p>
-        }
-        
-        <!-- Charts Grid -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-            <!-- Download Chart -->
-            <ChartCard Title="Download Speed (Mbps)"
-                      ChartId="downloadChart"
-                      ShowLegend="true"
-                      LegendItems="@GetAdapterLegend()" />
-
-            <!-- Upload Chart -->
-            <ChartCard Title="Upload Speed (Mbps)"
-                      ChartId="uploadChart"
-                      ShowLegend="true"
-                      LegendItems="@GetAdapterLegend()" />
-
-            <!-- Latency Chart -->
-            <ChartCard Title="Latency (ms)"
-                      ChartId="rttChart"
-                      ShowLegend="true"
-                      LegendItems="@GetAdapterLegend(includeActualConnection: true)" />
-
-            <!-- Loss Chart -->
-            <ChartCard Title="Packet Loss (%)"
-                      ChartId="lossChart"
-                      ShowLegend="true"
-                      LegendItems="@GetAdapterLegend(includeActualConnection: true)" />
-        </div>
-    }
-    else if (!_isInitialLoading && !_adapters.Any() && string.IsNullOrEmpty(_errorMessage)) 
-    {
-        <p class="text-slate-400 my-6">Adapter information not available, charts cannot be displayed.</p>
-    }
-
+    </section>
 </div>
 
 @code {
-    // Traffic charts state
-    private List<ConnectionItem> _stats = new();
-    private IReadOnlyList<Adapter> _adapters = Array.Empty<Adapter>();
-    private CancellationTokenSource? _statsCts;
-
-    private bool _isInitialLoading = true;
-    private bool _isStreaming = false;
-    private string _errorMessage = string.Empty;
-    private string _chartInitializationErrorMessage = string.Empty;
-
-    private IJSObjectReference? _chartModule;
-    private bool _jsModuleLoaded = false;
-    private bool _chartsSuccessfullyInitialized = false;
-    private bool _attemptedChartInitialization = false;
-    private bool _readyForChartInitializationStep = false;
-    private Timer? _chartUpdateTimer;
-    private Timer? _autoRefreshTimer;
-    private readonly object _chartDataLock = new();
-    private int _chartPushInProgress;
-    
-    // Uptime chart state
-    private ConnectionHealth _overallHealth = new();
-    private Timer? _healthUpdateTimer;
-    private IJSObjectReference? _uptimeChartModule;
-    private bool _uptimeChartModuleLoaded = false;
-    private bool _uptimeChartInitialized = false;
-    private bool _showQualityInfo = false;
-    private int _chartPeriod = 15; // Default to 15 seconds
-    private int _healthUpdateInProgress;
-    private int _adapterRefreshInProgress;
-    private const string ActualConnectionSeriesId = "__actual_connection";
-    private const string ActualConnectionSeriesLabel = "Actual Connection";
-    private const string ActualConnectionSeriesColor = "#34d399";
-
-    private Dictionary<string, Dictionary<string, double>> _batchedChartData = new()
-    {
-        { "downloadChart", new Dictionary<string, double>() },
-        { "uploadChart", new Dictionary<string, double>() },
-        { "rttChart", new Dictionary<string, double>() },
-        { "lossChart", new Dictionary<string, double>() }
-    };
+    private const int MaxHistory = 60;
+    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
+    private readonly CancellationTokenSource _refreshCts = new();
+    private readonly List<double> _downloadHistory = [];
+    private readonly List<double> _uploadHistory = [];
+    private readonly List<double> _latencyHistory = [];
+    private readonly List<double> _lossHistory = [];
+    private XBondStatsSnapshot? _snapshot;
 
     protected override async Task OnInitializedAsync()
     {
-        Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnInitializedAsync - Starting.");
-        _isInitialLoading = true;
-        Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnInitializedAsync - Finished.");
+        await RefreshAsync();
+        _ = RunRefreshLoopAsync();
     }
 
-    private async Task LoadInitialData()
-    {
-        if (Interlocked.Exchange(ref _adapterRefreshInProgress, 1) == 1)
-        {
-            return;
-        }
-
-        Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData");
-        try
-        {
-            _adapters = await SpeedifyService.GetAdaptersAsync() ?? Array.Empty<Adapter>();
-            Console.WriteLine(!_adapters.Any()
-                ? $"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - No adapters found."
-                : $"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Loaded {_adapters.Count} adapters.");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): LoadInitialData - Error: {ex.Message}");
-            _errorMessage = $"Could not load adapter information: {ex.Message}";
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _adapterRefreshInProgress, 0);
-        }
-    }
-    
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync - firstRender: {firstRender}, _jsModuleLoaded: {_jsModuleLoaded}, _chartsSuccessfullyInitialized: {_chartsSuccessfullyInitialized}, _readyForChartInitializationStep: {_readyForChartInitializationStep}");
-        if (firstRender)
-        {
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (firstRender) - Step 1: Load JS Modules & Adapters.");
-            
-            // Start health monitoring timer
-            _healthUpdateTimer = new Timer(async _ => await InvokeAsync(UpdateHealthData), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-            
-            // Start adapter refresh timer
-            _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadInitialData), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
-
-            await LoadInitialData();
-            await EnsureJsModulesAreLoaded();
-
-            await Task.Delay(10);
-            
-            if (_jsModuleLoaded && _adapters.Any() && string.IsNullOrEmpty(_errorMessage))
-            {
-                _readyForChartInitializationStep = true;
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (firstRender) - JS Modules loaded and adapters present. Ready for chart init step.");
-                await InvokeAsync(StateHasChanged);
-            }
-            else if (!_adapters.Any() && string.IsNullOrEmpty(_errorMessage))
-            {
-                 _errorMessage = "No network adapters found. Cannot display statistics or charts.";
-                 Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (firstRender) - No adapters, cannot proceed with charts.");
-                 _isInitialLoading = false;
-                 await InvokeAsync(StateHasChanged);
-            } else if (!_jsModuleLoaded && string.IsNullOrEmpty(_errorMessage)) {
-                 _errorMessage = "Charting library failed to load. Charts unavailable.";
-                 _isInitialLoading = false;
-                 await InvokeAsync(StateHasChanged);
-            }
-        }
-        else if (_readyForChartInitializationStep && !_chartsSuccessfullyInitialized && _jsModuleLoaded && _adapters.Any())
-        {
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync (subsequent, _readyForChartInitializationStep=true) - Step 2: Initialize Charts.");
-            await InitializeChartsInternal();
-            _readyForChartInitializationStep = false;
-
-            if (_chartsSuccessfullyInitialized && !_isStreaming && string.IsNullOrEmpty(_errorMessage))
-            {
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync - Charts initialized, auto-starting stream.");
-                await StartStreamingStatsInternal();
-            }
-            else
-            {
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): OnAfterRenderAsync - Post chart init - Auto-start conditions NOT met. Error: '{_errorMessage}', ChartsInit: {_chartsSuccessfullyInitialized}, Streaming: {_isStreaming}");
-            }
-            _isInitialLoading = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private async Task EnsureJsModulesAreLoaded()
-    {
-        // Load traffic charts module
-        if (!_jsModuleLoaded)
-        {
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): EnsureJsModulesAreLoaded - Loading traffic charts module.");
-            try
-            {
-                _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
-                _jsModuleLoaded = true;
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Traffic charts module loaded successfully.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Error loading traffic charts module: {ex.Message}");
-                _errorMessage = "Failed to load traffic charting library.";
-                _jsModuleLoaded = false;
-            }
-        }
-        
-        // Load uptime chart module
-        if (!_uptimeChartModuleLoaded)
-        {
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): EnsureJsModulesAreLoaded - Loading uptime chart module.");
-            try
-            {
-                _uptimeChartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/uptimeChart.js");
-                _uptimeChartModuleLoaded = true;
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Uptime chart module loaded successfully.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Error loading uptime chart module: {ex.Message}");
-                // Don't fail the whole page if uptime chart doesn't load
-                _uptimeChartModuleLoaded = false;
-            }
-        }
-    }
-
-    private async Task UpdateHealthData()
-    {
-        if (Interlocked.Exchange(ref _healthUpdateInProgress, 1) == 1)
-        {
-            return;
-        }
-
-        try
-        {
-            _overallHealth = ConnectionHealthService.GetOverallHealth();
-            
-            // Initialize or update uptime chart
-            if (_uptimeChartModuleLoaded && _uptimeChartModule != null && ConnectionHealthService.IsInitialized())
-            {
-                if (!_uptimeChartInitialized)
-                {
-                    await InitializeUptimeChart();
-                }
-                else
-                {
-                    await UpdateUptimeChart();
-                }
-            }
-            
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Error updating health data: {ex.Message}");
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _healthUpdateInProgress, 0);
-        }
-    }
-
-    private async Task InitializeUptimeChart()
+    private async Task RunRefreshLoopAsync()
     {
         try
         {
-            var success = await _uptimeChartModule!.InvokeAsync<bool>("initializeUptimeChart", "uptimeChart");
-            if (success)
+            while (await _timer.WaitForNextTickAsync(_refreshCts.Token))
             {
-                _uptimeChartInitialized = true;
-                Console.WriteLine("Details.razor: Uptime chart initialized successfully");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Details.razor: Error initializing uptime chart: {ex.Message}");
-        }
-    }
-
-    private async Task UpdateUptimeChart()
-    {
-        try
-        {
-            var timestamp = DateTime.Now.ToString("HH:mm:ss");
-            var successRate = _overallHealth.SuccessRate;
-            var failureRate = 100 - successRate;
-            
-            await _uptimeChartModule!.InvokeVoidAsync("updateUptimeChart", timestamp, successRate, failureRate);
-        }
-        catch (JSDisconnectedException)
-        {
-            // Browser disconnected, stop updating
-            _uptimeChartInitialized = false;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Details.razor: Error updating uptime chart: {ex.Message}");
-        }
-    }
-
-    private string GetAdapterDisplayName(string adapterId)
-    {
-        var adapter = _adapters.FirstOrDefault(a => a.AdapterId == adapterId);
-        return adapter != null
-            ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name
-            : adapterId;
-    }
-
-    private List<ChartCard.LegendItem> GetAdapterLegend(bool includeActualConnection = false)
-    {
-        var legend = new List<ChartCard.LegendItem>();
-        var colors = new[] { "#22d3ee", "#f472b6", "#f59e0b", "#38bdf8", "#a855f7", "#fb923c" };
-        int colorIndex = 0;
-        
-        // Only show connected/active adapters in legend
-        var activeAdapters = GetActiveAdapters();
-        foreach (var adapter in activeAdapters)
-        {
-            legend.Add(new ChartCard.LegendItem
-            {
-                Label = GetAdapterDisplayName(adapter.AdapterId),
-                Color = colors[colorIndex++ % colors.Length]
-            });
-        }
-
-        if (includeActualConnection)
-        {
-            legend.Add(new ChartCard.LegendItem
-            {
-                Label = ActualConnectionSeriesLabel,
-                Color = ActualConnectionSeriesColor
-            });
-        }
-        
-        return legend;
-    }
-
-    private IEnumerable<Adapter> GetActiveAdapters()
-    {
-        // Filter to only include adapters that are connected, connecting, or standby
-        return _adapters.Where(a =>
-            a.State != null &&
-            (a.State.Equals("connected", StringComparison.OrdinalIgnoreCase) ||
-             a.State.Equals("connecting", StringComparison.OrdinalIgnoreCase) ||
-             a.State.Equals("standby", StringComparison.OrdinalIgnoreCase))
-        );
-    }
-
-    private async Task InitializeChartsInternal()
-    {
-        if (!_jsModuleLoaded || _chartModule == null || !_adapters.Any())
-        {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): InitializeChartsInternal skipped. JSLoaded: {_jsModuleLoaded}, ChartModuleNull: {_chartModule == null}, AdaptersCount: {_adapters.Count}");
-            _attemptedChartInitialization = true;
-            return;
-        }
-        _attemptedChartInitialization = true;
-        _chartInitializationErrorMessage = string.Empty;
-
-        Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): InitializeChartsInternal attempting...");
-        
-        // Only include active/connected adapters in charts
-        var activeAdapters = GetActiveAdapters().ToList();
-        if (!activeAdapters.Any())
-        {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): No active adapters found for chart initialization.");
-            _chartInitializationErrorMessage = "No active network connections found.";
-            _chartsSuccessfullyInitialized = false;
-            return;
-        }
-        
-        var adapterIdsForChart = activeAdapters.Select(a => a.AdapterId).ToArray();
-        var adapterDisplayNamesForChart = activeAdapters.Select(x => GetAdapterDisplayName(x.AdapterId)).ToArray();
-        var qualityChartIds = adapterIdsForChart.Append(ActualConnectionSeriesId).ToArray();
-        var qualityChartNames = adapterDisplayNamesForChart.Append(ActualConnectionSeriesLabel).ToArray();
-        var initialTimestamp = DateTime.Now.ToString("HH:mm:ss");
-        bool allChartsOk = true;
-        List<string> failedCharts = new List<string>();
-
-        try
-        {
-            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Download");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", adapterIdsForChart, adapterDisplayNamesForChart, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Upload");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", qualityChartIds, qualityChartNames, initialTimestamp)) { allChartsOk = false; failedCharts.Add("RTT");}
-            if (!await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", qualityChartIds, qualityChartNames, initialTimestamp)) { allChartsOk = false; failedCharts.Add("Loss");}
-
-            _chartsSuccessfullyInitialized = allChartsOk;
-            if (allChartsOk) Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): All charts initialized successfully.");
-            else {
-                 _chartInitializationErrorMessage = $"Failed to initialize: {string.Join(", ", failedCharts)} chart(s). Canvas elements might not be ready or other JS errors occurred.";
-                 if(string.IsNullOrEmpty(_errorMessage)) _errorMessage = _chartInitializationErrorMessage;
-                 Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): One or more charts failed to initialize: {string.Join(", ", failedCharts)}");
-            }
-        }
-        catch (JSException ex)
-        {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): JSException during chart initialization: {ex.Message}");
-            _chartInitializationErrorMessage = $"JS Error during chart setup: {ex.Message.Split('\n')[0]}.";
-            if(string.IsNullOrEmpty(_errorMessage)) _errorMessage = _chartInitializationErrorMessage;
-            _chartsSuccessfullyInitialized = false;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): General exception during chart initialization: {ex.Message}");
-            _chartInitializationErrorMessage = "An unexpected error occurred while setting up charts.";
-            if(string.IsNullOrEmpty(_errorMessage)) _errorMessage = _chartInitializationErrorMessage;
-            _chartsSuccessfullyInitialized = false;
-        }
-    }
-    
-    private async Task StartStreamingStatsInternal()
-    {
-        if (_isStreaming) return;
-        if (!_chartsSuccessfullyInitialized) { 
-            _errorMessage = "Cannot start streaming: Charts are not ready.";
-            _isInitialLoading = false; await InvokeAsync(StateHasChanged); return;
-        }
-
-        Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): StartStreamingStatsInternal called.");
-        StopStreamingStatsInternal(false); 
-        _statsCts = new CancellationTokenSource();
-        _isStreaming = true;
-        
-        await InvokeAsync(StateHasChanged); 
-
-        try
-        {
-            _chartUpdateTimer?.Dispose();
-            _chartUpdateTimer = new Timer(_ => _ = InvokeAsync(PushBatchedChartDataToJsAsync), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.1));
-
-            await foreach (var statEntry in SpeedifyService.GetStatsWithAggregateAsync(_statsCts.Token))
-            {
-                if (_isInitialLoading) _isInitialLoading = false;
-                var isActualConnection = IsActualConnectionStats(statEntry);
-                if (statEntry.Connected is false && !isActualConnection)
-                {
-                    continue;  // Skip this adapter, keep stream alive
-                }
-
-                var lossPercent = Math.Round(statEntry.AverageLossPercent, 2);
-
-                lock (_chartDataLock)
-                {
-                    if (isActualConnection)
-                    {
-                        _batchedChartData["lossChart"][ActualConnectionSeriesId] = lossPercent;
-                    }
-                    else
-                    {
-                        var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
-                        if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
-                        else _stats.Add(statEntry);
-
-                        var downloadMbps = Math.Round(SpeedifyStatsUnits.RateFieldToMbps(statEntry.ReceiveBps), 2);
-                        var uploadMbps = Math.Round(SpeedifyStatsUnits.RateFieldToMbps(statEntry.SendBps), 2);
-
-                        _batchedChartData["downloadChart"][statEntry.AdapterId] = downloadMbps;
-                        _batchedChartData["uploadChart"][statEntry.AdapterId] = uploadMbps;
-                        _batchedChartData["rttChart"][statEntry.AdapterId] = statEntry.LatencyMs;
-                        _batchedChartData["lossChart"][statEntry.AdapterId] = lossPercent;
-                    }
-                }
-                
-                await InvokeAsync(StateHasChanged); 
+                await InvokeAsync(RefreshAsync);
             }
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Statistics streaming was canceled.");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Error during statistics streaming: {ex.Message}\n{ex.StackTrace}");
-            _errorMessage = $"Streaming error: {ex.Message.Split('\n')[0]}";
-        }
-        finally
-        {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Streaming loop finished or was broken.");
-            _isStreaming = false;
-            _isInitialLoading = false; 
-            _chartUpdateTimer?.Dispose(); _chartUpdateTimer = null;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-    
-    private async Task PushBatchedChartDataToJsAsync()
-    {
-        if (!_chartsSuccessfullyInitialized || _chartModule == null || !_isStreaming || (_statsCts?.IsCancellationRequested ?? true)) return;
-        if (Interlocked.Exchange(ref _chartPushInProgress, 1) == 1) return;
-
-        string currentTime = DateTime.Now.ToString("HH:mm:ss");
-        try
-        {
-            Dictionary<string, double> dlData;
-            Dictionary<string, double> ulData;
-            Dictionary<string, double> rttData;
-            Dictionary<string, double> lossData;
-
-            lock (_chartDataLock)
-            {
-                AddActualConnectionLatencyPoint();
-
-                dlData = new Dictionary<string, double>(_batchedChartData["downloadChart"]);
-                ulData = new Dictionary<string, double>(_batchedChartData["uploadChart"]);
-                rttData = new Dictionary<string, double>(_batchedChartData["rttChart"]);
-                lossData = new Dictionary<string, double>(_batchedChartData["lossChart"]);
-
-                _batchedChartData["downloadChart"].Clear();
-                _batchedChartData["uploadChart"].Clear();
-                _batchedChartData["rttChart"].Clear();
-                _batchedChartData["lossChart"].Clear();
-            }
-
-            if (!dlData.Any() && !ulData.Any() && !rttData.Any() && !lossData.Any()) return;
-
-            if (dlData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "downloadChart", currentTime, dlData);
-            if (ulData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", currentTime, ulData);
-            if (rttData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "rttChart", currentTime, rttData);
-            if (lossData.Any()) await _chartModule.InvokeVoidAsync("addDataToChart", "lossChart", currentTime, lossData);
-        }
-        catch (JSDisconnectedException ex) {
-            Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): JSDisconnectedException in PushBatchedChartDataToJs: {ex.Message}. Stopping stream.");
-            await InvokeAsync(() => StopStreamingStatsInternal(true)); 
-        }
-        catch (ObjectDisposedException ode) { 
-             Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): ObjectDisposedException in PushBatchedChartDataToJs (likely _chartModule): {ode.Message}.");
-        }
-        catch (Exception ex) { Console.WriteLine($"Statistics.razor ({DateTime.Now:HH:mm:ss.fff}): Error in PushBatchedChartDataToJs: {ex.Message}"); }
-        finally
-        {
-            Interlocked.Exchange(ref _chartPushInProgress, 0);
         }
     }
 
-    private void StopStreamingStatsInternal(bool triggerStateHasChanged = true)
+    private async Task RefreshAsync()
     {
-        _chartUpdateTimer?.Dispose(); _chartUpdateTimer = null;
-        if (_statsCts != null)
+        _snapshot = await XBondStatsService.GetSnapshotAsync(_refreshCts.Token);
+        AddHistory(_downloadHistory, _snapshot.DownloadMbps);
+        AddHistory(_uploadHistory, _snapshot.UploadMbps);
+        AddHistory(_latencyHistory, _snapshot.AverageRttMs);
+        AddHistory(_lossHistory, _snapshot.MaxLossPercent);
+        StateHasChanged();
+    }
+
+    private static void AddHistory(List<double> values, double value)
+    {
+        values.Add(double.IsFinite(value) ? value : 0);
+        if (values.Count > MaxHistory)
         {
-            if (!_statsCts.IsCancellationRequested) _statsCts.Cancel();
-            _statsCts.Dispose(); _statsCts = null;
-        }
-        if (_isStreaming)
-        {
-            _isStreaming = false;
-            Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Streaming stopped.");
-            if(triggerStateHasChanged) InvokeAsync(StateHasChanged);
-        }
-    }
-
-    // Uptime chart helper methods
-    private string GetStatusBadgeClass(ConnectionStatus status)
-    {
-        return status switch
-        {
-            ConnectionStatus.Excellent => "bg-green-500/20 text-green-300 border border-green-500/30",
-            ConnectionStatus.Good => "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30",
-            ConnectionStatus.Fair => "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30",
-            ConnectionStatus.Poor => "bg-orange-500/20 text-orange-300 border border-orange-500/30",
-            ConnectionStatus.Critical => "bg-red-500/20 text-red-300 border border-red-500/30",
-            _ => "bg-slate-500/20 text-slate-300 border border-slate-500/30"
-        };
-    }
-
-    private string GetStatusText(ConnectionStatus status)
-    {
-        return status switch
-        {
-            ConnectionStatus.Excellent => "Excellent",
-            ConnectionStatus.Good => "Good",
-            ConnectionStatus.Fair => "Fair",
-            ConnectionStatus.Poor => "Poor",
-            ConnectionStatus.Critical => "Critical",
-            ConnectionStatus.Initializing => "Initializing",
-            _ => "Unknown"
-        };
-    }
-
-    private string GetStatusIndicatorClass(ConnectionStatus status)
-    {
-        return status switch
-        {
-            ConnectionStatus.Excellent => "bg-green-500",
-            ConnectionStatus.Good => "bg-cyan-500",
-            ConnectionStatus.Fair => "bg-yellow-500",
-            ConnectionStatus.Poor => "bg-orange-500",
-            ConnectionStatus.Critical => "bg-red-500",
-            _ => "bg-slate-500"
-        };
-    }
-
-    private string GetStatusDescription(ConnectionStatus status)
-    {
-        return status switch
-        {
-            ConnectionStatus.Excellent => "Connection is excellent - perfect for gaming, VoIP, and streaming",
-            ConnectionStatus.Good => "Connection is good - suitable for most online activities",
-            ConnectionStatus.Fair => "Connection is fair - acceptable for browsing and streaming",
-            ConnectionStatus.Poor => "Connection quality is degraded - may experience lag or buffering",
-            ConnectionStatus.Critical => "Connection is unstable - experiencing significant issues",
-            _ => "Connection status unknown"
-        };
-    }
-
-    private string GetUptimeIconColor(double uptime)
-    {
-        if (uptime >= 98) return "text-green-400";
-        if (uptime >= 95) return "text-cyan-400";
-        if (uptime >= 90) return "text-yellow-400";
-        return "text-red-400";
-    }
-
-    private string GetUptimeTextColor(double uptime)
-    {
-        if (uptime >= 98) return "text-green-400";
-        if (uptime >= 95) return "text-cyan-400";
-        if (uptime >= 90) return "text-yellow-400";
-        return "text-red-400";
-    }
-
-    private string GetLatencyTextColor(double latency)
-    {
-        if (latency < 30) return "text-green-400";
-        if (latency < 80) return "text-cyan-400";
-        if (latency < 150) return "text-yellow-400";
-        return "text-red-400";
-    }
-
-    private string GetJitterTextColor(double jitter)
-    {
-        if (jitter < 5) return "text-green-400";
-        if (jitter < 15) return "text-cyan-400";
-        if (jitter < 30) return "text-yellow-400";
-        return "text-red-400";
-    }
-
-    private string GetStabilityTextColor(double stability)
-    {
-        if (stability >= 0.8) return "text-green-400";
-        if (stability >= 0.6) return "text-cyan-400";
-        if (stability >= 0.4) return "text-yellow-400";
-        return "text-red-400";
-    }
-
-    private async Task ChangePeriod(int seconds)
-    {
-        _chartPeriod = seconds;
-        Console.WriteLine($"Details.razor: Chart period changed to {_chartPeriod} seconds");
-
-        if (_jsModuleLoaded && _chartModule != null)
-        {
-            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
+            values.RemoveAt(0);
         }
     }
 
-    private void AddActualConnectionLatencyPoint()
+    private static RenderFragment MetricCard(string label, string value) => @<article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-4">
+        <p class="text-sm text-slate-400">@label</p>
+        <p class="mt-2 text-2xl font-bold text-white">@value</p>
+    </article>;
+
+    private static RenderFragment ChartPanel(string title, IReadOnlyList<double> values, string unit, string colorClass) => @<article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-4">
+        <div class="mb-3 flex items-center justify-between">
+            <h2 class="font-semibold text-white">@title</h2>
+            <span class="@($"text-sm font-semibold {colorClass}")">@FormatChartValue(values.LastOrDefault(), unit)</span>
+        </div>
+        <div class="h-40">
+            <svg class="h-full w-full" viewBox="0 0 300 120" preserveAspectRatio="none" role="img" aria-label="@title">
+                <line x1="0" y1="100" x2="300" y2="100" stroke="rgba(148,163,184,.16)" stroke-width="1" />
+                <line x1="0" y1="60" x2="300" y2="60" stroke="rgba(148,163,184,.10)" stroke-width="1" />
+                <polyline points="@BuildPolyline(values)" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+        </div>
+    </article>;
+
+    private static string BuildPolyline(IReadOnlyList<double> values)
     {
-        if (!ConnectionHealthService.IsInitialized())
+        if (values.Count == 0)
         {
-            return;
+            return "";
         }
 
-        var health = ConnectionHealthService.GetOverallHealth();
-        if (health.AverageLatency <= 0)
+        var max = Math.Max(1, values.Max());
+        return string.Join(' ', values.Select((value, index) =>
         {
-            return;
-        }
-
-        _batchedChartData["rttChart"][ActualConnectionSeriesId] = Math.Round(health.AverageLatency, 1);
+            var x = values.Count == 1 ? 300 : index * 300d / (values.Count - 1);
+            var y = 110 - Math.Clamp(value / max, 0, 1) * 100;
+            return $"{Math.Round(x, 1)},{Math.Round(y, 1)}";
+        }));
     }
 
-    private static bool IsActualConnectionStats(ConnectionItem statEntry)
-    {
-        return statEntry.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) &&
-               statEntry.ConnectionId.Equals("speedify", StringComparison.OrdinalIgnoreCase);
-    }
+    private static string FormatChartValue(double value, string unit) => $"{Math.Round(value, 1)} {unit}";
+
+    private string FormatUpdated() => _snapshot is null
+        ? "--"
+        : _snapshot.UpdatedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+
+    private static string FormatLatency(double? value) => value.HasValue && value.Value > 0
+        ? $"{Math.Round(value.Value)} ms"
+        : "--";
+
+    private static string FormatPercent(double? value) => value.HasValue
+        ? $"{Math.Round(value.Value, 1)}%"
+        : "--";
 
     public async ValueTask DisposeAsync()
     {
-        Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): DisposeAsync called.");
-        
-        // Dispose health update timer
-        _healthUpdateTimer?.Dispose();
-
-        if (_autoRefreshTimer != null)
-        {
-            await _autoRefreshTimer.DisposeAsync();
-        }
-        
-        // Dispose streaming
-        StopStreamingStatsInternal(false);
-        
-        // Dispose traffic charts module
-        if (_chartModule != null)
-        {
-            try
-            {
-                if (_chartsSuccessfullyInitialized) await _chartModule.InvokeVoidAsync("disposeAllCharts");
-                await _chartModule.DisposeAsync();
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Traffic chart module disposed.");
-            }
-            catch(Exception ex) { Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Error disposing traffic chart module: {ex.Message}"); }
-            finally { _chartModule = null; _chartsSuccessfullyInitialized = false; }
-        }
-        
-        // Dispose uptime chart module
-        if (_uptimeChartModule != null)
-        {
-            try
-            {
-                if (_uptimeChartInitialized)
-                {
-                    await _uptimeChartModule.InvokeVoidAsync("disposeUptimeChart");
-                }
-                await _uptimeChartModule.DisposeAsync();
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Uptime chart module disposed.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Details.razor ({DateTime.Now:HH:mm:ss.fff}): Error disposing uptime chart module: {ex.Message}");
-            }
-            finally { _uptimeChartModule = null; _uptimeChartInitialized = false; }
-        }
+        await _refreshCts.CancelAsync();
+        _timer.Dispose();
+        _refreshCts.Dispose();
     }
 }

@@ -43,24 +43,18 @@ public class XBondTrafficEngineService(
 
     public async Task<XBondTrafficEngineStatus> SetModeAsync(string mode, CancellationToken cancellationToken = default)
     {
-        var normalizedMode = XBondTrafficEngineModes.Normalize(mode);
-        if (normalizedMode == XBondTrafficEngineModes.XBondPrimary && !settings.AllowPrimaryMode)
-        {
-            return ErrorStatus("XBond primary mode is locked. Enable AllowPrimaryMode in configuration before selecting it.");
-        }
-
-        settings.TrafficEngineMode = normalizedMode;
-        settings.Enabled = normalizedMode != XBondTrafficEngineModes.SpeedifyPrimary;
+        settings.TrafficEngineMode = XBondTrafficEngineModes.Normalize(mode);
+        settings.Enabled = true;
         await settingsStore.SaveAsync(settings, cancellationToken).ConfigureAwait(false);
         return await GetStatusAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public Task<XBondTrafficEngineStatus> StartCanaryAsync(CancellationToken cancellationToken = default)
+    public Task<XBondTrafficEngineStatus> StartAsync(CancellationToken cancellationToken = default)
     {
         return RunServiceActionAsync("start", cancellationToken);
     }
 
-    public Task<XBondTrafficEngineStatus> StopCanaryAsync(CancellationToken cancellationToken = default)
+    public Task<XBondTrafficEngineStatus> StopAsync(CancellationToken cancellationToken = default)
     {
         return RunServiceActionAsync("stop", cancellationToken);
     }
@@ -85,11 +79,6 @@ public class XBondTrafficEngineService(
         if (!OperatingSystem.IsLinux())
         {
             return ErrorStatus("XBond service control is only available on Linux.");
-        }
-
-        if (settings.TrafficEngineMode == XBondTrafficEngineModes.XBondPrimary && !settings.AllowPrimaryMode)
-        {
-            return ErrorStatus("XBond primary mode is locked. Enable AllowPrimaryMode in configuration before service control.");
         }
 
         if (!await _operationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
@@ -130,7 +119,6 @@ public class XBondTrafficEngineService(
         {
             Mode = XBondTrafficEngineModes.Normalize(settings.TrafficEngineMode),
             ServiceControlAllowed = settings.AllowServiceControl,
-            PrimaryModeAllowed = settings.AllowPrimaryMode,
             ClientServiceName = settings.ClientServiceName,
             UpdatedAtUtc = DateTime.UtcNow
         };
@@ -220,21 +208,12 @@ public class XBondTrafficEngineService(
     {
         if (!status.ServiceControlAllowed)
         {
-            return "Speedify remains primary. XBond service control is locked by configuration.";
+            return "XBond service control is locked by configuration.";
         }
 
-        return status.Mode switch
-        {
-            XBondTrafficEngineModes.XBondCanary => status.ClientServiceRunning
-                ? "XBond canary service is running."
-                : "XBond canary is selected but the client service is stopped.",
-            XBondTrafficEngineModes.XBondPrimary => status.ClientServiceRunning
-                ? "XBond primary mode is selected and the client service is running."
-                : "XBond primary mode is selected but the client service is stopped.",
-            _ => status.ClientServiceRunning
-                ? "Speedify remains primary; XBond canary service is running."
-                : "Speedify primary is selected."
-        };
+        return status.ClientServiceRunning
+            ? "XBond tunnel service is running."
+            : "XBond tunnel service is stopped.";
     }
 
     private string ServiceCommandLabel(string action)

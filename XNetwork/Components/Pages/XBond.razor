@@ -1,1035 +1,260 @@
 @page "/xbond"
-@using Microsoft.AspNetCore.Components
 @using XNetwork.Models
 @using XNetwork.Services
-@inject XBondStatusService XBondStatusService
-@inject XBondLabService XBondLabService
-@inject XBondTrafficEngineService XBondTrafficEngineService
-@inject XBondScopedRouteService XBondScopedRouteService
+@using XNetwork.Utils
+@implements IAsyncDisposable
+@inject XBondStatsService XBondStatsService
+@inject XBondTrafficEngineService TrafficEngineService
+@inject XBondLabService LabService
+@inject XBondScopedRouteService ScopedRouteService
 
-<PageTitle>XBond - XNetwork</PageTitle>
+<PageTitle>XBond</PageTitle>
 
-<div class="p-4 md:p-6">
-    <div class="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-            <p class="text-xs font-semibold uppercase tracking-wide text-cyan-300">Reliability Tunnel Prototype</p>
-            <h2 class="mt-1 text-3xl font-bold text-white">XBond</h2>
-            <p class="mt-2 max-w-3xl text-sm text-slate-400">
-                Rust dataplane prototype for dynamic stable-anchor routing, packet-level redundancy, and first-arrival-wins delivery.
-            </p>
-        </div>
-        <button type="button"
-                class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                disabled="@_isLoading"
-                @onclick="RefreshAsync">
-            <i class="fas fa-rotate @(_isLoading ? "animate-spin" : "")"></i>
-            Refresh
-        </button>
-    </div>
+<div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
+    <section>
+        <h1 class="text-2xl font-bold text-white">XBond</h1>
+        <p class="mt-1 text-sm text-slate-400">Runtime status, diagnostics, and IPv4 route tests.</p>
+    </section>
 
-    @if (_status == null)
-    {
-        <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-5 text-slate-300">
-            Loading XBond status...
-        </div>
-    }
-    else
-    {
-        <section class="mb-6 rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg">
-            <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="@GetStateBadgeClass()">@GetStateLabel()</span>
-                        <span class="rounded-full border border-slate-700 bg-slate-950/60 px-2.5 py-1 text-xs font-semibold text-slate-300">
-                            @FormatMode(_status.Mode)
-                        </span>
-                    </div>
-                    <h3 class="mt-3 text-xl font-semibold text-white">@GetSummaryTitle()</h3>
-                    <p class="mt-2 text-sm text-slate-400">@(_status.HasError ? _status.Error : _status.Message)</p>
-                </div>
-                <div class="grid grid-cols-2 gap-3 text-sm md:min-w-80">
-                    @Metric("Server", DisplayValue(_status.ServerAddress))
-                    @Metric("Anchor", GetAnchorLabel())
-                    @Metric("Tunnel", FormatTunnelState(_status.Tunnel))
-                    @Metric("Data sent", _status.DataPacketsSent.ToString("N0"))
-                    @Metric("Data received", _status.DataPacketsReceived.ToString("N0"))
-                    @Metric("Duplicates sent", _status.DuplicatePacketsSent.ToString("N0"))
-                    @Metric("Duplicates dropped", _status.DuplicatePacketsDropped.ToString("N0"))
-                    @Metric("Late dropped", _status.LatePacketsDropped.ToString("N0"))
-                    @Metric("FEC", GetFecLabel(_status.Fec))
-                    @Metric("Updated", FormatAge(_status.UpdatedAtUtc))
-                </div>
-            </div>
-        </section>
-
-        <section class="mb-6 rounded-xl border border-indigo-500/20 bg-slate-800/50 shadow-lg">
-            <div class="flex flex-col gap-4 border-b border-slate-700 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
-                <div class="min-w-0">
-                    <div class="flex flex-wrap items-center gap-2">
-                        <span class="@GetEngineBadgeClass()">@GetEngineModeLabel(_trafficEngineStatus?.Mode)</span>
-                        @if (_trafficEngineStatus?.ClientServiceRunning == true)
-                        {
-                            <span class="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200">
-                                Service active
-                            </span>
-                        }
-                        else
-                        {
-                            <span class="rounded-full border border-slate-700 bg-slate-950/60 px-2.5 py-1 text-xs font-semibold text-slate-400">
-                                Service @_trafficEngineStatus?.ClientServiceState
-                            </span>
-                        }
-                    </div>
-                    <h3 class="mt-3 text-xl font-semibold text-white">Traffic engine</h3>
-                    <p class="mt-2 text-sm text-slate-400">@(_trafficEngineStatus?.HasError == true ? _trafficEngineStatus.Error : _trafficEngineStatus?.Message)</p>
-                </div>
-                <div class="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:min-w-[34rem]">
-                    @EngineModeButton(XBondTrafficEngineModes.SpeedifyPrimary, "Speedify", "Primary")
-                    @EngineModeButton(XBondTrafficEngineModes.XBondCanary, "XBond", "Canary")
-                    @EngineModeButton(XBondTrafficEngineModes.XBondPrimary, "XBond", "Primary")
-                </div>
-            </div>
-            <div class="grid gap-4 p-4 lg:grid-cols-[1fr_auto] lg:items-center">
-                <div class="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-                    @Metric("Mode", GetEngineModeLabel(_trafficEngineStatus?.Mode))
-                    @Metric("Client service", DisplayValue(_trafficEngineStatus?.ClientServiceName))
-                    @Metric("Service state", DisplayValue(_trafficEngineStatus?.ClientServiceState))
-                    @Metric("Boot", GetBootStateLabel())
-                    @Metric("Control", _trafficEngineStatus?.ServiceControlAllowed == true ? "Unlocked" : "Locked")
-                </div>
-                <div class="flex flex-col gap-2 sm:flex-row">
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@(!CanStartCanary() || _isChangingTrafficEngine)"
-                            @onclick="StartXBondCanaryAsync">
-                        <i class="fas fa-play @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
-                        Start Canary
-                    </button>
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@(!CanStopCanary() || _isChangingTrafficEngine)"
-                            @onclick="StopXBondCanaryAsync">
-                        <i class="fas fa-stop @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
-                        Stop XBond
-                    </button>
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@(!CanEnableAtBoot() || _isChangingTrafficEngine)"
-                            @onclick="EnableXBondAtBootAsync">
-                        <i class="fas fa-power-off @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
-                        Enable Boot
-                    </button>
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-600 bg-slate-950/40 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@(!CanDisableAtBoot() || _isChangingTrafficEngine)"
-                            @onclick="DisableXBondAtBootAsync">
-                        <i class="fas fa-ban @(_isChangingTrafficEngine ? "animate-pulse" : "")"></i>
-                        Disable Boot
-                    </button>
-                </div>
-            </div>
-        </section>
-
-        <section class="mb-6 grid gap-4 lg:grid-cols-3">
-            <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
-                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Data paths</p>
-                <p class="mt-2 text-2xl font-bold text-white">@FormatPathList(_status.Schedule.DataPathIds)</p>
-                <p class="mt-1 text-sm text-slate-400">Immediate packets use only the selected anchor path.</p>
-            </div>
-            <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
-                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">Duplicate paths</p>
-                <p class="mt-2 text-2xl font-bold text-white">@FormatPathList(_status.Schedule.DuplicatePathIds)</p>
-                <p class="mt-1 text-sm text-slate-400">Late duplicates are discarded by sequence number.</p>
-            </div>
-            <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
-                <p class="text-xs font-semibold uppercase tracking-wide text-slate-500">FEC paths</p>
-                <p class="mt-2 text-2xl font-bold text-white">@FormatPathList(_status.Schedule.FecPathIds)</p>
-                <p class="mt-1 text-sm text-slate-400">@_status.Fec.Message</p>
-            </div>
-        </section>
-
-        <section class="mb-6 rounded-xl border border-sky-500/20 bg-slate-800/50 shadow-lg">
-            <div class="flex flex-col gap-4 border-b border-slate-700 px-4 py-4 lg:flex-row lg:items-start lg:justify-between">
+    <section class="grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
+        <article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+            <div class="flex items-start justify-between gap-4">
                 <div>
-                    <h3 class="text-lg font-semibold text-white">Scoped route canary</h3>
-                    <p class="mt-1 text-sm text-slate-400">Route one IPv4 host through XBond for a bounded test or a manual app trial.</p>
+                    <h2 class="text-lg font-semibold text-white">Tunnel Runtime</h2>
+                    <p class="mt-1 text-sm text-slate-400">@(_snapshot?.Message ?? "Loading XBond status")</p>
                 </div>
-                <div class="flex flex-col gap-2 sm:flex-row lg:min-w-[34rem]">
-                    <input class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-white outline-none transition-colors placeholder:text-slate-600 focus:border-sky-400"
-                           value="@_scopedRouteTarget"
-                           @oninput="OnScopedRouteTargetChanged"
-                           placeholder="1.1.1.1" />
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@_isRunningScopedRouteAction"
-                            @onclick="RunScopedRouteTestAsync">
-                        <i class="fas fa-vial @(_isRunningScopedRouteAction ? "animate-pulse" : "")"></i>
-                        Test
-                    </button>
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@_isRunningScopedRouteAction"
-                            @onclick="ApplyScopedRouteAsync">
-                        <i class="fas fa-route @(_isRunningScopedRouteAction ? "animate-pulse" : "")"></i>
-                        Enable Route
-                    </button>
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition-colors hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@_isRunningScopedRouteAction"
-                            @onclick="ClearScopedRouteAsync">
-                        <i class="fas fa-eraser @(_isRunningScopedRouteAction ? "animate-pulse" : "")"></i>
-                        Clear
-                    </button>
-                </div>
+                <span class="@RuntimePillClass">@RuntimeLabel</span>
             </div>
-            <div class="grid gap-4 p-4 lg:grid-cols-[1fr_1.2fr]">
-                <div class="grid grid-cols-2 gap-3 text-sm md:grid-cols-4 lg:grid-cols-2">
-                    @Metric("Target", DisplayValue(_scopedRouteStatus?.TargetCidr))
-                    @Metric("Device", XBondScopedRouteService.Settings.CanaryTunnelDevice)
-                    @Metric("Source", XBondScopedRouteService.Settings.CanaryTunnelSource)
-                    @Metric("Route", GetScopedRouteLabel())
-                </div>
-                <div class="rounded-xl border border-slate-700/70 bg-slate-950/40 p-4">
-                    @if (_isRunningScopedRouteAction)
-                    {
-                        <div class="flex items-center gap-3 text-sky-100">
-                            <i class="fas fa-circle-notch animate-spin"></i>
-                            <span class="text-sm font-semibold">Running scoped route operation...</span>
-                        </div>
-                    }
-                    else if (_scopedRouteTestResult != null)
-                    {
-                        <div class="flex flex-wrap items-center gap-2">
-                            <span class="@GetScopedTestBadgeClass(_scopedRouteTestResult)">
-                                @(_scopedRouteTestResult.Succeeded ? "Passed" : "Check")
-                            </span>
-                            <span class="text-sm text-slate-400">@_scopedRouteTestResult.Message</span>
-                        </div>
-
-                        @if (_scopedRouteTestResult.HasError)
-                        {
-                            <p class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                                @_scopedRouteTestResult.Error
-                            </p>
-                        }
-
-                        <div class="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
-                            @Metric("Sent", _scopedRouteTestResult.Sent.ToString("N0"))
-                            @Metric("Received", _scopedRouteTestResult.Received.ToString("N0"))
-                            @Metric("Loss", $"{_scopedRouteTestResult.LossRate:P1}")
-                            @Metric("Avg RTT", FormatNullableMs(_scopedRouteTestResult.AvgRttMs))
-                            @Metric("Cleanup", _scopedRouteTestResult.RouteRemoved ? "Removed" : "Check")
-                        </div>
-                    }
-                    else
-                    {
-                        <p class="text-sm text-slate-400">@(_scopedRouteStatus?.HasError == true ? _scopedRouteStatus.Error : _scopedRouteStatus?.Message)</p>
-                        @if (!string.IsNullOrWhiteSpace(_scopedRouteStatus?.RouteOutput))
-                        {
-                            <p class="mt-3 break-words rounded-lg border border-slate-700/70 bg-slate-900/60 px-3 py-2 text-xs text-slate-400">
-                                @_scopedRouteStatus.RouteOutput
-                            </p>
-                        }
-                    }
-                </div>
+            <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                @Info("Server", _snapshot?.ServerAddress ?? "--")
+                @Info("Device", _snapshot?.TunnelDevice ?? "xbond0")
+                @Info("Mode", FormatMode(_snapshot?.Mode))
+                @Info("IPv6", "Unsupported")
             </div>
-        </section>
+        </article>
 
-        <section class="mb-6 rounded-xl border border-cyan-500/20 bg-slate-800/50 shadow-lg">
-            <div class="flex flex-col gap-4 border-b border-slate-700 px-4 py-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                    <h3 class="text-lg font-semibold text-white">XBond Lab</h3>
-                    <p class="mt-1 text-sm text-slate-400">Single heartbeat can use Speedify bypass; multi-path probes use physical interface isolation by default.</p>
-                </div>
-                <div class="flex flex-col gap-2 sm:flex-row">
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-colors hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@(_isRunningPublicTest || _isRunningMultiPathTest)"
-                            @onclick="RunPublicTestAsync">
-                        <i class="fas fa-satellite-dish @(_isRunningPublicTest ? "animate-pulse" : "")"></i>
-                        @(_isRunningPublicTest ? "Running..." : "Run Public Test")
-                    </button>
-                    <button type="button"
-                            class="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled="@(_isRunningPublicTest || _isRunningMultiPathTest)"
-                            @onclick="RunMultiPathTestAsync">
-                        <i class="fas fa-code-branch @(_isRunningMultiPathTest ? "animate-pulse" : "")"></i>
-                        @(_isRunningMultiPathTest ? "Probing..." : "Run Multi-Path Probe")
-                    </button>
-                </div>
+        <article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+            <h2 class="text-lg font-semibold text-white">Service</h2>
+            <p class="mt-1 text-sm text-slate-400">@(_trafficStatus?.Message ?? "Loading service status")</p>
+            <div class="mt-4 flex flex-wrap gap-2">
+                <button type="button" class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40" disabled="@(!(_trafficStatus?.CanStart ?? false) || _busy)" @onclick="StartAsync">Start</button>
+                <button type="button" class="rounded-lg bg-rose-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-40" disabled="@(!(_trafficStatus?.CanStop ?? false) || _busy)" @onclick="StopAsync">Stop</button>
+                <button type="button" class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-200 disabled:opacity-40" disabled="@(!(_trafficStatus?.CanEnableAtBoot ?? false) || _busy)" @onclick="EnableBootAsync">Enable boot</button>
             </div>
-            <div class="grid gap-4 p-4 lg:grid-cols-[1fr_1.2fr]">
-                <div class="grid grid-cols-2 gap-3 text-sm">
-                    @Metric("Server", XBondLabService.Settings.PublicTestServerAddress)
-                    @Metric("Heartbeat bypass", $"{XBondLabService.Settings.PublicTestBypassPort}/{XBondLabService.Settings.PublicTestBypassProtocol}")
-                    @Metric("Multi-path bypass", XBondLabService.Settings.MultiPathUseSpeedifyBypass ? "Enabled" : "Disabled")
-                    @Metric("Packets", XBondLabService.Settings.PublicTestCount.ToString("N0"))
-                    @Metric("Timeout", $"{XBondLabService.Settings.PublicTestPacketTimeoutMs:N0} ms")
-                    @Metric("Probe config", GetProbeConfigLabel())
-                </div>
-                <div class="rounded-xl border border-slate-700/70 bg-slate-950/40 p-4">
-                    @if (_isRunningPublicTest)
-                    {
-                        <div class="flex items-center gap-3 text-cyan-100">
-                            <i class="fas fa-circle-notch animate-spin"></i>
-                            <span class="text-sm font-semibold">Running public heartbeat test...</span>
-                        </div>
-                    }
-                    else if (_publicTestResult == null)
-                    {
-                        <p class="text-sm text-slate-400">No public test has been run in this dashboard session.</p>
-                    }
-                    else
-                    {
-                        <div class="flex flex-wrap items-center gap-2">
-                            <span class="@GetTestBadgeClass(_publicTestResult)">
-                                @(_publicTestResult.Succeeded ? "Passed" : "Failed")
-                            </span>
-                            <span class="text-sm text-slate-400">@_publicTestResult.Message</span>
-                        </div>
+        </article>
+    </section>
 
-                        @if (_publicTestResult.HasError)
-                        {
-                            <p class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                                @_publicTestResult.Error
-                            </p>
-                        }
-
-                        <div class="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
-                            @Metric("Sent", _publicTestResult.Sent.ToString("N0"))
-                            @Metric("Received", _publicTestResult.Received.ToString("N0"))
-                            @Metric("Loss", $"{_publicTestResult.LossRate:P1}")
-                            @Metric("Avg RTT", FormatNullableMs(_publicTestResult.AvgRttMs))
-                            @Metric("Min RTT", FormatNullableMs(_publicTestResult.MinRttMs))
-                            @Metric("Max RTT", FormatNullableMs(_publicTestResult.MaxRttMs))
-                            @Metric("Client bind", DisplayValue(_publicTestResult.Bind))
-                            @Metric("Cleanup", GetCleanupLabel(_publicTestResult))
-                        </div>
-                    }
-                </div>
-                <div class="rounded-xl border border-emerald-500/20 bg-slate-950/40 p-4 lg:col-span-2">
-                    <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+        <div class="mb-4 flex items-center justify-between gap-3">
+            <h2 class="text-lg font-semibold text-white">Path Roles</h2>
+            <span class="text-xs text-slate-500">Updated @FormatUpdated()</span>
+        </div>
+        <div class="grid gap-3 md:grid-cols-2">
+            @foreach (var path in _snapshot?.Paths ?? Array.Empty<XBondPathStatsSnapshot>())
+            {
+                <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+                    <div class="flex items-start justify-between gap-3">
                         <div>
-                            <h4 class="text-sm font-semibold uppercase tracking-wide text-emerald-200">Multi-path shadow probe</h4>
-                            <p class="mt-1 text-sm text-slate-400">Duplicate heartbeats across configured paths; first arrival wins.</p>
+                            <h3 class="font-semibold text-white">@path.Name</h3>
+                            <p class="mt-1 text-sm text-slate-500">@path.InterfaceName</p>
                         </div>
-                        @if (_multiPathTestResult != null)
-                        {
-                            <span class="@GetProbeBadgeClass(_multiPathTestResult)">
-                                @GetProbeBadgeLabel(_multiPathTestResult)
-                            </span>
-                        }
+                        <span class="@RolePill(path)">@path.Role</span>
                     </div>
+                    <div class="mt-4 grid grid-cols-3 gap-3 text-sm text-slate-300">
+                        <span>@FormatLatency(path.RttMs)</span>
+                        <span>@FormatPercent(path.LossPercent) loss</span>
+                        <span>@SpeedFormatter.FormatSpeed(path.ThroughputMbps)</span>
+                    </div>
+                    <p class="mt-3 text-xs text-slate-500">@path.StateText, score @Math.Round(path.Score)</p>
+                </article>
+            }
+        </div>
+    </section>
 
-                    @if (_isRunningMultiPathTest)
+    <section class="grid gap-4 lg:grid-cols-2">
+        <article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+            <h2 class="text-lg font-semibold text-white">Heartbeat Diagnostic</h2>
+            <p class="mt-1 text-sm text-slate-400">Sends sealed XBond heartbeat packets to the configured server.</p>
+            <button type="button" class="mt-4 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40" disabled="@_busy" @onclick="RunHeartbeatAsync">
+                Run heartbeat
+            </button>
+            @if (_heartbeat is not null)
+            {
+                <div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+                    <p class="font-semibold text-white">@_heartbeat.Message</p>
+                    <p class="mt-1">@_heartbeat.Received/@_heartbeat.Sent received, avg @FormatLatency(_heartbeat.AvgRttMs)</p>
+                    @if (!string.IsNullOrWhiteSpace(_heartbeat.Error))
                     {
-                        <div class="mt-4 flex items-center gap-3 text-emerald-100">
-                            <i class="fas fa-circle-notch animate-spin"></i>
-                            <span class="text-sm font-semibold">Running multi-path probe...</span>
-                        </div>
-                    }
-                    else if (_multiPathTestResult == null)
-                    {
-                        <p class="mt-4 text-sm text-slate-400">No multi-path probe has been run in this dashboard session.</p>
-                    }
-                    else
-                    {
-                        <p class="mt-3 text-sm text-slate-400">@_multiPathTestResult.Message</p>
-
-                        @if (_multiPathTestResult.HasError)
-                        {
-                            <p class="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                                @_multiPathTestResult.Error
-                            </p>
-                        }
-
-                        <div class="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-5">
-                            @Metric("Mode", FormatMode(_multiPathTestResult.Mode))
-                            @Metric("Anchor", FormatProbePathId(_multiPathTestResult.AnchorPathId))
-                            @Metric("Duplicates", FormatPathList(_multiPathTestResult.DuplicatePathIds))
-                            @Metric("First arrivals", $"{_multiPathTestResult.TotalFirstArrivals:N0}/{_multiPathTestResult.ExpectedSequences:N0}")
-                            @Metric("Total ACKs", _multiPathTestResult.TotalAcks.ToString("N0"))
-                        </div>
-
-                        <div class="mt-4 overflow-hidden rounded-xl border border-slate-700/70">
-                            <div class="grid grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_1.1fr] gap-3 border-b border-slate-700 bg-slate-900/70 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                <span>Path</span>
-                                <span>Packets</span>
-                                <span>RTT</span>
-                                <span>Route</span>
-                                <span>Source</span>
-                            </div>
-                            <div class="divide-y divide-slate-700/70">
-                                @foreach (var path in _multiPathTestResult.Paths)
-                                {
-                                    <div class="grid gap-3 px-3 py-3 text-sm text-slate-200 md:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_1.1fr] md:items-center">
-                                        <div class="min-w-0">
-                                            <p class="truncate font-semibold text-white">@FormatProbePathName(path)</p>
-                                            <p class="mt-0.5 text-xs text-slate-500">ID @path.PathId</p>
-                                        </div>
-                                        <div>
-                                            <p>@path.FirstArrivals first / @path.Acks ACK</p>
-                                            <p class="text-xs text-slate-500">@path.Sent sent, @($"{path.LossRate:P1}") loss</p>
-                                        </div>
-                                        <div>
-                                            <p>@FormatNullableMs(path.AvgRttMs)</p>
-                                            <p class="text-xs text-slate-500">Dup drops @FormatNullableCount(path.DuplicatesDropped)</p>
-                                        </div>
-                                        <div>
-                                            <span class="@GetRouteBadgeClass(path)">@GetRouteLabel(path)</span>
-                                        </div>
-                                        <div class="min-w-0">
-                                            <p class="truncate">@DisplayValue(path.Source)</p>
-                                            <p class="mt-0.5 truncate text-xs text-slate-500">@DisplayValue(path.RouteVerification.Reason)</p>
-                                        </div>
-                                    </div>
-                                }
-                            </div>
-                        </div>
+                        <p class="mt-1 text-rose-200">@_heartbeat.Error</p>
                     }
                 </div>
-            </div>
-        </section>
+            }
+        </article>
 
-        <section class="rounded-xl border border-slate-700 bg-slate-800/50 shadow-lg">
-            <div class="border-b border-slate-700 px-4 py-3">
-                <h3 class="text-lg font-semibold text-white">Path health</h3>
-                <p class="mt-1 text-sm text-slate-400">Roles are selected by observed health, not adapter name.</p>
-            </div>
-            <div class="divide-y divide-slate-700/70">
-                @if (_status.Paths.Count == 0)
-                {
-                    <div class="p-4 text-sm text-slate-400">No XBond paths are configured yet.</div>
-                }
-                else
-                {
-                    @foreach (var path in _status.Paths)
+        <article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+            <h2 class="text-lg font-semibold text-white">Multi-Path Diagnostic</h2>
+            <p class="mt-1 text-sm text-slate-400">Verifies physical path isolation and duplicate packet delivery.</p>
+            <button type="button" class="mt-4 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40" disabled="@_busy" @onclick="RunMultiPathAsync">
+                Run multi-path
+            </button>
+            @if (_multiPath is not null)
+            {
+                <div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+                    <p class="font-semibold text-white">@_multiPath.Message</p>
+                    <p class="mt-1">Anchor @_multiPath.AnchorPathId, ACKs @_multiPath.TotalAcks/@_multiPath.TotalSent</p>
+                    @if (!string.IsNullOrWhiteSpace(_multiPath.Error))
                     {
-                        <div class="grid gap-3 p-4 md:grid-cols-[1fr_auto] md:items-center">
-                            <div class="min-w-0">
-                                <div class="flex flex-wrap items-center gap-2">
-                                    <p class="font-semibold text-white">@path.Name</p>
-                                    <span class="@GetRoleBadgeClass(path.Role)">@FormatRole(path.Role)</span>
-                                    <span class="@GetIsolationBadgeClass(path.PathIsolation)">@GetIsolationLabel(path.PathIsolation)</span>
-                                    <span class="rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-xs font-semibold text-slate-400">
-                                        ID @path.PathId
-                                    </span>
-                                </div>
-                                <p class="mt-1 text-sm text-slate-400">@DisplayPathBinding(path)</p>
-                            </div>
-                            <div class="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4 lg:grid-cols-8">
-                                @Metric("Score", path.Score.ToString("N0"))
-                                @Metric("RTT", path.RttMs.HasValue ? $"{path.RttMs.Value:N0} ms" : "--")
-                                @Metric("Jitter", path.JitterMs.HasValue ? $"{path.JitterMs.Value:N0} ms" : "--")
-                                @Metric("Loss", $"{path.LossRate:P1}")
-                                @Metric("Late", $"{path.LateRate:P1}")
-                                @Metric("Queue", path.QueueDepth.ToString("N0"))
-                                @Metric("Throughput", FormatBits(path.ThroughputBps))
-                                @Metric("State", GetPathState(path))
-                            </div>
-                        </div>
+                        <p class="mt-1 text-rose-200">@_multiPath.Error</p>
                     }
+                </div>
+            }
+        </article>
+    </section>
+
+    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+        <h2 class="text-lg font-semibold text-white">Scoped IPv4 Route</h2>
+        <p class="mt-1 text-sm text-slate-400">Manual diagnostics only. This does not install automatic rollback.</p>
+        <div class="mt-4 flex flex-col gap-3 sm:flex-row">
+            <input class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 outline-none focus:border-cyan-500 sm:w-64" @bind="_routeTarget" />
+            <button type="button" class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40" disabled="@_busy" @onclick="RunRouteTestAsync">Run route test</button>
+        </div>
+        @if (_routeTest is not null)
+        {
+            <div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+                <p class="font-semibold text-white">@_routeTest.Message</p>
+                <p class="mt-1">Packets @_routeTest.Received/@_routeTest.Sent, avg @FormatLatency(_routeTest.AvgRttMs)</p>
+                @if (!string.IsNullOrWhiteSpace(_routeTest.Error))
+                {
+                    <p class="mt-1 text-rose-200">@_routeTest.Error</p>
                 }
             </div>
-        </section>
-    }
+        }
+    </section>
 </div>
 
 @code {
-    private XBondStatus? _status;
-    private XBondTrafficEngineStatus? _trafficEngineStatus;
-    private XBondPublicTestResult? _publicTestResult;
-    private XBondProbeResult? _multiPathTestResult;
-    private XBondScopedRouteStatus? _scopedRouteStatus;
-    private XBondScopedRouteTestResult? _scopedRouteTestResult;
-    private string _scopedRouteTarget = "";
-    private bool _isLoading;
-    private bool _isRunningPublicTest;
-    private bool _isRunningMultiPathTest;
-    private bool _isChangingTrafficEngine;
-    private bool _isRunningScopedRouteAction;
+    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
+    private readonly CancellationTokenSource _refreshCts = new();
+    private XBondStatsSnapshot? _snapshot;
+    private XBondTrafficEngineStatus? _trafficStatus;
+    private XBondPublicTestResult? _heartbeat;
+    private XBondProbeResult? _multiPath;
+    private XBondScopedRouteTestResult? _routeTest;
+    private string _routeTarget = "1.1.1.1";
+    private bool _busy;
 
     protected override async Task OnInitializedAsync()
     {
-        _scopedRouteTarget = XBondScopedRouteService.Settings.ScopedRouteDefaultTarget;
+        _routeTarget = ScopedRouteService.Settings.ScopedRouteDefaultTarget;
         await RefreshAsync();
+        _ = RunRefreshLoopAsync();
+    }
+
+    private async Task RunRefreshLoopAsync()
+    {
+        try
+        {
+            while (await _timer.WaitForNextTickAsync(_refreshCts.Token))
+            {
+                await InvokeAsync(RefreshAsync);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     private async Task RefreshAsync()
     {
-        _isLoading = true;
+        _snapshot = await XBondStatsService.GetSnapshotAsync(_refreshCts.Token);
+        _trafficStatus = await TrafficEngineService.GetStatusAsync(_refreshCts.Token);
+        StateHasChanged();
+    }
+
+    private async Task StartAsync() => await RunBusyAsync(() => TrafficEngineService.StartAsync());
+
+    private async Task StopAsync() => await RunBusyAsync(() => TrafficEngineService.StopAsync());
+
+    private async Task EnableBootAsync() => await RunBusyAsync(() => TrafficEngineService.EnableAtBootAsync());
+
+    private async Task RunHeartbeatAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            _heartbeat = await LabService.RunPublicHeartbeatTestAsync();
+            return _trafficStatus ?? new XBondTrafficEngineStatus();
+        });
+    }
+
+    private async Task RunMultiPathAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            _multiPath = await LabService.RunPublicMultiPathTestAsync();
+            return _trafficStatus ?? new XBondTrafficEngineStatus();
+        });
+    }
+
+    private async Task RunRouteTestAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            _routeTest = await ScopedRouteService.RunScopedRouteTestAsync(_routeTarget);
+            return _trafficStatus ?? new XBondTrafficEngineStatus();
+        });
+    }
+
+    private async Task RunBusyAsync(Func<Task<XBondTrafficEngineStatus>> action)
+    {
+        _busy = true;
         try
         {
-            var statusTask = XBondStatusService.GetStatusAsync();
-            var trafficTask = XBondTrafficEngineService.GetStatusAsync();
-            var scopedRouteTask = XBondScopedRouteService.GetStatusAsync(_scopedRouteTarget);
-            await Task.WhenAll(statusTask, trafficTask, scopedRouteTask);
-            _status = await statusTask;
-            _trafficEngineStatus = await trafficTask;
-            _scopedRouteStatus = await scopedRouteTask;
+            _trafficStatus = await action();
         }
         finally
         {
-            _isLoading = false;
+            _busy = false;
+            await RefreshAsync();
         }
     }
 
-    private async Task RunPublicTestAsync()
+    private string RuntimeLabel => _snapshot switch
     {
-        _isRunningPublicTest = true;
-        try
-        {
-            _publicTestResult = await XBondLabService.RunPublicHeartbeatTestAsync();
-        }
-        finally
-        {
-            _isRunningPublicTest = false;
-        }
-    }
-
-    private async Task RunMultiPathTestAsync()
-    {
-        _isRunningMultiPathTest = true;
-        try
-        {
-            _multiPathTestResult = await XBondLabService.RunPublicMultiPathTestAsync();
-        }
-        finally
-        {
-            _isRunningMultiPathTest = false;
-        }
-    }
-
-    private async Task SetTrafficEngineModeAsync(string mode)
-    {
-        _isChangingTrafficEngine = true;
-        try
-        {
-            _trafficEngineStatus = await XBondTrafficEngineService.SetModeAsync(mode);
-            _status = await XBondStatusService.GetStatusAsync();
-        }
-        finally
-        {
-            _isChangingTrafficEngine = false;
-        }
-    }
-
-    private async Task StartXBondCanaryAsync()
-    {
-        _isChangingTrafficEngine = true;
-        try
-        {
-            _trafficEngineStatus = await XBondTrafficEngineService.StartCanaryAsync();
-            _status = await XBondStatusService.GetStatusAsync();
-        }
-        finally
-        {
-            _isChangingTrafficEngine = false;
-        }
-    }
-
-    private async Task StopXBondCanaryAsync()
-    {
-        _isChangingTrafficEngine = true;
-        try
-        {
-            _trafficEngineStatus = await XBondTrafficEngineService.StopCanaryAsync();
-            _status = await XBondStatusService.GetStatusAsync();
-        }
-        finally
-        {
-            _isChangingTrafficEngine = false;
-        }
-    }
-
-    private async Task EnableXBondAtBootAsync()
-    {
-        _isChangingTrafficEngine = true;
-        try
-        {
-            _trafficEngineStatus = await XBondTrafficEngineService.EnableAtBootAsync();
-        }
-        finally
-        {
-            _isChangingTrafficEngine = false;
-        }
-    }
-
-    private async Task DisableXBondAtBootAsync()
-    {
-        _isChangingTrafficEngine = true;
-        try
-        {
-            _trafficEngineStatus = await XBondTrafficEngineService.DisableAtBootAsync();
-        }
-        finally
-        {
-            _isChangingTrafficEngine = false;
-        }
-    }
-
-    private async Task RunScopedRouteTestAsync()
-    {
-        _isRunningScopedRouteAction = true;
-        try
-        {
-            _scopedRouteTestResult = await XBondScopedRouteService.RunScopedRouteTestAsync(_scopedRouteTarget);
-            _scopedRouteStatus = await XBondScopedRouteService.GetStatusAsync(_scopedRouteTarget);
-        }
-        finally
-        {
-            _isRunningScopedRouteAction = false;
-        }
-    }
-
-    private async Task ApplyScopedRouteAsync()
-    {
-        _isRunningScopedRouteAction = true;
-        try
-        {
-            _scopedRouteTestResult = null;
-            _scopedRouteStatus = await XBondScopedRouteService.ApplyScopedRouteAsync(_scopedRouteTarget);
-        }
-        finally
-        {
-            _isRunningScopedRouteAction = false;
-        }
-    }
-
-    private async Task ClearScopedRouteAsync()
-    {
-        _isRunningScopedRouteAction = true;
-        try
-        {
-            _scopedRouteTestResult = null;
-            _scopedRouteStatus = await XBondScopedRouteService.ClearScopedRouteAsync(_scopedRouteTarget);
-        }
-        finally
-        {
-            _isRunningScopedRouteAction = false;
-        }
-    }
-
-    private void OnScopedRouteTargetChanged(ChangeEventArgs args)
-    {
-        _scopedRouteTarget = args.Value?.ToString() ?? "";
-        _scopedRouteTestResult = null;
-    }
-
-    private bool CanStartCanary() => _trafficEngineStatus?.CanStartCanary == true;
-
-    private bool CanStopCanary() => _trafficEngineStatus?.CanStopCanary == true;
-
-    private bool CanEnableAtBoot() => _trafficEngineStatus?.CanEnableAtBoot == true;
-
-    private bool CanDisableAtBoot() => _trafficEngineStatus?.CanDisableAtBoot == true;
-
-    private string GetStateLabel()
-    {
-        if (_status?.HasError == true)
-        {
-            return "Error";
-        }
-
-        if (_status?.Running == true)
-        {
-            return "Running";
-        }
-
-        return _status?.Enabled == true ? "Enabled" : "Disabled";
-    }
-
-    private string GetStateBadgeClass()
-    {
-        if (_status?.HasError == true)
-        {
-            return "rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-semibold text-red-200";
-        }
-
-        if (_status?.Running == true)
-        {
-            return "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200";
-        }
-
-        return _status?.Enabled == true
-            ? "rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-200"
-            : "rounded-full border border-slate-700 bg-slate-950/60 px-2.5 py-1 text-xs font-semibold text-slate-400";
-    }
-
-    private string GetSummaryTitle()
-    {
-        if (_status?.HasError == true)
-        {
-            return "Status command failed";
-        }
-
-        if (_status?.Running == true)
-        {
-            return "XBond tunnel is running";
-        }
-
-        return _status?.Enabled == true ? "XBond prototype is enabled" : "XBond prototype is parked";
-    }
-
-    private string GetAnchorLabel()
-    {
-        if (_status?.AnchorPathId == null)
-        {
-            return "--";
-        }
-
-        var path = _status.Paths.FirstOrDefault(path => path.PathId == _status.AnchorPathId.Value);
-        return path == null ? $"Path {_status.AnchorPathId}" : $"{path.Name} ({path.PathId})";
-    }
-
-    private static string FormatMode(string mode)
-    {
-        return mode switch
-        {
-            "anchor-only" => "Anchor Only",
-            "anchor-duplicate-1" => "Anchor + Duplicate",
-            "anchor-fec" => "Anchor + FEC",
-            "full-duplicate-debug" => "Full Duplicate Debug",
-            _ => mode
-        };
-    }
-
-    private static string GetEngineModeLabel(string? mode)
-    {
-        return XBondTrafficEngineModes.Normalize(mode) switch
-        {
-            XBondTrafficEngineModes.XBondCanary => "XBond Canary",
-            XBondTrafficEngineModes.XBondPrimary => "XBond Primary",
-            _ => "Speedify Primary"
-        };
-    }
-
-    private string GetEngineBadgeClass()
-    {
-        return XBondTrafficEngineModes.Normalize(_trafficEngineStatus?.Mode) switch
-        {
-            XBondTrafficEngineModes.XBondCanary => "rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-200",
-            XBondTrafficEngineModes.XBondPrimary => "rounded-full border border-fuchsia-500/40 bg-fuchsia-500/10 px-2.5 py-1 text-xs font-semibold text-fuchsia-200",
-            _ => "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
-        };
-    }
-
-    private string GetBootStateLabel()
-    {
-        if (_trafficEngineStatus == null)
-        {
-            return "--";
-        }
-
-        return _trafficEngineStatus.ClientServiceEnabled
-            ? "Enabled"
-            : FormatStateLabel(_trafficEngineStatus.ClientServiceEnableState);
-    }
-
-    private string GetScopedRouteLabel()
-    {
-        if (_scopedRouteStatus == null)
-        {
-            return "--";
-        }
-
-        if (_scopedRouteStatus.HasError)
-        {
-            return "Error";
-        }
-
-        return _scopedRouteStatus.RouteUsesXBond ? "XBond" : "Normal";
-    }
-
-    private static string FormatRole(string role)
-    {
-        return role switch
-        {
-            "anchor" => "Anchor",
-            "backup" => "Backup",
-            "probe" => "Probe",
-            "cooldown" => "Cooling down",
-            "unavailable" => "Unavailable",
-            _ => role
-        };
-    }
-
-    private static string FormatTunnelState(XBondTunnelStatus tunnel)
-    {
-        if (!string.IsNullOrWhiteSpace(tunnel.DeviceName))
-        {
-            return $"{FormatStateLabel(tunnel.State)} ({tunnel.DeviceName})";
-        }
-
-        return FormatStateLabel(tunnel.State);
-    }
-
-    private static string GetFecLabel(XBondFecStatus fec)
-    {
-        if (!fec.Configured)
-        {
-            return "Not configured";
-        }
-
-        return fec.ProductionReady ? "Ready" : "Canary stub";
-    }
-
-    private static string GetIsolationLabel(XBondPathIsolationStatus isolation)
-    {
-        if (isolation.Active)
-        {
-            return "Isolated";
-        }
-
-        return isolation.Requested ? "Isolation pending" : "No isolation";
-    }
-
-    private static string GetIsolationBadgeClass(XBondPathIsolationStatus isolation)
-    {
-        if (isolation.Active)
-        {
-            return "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200";
-        }
-
-        if (isolation.Requested)
-        {
-            return "rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-200";
-        }
-
-        return "rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-xs font-semibold text-slate-400";
-    }
-
-    private static string DisplayPathBinding(XBondPathStatus path)
-    {
-        var parts = new[]
-        {
-            path.InterfaceName,
-            string.IsNullOrWhiteSpace(path.BindAddress) ? null : $"bind {path.BindAddress}",
-            string.IsNullOrWhiteSpace(path.PathIsolation.Message) ? null : path.PathIsolation.Message
-        }.Where(part => !string.IsNullOrWhiteSpace(part));
-
-        return string.Join(" - ", parts);
-    }
-
-    private static string FormatStateLabel(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "--";
-        }
-
-        return string.Join(' ', value.Split('-', StringSplitOptions.RemoveEmptyEntries)
-            .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
-    }
-
-    private static string GetRoleBadgeClass(string role)
-    {
-        return role switch
-        {
-            "anchor" => "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200",
-            "backup" => "rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-200",
-            "cooldown" => "rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-200",
-            "unavailable" => "rounded-full border border-red-500/40 bg-red-500/10 px-2 py-0.5 text-xs font-semibold text-red-200",
-            _ => "rounded-full border border-slate-700 bg-slate-950/60 px-2 py-0.5 text-xs font-semibold text-slate-400"
-        };
-    }
-
-    private static string GetTestBadgeClass(XBondPublicTestResult result)
-    {
-        return result.Succeeded
-            ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
-            : "rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-semibold text-red-200";
-    }
-
-    private static string GetScopedTestBadgeClass(XBondScopedRouteTestResult result)
-    {
-        return result.Succeeded
-            ? "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
-            : "rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200";
-    }
-
-    private static string GetProbeBadgeClass(XBondProbeResult result)
-    {
-        if (result.FullyVerified)
-        {
-            return "rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200";
-        }
-
-        if (result.Succeeded)
-        {
-            return "rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200";
-        }
-
-        return result.HasAnyPathResponse
-            ? "rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200"
-            : "rounded-full border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-xs font-semibold text-red-200";
-    }
-
-    private static string GetProbeBadgeLabel(XBondProbeResult result)
-    {
-        if (result.FullyVerified)
-        {
-            return "Verified";
-        }
-
-        if (result.Succeeded)
-        {
-            return "Route warning";
-        }
-
-        return result.HasAnyPathResponse ? "Degraded" : "Failed";
-    }
-
-    private static string GetRouteBadgeClass(XBondProbePathResult path)
-    {
-        return path.RouteVerified
-            ? "inline-flex rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200"
-            : "inline-flex rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-200";
-    }
-
-    private static string GetRouteLabel(XBondProbePathResult path)
-    {
-        return path.RouteVerified ? "Verified" : "Unverified";
-    }
-
-    private static string FormatPathList(IReadOnlyCollection<int> pathIds)
-    {
-        return pathIds.Count == 0 ? "--" : string.Join(", ", pathIds.Select(id => $"Path {id}"));
-    }
-
-    private static string FormatProbePathId(int? pathId)
-    {
-        return pathId.HasValue ? $"Path {pathId.Value}" : "--";
-    }
-
-    private string GetProbeConfigLabel()
-    {
-        if (XBondLabService.Settings.PublicTestPathIds.Count > 0)
-        {
-            return string.Join(", ", XBondLabService.Settings.PublicTestPathIds.Select(id => $"Path {id}"));
-        }
-
-        if (XBondLabService.Settings.PublicTestBinds.Count > 0)
-        {
-            return $"{XBondLabService.Settings.PublicTestBinds.Count:N0} bind override(s)";
-        }
-
-        return "client.toml paths";
-    }
-
-    private static string FormatProbePathName(XBondProbePathResult path)
-    {
-        var name = string.IsNullOrWhiteSpace(path.Adapter) ? $"Path {path.PathId}" : path.Adapter;
-        if (!string.IsNullOrWhiteSpace(path.InterfaceName))
-        {
-            return $"{name} ({path.InterfaceName})";
-        }
-
-        return name;
-    }
-
-    private static string DisplayValue(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? "--" : value;
-    }
-
-    private static string FormatBits(ulong bitsPerSecond)
-    {
-        if (bitsPerSecond == 0)
-        {
-            return "0 bps";
-        }
-
-        return bitsPerSecond >= 1_000_000
-            ? $"{bitsPerSecond / 1_000_000d:N1} Mbps"
-            : $"{bitsPerSecond / 1_000d:N1} kbps";
-    }
-
-    private static string FormatNullableMs(double? value)
-    {
-        return value.HasValue ? $"{value.Value:N1} ms" : "--";
-    }
-
-    private static string FormatNullableCount(int? value)
-    {
-        return value.HasValue ? value.Value.ToString("N0") : "--";
-    }
-
-    private static string GetCleanupLabel(XBondPublicTestResult result)
-    {
-        if (result.BypassWasAlreadyPresent)
-        {
-            return "Preserved";
-        }
-
-        return result.BypassRemoved ? "Removed" : "Check";
-    }
-
-    private static string GetPathState(XBondPathStatus path)
-    {
-        if (!path.InterfaceUp)
-        {
-            return "Down";
-        }
-
-        return path.InCooldown ? "Cooldown" : "Up";
-    }
-
-    private static string FormatAge(DateTime timestampUtc)
-    {
-        var elapsed = DateTime.UtcNow - timestampUtc;
-        if (elapsed.TotalSeconds < 5)
-        {
-            return "now";
-        }
-
-        if (elapsed.TotalMinutes < 1)
-        {
-            return $"{elapsed.TotalSeconds:N0}s ago";
-        }
-
-        return $"{elapsed.TotalMinutes:N0}m ago";
-    }
-
-    private static RenderFragment Metric(string label, string value) => builder =>
-    {
-        builder.OpenElement(0, "div");
-        builder.AddAttribute(1, "class", "rounded-lg border border-slate-700/70 bg-slate-950/40 px-3 py-2");
-        builder.OpenElement(2, "p");
-        builder.AddAttribute(3, "class", "text-[11px] font-semibold uppercase tracking-wide text-slate-500");
-        builder.AddContent(4, label);
-        builder.CloseElement();
-        builder.OpenElement(5, "p");
-        builder.AddAttribute(6, "class", "mt-1 break-words font-semibold text-white");
-        builder.AddContent(7, value);
-        builder.CloseElement();
-        builder.CloseElement();
+        null => "Loading",
+        { HasError: true } => "Unavailable",
+        { IsRunning: true } => "Running",
+        _ => "Stopped"
     };
 
-    private RenderFragment EngineModeButton(string mode, string title, string detail) => builder =>
-    {
-        var normalizedCurrent = XBondTrafficEngineModes.Normalize(_trafficEngineStatus?.Mode);
-        var selected = normalizedCurrent == mode;
-        var disabled = _isChangingTrafficEngine ||
-                       (mode == XBondTrafficEngineModes.XBondPrimary &&
-                        _trafficEngineStatus?.PrimaryModeAllowed != true);
-        var css = selected
-            ? "rounded-lg border border-cyan-400/60 bg-cyan-500/20 px-3 py-3 text-left shadow-lg shadow-cyan-950/30"
-            : "rounded-lg border border-slate-700/80 bg-slate-950/40 px-3 py-3 text-left transition-colors hover:border-cyan-500/50 hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-50";
+    private string RuntimePillClass => _snapshot?.IsRunning == true
+        ? "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
+        : "rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200";
 
-        builder.OpenElement(0, "button");
-        builder.AddAttribute(1, "type", "button");
-        builder.AddAttribute(2, "class", css);
-        builder.AddAttribute(3, "disabled", disabled);
-        builder.AddAttribute(4, "onclick", EventCallback.Factory.Create(this, () => SetTrafficEngineModeAsync(mode)));
-        builder.OpenElement(5, "p");
-        builder.AddAttribute(6, "class", "text-sm font-semibold text-white");
-        builder.AddContent(7, title);
-        builder.CloseElement();
-        builder.OpenElement(8, "p");
-        builder.AddAttribute(9, "class", selected ? "mt-1 text-xs font-semibold text-cyan-100" : "mt-1 text-xs font-semibold text-slate-400");
-        builder.AddContent(10, detail);
-        builder.CloseElement();
-        builder.CloseElement();
+    private static RenderFragment Info(string label, string value) => @<div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+        <p class="text-xs uppercase tracking-wide text-slate-500">@label</p>
+        <p class="mt-1 truncate font-semibold text-white">@value</p>
+    </div>;
+
+    private static string RolePill(XBondPathStatsSnapshot path) => path.Role.ToLowerInvariant() switch
+    {
+        "anchor" => "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200",
+        "backup" => "rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-200",
+        "unavailable" => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300",
+        _ => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300"
     };
+
+    private string FormatUpdated() => _snapshot?.UpdatedAtUtc.ToLocalTime().ToString("HH:mm:ss") ?? "--";
+
+    private static string FormatMode(string? mode) => string.IsNullOrWhiteSpace(mode) ? "XBond" : mode.Replace('-', ' ');
+
+    private static string FormatLatency(double? value) => value.HasValue && value.Value > 0 ? $"{Math.Round(value.Value)} ms" : "--";
+
+    private static string FormatPercent(double? value) => value.HasValue ? $"{Math.Round(value.Value, 1)}%" : "--";
+
+    public async ValueTask DisposeAsync()
+    {
+        await _refreshCts.CancelAsync();
+        _timer.Dispose();
+        _refreshCts.Dispose();
+    }
 }

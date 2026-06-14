@@ -1,6 +1,6 @@
-# XBond Canary Deployment
+# XBond Deployment
 
-These files are for the boot-enabled XBond canary tunnel. They do not replace Speedify unless scoped routes or primary routing are added separately.
+These files install the boot-enabled XBond tunnel. XBond is IPv4-only in this milestone; IPv6 traffic must remain disabled or routed outside XBond until IPv6 encapsulation is implemented.
 
 ## Router
 
@@ -11,7 +11,7 @@ install -m 0755 /tmp/xbond-client /usr/local/bin/xbond-client
 install -d -m 0750 /etc/xbond
 install -m 0644 /tmp/client.toml /etc/xbond/client.toml
 install -m 0600 /tmp/client.env /etc/xbond/client.env
-install -m 0644 xbond-client-canary.service /etc/systemd/system/xbond-client.service
+install -m 0644 xbond-client.service /etc/systemd/system/xbond-client.service
 install -m 0755 scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 systemctl daemon-reload
 systemctl enable --now xbond-client.service
@@ -21,35 +21,36 @@ systemctl enable --now xbond-client.service
 Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
-The canary client unit reapplies `10.250.0.2/30` to `xbond0` after each service start.
+The XBond client unit reapplies `10.250.0.2/30` to `xbond0` after each service start.
 Use `xbond-client-rollback [target-ip]` to remove one scoped `/32` route, or run it without arguments to remove all `/32` routes on `xbond0`.
 
 ## Server
 
-Install as root on `xeon-speedify-vultr-01`:
+Install as root on the XBond VPS:
 
 ```bash
 install -m 0755 /tmp/xbond-server /usr/local/bin/xbond-server
 install -d -m 0750 /etc/xbond
 install -m 0600 /tmp/server.env /etc/xbond/server.env
-install -m 0644 xbond-server-canary.service /etc/systemd/system/xbond-server-canary.service
+install -m 0644 xbond-server.service /etc/systemd/system/xbond-server.service
 install -m 0644 xbond-server-nat.service /etc/systemd/system/xbond-server-nat.service
 install -m 0755 scripts/xbond-server-nat-apply.sh /usr/local/sbin/xbond-server-nat-apply
 install -m 0755 scripts/xbond-server-nat-rollback.sh /usr/local/sbin/xbond-server-nat-rollback
 systemctl daemon-reload
-systemctl enable --now xbond-server-canary.service
+systemctl enable --now xbond-server.service
 systemctl enable --now xbond-server-nat.service
 ```
 
 The server unit listens on `8444/udp`, opens `xbonds0`, and can send return packets back to the latest client path peers.
-The canary server unit reapplies `10.250.0.1/30` to `xbonds0` after each service start.
+The XBond server unit reapplies `10.250.0.1/30` to `xbonds0` after each service start.
 The NAT unit enables IPv4 forwarding and idempotently installs forwarding/MASQUERADE rules for `10.250.0.0/30` through `enp1s0`. Override `XBOND_WAN_IF`, `XBOND_TUN_IF`, or `XBOND_CLIENT_CIDR` in a systemd drop-in if those names change.
 Run `systemctl stop xbond-server-nat.service` to remove the NAT rules through `ExecStop`.
 
-## Canary Limits
+## XBond Limits
 
-- `xbond-client canary-tunnel` opens a TUN and encapsulates IPv4 packets, but it does not change default routes.
-- Each `xbond-client canary-tunnel` process uses a fresh runtime session id by default so service restarts are not treated as duplicate old packets by the server. Use `--session-id` only for deterministic diagnostics.
+- `xbond-client tunnel` opens a TUN and encapsulates IPv4 packets.
+- XNetwork keeps manual `/32` route diagnostics. Default-route ownership by `xbond0` is an explicit operator action; no automatic rollback is implemented in this branch.
+- Each `xbond-client tunnel` process uses a fresh runtime session id by default so service restarts are not treated as duplicate old packets by the server. Use `--session-id` only for deterministic diagnostics.
 - `xbond-server --tun-name <name>` writes first-arrival IPv4 payloads to a TUN and reads return packets from the server TUN for encapsulation back to the client.
-- `AnchorFec` uses canary XOR parity blocks and can recover one missing packet per two-packet block when the paired packet and parity arrive.
-- Keep Speedify as primary until a scoped `/32` route is explicitly added. Never add a default route unless XNetwork `AllowPrimaryMode=true` and a rollback path has been verified.
+- `AnchorFec` uses XBond XOR parity blocks and can recover one missing packet per two-packet block when the paired packet and parity arrive.
+- The tunnel scheduler recomputes roles continuously and refuses paths that are down, fail socket binding/connectivity, repeatedly fail sends, or report full loss.

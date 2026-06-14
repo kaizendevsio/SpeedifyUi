@@ -2,12 +2,12 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 
 #[derive(Debug)]
-pub struct CanaryTun {
+pub struct XBondTun {
     name: String,
     file: File,
 }
 
-impl CanaryTun {
+impl XBondTun {
     pub fn open(name: &str, mtu: u16) -> io::Result<Self> {
         open_platform_tun(name, mtu)
     }
@@ -33,7 +33,7 @@ impl CanaryTun {
 }
 
 #[cfg(target_os = "linux")]
-fn open_platform_tun(name: &str, _mtu: u16) -> io::Result<CanaryTun> {
+fn open_platform_tun(name: &str, _mtu: u16) -> io::Result<XBondTun> {
     use std::ffi::CString;
     use std::os::fd::FromRawFd;
 
@@ -92,18 +92,18 @@ fn open_platform_tun(name: &str, _mtu: u16) -> io::Result<CanaryTun> {
         .collect::<Vec<_>>();
     let actual_name = String::from_utf8_lossy(&actual_name).to_string();
 
-    Ok(CanaryTun {
+    Ok(XBondTun {
         name: actual_name,
         file,
     })
 }
 
 #[cfg(not(target_os = "linux"))]
-fn open_platform_tun(name: &str, _mtu: u16) -> io::Result<CanaryTun> {
+fn open_platform_tun(name: &str, _mtu: u16) -> io::Result<XBondTun> {
     let _ = name;
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "canary TUN devices are only implemented on Linux",
+        "XBond TUN devices are only implemented on Linux",
     ))
 }
 

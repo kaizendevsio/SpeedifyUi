@@ -54,8 +54,7 @@ public class NetworkMonitorSettingsStoreTests
                 WhitelistedLinks = new List<string> { "old0" },
                 DownTimeoutSeconds = 30
             },
-            new TestHostApplicationLifetime(),
-            new SpeedifyService());
+            new TestHostApplicationLifetime());
         var updatedSettings = new NetworkMonitorSettings
         {
             Enabled = true,

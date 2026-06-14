@@ -1,9 +1,9 @@
 # AGENTS.md
 
 ## Repo Shape
-- `SpeedifyUi.sln` contains three .NET 9 projects: `XNetwork/XNetwork.csproj` (Blazor Server dashboard), `SpeedifyProbeAgent/SpeedifyProbeAgent.csproj` (external health probe API), and `XNetwork.Tests/XNetwork.Tests.csproj` (xUnit tests).
-- Main app wiring is in `XNetwork/Program.cs`: Interactive Server components, route transitions, singleton/hosted `SpeedifyService`, `NetworkMonitorService`, `ConnectionHealthService`, `CudyApControlService`, `AutoServerSwitchService`, `XRouterService`, and `LocalProcessTrafficService`.
-- Main dashboard routes are `/` (`Home.razor`), `/details` (`Statistics.razor`), `/settings`, `/controls`, `/server-statistics`, `/server-switching`, `/ai-chat`, and `/xrouter` (`XRouter.razor`, shown in the UI as `Wifi`).
+- On branch `feature/xband-only-runtime`, `SpeedifyUi.sln` contains two .NET 9 projects: `XNetwork/XNetwork.csproj` (Blazor Server dashboard) and `XNetwork.Tests/XNetwork.Tests.csproj` (xUnit tests). `SpeedifyProbeAgent` is intentionally removed from this branch.
+- Main app wiring is in `XNetwork/Program.cs`: Interactive Server components, route transitions, `XBondStatsService`, `XBondStatusService`, `XBondTrafficEngineService`, `NetworkMonitorService`, `ConnectionHealthService`, `CudyApControlService`, `XRouterService`, and `LocalProcessTrafficService`.
+- Main runtime routes on `feature/xband-only-runtime` are `/` (`Home.razor`), `/details` (`Statistics.razor`), `/xbond`, `/settings`, and `/xrouter` (`XRouter.razor`, shown in the UI as `Wifi`). Legacy controls/server-switching pages are intentionally removed.
 - Product branding is `XNetwork`; the historical `/xrouter` route and some class names remain for compatibility and should not be renamed casually.
 - Frontend assets are mostly static/CDN: Tailwind, Font Awesome, Google Fonts, and Chart.js are loaded from CDNs in `App.razor`; local JS modules live in `XNetwork/wwwroot/js`.
 - Current app logo asset is `XNetwork/wwwroot/icons/xnetwork-logo.png`; browser/PWA references use `/icons/xnetwork-logo.png?v=20260511`.
@@ -13,7 +13,7 @@
 - Test: `dotnet test XNetwork.Tests/XNetwork.Tests.csproj`
 - Run locally: `dotnet run --project XNetwork/XNetwork.csproj`
 - Publish app: `dotnet publish XNetwork/XNetwork.csproj -c Release`
-- Publish probe: `dotnet publish SpeedifyProbeAgent/SpeedifyProbeAgent.csproj -c Release`
+- Rust tests: run `cargo test` from `xbond/`.
 - Real app HTTP binding is `http://0.0.0.0:8080` from `XNetwork/appsettings.json`; `launchSettings.json` ports are not the deployment binding.
 - If parallel `dotnet build` and `dotnet test` collide on `obj` files, run `dotnet build-server shutdown` and rerun sequentially.
 
@@ -31,7 +31,15 @@
 - `deploy.sh` runs `git pull`, preserves published `appsettings.json` and `auto-server-switch-state.json`, cleans publish output, runs `dotnet publish XNetwork/XNetwork.csproj -c Release`, restores preserved runtime files, kills the `xnetwork.service` MainPID, and lets systemd restart it.
 - Non-interactive `sudo systemctl restart xnetwork.service` is not available; the deploy script uses MainPID `kill -KILL` to trigger restart.
 - After deploy, verify with `systemctl is-active xnetwork.service`, `curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/`, and optionally external `curl http://100.112.183.104:8080/`.
-- Remote publish often emits existing CS1998 warnings in `Statistics.razor`, `SpeedifyService.cs`, and `Settings.razor`; they are known warnings, not deployment blockers.
+- Remote publish warnings should be reviewed normally on `feature/xband-only-runtime`; the old `SpeedifyService.cs` warning note no longer applies because that service is removed in this branch.
+
+## XBond-Only Branch
+- 2026-06-15: Branch `feature/xband-only-runtime` is the XBond-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion = "xbond-2026.06.18"` with a changelog entry `XBond-only runtime branch.`
+- 2026-06-15: This branch intentionally has no Speedify/XBond toggle, no canary mode, no `speedify_cli` polling, no private reconnect, no auto server switching, no Speedify transport/bonding settings, no Speedify adapter encryption/rate-limit controls, and no `SpeedifyProbeAgent` project reference.
+- 2026-06-15: Dashboard and `/details` analytics read XBond runtime state through `XBondStatsService`, which normalizes `xbond-client status --json --config <path>` and runtime status from `/run/xbond/client-status.json`. Dashboard upload/download use XBond tunnel payload throughput counters, not duplicated per-path egress totals.
+- 2026-06-15: Rust command `xbond-client tunnel` replaces the old canary tunnel command. Deployment templates are `xbond-client.service`, `xbond-server.service`, and `xbond-server-nat.service`; service files should not use canary naming on this branch.
+- 2026-06-15: XBond tunnel scheduling recomputes roles every 1 second. Paths with `NO-CARRIER`/down interfaces, socket bind/connect failure, repeated send failures, missing live sockets, or full-loss health are put in cooldown/unavailable state and cannot be anchor.
+- 2026-06-15: XBond-only production routing remains IPv4-only for this milestone. The UI keeps scoped `/32` route diagnostics and service controls, but no automatic rollback feature is implemented on this branch.
 
 ## Speedify CLI
 - The app requires `speedify_cli` in PATH; successful commands return JSON and errors are on stderr as documented in `speedify-cli.md`.

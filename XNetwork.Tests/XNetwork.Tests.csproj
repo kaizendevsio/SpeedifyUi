@@ -21,7 +21,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\XNetwork\XNetwork.csproj" />
-    <ProjectReference Include="..\SpeedifyProbeAgent\SpeedifyProbeAgent.csproj" />
   </ItemGroup>
 
 </Project>

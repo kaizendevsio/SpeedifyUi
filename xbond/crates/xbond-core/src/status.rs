@@ -17,6 +17,10 @@ pub struct XBondStatus {
     pub duplicate_packets_sent: u64,
     pub duplicate_packets_dropped: u64,
     pub data_packets_received: u64,
+    pub data_bytes_sent: u64,
+    pub data_bytes_received: u64,
+    pub outbound_throughput_bps: u64,
+    pub inbound_throughput_bps: u64,
     pub fec_packets_sent: u64,
     pub fec_packets_recovered: u64,
     pub fec_packets_skipped: u64,
@@ -130,7 +134,7 @@ impl Default for XBondTunnelStatus {
             state: "disabled".to_string(),
             device_name: None,
             mtu: None,
-            message: "Canary tunnel is disabled by default.".to_string(),
+            message: "XBond tunnel is disabled by default.".to_string(),
         }
     }
 }
@@ -168,6 +172,14 @@ pub struct XBondRuntimeStatus {
     pub duplicate_packets_dropped: u64,
     #[serde(default)]
     pub data_packets_received: u64,
+    #[serde(default)]
+    pub data_bytes_sent: u64,
+    #[serde(default)]
+    pub data_bytes_received: u64,
+    #[serde(default)]
+    pub outbound_throughput_bps: u64,
+    #[serde(default)]
+    pub inbound_throughput_bps: u64,
     #[serde(default)]
     pub fec_packets_sent: u64,
     #[serde(default)]

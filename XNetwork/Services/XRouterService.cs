@@ -47,14 +47,14 @@ public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings 
         }
     }
 
-    public async Task<RouterTrafficSummary> GetTrafficSummaryAsync(double speedifyDownloadMbps, double speedifyUploadMbps, CancellationToken cancellationToken = default)
+    public async Task<RouterTrafficSummary> GetTrafficSummaryAsync(double xbondDownloadMbps, double xbondUploadMbps, CancellationToken cancellationToken = default)
     {
         var clients = await GetClientsAsync(cancellationToken).ConfigureAwait(false);
         var localProcessTraffic = await localProcessTrafficService.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         return new RouterTrafficSummary
         {
-            SpeedifyDownloadMbps = speedifyDownloadMbps,
-            SpeedifyUploadMbps = speedifyUploadMbps,
+            XBondDownloadMbps = xbondDownloadMbps,
+            XBondUploadMbps = xbondUploadMbps,
             CudyClientDownloadMbps = clients.Sum(client => client.DownloadMbps),
             CudyClientUploadMbps = clients.Sum(client => client.UploadMbps),
             CudyClientCount = clients.Count,

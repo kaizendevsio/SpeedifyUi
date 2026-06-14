@@ -32,10 +32,10 @@ public class XBondStatusServiceTests
               "mode": "anchor-fec",
               "server_addr": "45.77.241.247:8444",
               "tunnel": {
-                "state": "canary-running",
+                "state": "running",
                 "device_name": "xbond0",
                 "mtu": 1400,
-                "message": "Canary tunnel is open"
+                "message": "XBond tunnel is open"
               },
               "anchor_path_id": 1,
               "schedule": {
@@ -80,7 +80,7 @@ public class XBondStatusServiceTests
               "fec": {
                 "configured": true,
                 "production_ready": false,
-                "message": "FEC is a canary stub"
+                "message": "FEC is enabled"
               },
               "late_packets_dropped": 1,
               "message": "live"
@@ -92,7 +92,7 @@ public class XBondStatusServiceTests
         Assert.Equal(1, status.AnchorPathId);
         Assert.Equal([1], status.Schedule.DataPathIds);
         Assert.Equal([2], status.Schedule.FecPathIds);
-        Assert.Equal("canary-running", status.Tunnel.State);
+        Assert.Equal("running", status.Tunnel.State);
         Assert.Equal("xbond0", status.Tunnel.DeviceName);
         Assert.Equal((ulong)8, status.DataPacketsSent);
         Assert.Equal((ulong)4, status.DuplicatePacketsSent);
@@ -198,7 +198,7 @@ public class XBondStatusServiceTests
                   "route_verification": {
                     "verified": false,
                     "method": "ip-route-get",
-                    "reason": "route leaves through Speedify interface connectify0"
+                    "reason": "route leaves through blocked tunnel interface connectify0"
                   }
                 }
               ]
@@ -284,26 +284,6 @@ public class XBondStatusServiceTests
         Assert.False(result.FullyVerified);
         Assert.True(result.HasPathLoss);
         Assert.True(result.HasAnyPathResponse);
-    }
-
-    [Fact]
-    public void HasBypassPort_TreatsZeroRangeEndAsSinglePort()
-    {
-        var settings = new StreamingBypassSettings
-        {
-            Ports =
-            [
-                new PortRule
-                {
-                    Port = 8444,
-                    PortRangeEnd = 0,
-                    Protocol = "udp"
-                }
-            ]
-        };
-
-        Assert.True(XBondLabService.HasBypassPort(settings, 8444, "UDP"));
-        Assert.False(XBondLabService.HasBypassPort(settings, 8445, "udp"));
     }
 
     [Theory]

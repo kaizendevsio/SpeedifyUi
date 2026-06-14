@@ -40,6 +40,18 @@ public class XBondStatus
     [JsonPropertyName("data_packets_received")]
     public ulong DataPacketsReceived { get; set; }
 
+    [JsonPropertyName("data_bytes_sent")]
+    public ulong DataBytesSent { get; set; }
+
+    [JsonPropertyName("data_bytes_received")]
+    public ulong DataBytesReceived { get; set; }
+
+    [JsonPropertyName("outbound_throughput_bps")]
+    public ulong OutboundThroughputBps { get; set; }
+
+    [JsonPropertyName("inbound_throughput_bps")]
+    public ulong InboundThroughputBps { get; set; }
+
     [JsonPropertyName("fec_packets_sent")]
     public ulong FecPacketsSent { get; set; }
 
@@ -98,7 +110,7 @@ public class XBondTunnelStatus
     public int? Mtu { get; set; }
 
     [JsonPropertyName("message")]
-    public string Message { get; set; } = "Canary tunnel is disabled by default.";
+    public string Message { get; set; } = "XBond tunnel is not reporting runtime status.";
 }
 
 public class XBondFecStatus

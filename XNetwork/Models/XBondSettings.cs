@@ -2,13 +2,11 @@ namespace XNetwork.Models;
 
 public class XBondSettings
 {
-    public bool Enabled { get; set; }
+    public bool Enabled { get; set; } = true;
 
-    public string TrafficEngineMode { get; set; } = XBondTrafficEngineModes.SpeedifyPrimary;
+    public string TrafficEngineMode { get; set; } = XBondTrafficEngineModes.XBondActive;
 
     public bool AllowServiceControl { get; set; }
-
-    public bool AllowPrimaryMode { get; set; }
 
     public string ClientServiceName { get; set; } = "xbond-client.service";
 
@@ -28,10 +26,6 @@ public class XBondSettings
 
     public string PublicTestServerAddress { get; set; } = "45.77.241.247:8444";
 
-    public int PublicTestBypassPort { get; set; } = 8444;
-
-    public string PublicTestBypassProtocol { get; set; } = "udp";
-
     public int PublicTestPathId { get; set; } = 1;
 
     public List<int> PublicTestPathIds { get; set; } = new();
@@ -44,19 +38,15 @@ public class XBondSettings
 
     public int PublicTestPacketTimeoutMs { get; set; } = 2500;
 
-    public int PublicTestBypassSettleMs { get; set; } = 2000;
-
-    public bool MultiPathUseSpeedifyBypass { get; set; }
-
     public int PublicTestCommandTimeoutSeconds { get; set; } = 45;
 
     public string PublicTestKeyEnvironmentVariable { get; set; } = "XBOND_PSK";
 
     public string PublicTestKeyFilePath { get; set; } = "/home/xeon-network/.config/XNetwork/xbond-psk";
 
-    public string CanaryTunnelDevice { get; set; } = "xbond0";
+    public string TunnelDevice { get; set; } = "xbond0";
 
-    public string CanaryTunnelSource { get; set; } = "10.250.0.2";
+    public string TunnelSource { get; set; } = "10.250.0.2";
 
     public string RouteCommandPath { get; set; } = "ip";
 
@@ -73,40 +63,19 @@ public class XBondSettings
 
 public static class XBondTrafficEngineModes
 {
-    public const string SpeedifyPrimary = "speedify-primary";
-    public const string XBondCanary = "xbond-canary";
-    public const string XBondPrimary = "xbond-primary";
+    public const string XBondActive = "xbond-active";
 
-    public static bool IsKnown(string mode)
-    {
-        return string.Equals(mode, SpeedifyPrimary, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(mode, XBondCanary, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(mode, XBondPrimary, StringComparison.OrdinalIgnoreCase);
-    }
+    public static bool IsKnown(string mode) =>
+        string.Equals(mode, XBondActive, StringComparison.OrdinalIgnoreCase);
 
-    public static string Normalize(string? mode)
-    {
-        if (string.Equals(mode, XBondCanary, StringComparison.OrdinalIgnoreCase))
-        {
-            return XBondCanary;
-        }
-
-        if (string.Equals(mode, XBondPrimary, StringComparison.OrdinalIgnoreCase))
-        {
-            return XBondPrimary;
-        }
-
-        return SpeedifyPrimary;
-    }
+    public static string Normalize(string? mode) => XBondActive;
 }
 
 public class XBondTrafficEngineStatus
 {
-    public string Mode { get; set; } = XBondTrafficEngineModes.SpeedifyPrimary;
+    public string Mode { get; set; } = XBondTrafficEngineModes.XBondActive;
 
     public bool ServiceControlAllowed { get; set; }
-
-    public bool PrimaryModeAllowed { get; set; }
 
     public string ClientServiceName { get; set; } = "";
 
@@ -118,10 +87,9 @@ public class XBondTrafficEngineStatus
 
     public bool ClientServiceEnabled { get; set; }
 
-    public bool CanStartCanary => ServiceControlAllowed && !ClientServiceRunning &&
-                                  (Mode != XBondTrafficEngineModes.XBondPrimary || PrimaryModeAllowed);
+    public bool CanStart => ServiceControlAllowed && !ClientServiceRunning;
 
-    public bool CanStopCanary => ServiceControlAllowed && ClientServiceRunning;
+    public bool CanStop => ServiceControlAllowed && ClientServiceRunning;
 
     public bool CanEnableAtBoot => ServiceControlAllowed && !ClientServiceEnabled;
 

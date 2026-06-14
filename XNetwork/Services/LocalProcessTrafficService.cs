@@ -7,7 +7,7 @@ namespace XNetwork.Services;
 
 public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logger)
 {
-    private const string DefaultInterface = "connectify0";
+    private const string DefaultInterface = "xbond0";
     private static readonly TimeSpan CacheDuration = TimeSpan.FromMilliseconds(750);
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(4);
     private static readonly Regex NethogsLineRegex = new("^(?<command>.+?)\\s+(?<upload>\\d+(?:\\.\\d+)?)\\s+(?<download>\\d+(?:\\.\\d+)?)$", RegexOptions.Compiled);
@@ -76,7 +76,7 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
             {
                 IsSupported = true,
                 Source = $"nethogs on {DefaultInterface}",
-                Message = processes.Count == 0 ? "No local process traffic was observed in this sample." : "Live local process throughput sampled from the Speedify tunnel interface.",
+                Message = processes.Count == 0 ? "No local process traffic was observed in this sample." : "Live local process throughput sampled from the XBond tunnel interface.",
                 Processes = processes
             };
         }

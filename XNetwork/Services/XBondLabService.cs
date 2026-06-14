@@ -6,8 +6,7 @@ namespace XNetwork.Services;
 
 public class XBondLabService(
     ILogger<XBondLabService> logger,
-    XBondSettings settings,
-    SpeedifyService speedifyService)
+    XBondSettings settings)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly SemaphoreSlim _testLock = new(1, 1);
@@ -18,83 +17,32 @@ public class XBondLabService(
     {
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorResult("Another XBond public test is already running.");
+            return ErrorResult("Another XBond diagnostic is already running.");
         }
 
         var result = new XBondPublicTestResult
         {
             StartedAtUtc = DateTime.UtcNow,
-            Server = settings.PublicTestServerAddress,
-            BypassRule = $"{settings.PublicTestBypassPort}/{settings.PublicTestBypassProtocol}"
+            Server = settings.PublicTestServerAddress
         };
 
-        var shouldRestoreBypassEnabled = false;
         try
         {
-            var before = await speedifyService.GetStreamingBypassSettingsAsync(cancellationToken).ConfigureAwait(false)
-                ?? throw new InvalidOperationException("Unable to read Speedify streaming bypass settings.");
-
-            result.BypassWasAlreadyPresent = HasBypassPort(before, settings.PublicTestBypassPort, settings.PublicTestBypassProtocol);
-
-            if (!before.Enabled)
-            {
-                if (!await speedifyService.SetStreamingBypassEnabledAsync(true, cancellationToken).ConfigureAwait(false))
-                {
-                    throw new InvalidOperationException("Unable to enable Speedify streaming bypass for the test.");
-                }
-
-                result.BypassEnabledChanged = true;
-                shouldRestoreBypassEnabled = true;
-            }
-
-            if (!result.BypassWasAlreadyPresent)
-            {
-                if (!await speedifyService.SetStreamingBypassPortsAsync(
-                        "add",
-                        [new PortRule { Port = settings.PublicTestBypassPort, Protocol = settings.PublicTestBypassProtocol }],
-                        cancellationToken).ConfigureAwait(false))
-                {
-                    throw new InvalidOperationException($"Unable to add temporary bypass rule {result.BypassRule}.");
-                }
-
-                result.BypassAdded = true;
-            }
-
-            if (settings.PublicTestBypassSettleMs > 0)
-            {
-                await Task.Delay(TimeSpan.FromMilliseconds(settings.PublicTestBypassSettleMs), cancellationToken)
-                    .ConfigureAwait(false);
-            }
-
             var key = ReadPsk();
             var ping = await RunPingAsync(key, cancellationToken).ConfigureAwait(false);
             CopyPingResult(ping, result);
             result.Message = result.Succeeded
-                ? "Public heartbeat completed successfully."
-                : "Public heartbeat completed with packet loss.";
+                ? "XBond heartbeat completed successfully."
+                : "XBond heartbeat completed with packet loss.";
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond public heartbeat test failed");
+            logger.LogWarning(ex, "XBond heartbeat diagnostic failed");
             result.Error = ex.Message;
-            result.Message = "Public heartbeat test failed.";
+            result.Message = "XBond heartbeat diagnostic failed.";
         }
         finally
         {
-            if (result.BypassAdded)
-            {
-                result.BypassRemoved = await speedifyService.SetStreamingBypassPortsAsync(
-                    "rem",
-                    [new PortRule { Port = settings.PublicTestBypassPort, Protocol = settings.PublicTestBypassProtocol }],
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-
-            if (shouldRestoreBypassEnabled)
-            {
-                result.BypassEnabledRestored = await speedifyService.SetStreamingBypassEnabledAsync(false, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
             result.CompletedAtUtc = DateTime.UtcNow;
             _testLock.Release();
         }
@@ -118,105 +66,41 @@ public class XBondLabService(
     {
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorProbeResult("Another XBond public test is already running.");
+            return ErrorProbeResult("Another XBond diagnostic is already running.");
         }
 
         var result = new XBondProbeResult
         {
             StartedAtUtc = DateTime.UtcNow,
-            Server = settings.PublicTestServerAddress,
-            BypassRule = settings.MultiPathUseSpeedifyBypass
-                ? $"{settings.PublicTestBypassPort}/{settings.PublicTestBypassProtocol}"
-                : "Not used"
+            Server = settings.PublicTestServerAddress
         };
 
-        var shouldRestoreBypassEnabled = false;
         try
         {
-            if (settings.MultiPathUseSpeedifyBypass)
-            {
-                var before = await speedifyService.GetStreamingBypassSettingsAsync(cancellationToken).ConfigureAwait(false)
-                    ?? throw new InvalidOperationException("Unable to read Speedify streaming bypass settings.");
-
-                result.BypassWasAlreadyPresent = HasBypassPort(before, settings.PublicTestBypassPort, settings.PublicTestBypassProtocol);
-
-                if (!before.Enabled)
-                {
-                    if (!await speedifyService.SetStreamingBypassEnabledAsync(true, cancellationToken).ConfigureAwait(false))
-                    {
-                        throw new InvalidOperationException("Unable to enable Speedify streaming bypass for the test.");
-                    }
-
-                    result.BypassEnabledChanged = true;
-                    shouldRestoreBypassEnabled = true;
-                }
-
-                if (!result.BypassWasAlreadyPresent)
-                {
-                    if (!await speedifyService.SetStreamingBypassPortsAsync(
-                            "add",
-                            [new PortRule { Port = settings.PublicTestBypassPort, Protocol = settings.PublicTestBypassProtocol }],
-                            cancellationToken).ConfigureAwait(false))
-                    {
-                        throw new InvalidOperationException($"Unable to add temporary bypass rule {result.BypassRule}.");
-                    }
-
-                    result.BypassAdded = true;
-                }
-
-                if (settings.PublicTestBypassSettleMs > 0)
-                {
-                    await Task.Delay(TimeSpan.FromMilliseconds(settings.PublicTestBypassSettleMs), cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-
             var key = ReadPsk();
             var probe = await RunMultiPingAsync(key, cancellationToken).ConfigureAwait(false);
             CopyProbeResult(probe, result);
             result.Message = result.FullyVerified
-                ? "Multi-path probe completed on verified physical routes."
+                ? "Multi-path diagnostic completed on verified physical routes."
                 : result.Succeeded
-                    ? "Multi-path probe completed with route verification warnings."
+                    ? "Multi-path diagnostic completed with route-verification warnings."
                     : result.HasAnyPathResponse
-                        ? "Multi-path probe completed with path loss or degradation."
-                        : "Multi-path probe completed with packet loss.";
+                        ? "Multi-path diagnostic completed with path loss or degradation."
+                        : "Multi-path diagnostic completed with packet loss.";
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond public multi-path probe failed");
+            logger.LogWarning(ex, "XBond multi-path diagnostic failed");
             result.Error = ex.Message;
-            result.Message = "Multi-path probe failed.";
+            result.Message = "Multi-path diagnostic failed.";
         }
         finally
         {
-            if (result.BypassAdded)
-            {
-                result.BypassRemoved = await speedifyService.SetStreamingBypassPortsAsync(
-                    "rem",
-                    [new PortRule { Port = settings.PublicTestBypassPort, Protocol = settings.PublicTestBypassProtocol }],
-                    CancellationToken.None).ConfigureAwait(false);
-            }
-
-            if (shouldRestoreBypassEnabled)
-            {
-                result.BypassEnabledRestored = await speedifyService.SetStreamingBypassEnabledAsync(false, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
             result.CompletedAtUtc = DateTime.UtcNow;
             _testLock.Release();
         }
 
         return result;
-    }
-
-    public static bool HasBypassPort(StreamingBypassSettings bypassSettings, int port, string protocol)
-    {
-        return bypassSettings.Ports.Any(rule =>
-            rule.Port == port &&
-            (!rule.PortRangeEnd.HasValue || rule.PortRangeEnd.Value is 0 || rule.PortRangeEnd.Value == port) &&
-            string.Equals(rule.Protocol, protocol, StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<XBondPublicTestResult> RunPingAsync(string key, CancellationToken cancellationToken)
@@ -248,39 +132,7 @@ public class XBondLabService(
         startInfo.ArgumentList.Add(settings.PublicTestKeyEnvironmentVariable);
         startInfo.ArgumentList.Add("--json");
 
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
-        {
-            throw new InvalidOperationException("Failed to start xbond-client.");
-        }
-
-        try
-        {
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
-            await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
-
-            var stdout = await stdoutTask.ConfigureAwait(false);
-            var stderr = await stderrTask.ConfigureAwait(false);
-            if (process.ExitCode != 0)
-            {
-                throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr)
-                    ? $"xbond-client exited with code {process.ExitCode}"
-                    : stderr.Trim());
-            }
-
-            return ParsePingJson(stdout);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            TryKill(process);
-            throw new TimeoutException($"xbond-client ping timed out after {settings.PublicTestCommandTimeoutSeconds} seconds.");
-        }
-        catch
-        {
-            TryKill(process);
-            throw;
-        }
+        return await RunJsonCommandAsync(startInfo, ParsePingJson, timeoutCts.Token).ConfigureAwait(false);
     }
 
     private async Task<XBondProbeResult> RunMultiPingAsync(string key, CancellationToken cancellationToken)
@@ -325,33 +177,36 @@ public class XBondLabService(
         startInfo.ArgumentList.Add(settings.PublicTestKeyEnvironmentVariable);
         startInfo.ArgumentList.Add("--json");
 
+        return await RunJsonCommandAsync(startInfo, ParseMultiPingJson, timeoutCts.Token).ConfigureAwait(false);
+    }
+
+    private static async Task<T> RunJsonCommandAsync<T>(
+        ProcessStartInfo startInfo,
+        Func<string, T> parser,
+        CancellationToken cancellationToken)
+    {
         using var process = new Process { StartInfo = startInfo };
         if (!process.Start())
         {
-            throw new InvalidOperationException("Failed to start xbond-client.");
+            throw new InvalidOperationException($"Failed to start {startInfo.FileName}.");
         }
 
         try
         {
-            var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
-            await process.WaitForExitAsync(timeoutCts.Token).ConfigureAwait(false);
+            var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
 
             var stdout = await stdoutTask.ConfigureAwait(false);
             var stderr = await stderrTask.ConfigureAwait(false);
             if (process.ExitCode != 0)
             {
                 throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr)
-                    ? $"xbond-client exited with code {process.ExitCode}"
+                    ? $"{startInfo.FileName} exited with code {process.ExitCode}"
                     : stderr.Trim());
             }
 
-            return ParseMultiPingJson(stdout);
-        }
-        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-        {
-            TryKill(process);
-            throw new TimeoutException($"xbond-client multi-ping timed out after {settings.PublicTestCommandTimeoutSeconds} seconds.");
+            return parser(stdout);
         }
         catch
         {
@@ -377,7 +232,7 @@ public class XBondLabService(
             }
         }
 
-        throw new InvalidOperationException("XBond public test key is not configured.");
+        throw new InvalidOperationException("XBond diagnostic key is not configured.");
     }
 
     private static XBondPublicTestResult ErrorResult(string message)
@@ -437,7 +292,7 @@ public class XBondLabService(
         }
         catch
         {
-            // Best effort cleanup for a failed lab command.
+            // Best effort cleanup for a failed diagnostic command.
         }
     }
 }

@@ -22,7 +22,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
     {
         if (!settings.Enabled)
         {
-            return DisabledStatus("XBond prototype is disabled. Enable it after xbond-client is installed on this host.");
+            return DisabledStatus("XBond runtime is disabled. Enable xbond-client on this host.");
         }
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

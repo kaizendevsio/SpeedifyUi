@@ -17,18 +17,15 @@ public class NetworkMonitorService : BackgroundService
     private readonly Dictionary<string, string?> _lastRestartErrors = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _stateLock = new();
     private readonly IHostApplicationLifetime _appLifetime;
-    private readonly SpeedifyService _speedifyService;
 
     public NetworkMonitorService(
         ILogger<NetworkMonitorService> logger,
         NetworkMonitorSettings settings,
-        IHostApplicationLifetime appLifetime,
-        SpeedifyService speedifyService)
+        IHostApplicationLifetime appLifetime)
     {
         _logger = logger;
         _settings = CopySettings(settings);
         _appLifetime = appLifetime;
-        _speedifyService = speedifyService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -99,39 +96,38 @@ public class NetworkMonitorService : BackgroundService
     {
         try
         {
-            var whitelistedLinks = new HashSet<string>(settings.WhitelistedLinks, StringComparer.OrdinalIgnoreCase);
-            var adapters = await _speedifyService.GetAdaptersAsync(stoppingToken);
-            foreach (var adapter in adapters)
+            foreach (var link in settings.WhitelistedLinks)
             {
-                if (!whitelistedLinks.Contains(adapter.Name))
-                    continue;
-
-                bool isDisconnected = adapter.State.ToLowerInvariant() == "disconnected";
+                var state = GetInterfaceState(link);
+                var isDisconnected = IsInterfaceDown(state);
                 var shouldRestart = false;
                 if (isDisconnected)
                 {
                     lock (_stateLock)
                     {
-                        _lastObservedStates[adapter.Name] = adapter.State;
-                        if (!_disconnectionTimes.ContainsKey(adapter.Name))
+                        _lastObservedStates[link] = state;
+                        if (!_disconnectionTimes.ContainsKey(link))
                         {
-                            _disconnectionTimes[adapter.Name] = DateTime.UtcNow;
-                            _logger.LogWarning("Speedify adapter {Link} is disconnected. Will attempt restart after {Timeout} seconds",
-                                adapter.Name, settings.DownTimeoutSeconds);
+                            _disconnectionTimes[link] = DateTime.UtcNow;
+                            _logger.LogWarning(
+                                "Network link {Link} is down ({State}). Will attempt restart after {Timeout} seconds",
+                                link,
+                                state,
+                                settings.DownTimeoutSeconds);
                         }
                         else
                         {
-                            var downTime = DateTime.UtcNow - _disconnectionTimes[adapter.Name];
-                            shouldRestart = downTime.TotalSeconds >= settings.DownTimeoutSeconds && CanAttemptRestartLocked(adapter.Name, settings);
+                            var downTime = DateTime.UtcNow - _disconnectionTimes[link];
+                            shouldRestart = downTime.TotalSeconds >= settings.DownTimeoutSeconds && CanAttemptRestartLocked(link, settings);
                         }
                     }
 
                     if (shouldRestart)
                     {
-                        await RestartLink(adapter.Name, stoppingToken);
+                        await RestartLink(link, stoppingToken);
                         lock (_stateLock)
                         {
-                            _disconnectionTimes.Remove(adapter.Name);
+                            _disconnectionTimes.Remove(link);
                         }
                     }
                 }
@@ -139,11 +135,11 @@ public class NetworkMonitorService : BackgroundService
                 {
                     lock (_stateLock)
                     {
-                        _lastObservedStates[adapter.Name] = adapter.State;
-                        if (_disconnectionTimes.ContainsKey(adapter.Name))
+                        _lastObservedStates[link] = state;
+                        if (_disconnectionTimes.ContainsKey(link))
                         {
-                            _logger.LogInformation("Speedify adapter {Link} is now up", adapter.Name);
-                            _disconnectionTimes.Remove(adapter.Name);
+                            _logger.LogInformation("Network link {Link} is now up", link);
+                            _disconnectionTimes.Remove(link);
                         }
                     }
                 }
@@ -151,8 +147,40 @@ public class NetworkMonitorService : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error checking Speedify adapters");
+            _logger.LogError(ex, "Error checking network links");
         }
+    }
+
+    private static string GetInterfaceState(string interfaceName)
+    {
+        var interfacePath = Path.Combine("/sys/class/net", interfaceName);
+        var operStatePath = Path.Combine(interfacePath, "operstate");
+        var carrierPath = Path.Combine(interfacePath, "carrier");
+
+        if (!Directory.Exists(interfacePath))
+        {
+            return "missing";
+        }
+
+        var operState = File.Exists(operStatePath)
+            ? File.ReadAllText(operStatePath).Trim()
+            : "unknown";
+        var carrier = File.Exists(carrierPath)
+            ? File.ReadAllText(carrierPath).Trim()
+            : "unknown";
+
+        return carrier == "0" && !string.Equals(operState, "up", StringComparison.OrdinalIgnoreCase)
+            ? "no-carrier"
+            : operState;
+    }
+
+    private static bool IsInterfaceDown(string state)
+    {
+        return state.Equals("missing", StringComparison.OrdinalIgnoreCase) ||
+               state.Equals("down", StringComparison.OrdinalIgnoreCase) ||
+               state.Equals("dormant", StringComparison.OrdinalIgnoreCase) ||
+               state.Equals("lowerlayerdown", StringComparison.OrdinalIgnoreCase) ||
+               state.Equals("no-carrier", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool CanAttemptRestartLocked(string interfaceName, NetworkMonitorSettings settings)
@@ -562,8 +590,8 @@ public class NetworkMonitorService : BackgroundService
     }
 
     /// <summary>
-    /// Set a specific adapter as the primary default route for bypass mode.
-    /// This makes the specified adapter the preferred route when Speedify is disconnected.
+    /// Set a specific adapter as the primary default route for diagnostics.
+    /// This makes the specified adapter the preferred route until OS routing changes it again.
     /// </summary>
     /// <param name="adapterId">The adapter ID (interface name) to use for routing</param>
     /// <param name="cancellationToken">Cancellation token</param>

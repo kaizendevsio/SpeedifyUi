@@ -39,10 +39,10 @@ public partial class XBondScopedRouteService(
 
         status.RouteOutput = result.Output;
         status.RouteUsesXBond = result.ExitCode == 0 &&
-                                result.Output.Contains($"dev {settings.CanaryTunnelDevice}", StringComparison.Ordinal);
+                                result.Output.Contains($"dev {settings.TunnelDevice}", StringComparison.Ordinal);
         status.Message = status.RouteUsesXBond
-            ? $"Scoped route for {status.TargetCidr} uses {settings.CanaryTunnelDevice}."
-            : $"Scoped route for {status.TargetCidr} is not active on {settings.CanaryTunnelDevice}.";
+            ? $"Scoped route for {status.TargetCidr} uses {settings.TunnelDevice}."
+            : $"Scoped route for {status.TargetCidr} is not active on {settings.TunnelDevice}.";
 
         if (result.ExitCode != 0)
         {
@@ -152,8 +152,8 @@ public partial class XBondScopedRouteService(
             return new XBondScopedRouteTestResult
             {
                 Target = target,
-                TunnelDevice = settings.CanaryTunnelDevice,
-                SourceAddress = settings.CanaryTunnelSource,
+                TunnelDevice = settings.TunnelDevice,
+                SourceAddress = settings.TunnelSource,
                 Error = error,
                 Message = error,
                 UpdatedAtUtc = DateTime.UtcNow
@@ -163,8 +163,8 @@ public partial class XBondScopedRouteService(
         var result = new XBondScopedRouteTestResult
         {
             Target = normalizedTarget,
-            TunnelDevice = settings.CanaryTunnelDevice,
-            SourceAddress = settings.CanaryTunnelSource,
+            TunnelDevice = settings.TunnelDevice,
+            SourceAddress = settings.TunnelSource,
             UpdatedAtUtc = DateTime.UtcNow
         };
 
@@ -198,7 +198,7 @@ public partial class XBondScopedRouteService(
                 settings.PingCommandPath,
                 [
                     "-I",
-                    settings.CanaryTunnelDevice,
+                    settings.TunnelDevice,
                     "-c",
                     settings.ScopedRouteTestCount.ToString(),
                     "-W",
@@ -211,7 +211,7 @@ public partial class XBondScopedRouteService(
 
             ApplyPingOutput(result, ping.Output);
             result.RouteOutput = (await GetStatusAsync(normalizedTarget, cancellationToken).ConfigureAwait(false)).RouteOutput;
-            result.RouteUsesXBond = result.RouteOutput.Contains($"dev {settings.CanaryTunnelDevice}", StringComparison.Ordinal);
+            result.RouteUsesXBond = result.RouteOutput.Contains($"dev {settings.TunnelDevice}", StringComparison.Ordinal);
             result.Message = result.Succeeded
                 ? "Scoped XBond route test passed and the temporary route was removed."
                 : "Scoped XBond route test completed with loss or errors; the temporary route was removed.";
@@ -308,7 +308,7 @@ public partial class XBondScopedRouteService(
     {
         return await RunCommandAsync(
             settings.RouteCommandPath,
-            ["route", "replace", $"{target}/32", "dev", settings.CanaryTunnelDevice, "src", settings.CanaryTunnelSource],
+            ["route", "replace", $"{target}/32", "dev", settings.TunnelDevice, "src", settings.TunnelSource],
             useSudo: true,
             timeoutSeconds: settings.ScopedRouteCommandTimeoutSeconds,
             cancellationToken).ConfigureAwait(false);
@@ -318,7 +318,7 @@ public partial class XBondScopedRouteService(
     {
         return await RunCommandAsync(
             settings.RouteCommandPath,
-            ["route", "del", $"{target}/32", "dev", settings.CanaryTunnelDevice],
+            ["route", "del", $"{target}/32", "dev", settings.TunnelDevice],
             useSudo: true,
             timeoutSeconds: settings.ScopedRouteCommandTimeoutSeconds,
             cancellationToken).ConfigureAwait(false);
@@ -329,8 +329,8 @@ public partial class XBondScopedRouteService(
         return new XBondScopedRouteStatus
         {
             Target = target,
-            TunnelDevice = settings.CanaryTunnelDevice,
-            SourceAddress = settings.CanaryTunnelSource,
+            TunnelDevice = settings.TunnelDevice,
+            SourceAddress = settings.TunnelSource,
             UpdatedAtUtc = DateTime.UtcNow
         };
     }
@@ -340,8 +340,8 @@ public partial class XBondScopedRouteService(
         return new XBondScopedRouteStatus
         {
             Target = target,
-            TunnelDevice = settings.CanaryTunnelDevice,
-            SourceAddress = settings.CanaryTunnelSource,
+            TunnelDevice = settings.TunnelDevice,
+            SourceAddress = settings.TunnelSource,
             Error = error,
             Message = error,
             UpdatedAtUtc = DateTime.UtcNow

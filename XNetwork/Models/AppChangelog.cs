@@ -13,44 +13,44 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "2026.06.17";
+    public const string CurrentVersion = "xbond-2026.06.18";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
-            Date = "2026-06-14",
-            Summary = "Added boot-safe XBond canary controls.",
+            Date = "2026-06-15",
+            Summary = "XBond-only runtime branch.",
             Changes =
             [
-                "Shows XBond service boot enablement and allows guarded service enable/disable from the XBond page.",
-                "Adds scoped /32 route controls so one IPv4 host can be tested through XBond without changing the router default route.",
-                "Adds deployment scripts for persistent Vultr XBond NAT and rollback helpers."
+                "Removes the legacy tunnel runtime services and makes XBond the only traffic engine in this branch.",
+                "Dashboard and analytics now read XBond runtime status and path telemetry.",
+                "Renames tunnel controls and diagnostics to XBond active mode."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.16",
             Date = "2026-06-14",
-            Summary = "Made XBond canary tunnel bidirectional.",
+            Summary = "Made the XBond tunnel bidirectional.",
             Changes =
             [
                 "The XBond client now writes return packets from the server back into the client TUN.",
                 "The XBond server now reads its TUN and sends return packets back to the latest known client path peers.",
-                "This enables a real canary TUN ping test without changing the router default route."
+                "This enables a real XBond TUN ping test without changing the router default route."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.15",
             Date = "2026-06-14",
-            Summary = "Added canary XBond FEC recovery.",
+            Summary = "Added XBond FEC recovery.",
             Changes =
             [
-                "Added XOR parity FEC blocks for XBond AnchorFec canary traffic.",
+                "Added XOR parity FEC blocks for XBond AnchorFec traffic.",
                 "The XBond server can recover one missing packet from each two-packet parity block when the paired data packet and parity arrive.",
-                "Keeps FEC in the canary tunnel path only; production routing is still disabled by default."
+                "Keeps FEC in the XBond tunnel path only; production routing is still disabled by default."
             ]
         },
         new ChangelogEntry
@@ -60,10 +60,10 @@ public static class AppChangelog
             Summary = "Added XBond traffic-engine controls.",
             Changes =
             [
-                "Added a persisted XBond traffic-engine mode so Speedify can remain primary while XBond is tested as a canary.",
+                "Added a persisted XBond traffic-engine mode for staged tunnel testing.",
                 "Added guarded XBond service controls that stay locked unless explicitly enabled in configuration.",
                 "Locks XBond primary mode behind a separate configuration flag so production routing cannot change by accident.",
-                "Changed multi-path XBond probes to use bind-device physical path isolation instead of the Speedify bypass by default."
+                "Changed multi-path XBond probes to use bind-device physical path isolation instead of the legacy tunnel bypass by default."
             ]
         },
         new ChangelogEntry
@@ -85,7 +85,7 @@ public static class AppChangelog
             Summary = "Stabilized the XBond public lab test.",
             Changes =
             [
-                "Added a short settle window after creating the temporary Speedify bypass before sending XBond heartbeat packets.",
+                "Added a short settle window after creating the temporary legacy tunnel bypass before sending XBond heartbeat packets.",
                 "Keeps the public lab test cleanup behavior unchanged after the run completes."
             ]
         },
@@ -96,7 +96,7 @@ public static class AppChangelog
             Summary = "Added XBond public heartbeat lab controls.",
             Changes =
             [
-                "Added an XBond Lab public test button that temporarily bypasses UDP 8444 through Speedify.",
+                "Added an XBond Lab public test button that temporarily bypasses UDP 8444 through legacy tunnel.",
                 "Shows XBond heartbeat packet loss, RTT, client bind address, and bypass cleanup status in the dashboard.",
                 "Keeps XBond in shadow-test mode without routing production traffic."
             ]
@@ -135,7 +135,7 @@ public static class AppChangelog
                 "Uses current nonzero tunnel throughput as the primary signal for Actively Redundant membership.",
                 "Selects adapters carrying the dominant current traffic direction before falling back to total tunnel traffic.",
                 "Prevents idle connected adapters with zero current throughput from filling the active redundant group.",
-                "Batches Speedify stats renders so dashboard adapter speed animations do not flicker on partial stat-row updates."
+                "Batches legacy tunnel stats renders so dashboard adapter speed animations do not flicker on partial stat-row updates."
             ]
         },
         new ChangelogEntry
@@ -146,8 +146,8 @@ public static class AppChangelog
             Changes =
             [
                 "Changed the dashboard group title to Actively Redundant and removed the group subtitle.",
-                "Detects active redundant adapters from live non-proxy tunnel traffic instead of connected Speedify rows.",
-                "Caps the active group by the Speedify max redundant setting so standby adapters stay outside the group."
+                "Detects active redundant adapters from live non-proxy tunnel traffic instead of connected legacy tunnel rows.",
+                "Caps the active group by the legacy tunnel max redundant setting so standby adapters stay outside the group."
             ]
         },
         new ChangelogEntry
@@ -157,9 +157,9 @@ public static class AppChangelog
             Summary = "Made redundant adapter membership visible on the dashboard.",
             Changes =
             [
-                "Added a dedicated Redundant group section that lists the adapters currently carrying protected Speedify tunnel traffic.",
+                "Added a dedicated Redundant group section that lists the adapters currently carrying protected legacy tunnel tunnel traffic.",
                 "Separated connected or connecting adapters that are not currently selected for redundant traffic into an Other adapters section.",
-                "Kept the group membership based on live Speedify tunnel rows, so it follows actual adapter usage instead of adapter names or USB positions."
+                "Kept the group membership based on live legacy tunnel tunnel rows, so it follows actual adapter usage instead of adapter names or USB positions."
             ]
         },
         new ChangelogEntry
@@ -171,7 +171,7 @@ public static class AppChangelog
             [
                 "Added inset spacing to Starlink action sliders so the handle no longer touches the track edge.",
                 "Removed x-axis labels from dashboard detail charts, Starlink charts, and uptime charts.",
-                "In redundant mode, groups adapters actively used by live Speedify tunnel rows at the top of the dashboard list.",
+                "In redundant mode, groups adapters actively used by live legacy tunnel tunnel rows at the top of the dashboard list.",
                 "Removed the visible traffic-breakdown hint from the connection summary while keeping the card action available.",
                 "Changed dashboard adapter status pills into compact status dots with hover/tap popovers and a connecting spinner ring.",
                 "Updated the PWA theme color to match the app background and refreshed the service-worker cache."

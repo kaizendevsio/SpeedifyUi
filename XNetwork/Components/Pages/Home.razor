@@ -1,2343 +1,269 @@
 @page "/"
 @using XNetwork.Models
 @using XNetwork.Services
-@using XNetwork.Components.Custom
 @using XNetwork.Utils
-@inject SpeedifyService SpeedifyService
-@inject XRouterService XRouterService
-@inject IConnectionHealthService ConnectionHealthService
-@inject NetworkMonitorService NetworkMonitorService
-@inject AutoServerSwitchService AutoServerSwitchService
-@inject CudyApControlService CudyApControlService
-@inject LocalProcessTrafficService LocalProcessTrafficService
-@inject IStarlinkTelemetryService StarlinkTelemetryService
-@inject StarlinkTelemetrySettings StarlinkTelemetrySettings
-@inject IJSRuntime JSRuntime
 @implements IAsyncDisposable
+@inject XBondStatsService XBondStatsService
+@inject IStarlinkTelemetryService StarlinkTelemetryService
 
-<PageTitle>Dashboard - XNetwork</PageTitle>
+<PageTitle>XNetwork</PageTitle>
 
-<div class="p-4 md:p-6">
-    <div class="hidden md:block">
-        <h2 class="text-3xl font-bold text-white mb-1">Dashboard</h2>
-        <p class="text-slate-400 mb-6">Manage and monitor network adapters in real-time.</p>
-    </div>
+<div class="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
+    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5 shadow-xl shadow-slate-950/20">
+        <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                    <h2 class="text-xl font-bold text-white">XBond Tunnel</h2>
+                    <span class="@StatePillClass">@StateLabel</span>
+                </div>
+                <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-400">
+                    <span><i class="fas fa-server mr-1 text-cyan-300"></i>@(_snapshot?.ServerAddress ?? "No server")</span>
+                    <span><i class="fas fa-network-wired mr-1 text-emerald-300"></i>@(_snapshot?.TunnelDevice ?? "xbond0")</span>
+                    <span><i class="fas fa-layer-group mr-1 text-teal-300"></i>@FormatMode(_snapshot?.Mode)</span>
+                </div>
+            </div>
+            <button type="button"
+                    class="rounded-lg border border-slate-700/80 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-cyan-500/50 hover:text-white"
+                    @onclick="RefreshAsync">
+                <i class="fas fa-rotate mr-2"></i>Refresh
+            </button>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(_snapshot?.Error))
+        {
+            <p class="mt-4 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">@_snapshot.Error</p>
+        }
+    </section>
 
-    @{
-        var dashboardAlerts = GetDashboardAlerts().ToList();
-    }
-    @if (dashboardAlerts.Any())
+    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+        <div class="flex items-center justify-between gap-3">
+            <div>
+                <h2 class="text-2xl font-bold text-white">@ConnectionTitle</h2>
+                <p class="mt-1 text-sm text-slate-400">@ConnectionSubtitle</p>
+            </div>
+            <div class="flex h-12 w-12 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-300">
+                <i class="fas fa-signal text-2xl"></i>
+            </div>
+        </div>
+
+        <div class="mt-5 grid grid-cols-3 gap-3">
+            @Metric("Latency", FormatLatency(_snapshot?.AverageRttMs))
+            @Metric("Download", SpeedFormatter.FormatSpeed(_snapshot?.DownloadMbps ?? 0))
+            @Metric("Upload", SpeedFormatter.FormatSpeed(_snapshot?.UploadMbps ?? 0))
+        </div>
+    </section>
+
+    @if (_starlink.IsAvailable)
     {
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-6" aria-label="Network health alerts">
-            @foreach (var alert in dashboardAlerts)
+        <section class="rounded-lg border border-cyan-500/20 bg-slate-900/75 p-4">
+            <div class="flex items-center justify-between gap-3">
+                <div>
+                    <h3 class="font-semibold text-white">Starlink Telemetry</h3>
+                    <p class="mt-1 text-sm text-slate-400">
+                        Dish @FormatLatency(_starlink.PopPingLatencyMs), obstruction @FormatPercent(_starlink.ObstructionPercent), alignment @FormatDegrees(_starlink.AlignmentErrorDegrees)
+                    </p>
+                </div>
+                <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200">Live</span>
+            </div>
+        </section>
+    }
+
+    <section>
+        <div class="mb-3 flex items-center gap-3">
+            <h2 class="text-2xl font-bold text-white">Adapters</h2>
+            <span class="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-300">
+                @((_snapshot?.Paths.Count(path => path.InterfaceUp)).GetValueOrDefault()) live
+            </span>
+        </div>
+
+        @if (_snapshot is null)
+        {
+            <div class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5 text-slate-400">Loading XBond paths...</div>
+        }
+        else
+        {
+            @if (_snapshot.ActivePaths.Count > 0)
             {
-                <div class="rounded-xl border p-4 @alert.CssClass">
-                    <div class="flex items-start gap-3">
-                        <i class="fas @alert.Icon mt-0.5"></i>
-                        <div class="min-w-0">
-                            <p class="font-semibold text-white">@alert.Title</p>
-                            <p class="text-sm text-slate-300 mt-1">@alert.Message</p>
-                        </div>
+                <div class="mb-4 rounded-lg border border-cyan-500/25 bg-cyan-500/[0.06] p-3">
+                    <div class="mb-3 flex items-center gap-2 px-1">
+                        <i class="fas fa-shield-halved text-cyan-300"></i>
+                        <h3 class="font-semibold text-white">Actively Redundant</h3>
+                    </div>
+                    <div class="grid gap-3">
+                        @foreach (var path in _snapshot.ActivePaths)
+                        {
+                            @PathCard(path)
+                        }
                     </div>
                 </div>
             }
-        </div>
-    }
 
-    @if (!string.IsNullOrEmpty(_error) && _adapters == null && !_initialLoadComplete) 
-    {
-        <div class="bg-red-500/10 border border-red-500/50 text-red-400 p-4 mb-6 rounded-lg" role="alert">
-            <p class="font-bold">Error Loading Adapters</p>
-            <p>@_error</p>
-            <button @onclick="StreamSpeedifyDataAsync" class="mt-2 px-3 py-1 bg-red-600 text-white text-sm font-semibold rounded hover:bg-red-700" disabled="@_isProcessingAction">Retry</button>
-        </div>
-    }
-    else if (_adapters == null && !_initialLoadComplete) 
-    {
-        <div class="space-y-6" aria-label="Loading dashboard">
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg p-4">
-                <div class="flex items-center gap-3">
-                    <SkeletonBlock CssClass="w-10 h-10 rounded-full flex-shrink-0" />
-                    <div class="flex-grow space-y-2">
-                        <SkeletonBlock CssClass="h-5 w-2/5" />
-                        <SkeletonBlock CssClass="h-4 w-3/5" />
-                    </div>
-                </div>
-            </div>
-
-            <div class="bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg p-5">
-                <SkeletonBlock CssClass="h-5 w-1/3 mb-5" />
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    @for (var i = 0; i < 4; i++)
+            @if (_snapshot.StandbyPaths.Count > 0)
+            {
+                <div class="grid gap-3">
+                    @foreach (var path in _snapshot.StandbyPaths)
                     {
-                        <div class="bg-slate-900/50 rounded-lg p-4 space-y-3">
-                            <SkeletonBlock CssClass="h-4 w-3/5" />
-                            <SkeletonBlock CssClass="h-8 w-2/3" />
-                            <SkeletonBlock CssClass="h-3 w-1/2" />
-                        </div>
+                        @PathCard(path)
                     }
                 </div>
-            </div>
-
-            <div class="space-y-3">
-                <div class="flex items-center gap-3 px-1">
-                    <SkeletonBlock CssClass="h-6 w-28" />
-                    <SkeletonBlock CssClass="h-7 w-24 rounded-full" />
-                </div>
-                @for (var i = 0; i < 3; i++)
-                {
-                    <div class="bg-slate-800/50 border border-slate-700 rounded-xl px-3 py-3 shadow-lg">
-                        <div class="flex items-center justify-between gap-3">
-                            <div class="flex items-center gap-3 flex-grow min-w-0">
-                                <SkeletonBlock CssClass="w-10 h-6" />
-                                <div class="flex-grow space-y-2">
-                                    <SkeletonBlock CssClass="h-5 w-2/5" />
-                                    <SkeletonBlock CssClass="h-4 w-3/5" />
-                                </div>
-                            </div>
-                            <SkeletonBlock CssClass="h-7 w-20 rounded-full" />
-                        </div>
-                        <div class="flex items-center gap-4 mt-3">
-                            <SkeletonBlock CssClass="h-4 w-20" />
-                            <SkeletonBlock CssClass="h-4 w-20" />
-                            <SkeletonBlock CssClass="h-4 w-16" />
-                        </div>
-                    </div>
-                }
-            </div>
-        </div>
-    }
-    else if (_adapters != null && !_adapters.Any())
-    {
-        <p class="text-slate-400">No network adapters found.</p>
-    }
-    else if (_adapters != null)
-    {
-        <!-- Current Server Information -->
-        <a href="/server-statistics" class="block bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 p-4 hover:border-cyan-500/60 hover:bg-slate-800/70 transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/60">
-            @if (_serverInfoLoading)
-            {
-                <div class="flex items-center gap-3">
-                    <div class="flex items-center gap-3 flex-grow">
-                        <SkeletonBlock CssClass="w-10 h-10 rounded-full flex-shrink-0" />
-                        <div class="flex-grow space-y-2">
-                            <SkeletonBlock CssClass="h-5 w-1/3" />
-                            <SkeletonBlock CssClass="h-4 w-1/2" />
-                        </div>
-                    </div>
-                </div>
             }
-            else if (_serverInfo == null)
-            {
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 bg-slate-700 rounded-full flex items-center justify-center">
-                        <i class="fas fa-server text-slate-500 text-lg"></i>
-                    </div>
-                    <div>
-                        <h3 class="text-base font-semibold text-slate-400">Not Connected to Server</h3>
-                        <p class="text-sm text-slate-500">Connect to a Speedify server to see details</p>
-                    </div>
-                </div>
-            }
-            else
-            {
-                <div class="flex items-center gap-3">
-                    <div class="w-10 h-10 bg-green-500/10 border border-green-500/30 rounded-full flex items-center justify-center flex-shrink-0">
-                        <i class="fas fa-server text-green-400 text-lg"></i>
-                    </div>
-                    <div class="flex-grow min-w-0">
-                        <div class="flex items-center gap-2 mb-1">
-                            <h3 class="text-base font-semibold text-white truncate">@_serverInfo.FriendlyName</h3>
-                            <span class="px-2 py-0.5 text-xs font-medium rounded-full flex-shrink-0 @GetServerBadgeClass()">
-                                @GetServerConnectionType()
-                            </span>
-                        </div>
-                        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-400">
-                            <span class="inline-flex items-center gap-1.5 min-w-0">
-                                <i class="fas fa-map-marker-alt text-xs"></i>
-                                <span class="truncate">@_serverInfo.City, @_serverInfo.Country</span>
-                            </span>
-                            <span class="inline-flex items-center gap-1.5 text-slate-300" title="@GetTransportTooltip()">
-                                <i class="fas fa-network-wired text-xs text-cyan-300"></i>
-                                <span>@GetServerTransportLabel()</span>
-                            </span>
-                            <span class="inline-flex items-center gap-1.5 text-slate-300" title="Speedify bonding mode">
-                                <i class="fas fa-layer-group text-xs text-emerald-300"></i>
-                                <span>@GetBondingModeLabel()</span>
-                            </span>
-                        </div>
-                    </div>
-                    <div class="flex-shrink-0 flex items-center gap-3">
-                        <span class="hidden sm:inline text-xs text-slate-500">Server tests</span>
-                        <i class="fas fa-chevron-right text-slate-500 text-xs"></i>
-                    </div>
-                </div>
-            }
-        </a>
-
-        <!-- Overall Connection Summary -->
-        <ConnectionSummary
-            ConnectionStatus="@GetOverallConnectionStatus()"
-            Latency="@GetAverageLatency()"
-            Download="@GetTotalDownload()"
-            Upload="@GetTotalUpload()"
-            IsStable="@IsConnectionStable()"
-            ShowTrafficDetailsHint="@XRouterService.IsConfigured"
-            OnTrafficDetailsRequested="ShowTrafficBreakdownAsync" />
-
-        <!-- Adapter List -->
-        <div class="space-y-3">
-            <div class="flex items-center gap-3 px-1">
-                <h3 class="text-lg font-semibold text-white">Adapters</h3>
-                <span class="px-3 py-1 bg-green-500/10 text-green-400 text-sm font-medium rounded-full">
-                    @GetConnectedCount() connected
-                </span>
-            </div>
-            
-            <div class="space-y-4" @ref="_adapterListElement">
-                @foreach (var adapterGroup in GetDashboardAdapterGroups())
-                {
-                    <section class="@GetAdapterGroupClass(adapterGroup)">
-                        @if (adapterGroup.ShowHeader)
-                        {
-                            <div class="mb-3 flex items-start justify-between gap-3 px-1">
-                                <div class="min-w-0">
-                                    <div class="flex items-center gap-2">
-                                        <span class="@GetAdapterGroupIconClass(adapterGroup)" aria-hidden="true">
-                                            <i class="fas fa-layer-group text-xs"></i>
-                                        </span>
-                                        <h4 class="@GetAdapterGroupTitleClass(adapterGroup)">@adapterGroup.Title</h4>
-                                    </div>
-                                    @if (!string.IsNullOrWhiteSpace(adapterGroup.Description))
-                                    {
-                                        <p class="mt-1 text-xs leading-snug text-slate-400">@adapterGroup.Description</p>
-                                    }
-                                </div>
-                                <span class="@GetAdapterGroupBadgeClass(adapterGroup)">@adapterGroup.Badge</span>
-                            </div>
-                        }
-
-                        <div class="space-y-3">
-                            @foreach (var adapter in adapterGroup.Adapters)
-                            {
-                    var currentStats = GetStatsForAdapter(adapter.AdapterId);
-                    var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
-                    var isConnecting = adapter.State.ToLowerInvariant() == "connecting";
-                    var bgClass = GetAdapterBackgroundClass(adapter, currentStats);
-                    var signalStrength = !isOffline ? GetSignalStrength(adapter, currentStats) : 0;
-                    var signalColor = !isOffline ? GetSignalColor(adapter.State, signalStrength) : "slate-700";
-                    var isStarlink = IsStarlinkAdapter(adapter);
-                    var starlinkTelemetry = isStarlink ? StarlinkTelemetryService.GetSnapshot() : null;
-                    var interactionClass = isStarlink
-                        ? "cursor-pointer hover:bg-slate-700/30 transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                        : "";
-
-                    <div @key="adapter.AdapterId"
-                         class="@($"{bgClass} border border-slate-700 rounded-xl px-3 py-3 shadow-lg relative {interactionClass}")"
-                         @onclick="() => OnAdapterClick(adapter)">
-                        <!-- Row 1: Header -->
-                        <div class="flex items-center justify-between gap-3 text-sm">
-                        <div class="flex items-center gap-3 flex-grow min-w-0">
-                            @if (!isOffline)
-                            {
-                                <div class="flex items-end gap-0.5 w-10 h-6 flex-shrink-0">
-                                    @for (int i = 0; i < 4; i++)
-                                    {
-                                        var isActive = isConnecting ? (i < 2) : (i < signalStrength);
-                                        var heightClass = i switch
-                                        {
-                                            0 => "h-2",  // 25% height
-                                            1 => "h-3",  // 37.5% height
-                                            2 => "h-4",  // 50% height
-                                            3 => "h-6",  // 100% height
-                                            _ => "h-2"
-                                        };
-                                        var animationClass = isConnecting && isActive ? "animate-pulse" : "";
-                                        var colorClass = isActive ? $"bg-{signalColor}" : "bg-slate-700";
-                                        <div class="@heightClass @colorClass @animationClass w-1.5 rounded-sm transition-all"></div>
-                                    }
-                                </div>
-                            }
-                                else
-                                {
-                                    <i class="fas fa-signal-slash text-red-400 text-lg w-8 text-center flex-shrink-0"></i>
-                                }
-                                <div class="flex flex-col min-w-0">
-                                    <span class="text-base font-medium text-white truncate">@GetProviderName(adapter)</span>
-                                    <span class="text-sm text-slate-400 truncate">@adapter.Name</span>
-                                </div>
-                            </div>
-                            <div class="flex items-center gap-2 flex-shrink-0">
-                                @{
-                                    var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
-                                }
-                                @if (!string.IsNullOrEmpty(gateway))
-                                {
-                                    <a href="http://@gateway"
-                                       target="_blank"
-                                       rel="noopener noreferrer"
-                                       class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-700/50 hover:bg-slate-600/50 text-slate-300 hover:text-white transition-colors border border-slate-600/50 hover:border-slate-500"
-                                       title="Open Router Admin (@gateway)"
-                                       @onclick:stopPropagation="true">
-                                         <span class="text-base">↗</span>
-                                     </a>
-                                 }
-                                 <button type="button"
-                                         class="@GetStatusDotButtonClass(adapter.State)"
-                                         title="@GetAdapterStatusTooltip(adapter.State)"
-                                         aria-label="@GetAdapterStatusTooltip(adapter.State)"
-                                         @onclick:stopPropagation="true">
-                                     <span class="@GetStatusDotClass(adapter.State)" aria-hidden="true"></span>
-                                     <span class="adapter-status-popover" role="tooltip">@GetAdapterStatusTooltip(adapter.State)</span>
-                                 </button>
-                            </div>
-                        </div>
-                        
-                        <!-- Row 2: Stats -->
-                        @if (!isOffline && currentStats != null)
-                        {
-                            var downloadSpeedMbps = SpeedifyStatsUnits.RateFieldToMbps(currentStats.ReceiveBps);
-                            var uploadSpeedMbps = SpeedifyStatsUnits.RateFieldToMbps(currentStats.SendBps);
-
-                            <div class="flex items-center gap-4 mt-3 text-sm">
-                                <div class="flex items-center gap-1.5">
-                                    <i class="fas fa-arrow-down text-cyan-400 text-sm"></i>
-                                    <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(downloadSpeedMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(downloadSpeedMbps)" CssClass="text-white font-semibold" AriaLabel="@SpeedFormatter.FormatSpeed(downloadSpeedMbps)" />
-                                    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(downloadSpeedMbps)</span>
-                                </div>
-                                <div class="flex items-center gap-1.5">
-                                    <i class="fas fa-arrow-up text-pink-400 text-sm"></i>
-                                    <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(uploadSpeedMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(uploadSpeedMbps)" CssClass="text-white font-semibold" AriaLabel="@SpeedFormatter.FormatSpeed(uploadSpeedMbps)" />
-                                    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(uploadSpeedMbps)</span>
-                                </div>
-                                <div class="flex items-center gap-1.5">
-                                    <i class="far fa-clock text-slate-400 text-sm"></i>
-                                    <AnimatedNumber Value="@currentStats.LatencyMs" Decimals="0" CssClass="text-white font-semibold" AriaLabel="@($"{currentStats.LatencyMs} milliseconds")" />
-                                    <span class="text-xs text-slate-400">ms</span>
-                                </div>
-                            </div>
-                        }
-
-                        @if (!isOffline && isStarlink)
-                        {
-                            <div class="mt-3 border-t border-slate-700/60 pt-3">
-                                @if (starlinkTelemetry?.IsAvailable == true)
-                                {
-                                    var alertPreview = starlinkTelemetry.ActiveAlerts.Take(2).ToList();
-                                    var hiddenAlertCount = Math.Max(0, starlinkTelemetry.ActiveAlerts.Count - alertPreview.Count);
-
-                                    <div class="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-slate-300">
-                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish latency">
-                                            <i class="fas fa-satellite-dish text-cyan-300"></i>
-                                            <span>Dish @FormatNullableMs(starlinkTelemetry.PopPingLatencyMs)</span>
-                                        </span>
-                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish throughput">
-                                            <i class="fas fa-arrow-down text-cyan-300"></i>
-                                            <span>@FormatNullableSpeed(starlinkTelemetry.DownlinkMbps)</span>
-                                        </span>
-                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish upstream throughput">
-                                            <i class="fas fa-arrow-up text-pink-300"></i>
-                                            <span>@FormatNullableSpeed(starlinkTelemetry.UplinkMbps)</span>
-                                        </span>
-                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink obstruction estimate">
-                                            <i class="fas fa-ban text-amber-300"></i>
-                                            <span>Obs @FormatNullablePercent(starlinkTelemetry.ObstructionPercent)</span>
-                                        </span>
-                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink alignment error">
-                                            <i class="fas fa-crosshairs text-emerald-300"></i>
-                                            <span>Align @FormatNullableDegrees(starlinkTelemetry.AlignmentErrorDegrees)</span>
-                                        </span>
-                                        <span class="inline-flex items-center gap-1.5" title="Direct Starlink dish uptime">
-                                            <i class="far fa-hourglass-half text-slate-400"></i>
-                                            <span>Up @FormatDuration(starlinkTelemetry.UptimeSeconds)</span>
-                                        </span>
-                                        @if (starlinkTelemetry.GpsSatellites is not null)
-                                        {
-                                            <span class="inline-flex items-center gap-1.5" title="Direct Starlink GPS satellites">
-                                                <i class="fas fa-location-crosshairs text-slate-400"></i>
-                                                <span>GPS @starlinkTelemetry.GpsSatellites</span>
-                                            </span>
-                                        }
-                                    </div>
-
-                                    @if (alertPreview.Count > 0)
-                                    {
-                                        <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                                            @foreach (var alert in alertPreview)
-                                            {
-                                                <span class="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-200 border border-amber-500/20 text-[11px]">
-                                                    @alert
-                                                </span>
-                                            }
-                                            @if (hiddenAlertCount > 0)
-                                            {
-                                                <span class="px-2 py-0.5 rounded-full bg-slate-700/50 text-slate-300 border border-slate-600/40 text-[11px]">
-                                                    +@hiddenAlertCount
-                                                </span>
-                                            }
-                                        </div>
-                                    }
-                                }
-                                else
-                                {
-                                    <div class="inline-flex items-center gap-2 text-xs text-amber-200" title="@starlinkTelemetry?.Error">
-                                        <i class="fas fa-satellite-dish"></i>
-                                        <span>Starlink stats unavailable</span>
-                                    </div>
-                                }
-                            </div>
-                        }
-                    </div>
-                            }
-                        </div>
-                    </section>
-                }
-            </div>
-        </div>
-    }
+        }
+    </section>
 </div>
 
-<ActionSheet IsOpen="_showTrafficBreakdown"
-             Title="Traffic Breakdown"
-             Description="Speedify tunnel traffic split by Wifi clients, local router processes, and estimated VPN overhead."
-             CloseLabel="Close traffic breakdown"
-             MaxWidthClass="md:max-w-5xl"
-             OnClose="CloseTrafficBreakdownAsync">
-    <div class="space-y-5">
-        @if (_routerTrafficLoading && _routerTrafficSummary is null)
-        {
-            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3" aria-label="Loading traffic breakdown">
-                @for (var i = 0; i < 4; i++)
-                {
-                    <div class="bg-slate-950/60 rounded-xl p-4 space-y-3">
-                        <SkeletonBlock CssClass="h-4 w-2/5" />
-                        <SkeletonBlock CssClass="h-8 w-3/5" />
-                        <SkeletonBlock CssClass="h-4 w-1/2" />
-                    </div>
-                }
-            </div>
-        }
-        else if (_routerTrafficSummary is not null)
-        {
-            var trafficSummary = GetCurrentRouterTrafficSummary();
-            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-                <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
-                    <p class="text-xs text-slate-400 mb-2">Speedify Tunnel</p>
-                    <p class="text-2xl font-bold text-cyan-300">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.SpeedifyDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.SpeedifyDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.SpeedifyDownloadMbps)" /> <span class="text-sm font-semibold text-cyan-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.SpeedifyDownloadMbps)</span></p>
-                    <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.SpeedifyUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.SpeedifyUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.SpeedifyUploadMbps)" /> <span class="text-xs font-semibold text-pink-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.SpeedifyUploadMbps)</span></p>
-                </div>
-                <div class="bg-slate-950/60 rounded-xl p-4 border border-slate-800">
-                    <p class="text-xs text-slate-400 mb-2">Wifi Clients</p>
-                    <p class="text-2xl font-bold text-cyan-300">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.CudyClientDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.CudyClientDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.CudyClientDownloadMbps)" /> <span class="text-sm font-semibold text-cyan-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.CudyClientDownloadMbps)</span></p>
-                    <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.CudyClientUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.CudyClientUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.CudyClientUploadMbps)" /> <span class="text-xs font-semibold text-pink-200/80">@SpeedFormatter.GetSpeedUnit(trafficSummary.CudyClientUploadMbps)</span></p>
-                    <p class="text-xs text-slate-500 mt-2">@trafficSummary.CudyClientCount Cudy clients</p>
-                </div>
-                <div class="bg-slate-950/60 rounded-xl p-4 border border-blue-500/20">
-                    <p class="text-xs text-blue-200 mb-2">Local Processes</p>
-                    <p class="text-2xl font-bold text-blue-200">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.LocalProcessDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.LocalProcessDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.LocalProcessDownloadMbps)" /> <span class="text-sm font-semibold text-blue-100/70">@SpeedFormatter.GetSpeedUnit(trafficSummary.LocalProcessDownloadMbps)</span></p>
-                    <p class="text-sm text-blue-100/80">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.LocalProcessUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.LocalProcessUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.LocalProcessUploadMbps)" /> <span class="text-xs font-semibold text-blue-100/60">@SpeedFormatter.GetSpeedUnit(trafficSummary.LocalProcessUploadMbps)</span></p>
-                </div>
-                <div class="bg-slate-950/60 rounded-xl p-4 border border-amber-500/25">
-                    <p class="text-xs text-amber-200 mb-2">Estimated VPN / Overhead</p>
-                    <p class="text-2xl font-bold text-amber-200">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.EstimatedOverheadDownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.EstimatedOverheadDownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.EstimatedOverheadDownloadMbps)" /> <span class="text-sm font-semibold text-amber-100/70">@SpeedFormatter.GetSpeedUnit(trafficSummary.EstimatedOverheadDownloadMbps)</span></p>
-                    <p class="text-sm text-amber-100/80">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(trafficSummary.EstimatedOverheadUploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(trafficSummary.EstimatedOverheadUploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(trafficSummary.EstimatedOverheadUploadMbps)" /> <span class="text-xs font-semibold text-amber-100/60">@SpeedFormatter.GetSpeedUnit(trafficSummary.EstimatedOverheadUploadMbps)</span></p>
-                </div>
-            </div>
-
-            @if (IsRedundantMode())
-            {
-                <div class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4 text-sm text-amber-100">
-                    <div class="flex items-start gap-3">
-                        <i class="fas fa-clone mt-0.5 text-amber-300"></i>
-                        <p>
-                            Speedify redundant mode is active. Tunnel traffic can exceed Wifi client traffic because packets may be duplicated across up to @GetMaxRedundantConnections() available connections, plus retransmits and timing mismatch.
-                        </p>
-                    </div>
-                </div>
-            }
-
-            <section class="bg-slate-950/50 border border-slate-800 rounded-xl overflow-hidden">
-                <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
-                    <div>
-                        <h4 class="font-semibold text-white">Top Local Processes</h4>
-                        <p class="text-xs text-slate-400">Live process names and throughput observed on the Speedify tunnel interface.</p>
-                    </div>
-                    <span class="text-xs text-slate-500">@trafficSummary.LocalProcessTraffic.Source</span>
-                </div>
-
-                @if (!trafficSummary.LocalProcessTraffic.IsSupported)
-                {
-                    <div class="p-4 text-sm text-slate-300">
-                        @trafficSummary.LocalProcessTraffic.Message
-                    </div>
-                }
-                else if (!trafficSummary.LocalProcessTraffic.Processes.Any())
-                {
-                    <div class="p-4 text-sm text-slate-300">
-                        @trafficSummary.LocalProcessTraffic.Message
-                    </div>
-                }
-                else
-                {
-                    <div class="divide-y divide-slate-800">
-                        @foreach (var process in trafficSummary.LocalProcessTraffic.Processes)
-                        {
-                            <div class="p-4 flex items-center justify-between gap-4">
-                                <div class="min-w-0">
-                                    <p class="font-semibold text-white truncate">@process.ProcessName</p>
-                                    <p class="text-xs text-slate-500 truncate">@FormatProcessDetail(process)</p>
-                                </div>
-                                <div class="text-right flex-shrink-0">
-                                    <p class="text-sm text-cyan-300">↓ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(process.DownloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(process.DownloadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(process.DownloadMbps)" /> <span class="text-xs text-cyan-200/70">@SpeedFormatter.GetSpeedUnit(process.DownloadMbps)</span></p>
-                                    <p class="text-sm text-pink-300">↑ <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(process.UploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(process.UploadMbps)" AriaLabel="@SpeedFormatter.FormatSpeed(process.UploadMbps)" /> <span class="text-xs text-pink-200/70">@SpeedFormatter.GetSpeedUnit(process.UploadMbps)</span></p>
-                                </div>
-                            </div>
-                        }
-                    </div>
-                }
-            </section>
-
-            <p class="text-xs text-slate-500">
-                Estimated VPN / overhead is the unmatched part after subtracting Wifi clients and observed local processes from Speedify tunnel totals. It can include Speedify encapsulation, retransmits, timing-window mismatch, forwarded client packets that nethogs cannot map to a Pi process, or local traffic the process sampler cannot attribute.
-            </p>
-        }
-
-        @if (!string.IsNullOrWhiteSpace(_routerTrafficError))
-        {
-            <p class="text-sm text-red-300">Traffic breakdown refresh failed: @_routerTrafficError</p>
-        }
-    </div>
-</ActionSheet>
-
-<ActionSheet IsOpen="_showStarlinkDetails"
-             Title="@GetStarlinkSheetTitle()"
-             Description="@GetStarlinkSheetDescription()"
-             CloseLabel="Close Starlink details"
-             MaxWidthClass="md:max-w-5xl"
-             OnClose="CloseStarlinkDetailsAsync">
-    @{
-        var starlinkSnapshot = StarlinkTelemetryService.GetSnapshot();
-        var starlinkHistory = StarlinkTelemetryService.GetHistory();
-        var starlinkCapabilities = StarlinkTelemetryService.GetCapabilities();
-        var detectedCapabilities = starlinkCapabilities.Capabilities.Where(c => c.IsDetected).ToList();
-        var openCapabilities = GetUniqueStarlinkOpenCapabilities(detectedCapabilities);
-        var commandCapabilities = detectedCapabilities
-            .Where(c => !string.IsNullOrWhiteSpace(c.DirectCommand) && IsStarlinkCommandVisible(c, starlinkSnapshot))
-            .ToList();
-    }
-
-    <div class="space-y-4">
-        <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Dish latency</p>
-                <p class="mt-1 text-xl font-semibold text-white">@FormatNullableMs(starlinkSnapshot.PopPingLatencyMs)</p>
-                <p class="mt-1 text-xs text-slate-500">Drop @FormatDropRate(starlinkSnapshot.PopPingDropRate)</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Downlink</p>
-                <p class="mt-1 text-xl font-semibold text-cyan-200">@FormatNullableSpeed(starlinkSnapshot.DownlinkMbps)</p>
-                <p class="mt-1 text-xs text-slate-500">Direct dish</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Uplink</p>
-                <p class="mt-1 text-xl font-semibold text-pink-200">@FormatNullableSpeed(starlinkSnapshot.UplinkMbps)</p>
-                <p class="mt-1 text-xs text-slate-500">Direct dish</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Obstruction</p>
-                <p class="mt-1 text-xl font-semibold text-amber-200">@FormatNullablePercent(starlinkSnapshot.ObstructionPercent)</p>
-                <p class="mt-1 text-xs text-slate-500">@FormatObstructionState(starlinkSnapshot.CurrentlyObstructed)</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Alignment</p>
-                <p class="mt-1 text-xl font-semibold text-emerald-200">@FormatNullableDegrees(starlinkSnapshot.AlignmentErrorDegrees)</p>
-                <p class="mt-1 text-xs text-slate-500">Az @FormatNullableDegrees(starlinkSnapshot.BoresightAzimuthDegrees)</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Elevation</p>
-                <p class="mt-1 text-xl font-semibold text-white">@FormatNullableDegrees(starlinkSnapshot.BoresightElevationDegrees)</p>
-                <p class="mt-1 text-xs text-slate-500">Boresight</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">GPS</p>
-                <p class="mt-1 text-xl font-semibold text-white">@FormatGpsState(starlinkSnapshot)</p>
-                <p class="mt-1 text-xs text-slate-500">@FormatGpsSatellites(starlinkSnapshot.GpsSatellites)</p>
-            </div>
-            <div class="rounded-xl border border-slate-800 bg-slate-950/55 p-3">
-                <p class="text-xs text-slate-400">Uptime</p>
-                <p class="mt-1 text-xl font-semibold text-white">@FormatDuration(starlinkSnapshot.UptimeSeconds)</p>
-                <p class="mt-1 text-xs text-slate-500">@FormatShortDeviceId(starlinkSnapshot.DeviceId)</p>
-            </div>
-        </section>
-
-        @if (!string.IsNullOrWhiteSpace(starlinkSnapshot.Error))
-        {
-            <p class="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                @starlinkSnapshot.Error
-            </p>
-        }
-
-        <section class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Latency" Metric="latency" Unit="ms" Stroke="#22d3ee" />
-            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Downlink" Metric="download" Unit="Mbps" Stroke="#38bdf8" />
-            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Uplink" Metric="upload" Unit="Mbps" Stroke="#f472b6" />
-            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Obstruction" Metric="obstruction" Unit="%" Stroke="#f59e0b" />
-        </section>
-
-        @if (starlinkSnapshot.ActiveAlerts.Count > 0)
-        {
-            <section class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4">
-                <p class="text-sm font-semibold text-amber-100 mb-3">Active Alerts</p>
-                <div class="space-y-2">
-                    @foreach (var alert in starlinkSnapshot.ActiveAlerts)
-                    {
-                        <div class="rounded-lg border border-amber-500/20 bg-slate-950/35 px-3 py-2">
-                            <p class="text-sm font-semibold text-amber-100">@alert</p>
-                            <p class="mt-0.5 text-xs text-amber-100/75">@GetStarlinkAlertDescription(alert)</p>
-                        </div>
-                    }
-                </div>
-            </section>
-        }
-
-        <section class="rounded-xl border border-slate-800 bg-slate-950/55 overflow-hidden">
-            <div class="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
-                <div>
-                    <h4 class="font-semibold text-white">Starlink Actions</h4>
-                    <p class="text-xs text-slate-400">Swipe an action fully to the right to run it from XNetwork.</p>
-                </div>
-                <span class="text-xs text-slate-500">@FormatLastUpdated(starlinkCapabilities.LastUpdatedUtc)</span>
-            </div>
-
-            @if (_lastStarlinkCommandResult is not null)
-            {
-                <div class="@GetStarlinkCommandResultClass(_lastStarlinkCommandResult) border-b border-slate-800 p-4 text-sm">
-                    <div class="flex items-start gap-3">
-                        <i class="fas @(_lastStarlinkCommandResult.Success ? "fa-check-circle" : "fa-triangle-exclamation") mt-0.5"></i>
-                        <div>
-                            <p class="font-semibold">@_lastStarlinkCommandResult.Message</p>
-                            <p class="text-xs opacity-80">@FormatLastUpdated(_lastStarlinkCommandResult.CompletedUtc)</p>
-                        </div>
-                    </div>
-                </div>
-            }
-
-            @if (openCapabilities.Count == 0 && commandCapabilities.Count == 0)
-            {
-                <div class="p-4 text-sm text-slate-400">
-                    No Starlink controls detected yet.
-                </div>
-            }
-            else
-            {
-                <div class="space-y-2.5 p-3">
-                    @foreach (var capability in openCapabilities)
-                    {
-                        <a href="@capability.ActionUrl"
-                           target="_blank"
-                           rel="noopener noreferrer"
-                           class="flex items-center justify-between gap-3 rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition-colors hover:bg-cyan-500/20">
-                            <span class="inline-flex min-w-0 items-center gap-3">
-                                <i class="fas fa-external-link-alt text-xs"></i>
-                                <span class="truncate">@GetStarlinkOpenActionLabel(capability)</span>
-                            </span>
-                            <span class="text-xs text-cyan-200/80">@StarlinkTelemetrySettings.Host</span>
-                        </a>
-                    }
-
-                    @foreach (var capability in commandCapabilities)
-                    {
-                        <div class="@GetStarlinkActionCardClass(capability)">
-                            <div class="flex items-start gap-2.5">
-                                <div class="@GetStarlinkActionIconClass(capability)">
-                                    <i class="fas @GetStarlinkCommandIcon(capability.DirectCommand) text-xs"></i>
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <div class="flex items-center justify-between gap-3">
-                                        <p class="text-sm font-semibold text-white">@GetStarlinkCommandButtonLabel(capability)</p>
-                                        @if (!capability.IsActionable)
-                                        {
-                                            <span class="shrink-0 rounded-full bg-slate-700/60 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
-                                                Unavailable
-                                            </span>
-                                        }
-                                    </div>
-                                    <p class="mt-0.5 text-xs text-slate-400">@GetStarlinkCommandShortDescription(capability)</p>
-                                    @if (!string.IsNullOrWhiteSpace(capability.DisabledReason))
-                                    {
-                                        <p class="mt-2 text-xs text-amber-200">@capability.DisabledReason</p>
-                                    }
-                                </div>
-                            </div>
-
-                            <div class="mt-2.5">
-                                <SlideToConfirm Label="@GetStarlinkCommandSlideLabel(capability)"
-                                                BusyLabel="@GetStarlinkCommandBusyLabel(capability)"
-                                                IconClass="@GetStarlinkCommandIcon(capability.DirectCommand)"
-                                                Tone="@GetStarlinkCommandTone(capability)"
-                                                Disabled="@(!capability.IsActionable || _starlinkCommandInProgress)"
-                                                IsBusy="@IsStarlinkCommandBusy(capability)"
-                                                OnConfirmed="() => ExecuteStarlinkCommandAsync(capability)" />
-                            </div>
-                        </div>
-                    }
-                </div>
-            }
-
-            @if (!string.IsNullOrWhiteSpace(starlinkCapabilities.Error))
-            {
-                <div class="border-t border-slate-800 p-4 text-xs text-amber-200">
-                    @starlinkCapabilities.Error
-                </div>
-            }
-        </section>
-
-        <section class="rounded-xl border border-slate-800 bg-slate-950/55 p-4">
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                <div>
-                    <p class="text-xs text-slate-500">Hardware</p>
-                    <p class="text-slate-200 break-words">@FormatUnknown(starlinkSnapshot.HardwareVersion)</p>
-                </div>
-                <div>
-                    <p class="text-xs text-slate-500">Software</p>
-                    <p class="text-slate-200 break-words">@FormatUnknown(starlinkSnapshot.SoftwareVersion)</p>
-                </div>
-                <div>
-                    <p class="text-xs text-slate-500">Management</p>
-                    <a href="@GetStarlinkWebUiUrl()"
-                       target="_blank"
-                       rel="noopener noreferrer"
-                       class="inline-flex items-center gap-2 text-cyan-200 hover:text-cyan-100">
-                        <i class="fas fa-external-link-alt text-xs"></i>
-                        <span>@StarlinkTelemetrySettings.Host</span>
-                    </a>
-                </div>
-            </div>
-        </section>
-    </div>
-</ActionSheet>
-
 @code {
-    private IReadOnlyList<Adapter>? _adapters;
-    private List<ConnectionItem> _stats = new();
-    private ConnectionItem? _aggregateStats;
-    private ServerInfo? _serverInfo;
-    private string? _error;
-    private CancellationTokenSource? _statsCts;
-    private Timer? _autoRefreshTimer;
-    private Timer? _serverInfoRefreshTimer;
-    private Timer? _routerTrafficRefreshTimer;
-    private Timer? _healthAlertRefreshTimer;
-    private readonly string[] _prios = ["automatic", "always", "secondary", "backup", "never"];
-    private Dictionary<string, string?> _gatewayCache = new();
-    private RouterTrafficSummary? _routerTrafficSummary;
-    private SpeedifySettings? _speedifySettings;
-    private AutoServerSwitchStatus? _autoSwitchStatus;
-    private CudyApControlStatus? _cudyApStatus;
-    private LocalProcessTrafficSnapshot? _localProcessTrafficHealth;
-    private string? _cudyClientHealthError;
-    private string? _speedifySettingsError;
-    private string? _routerTrafficError;
-    private bool _routerTrafficLoading;
-    private bool _showTrafficBreakdown;
-    private bool _showStarlinkDetails;
-    private bool _starlinkCommandInProgress;
-    private Adapter? _selectedStarlinkAdapter;
-    private StarlinkCapability? _pendingStarlinkCommand;
-    private StarlinkCommandResult? _lastStarlinkCommandResult;
-    private int _adapterRefreshInProgress;
-    private int _serverInfoRefreshInProgress;
-    private int _healthAlertRefreshInProgress;
-    private int _routerTrafficRefreshInProgress;
-    private int _statsRenderQueued;
-    private ElementReference _adapterListElement;
-    private IJSObjectReference? _animatedUiModule;
-    private bool _adapterListAnimationEnabled;
-    private readonly Dictionary<string, bool> _starlinkAdapterProbeCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, RedundantAdapterActivity> _redundantAdapterActivity = new(StringComparer.OrdinalIgnoreCase);
-    private DateTime _lastStarlinkAdapterProbeUtc = DateTime.MinValue;
-    private int _starlinkAdapterProbeInProgress;
-    private static readonly TimeSpan RedundantActivityHoldTime = TimeSpan.FromSeconds(12);
-    private static readonly TimeSpan StatsRenderDelay = TimeSpan.FromMilliseconds(150);
-
-    private bool _initialLoadComplete = false;
-    private bool _isProcessingAction = false;
-    private bool _serverInfoLoading = true;
+    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
+    private readonly CancellationTokenSource _refreshCts = new();
+    private XBondStatsSnapshot? _snapshot;
+    private StarlinkTelemetrySnapshot _starlink = StarlinkTelemetrySnapshot.Unavailable();
 
     protected override async Task OnInitializedAsync()
     {
-        await base.OnInitializedAsync();
-        
-        _autoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadAdaptersAndSettingsAsync), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
-        _serverInfoRefreshTimer = new Timer(async _ => await InvokeAsync(LoadServerInfoAsync), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
-        _healthAlertRefreshTimer = new Timer(_ => _ = InvokeAsync(() => LoadHealthAlertsAsync(true)), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(15));
-
-        await LoadAdaptersAndSettingsAsync();
-        await LoadServerInfoAsync();
-
-        await StreamSpeedifyDataAsync();
+        await RefreshAsync();
+        _ = RunRefreshLoopAsync();
     }
 
-    private async Task LoadHealthAlertsAsync(bool background)
+    private async Task RunRefreshLoopAsync()
     {
-        if (Interlocked.Exchange(ref _healthAlertRefreshInProgress, 1) == 1)
-        {
-            return;
-        }
-
         try
         {
-            _autoSwitchStatus = AutoServerSwitchService.GetStatus();
-            _cudyApStatus = CudyApControlService.GetStatus();
-            try
+            while (await _timer.WaitForNextTickAsync(_refreshCts.Token))
             {
-                _speedifySettings = await SpeedifyService.GetSettingsAsync(_statsCts?.Token ?? CancellationToken.None);
-                _speedifySettingsError = null;
+                await InvokeAsync(RefreshAsync);
             }
-            catch (Exception ex)
-            {
-                _speedifySettingsError = ex.Message;
-            }
-
-            if (XRouterService.IsConfigured)
-            {
-                try
-                {
-                    await XRouterService.GetClientsAsync(_statsCts?.Token ?? CancellationToken.None);
-                    _cudyClientHealthError = null;
-                }
-                catch (Exception ex)
-                {
-                    _cudyClientHealthError = ex.Message;
-                }
-
-                try
-                {
-                    _localProcessTrafficHealth = await LocalProcessTrafficService.GetSnapshotAsync(_statsCts?.Token ?? CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    _localProcessTrafficHealth = LocalProcessTrafficSnapshot.Unsupported(ex.Message);
-                }
-            }
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _healthAlertRefreshInProgress, 0);
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (firstRender)
-        {
-            _animatedUiModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/animatedUi.js");
-        }
-
-        if (_animatedUiModule is not null && !_adapterListAnimationEnabled && _adapters?.Any() == true)
-        {
-            await _animatedUiModule.InvokeVoidAsync("enableAutoAnimate", _adapterListElement);
-            _adapterListAnimationEnabled = true;
-        }
-    }
-
-    private string GetAdapterDisplayName(string adapterId)
-    {
-        var adapter = _adapters?.FirstOrDefault(a => a.AdapterId == adapterId);
-        return adapter != null ? !string.IsNullOrWhiteSpace(adapter.Isp) ? $"{adapter.Isp} ({adapter.Name})" : adapter.Name : adapterId;
-    }
-
-    private async Task LoadAdaptersAndSettingsAsync()
-    {
-        if (Interlocked.Exchange(ref _adapterRefreshInProgress, 1) == 1)
-        {
-            return;
-        }
-
-        try
-        {
-            _adapters = await SpeedifyService.GetAdaptersAsync();
-
-            // Load gateway IPs for all adapters (Linux only)
-            if (OperatingSystem.IsLinux() && _adapters != null)
-            {
-                foreach (var adapter in _adapters)
-                {
-                    if (!_gatewayCache.ContainsKey(adapter.AdapterId))
-                    {
-                        try
-                        {
-                            var gateway = await NetworkMonitorService.GetGatewayAsync(adapter.AdapterId);
-                            _gatewayCache[adapter.AdapterId] = gateway;
-                        }
-                        catch (Exception)
-                        {
-                            _gatewayCache[adapter.AdapterId] = null;
-                        }
-                    }
-                }
-
-                await RefreshStarlinkAdapterDetectionAsync(_adapters);
-            }
-
-            await InvokeAsync(StateHasChanged);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _adapterRefreshInProgress, 0);
-        }
-    }
-    
-    private async Task LoadServerInfoAsync()
-    {
-        if (Interlocked.Exchange(ref _serverInfoRefreshInProgress, 1) == 1)
-        {
-            return;
-        }
-
-        try
-        {
-            var serverInfoTask = SpeedifyService.GetCurrentServerAsync();
-            var settingsTask = SpeedifyService.GetSettingsAsync();
-
-            await Task.WhenAll(serverInfoTask, settingsTask);
-
-            _serverInfo = await serverInfoTask;
-            _speedifySettings = await settingsTask;
-            if (_speedifySettings is not null)
-            {
-                _speedifySettingsError = null;
-            }
-            _serverInfoLoading = false;
-            await InvokeAsync(StateHasChanged);
-        }
-        catch (Exception)
-        {
-            _serverInfoLoading = false;
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _serverInfoRefreshInProgress, 0);
-        }
-    }
-
-    private async Task ShowTrafficBreakdownAsync()
-    {
-        if (!XRouterService.IsConfigured)
-        {
-            return;
-        }
-
-        _showTrafficBreakdown = true;
-        _routerTrafficRefreshTimer ??= new Timer(async _ => await InvokeAsync(() => LoadRouterTrafficAsync(true)), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-        await LoadRouterTrafficAsync(false);
-    }
-
-    private async Task CloseTrafficBreakdownAsync()
-    {
-        _showTrafficBreakdown = false;
-        if (_routerTrafficRefreshTimer != null)
-        {
-            await _routerTrafficRefreshTimer.DisposeAsync();
-            _routerTrafficRefreshTimer = null;
-        }
-    }
-
-    private Task CloseStarlinkDetailsAsync()
-    {
-        _showStarlinkDetails = false;
-        _pendingStarlinkCommand = null;
-        return Task.CompletedTask;
-    }
-
-    private async Task ExecuteStarlinkCommandAsync(StarlinkCapability capability)
-    {
-        if (!capability.IsActionable || string.IsNullOrWhiteSpace(capability.DirectCommand) || _starlinkCommandInProgress)
-        {
-            return;
-        }
-
-        _pendingStarlinkCommand = capability;
-        _starlinkCommandInProgress = true;
-        _lastStarlinkCommandResult = null;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            _lastStarlinkCommandResult = await StarlinkTelemetryService.ExecuteCommandAsync(
-                capability.DirectCommand,
-                _statsCts?.Token ?? CancellationToken.None);
-        }
-        catch (OperationCanceledException)
-        {
-            _lastStarlinkCommandResult = new StarlinkCommandResult
-            {
-                Command = capability.DirectCommand,
-                Success = false,
-                Message = $"{capability.Label} command was canceled"
-            };
-        }
-        finally
-        {
-            _starlinkCommandInProgress = false;
-            _pendingStarlinkCommand = null;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private async Task LoadRouterTrafficAsync(bool background)
-    {
-        if (!XRouterService.IsConfigured || !_showTrafficBreakdown)
-        {
-            return;
-        }
-
-        if (Interlocked.Exchange(ref _routerTrafficRefreshInProgress, 1) == 1)
-        {
-            return;
-        }
-
-        if (!background)
-        {
-            _routerTrafficLoading = true;
-            await InvokeAsync(StateHasChanged);
-        }
-
-        try
-        {
-            _routerTrafficSummary = await XRouterService.GetTrafficSummaryAsync(GetTotalDownload(), GetTotalUpload(), _statsCts?.Token ?? CancellationToken.None);
-            _routerTrafficError = null;
         }
         catch (OperationCanceledException)
         {
         }
-        catch (Exception ex)
-        {
-            _routerTrafficError = ex.Message;
-        }
-        finally
-        {
-            _routerTrafficLoading = false;
-            Interlocked.Exchange(ref _routerTrafficRefreshInProgress, 0);
-            await InvokeAsync(StateHasChanged);
-        }
     }
-    
-    private async Task StreamSpeedifyDataAsync()
+
+    private async Task RefreshAsync()
     {
-        if (_isProcessingAction && _initialLoadComplete) return;
+        _snapshot = await XBondStatsService.GetSnapshotAsync(_refreshCts.Token);
+        _starlink = StarlinkTelemetryService.GetSnapshot();
+        StateHasChanged();
+    }
 
-        _statsCts = new CancellationTokenSource();
-        try
-        {
-            await foreach (var statEntry in SpeedifyService.GetStatsWithAggregateAsync(_statsCts.Token))
+    private string StateLabel => _snapshot switch
+    {
+        null => "Loading",
+        { HasError: true } => "Needs attention",
+        { IsRunning: true } => "XBond active",
+        _ => "Stopped"
+    };
+
+    private string StatePillClass => _snapshot switch
+    {
+        null => "rounded-full border border-slate-600 bg-slate-700/40 px-2.5 py-1 text-xs font-semibold text-slate-200",
+        { HasError: true } => "rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-200",
+        { IsRunning: true } => "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200",
+        _ => "rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200"
+    };
+
+    private string ConnectionTitle => _snapshot switch
+    {
+        null => "Checking XBond",
+        { HasError: true } => "Status Unavailable",
+        { IsRunning: true, MaxLossPercent: <= 1, AverageRttMs: <= 100 } => "Good Connection",
+        { IsRunning: true } => "Degraded Connection",
+        _ => "Tunnel Stopped"
+    };
+
+    private string ConnectionSubtitle => _snapshot switch
+    {
+        null => "Reading XBond runtime status.",
+        { HasError: true } => "XBond status could not be read.",
+        { IsRunning: true } => $"{_snapshot.ActivePaths.Count} active path(s), {_snapshot.StandbyPaths.Count} standby path(s).",
+        _ => _snapshot.Message
+    };
+
+    private static RenderFragment Metric(string label, string value) => @<div>
+        <p class="text-sm text-slate-400">@label</p>
+        <p class="mt-1 text-2xl font-bold text-white">@value</p>
+    </div>;
+
+    private static RenderFragment PathCard(XBondPathStatsSnapshot path) => @<article class="rounded-lg border border-slate-700/70 bg-slate-900/85 p-4">
+        <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="truncate text-lg font-semibold text-white">@path.Name</h3>
+                    <span class="@RoleClass(path)">@RoleLabel(path)</span>
+                </div>
+                <p class="mt-1 truncate text-sm text-slate-400">@path.InterfaceName</p>
+            </div>
+            <span class="@DotClass(path)" title="@path.StateText"></span>
+        </div>
+        <div class="mt-4 grid grid-cols-3 gap-3 text-sm">
+            <span class="text-cyan-300"><i class="fas fa-clock mr-1 text-slate-500"></i>@FormatLatency(path.RttMs)</span>
+            <span class="text-rose-300"><i class="fas fa-triangle-exclamation mr-1 text-slate-500"></i>@FormatPercent(path.LossPercent)</span>
+            <span class="text-emerald-300"><i class="fas fa-gauge-high mr-1 text-slate-500"></i>@SpeedFormatter.FormatSpeed(path.ThroughputMbps)</span>
+        </div>
+        <div class="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
+            <span>Score @Math.Round(path.Score)</span>
+            <span>Late @FormatPercent(path.LatePercent)</span>
+            <span>Queue @path.QueueDepth</span>
+            @if (path.InCooldown)
             {
-                if (IsSpeedifyAggregate(statEntry))
-                {
-                    _aggregateStats = statEntry;
-                    QueueStatsRender();
-                    continue;
-                }
-
-                TrackRedundantAdapterActivity(statEntry);
-
-                var existingStatIndex = _stats.FindIndex(s => s.AdapterId == statEntry.AdapterId);
-                if (existingStatIndex != -1) _stats[existingStatIndex] = statEntry;
-                else _stats.Add(statEntry);
-                
-                QueueStatsRender();
+                <span class="text-amber-300">Cooldown</span>
             }
-        }
-        catch (SpeedifyException ex)
-        {
-            _error = ex.Message;
-        }
-        catch (Exception ex)
-        {
-            _error = $"An unexpected error occurred: {ex.Message}";
-        }
-        finally
-        {
-            if (!_initialLoadComplete) _initialLoadComplete = true;
-        }
-    }
+        </div>
+    </article>;
 
-    private ConnectionItem? GetStatsForAdapter(string adapterId)
+    private static string DotClass(XBondPathStatsSnapshot path)
     {
-        return _stats.FirstOrDefault(x => x.AdapterId == adapterId);
-    }
-
-    private void QueueStatsRender()
-    {
-        if (Interlocked.Exchange(ref _statsRenderQueued, 1) == 1)
+        if (!path.InterfaceUp)
         {
-            return;
+            return "mt-1 h-3 w-3 rounded-full bg-slate-500";
         }
 
-        _ = InvokeAsync(async () =>
+        if (path.InCooldown)
         {
-            try
-            {
-                await Task.Delay(StatsRenderDelay, _statsCts?.Token ?? CancellationToken.None);
-                StateHasChanged();
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _statsRenderQueued, 0);
-            }
-        });
-    }
-
-    private static bool IsSpeedifyAggregate(ConnectionItem statEntry)
-    {
-        return statEntry.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) &&
-               statEntry.ConnectionId.Equals("speedify", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private async Task ChangePriority(string adapterId, string? newPriority)
-    {
-        if (string.IsNullOrEmpty(newPriority) || _isProcessingAction) return;
-        _isProcessingAction = true;
-        await InvokeAsync(StateHasChanged);
-
-        try
-        {
-            await SpeedifyService.SetPriorityAsync(adapterId, newPriority);
-            await LoadAdaptersAndSettingsAsync();
-        }
-        catch (SpeedifyException ex) { _error = ex.Message; }
-        finally
-        {
-            _isProcessingAction = false;
-            await InvokeAsync(StateHasChanged);
-        }
-    }
-
-    private string GetProviderName(Adapter adapter)
-    {
-        // Extract provider name from ISP field or use adapter name
-        if (!string.IsNullOrWhiteSpace(adapter.Isp))
-        {
-            return adapter.Isp;
-        }
-        
-        // If no ISP, return just the connection type as fallback
-        return adapter.Type;
-    }
-
-    private bool IsStarlinkAdapter(Adapter adapter)
-    {
-        if (StarlinkAdapterDetector.HasStarlinkMetadata(adapter, StarlinkTelemetrySettings.AdapterNameHints))
-        {
-            return true;
+            return "mt-1 h-3 w-3 rounded-full bg-amber-400";
         }
 
-        var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
-        if (StarlinkAdapterDetector.MatchesManagementGateway(gateway, StarlinkTelemetrySettings.Host))
+        return path.IsActive
+            ? "mt-1 h-3 w-3 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.55)]"
+            : "mt-1 h-3 w-3 rounded-full bg-cyan-400";
+    }
+
+    private static string RoleClass(XBondPathStatsSnapshot path) => path.Role.ToLowerInvariant() switch
+    {
+        "anchor" => "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200",
+        "backup" => "rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-200",
+        "cooldown" => "rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-200",
+        "unavailable" => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300",
+        _ => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300"
+    };
+
+    private static string RoleLabel(XBondPathStatsSnapshot path)
+    {
+        if (path.IsActive && !path.IsAnchor && string.Equals(path.Role, "probe", StringComparison.OrdinalIgnoreCase))
         {
-            return true;
+            return "backup";
         }
 
-        return _starlinkAdapterProbeCache.TryGetValue(adapter.AdapterId, out var canReachStarlink) && canReachStarlink;
+        return path.Role;
     }
 
-    private static string FormatNullableMs(double? milliseconds)
-    {
-        return milliseconds is > 0 ? $"{Math.Round(milliseconds.Value)} ms" : "--";
-    }
-
-    private static string FormatNullableSpeed(double? speedMbps)
-    {
-        return speedMbps is >= 0 ? SpeedFormatter.FormatSpeed(speedMbps.Value) : "--";
-    }
-
-    private static string FormatNullablePercent(double? percent)
-    {
-        return percent is >= 0 ? $"{Math.Round(percent.Value, percent.Value < 1 ? 2 : 1)}%" : "--";
-    }
-
-    private static string FormatNullableDegrees(double? degrees)
-    {
-        return degrees is >= 0 ? $"{Math.Round(degrees.Value, 1)} deg" : "--";
-    }
-
-    private static string FormatDuration(long? totalSeconds)
-    {
-        if (totalSeconds is null or < 0)
-        {
-            return "--";
-        }
-
-        var duration = TimeSpan.FromSeconds(totalSeconds.Value);
-        if (duration.TotalDays >= 1)
-        {
-            return $"{(int)duration.TotalDays}d {duration.Hours}h";
-        }
-
-        if (duration.TotalHours >= 1)
-        {
-            return $"{(int)duration.TotalHours}h {duration.Minutes}m";
-        }
-
-        return $"{duration.Minutes}m";
-    }
-
-    private string GetStarlinkSheetTitle()
-    {
-        return _selectedStarlinkAdapter is null
-            ? "Starlink"
-            : GetProviderName(_selectedStarlinkAdapter);
-    }
-
-    private string? GetStarlinkSheetDescription()
-    {
-        if (_selectedStarlinkAdapter is null)
-        {
-            return null;
-        }
-
-        return $"{_selectedStarlinkAdapter.Name} - direct dish telemetry";
-    }
-
-    private string GetStarlinkWebUiUrl()
-    {
-        return $"http://{StarlinkTelemetrySettings.Host}/";
-    }
-
-    private static string GetStarlinkAvailabilityLabel(StarlinkTelemetrySnapshot snapshot)
-    {
-        return snapshot.IsAvailable ? "Live" : "Unavailable";
-    }
-
-    private static string GetStarlinkAvailabilityPillClass(StarlinkTelemetrySnapshot snapshot)
-    {
-        return snapshot.IsAvailable
-            ? "bg-emerald-500/10 text-emerald-200 border border-emerald-500/25"
-            : "bg-amber-500/10 text-amber-200 border border-amber-500/25";
-    }
-
-    private static string GetStarlinkAvailabilityBorderClass(StarlinkTelemetrySnapshot snapshot)
-    {
-        return snapshot.IsAvailable ? "border-emerald-500/25" : "border-amber-500/25";
-    }
-
-    private static string GetStarlinkStatusSummary(StarlinkTelemetrySnapshot snapshot)
-    {
-        if (!snapshot.IsAvailable)
-        {
-            return "Direct Starlink telemetry is not available right now.";
-        }
-
-        var latency = FormatNullableMs(snapshot.PopPingLatencyMs);
-        var obstruction = FormatNullablePercent(snapshot.ObstructionPercent);
-        var alignment = FormatNullableDegrees(snapshot.AlignmentErrorDegrees);
-
-        return $"Latency {latency}, obstruction {obstruction}, alignment {alignment}.";
-    }
-
-    private static string FormatDropRate(double? dropRate)
-    {
-        return dropRate is >= 0 ? $"{Math.Round(dropRate.Value * 100, 2)}%" : "--";
-    }
-
-    private static string FormatObstructionState(bool? currentlyObstructed)
-    {
-        return currentlyObstructed switch
-        {
-            true => "Currently obstructed",
-            false => "Clear",
-            _ => "Unknown"
-        };
-    }
-
-    private static string FormatGpsState(StarlinkTelemetrySnapshot snapshot)
-    {
-        return snapshot.GpsValid switch
-        {
-            true => "Valid",
-            false => "Invalid",
-            _ => "--"
-        };
-    }
-
-    private static string FormatGpsSatellites(int? satellites)
-    {
-        return satellites is >= 0 ? $"{satellites} satellites" : "Satellites unknown";
-    }
-
-    private static string FormatLastUpdated(DateTimeOffset? updatedUtc)
-    {
-        if (updatedUtc is null)
-        {
-            return "--";
-        }
-
-        var age = DateTimeOffset.UtcNow - updatedUtc.Value;
-        if (age.TotalSeconds < 60)
-        {
-            return $"{Math.Max(0, (int)Math.Round(age.TotalSeconds))}s ago";
-        }
-
-        if (age.TotalMinutes < 60)
-        {
-            return $"{(int)Math.Round(age.TotalMinutes)}m ago";
-        }
-
-        return updatedUtc.Value.ToLocalTime().ToString("HH:mm");
-    }
-
-    private static string FormatShortDeviceId(string? deviceId)
-    {
-        if (string.IsNullOrWhiteSpace(deviceId))
-        {
-            return "Device unknown";
-        }
-
-        return deviceId.Length <= 12 ? deviceId : $"{deviceId[..6]}...{deviceId[^4..]}";
-    }
-
-    private static string FormatUnknown(string? value)
-    {
-        return string.IsNullOrWhiteSpace(value) ? "--" : value;
-    }
-
-    private static string GetCapabilityStatusLabel(StarlinkCapability capability)
-    {
-        if (!capability.IsDetected)
-        {
-            return "Unavailable";
-        }
-
-        return capability.IsActionable ? "Available" : "Detected";
-    }
-
-    private static string GetCapabilityStatusClass(StarlinkCapability capability)
-    {
-        if (!capability.IsDetected)
-        {
-            return "bg-slate-700/60 text-slate-300";
-        }
-
-        return capability.IsActionable
-            ? "bg-emerald-500/10 text-emerald-200 border border-emerald-500/20"
-            : "bg-cyan-500/10 text-cyan-200 border border-cyan-500/20";
-    }
-
-    private static string GetStarlinkCommandIcon(string? command)
-    {
-        return command?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => "fa-power-off",
-            "stow" => "fa-box-archive",
-            "unstow" => "fa-satellite-dish",
-            "dish_clear_obstruction_map" => "fa-map-location-dot",
-            _ => "fa-terminal"
-        };
-    }
-
-    private static bool IsStarlinkCommandVisible(StarlinkCapability capability, StarlinkTelemetrySnapshot snapshot)
-    {
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "stow" or "unstow" => snapshot.HasActuators != false,
-            _ => true
-        };
-    }
-
-    private static string GetStarlinkCommandButtonLabel(StarlinkCapability capability)
-    {
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => "Reboot",
-            "stow" => "Stow",
-            "unstow" => "Unstow",
-            "dish_clear_obstruction_map" => "Reset obstruction map",
-            _ => capability.Label
-        };
-    }
-
-    private static string GetStarlinkAlertDescription(string alert)
-    {
-        return alert.Trim().ToLowerInvariant() switch
-        {
-            "obstruction map reset" => "The learned obstruction map was cleared and Starlink is rebuilding obstruction history.",
-            "slow ethernet" or "slow ethernet 100" => "The Starlink Ethernet path is negotiating below expected speed.",
-            "obstructed" => "The dish currently sees signal obstruction.",
-            "roaming" => "The terminal is operating away from its expected service location.",
-            "moving too fast" => "The terminal is moving faster than the current service policy allows.",
-            "moving while stationary" => "Starlink sees movement while the service plan expects a stationary terminal.",
-            "thermal shutdown" => "The terminal shut down radio operation because of temperature.",
-            "thermal throttle" => "The terminal is reducing performance because of temperature.",
-            "power thermal" => "The power supply is thermally throttling.",
-            "low motor current" => "Dish actuator current is lower than expected.",
-            "signal lower than expected" => "The terminal is receiving weaker signal than predicted.",
-            "telemetry stale" => "Starlink internal telemetry is stale.",
-            _ => "Starlink reported this condition from direct dish telemetry."
-        };
-    }
-
-    private static string GetStarlinkOpenActionLabel(StarlinkCapability capability)
-    {
-        return string.Equals(capability.Key, "web-ui", StringComparison.OrdinalIgnoreCase)
-            ? "Open Starlink app"
-            : capability.Label;
-    }
-
-    private static IReadOnlyList<StarlinkCapability> GetUniqueStarlinkOpenCapabilities(IReadOnlyList<StarlinkCapability> capabilities)
-    {
-        return capabilities
-            .Where(c => !string.IsNullOrWhiteSpace(c.ActionUrl))
-            .GroupBy(c => c.ActionUrl!, StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
-                group.FirstOrDefault(c => string.Equals(c.Key, "web-ui", StringComparison.OrdinalIgnoreCase)) ??
-                group.First())
-            .ToList();
-    }
-
-    private static string GetStarlinkCommandShortDescription(StarlinkCapability capability)
-    {
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => "Restart the terminal. Starlink may be offline for a few minutes.",
-            "stow" => "Move the dish into stow position.",
-            "unstow" => "Return the dish from stow position.",
-            "dish_clear_obstruction_map" => "Clear learned obstruction history. It can take hours or days to rebuild.",
-            _ => capability.Description
-        };
-    }
-
-    private static string GetStarlinkCommandSlideLabel(StarlinkCapability capability)
-    {
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => "Slide to reboot",
-            "stow" => "Slide to stow",
-            "unstow" => "Slide to unstow",
-            "dish_clear_obstruction_map" => "Slide to reset map",
-            _ => $"Slide to run {capability.Label}"
-        };
-    }
-
-    private static string GetStarlinkCommandBusyLabel(StarlinkCapability capability)
-    {
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => "Rebooting...",
-            "stow" => "Stowing...",
-            "unstow" => "Unstowing...",
-            "dish_clear_obstruction_map" => "Resetting map...",
-            _ => "Running..."
-        };
-    }
-
-    private static string GetStarlinkCommandTone(StarlinkCapability capability)
-    {
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => "danger",
-            "stow" => "warning",
-            "dish_clear_obstruction_map" => "danger",
-            _ => "info"
-        };
-    }
-
-    private static string GetStarlinkActionCardClass(StarlinkCapability capability)
-    {
-        var baseClass = "rounded-xl border p-2.5";
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => $"{baseClass} border-red-500/20 bg-red-500/5",
-            "stow" => $"{baseClass} border-amber-500/20 bg-amber-500/5",
-            "dish_clear_obstruction_map" => $"{baseClass} border-red-500/20 bg-red-500/5",
-            _ => $"{baseClass} border-slate-800 bg-slate-900/35"
-        };
-    }
-
-    private static string GetStarlinkActionIconClass(StarlinkCapability capability)
-    {
-        var baseClass = "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg";
-        return capability.DirectCommand?.Trim().ToLowerInvariant() switch
-        {
-            "reboot" => $"{baseClass} bg-red-500/15 text-red-200",
-            "stow" => $"{baseClass} bg-amber-500/15 text-amber-200",
-            "dish_clear_obstruction_map" => $"{baseClass} bg-red-500/15 text-red-200",
-            _ => $"{baseClass} bg-cyan-500/15 text-cyan-200"
-        };
-    }
-
-    private bool IsStarlinkCommandBusy(StarlinkCapability capability)
-    {
-        return _starlinkCommandInProgress &&
-            string.Equals(
-                _pendingStarlinkCommand?.DirectCommand,
-                capability.DirectCommand,
-                StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string GetStarlinkCommandResultClass(StarlinkCommandResult result)
-    {
-        return result.Success
-            ? "bg-emerald-500/10 text-emerald-100"
-            : "bg-amber-500/10 text-amber-100";
-    }
-
-    private int GetSignalStrength(Adapter adapter, ConnectionItem? currentStats)
-    {
-        var health = ConnectionHealthService.GetAdapterHealth(adapter.AdapterId);
-        return AdapterHealthPresenter.GetSignalStrength(health, currentStats);
-    }
-
-    private async Task RefreshStarlinkAdapterDetectionAsync(IReadOnlyList<Adapter> adapters)
-    {
-        if (!StarlinkTelemetrySettings.Enabled ||
-            !StarlinkTelemetrySettings.AdapterProbeEnabled ||
-            Interlocked.Exchange(ref _starlinkAdapterProbeInProgress, 1) == 1)
-        {
-            return;
-        }
-
-        try
-        {
-            var now = DateTime.UtcNow;
-            if (now - _lastStarlinkAdapterProbeUtc < StarlinkTelemetrySettings.AdapterProbeInterval)
-            {
-                return;
-            }
-
-            _lastStarlinkAdapterProbeUtc = now;
-
-            var activeAdapterIds = adapters
-                .Select(a => a.AdapterId)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var staleAdapterId in _starlinkAdapterProbeCache.Keys.Where(id => !activeAdapterIds.Contains(id)).ToList())
-            {
-                _starlinkAdapterProbeCache.Remove(staleAdapterId);
-            }
-
-            foreach (var adapter in adapters.Where(a => !IsAdapterOffline(a)))
-            {
-                if (StarlinkAdapterDetector.HasStarlinkMetadata(adapter, StarlinkTelemetrySettings.AdapterNameHints))
-                {
-                    _starlinkAdapterProbeCache[adapter.AdapterId] = true;
-                    continue;
-                }
-
-                var gateway = _gatewayCache.GetValueOrDefault(adapter.AdapterId);
-                if (StarlinkAdapterDetector.MatchesManagementGateway(gateway, StarlinkTelemetrySettings.Host))
-                {
-                    _starlinkAdapterProbeCache[adapter.AdapterId] = true;
-                    continue;
-                }
-
-                _starlinkAdapterProbeCache[adapter.AdapterId] =
-                    await NetworkMonitorService.CanReachHttpHostViaInterfaceAsync(
-                        adapter.Name,
-                        StarlinkTelemetrySettings.Host,
-                        port: 80,
-                        timeout: StarlinkTelemetrySettings.RequestTimeout);
-            }
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _starlinkAdapterProbeInProgress, 0);
-        }
-    }
-
-    private string GetSignalColor(string state, int strength)
-    {
-        // Show yellow for connecting state
-        if (state.ToLowerInvariant() == "connecting")
-            return "yellow-400";
-            
-        return strength switch
-        {
-            4 => "green-400",   // All 4 bars - Excellent
-            3 => "cyan-400",    // 3 bars - Good
-            2 => "yellow-400",  // 2 bars - Fair
-            1 => "orange-400",  // 1 bar - Poor
-            _ => "red-400"      // 0 bars - Very poor
-        };
-    }
-
-    private void OnAdapterClick(Adapter adapter)
-    {
-        if (!IsStarlinkAdapter(adapter))
-        {
-            return;
-        }
-
-        _selectedStarlinkAdapter = adapter;
-        _showStarlinkDetails = true;
-    }
-
-    private static bool IsAdapterOffline(Adapter adapter)
-    {
-        return adapter.State.Equals("disconnected", StringComparison.OrdinalIgnoreCase) ||
-               adapter.State.Equals("offline", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string GetAdapterStatusTooltip(string state)
-    {
-        return state.Trim().ToLowerInvariant() switch
-        {
-            "connected" => "Connected",
-            "connecting" => "Connecting",
-            "disconnecting" => "Disconnecting",
-            "disconnected" => "Disconnected",
-            "offline" => "Offline",
-            _ => string.IsNullOrWhiteSpace(state) ? "Status unknown" : state
-        };
-    }
-
-    private static string GetStatusDotButtonClass(string state)
-    {
-        var connecting = state.Equals("connecting", StringComparison.OrdinalIgnoreCase)
-            ? " adapter-status-dot-connecting"
-            : string.Empty;
-
-        return $"adapter-status-dot-button{connecting}";
-    }
-
-    private static string GetStatusDotClass(string state)
-    {
-        return state.ToLowerInvariant() switch
-        {
-            "connected" => "adapter-status-dot adapter-status-dot-connected",
-            "connecting" => "adapter-status-dot adapter-status-dot-connecting-inner",
-            "disconnecting" => "adapter-status-dot adapter-status-dot-disconnecting",
-            "disconnected" => "adapter-status-dot adapter-status-dot-disconnected",
-            "offline" => "adapter-status-dot adapter-status-dot-disconnected",
-            _ => "adapter-status-dot adapter-status-dot-unknown"
-        };
-    }
-
-    private int GetSortOrderForState(string state)
-    {
-        return state.ToLowerInvariant() switch
-        {
-            "connected" => 0, 
-            "connecting" => 1, 
-            "disconnecting" => 2, 
-            "disconnected" => 3, 
-            _ => 4
-        };
-    }
-
-    private IEnumerable<Adapter> GetSortedAdapters()
-    {
-        if (_adapters == null) return Enumerable.Empty<Adapter>();
-        
-        // Filter out pure "disconnected" adapters - only show connected, connecting, standby, offline states
-        var visibleAdapters = _adapters.Where(a => a.State.ToLowerInvariant() != "disconnected");
-        
-        return visibleAdapters
-            .OrderBy(a => GetSortOrderForState(a.State))
-            .ThenBy(a => {
-                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
-                var stats = GetStatsForAdapter(a.AdapterId);
-                return AdapterHealthPresenter.GetSortKey(health, stats).Rank;
-            })
-            .ThenBy(a => {
-                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
-                var stats = GetStatsForAdapter(a.AdapterId);
-                return AdapterHealthPresenter.GetSortKey(health, stats).PacketLossPercent;
-            })
-            .ThenBy(a => {
-                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
-                var stats = GetStatsForAdapter(a.AdapterId);
-                return AdapterHealthPresenter.GetSortKey(health, stats).JitterMs;
-            })
-            .ThenBy(a => {
-                var health = ConnectionHealthService.GetAdapterHealth(a.AdapterId);
-                var stats = GetStatsForAdapter(a.AdapterId);
-                return AdapterHealthPresenter.GetSortKey(health, stats).LatencyMs;
-            })
-            .ThenBy(GetProviderName);
-    }
-
-    private IReadOnlyList<DashboardAdapterGroup> GetDashboardAdapterGroups()
-    {
-        var sortedAdapters = GetSortedAdapters().ToList();
-        if (!IsRedundantMode() || sortedAdapters.Count == 0)
-        {
-            return [DashboardAdapterGroup.Ungrouped(sortedAdapters)];
-        }
-
-        var activeRedundantAdapterIds = GetActiveRedundantAdapterIds(sortedAdapters);
-        var redundantAdapters = sortedAdapters
-            .Where(adapter => activeRedundantAdapterIds.Contains(adapter.AdapterId))
-            .ToList();
-
-        if (redundantAdapters.Count == 0)
-        {
-            return [DashboardAdapterGroup.Ungrouped(sortedAdapters)];
-        }
-
-        var otherAdapters = sortedAdapters
-            .Where(adapter => !activeRedundantAdapterIds.Contains(adapter.AdapterId))
-            .ToList();
-
-        var groups = new List<DashboardAdapterGroup>
-        {
-            new(
-                "Actively Redundant",
-                string.Empty,
-                $"{redundantAdapters.Count} of {GetMaxRedundantConnections()} active",
-                redundantAdapters,
-                IsRedundantGroup: true,
-                ShowHeader: true)
-        };
-
-        if (otherAdapters.Count > 0)
-        {
-            groups.Add(new(
-                "Other adapters",
-                string.Empty,
-                $"{otherAdapters.Count} available",
-                otherAdapters,
-                IsRedundantGroup: false,
-                ShowHeader: true));
-        }
-
-        return groups;
-    }
-
-    private static string GetAdapterGroupClass(DashboardAdapterGroup group)
-    {
-        if (!group.ShowHeader)
-        {
-            return "space-y-3";
-        }
-
-        return group.IsRedundantGroup
-            ? "rounded-2xl border border-emerald-400/25 bg-emerald-500/[0.045] p-2.5 shadow-lg shadow-emerald-950/20"
-            : "rounded-2xl border border-slate-700/60 bg-slate-950/20 p-2.5";
-    }
-
-    private static string GetAdapterGroupIconClass(DashboardAdapterGroup group) =>
-        group.IsRedundantGroup
-            ? "inline-flex h-6 w-6 items-center justify-center rounded-full border border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
-            : "inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-600/50 bg-slate-800/70 text-slate-300";
-
-    private static string GetAdapterGroupTitleClass(DashboardAdapterGroup group) =>
-        group.IsRedundantGroup
-            ? "text-sm font-semibold text-emerald-100"
-            : "text-sm font-semibold text-slate-200";
-
-    private static string GetAdapterGroupBadgeClass(DashboardAdapterGroup group) =>
-        group.IsRedundantGroup
-            ? "shrink-0 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
-            : "shrink-0 rounded-full border border-slate-600/50 bg-slate-800/70 px-2.5 py-1 text-xs font-semibold text-slate-300";
-
-    private IReadOnlySet<string> GetActiveRedundantAdapterIds(IReadOnlyList<Adapter> sortedAdapters)
-    {
-        if (!IsRedundantMode() || sortedAdapters.Count == 0)
-        {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        var now = DateTime.UtcNow;
-        var visibleAdapterIds = sortedAdapters
-            .Select(adapter => adapter.AdapterId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        PruneRedundantAdapterActivity(now, visibleAdapterIds);
-
-        var currentMembers = GetCurrentRedundantTrafficCandidates(visibleAdapterIds).ToList();
-        if (currentMembers.Count > 0)
-        {
-            return currentMembers
-                .Select(candidate => candidate.AdapterId)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        }
-
-        return _redundantAdapterActivity.Values
-            .Where(activity => visibleAdapterIds.Contains(activity.AdapterId))
-            .Where(activity => activity.IsRecentlyActive(now, TimeSpan.FromSeconds(3)))
-            .OrderByDescending(activity => activity.LastActivityScore)
-            .ThenByDescending(activity => activity.LastActiveUtc)
-            .Take(GetMaxRedundantConnections())
-            .Select(activity => activity.AdapterId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
-
-    private IReadOnlyList<RedundantTrafficCandidate> GetCurrentRedundantTrafficCandidates(IReadOnlySet<string> visibleAdapterIds)
-    {
-        var maxRedundant = GetMaxRedundantConnections();
-        var candidates = _stats
-            .Where(IsRealTunnelConnection)
-            .Where(stat => visibleAdapterIds.Contains(stat.AdapterId))
-            .Select(stat => new RedundantTrafficCandidate(
-                stat.AdapterId,
-                Math.Max(0, stat.ReceiveBps),
-                Math.Max(0, stat.SendBps),
-                Math.Max(stat.TotalBps, stat.ReceiveBps + stat.SendBps)))
-            .Where(candidate => candidate.TotalBps > 0)
-            .ToList();
-
-        if (candidates.Count == 0)
-        {
-            return [];
-        }
-
-        var dominantDirection = candidates.Sum(candidate => candidate.ReceiveBps) >= candidates.Sum(candidate => candidate.SendBps)
-            ? RedundantTrafficDirection.Receive
-            : RedundantTrafficDirection.Send;
-
-        var selected = candidates
-            .Where(candidate => candidate.GetDirectionalBps(dominantDirection) > 0)
-            .OrderByDescending(candidate => candidate.GetDirectionalBps(dominantDirection))
-            .ThenByDescending(candidate => candidate.TotalBps)
-            .Take(maxRedundant)
-            .ToList();
-
-        if (selected.Count < maxRedundant)
-        {
-            var selectedIds = selected
-                .Select(candidate => candidate.AdapterId)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-            selected.AddRange(candidates
-                .Where(candidate => !selectedIds.Contains(candidate.AdapterId))
-                .OrderByDescending(candidate => candidate.TotalBps)
-                .Take(maxRedundant - selected.Count));
-        }
-
-        return selected;
-    }
-
-    private void TrackRedundantAdapterActivity(ConnectionItem stat)
-    {
-        if (!IsRealTunnelConnection(stat))
-        {
-            return;
-        }
-
-        var now = DateTime.UtcNow;
-        if (!_redundantAdapterActivity.TryGetValue(stat.AdapterId, out var activity))
-        {
-            activity = new RedundantAdapterActivity(stat.AdapterId);
-            _redundantAdapterActivity[stat.AdapterId] = activity;
-        }
-
-        activity.Update(stat, now);
-        PruneRedundantAdapterActivity(now);
-    }
-
-    private void PruneRedundantAdapterActivity(DateTime now, IReadOnlySet<string>? visibleAdapterIds = null)
-    {
-        var staleAdapterIds = _redundantAdapterActivity.Values
-            .Where(activity => visibleAdapterIds is not null && !visibleAdapterIds.Contains(activity.AdapterId) ||
-                               now - activity.LastSeenUtc > TimeSpan.FromMinutes(2))
-            .Select(activity => activity.AdapterId)
-            .ToList();
-
-        foreach (var adapterId in staleAdapterIds)
-        {
-            _redundantAdapterActivity.Remove(adapterId);
-        }
-    }
-
-    private static bool IsRealTunnelConnection(ConnectionItem stat)
-    {
-        var protocol = NormalizeTransportMode(stat.Protocol);
-        return stat.Connected &&
-               !IsSpeedifyAggregate(stat) &&
-               !IsAuxiliaryConnection(stat) &&
-               stat.AdapterId.Length > 0 &&
-               !stat.AdapterId.Equals("speedify", StringComparison.OrdinalIgnoreCase) &&
-               protocol is not "" and not "auto" and not "proxy" and not "share";
-    }
-
-    private sealed record DashboardAdapterGroup(
-        string Title,
-        string Description,
-        string Badge,
-        IReadOnlyList<Adapter> Adapters,
-        bool IsRedundantGroup,
-        bool ShowHeader)
-    {
-        public static DashboardAdapterGroup Ungrouped(IReadOnlyList<Adapter> adapters) =>
-            new("Adapters", string.Empty, string.Empty, adapters, IsRedundantGroup: false, ShowHeader: false);
-    }
-
-    private sealed record RedundantTrafficCandidate(
-        string AdapterId,
-        double ReceiveBps,
-        double SendBps,
-        double TotalBps)
-    {
-        public double GetDirectionalBps(RedundantTrafficDirection direction) =>
-            direction == RedundantTrafficDirection.Receive ? ReceiveBps : SendBps;
-    }
-
-    private enum RedundantTrafficDirection
-    {
-        Receive,
-        Send
-    }
-
-    private sealed class RedundantAdapterActivity(string adapterId)
-    {
-        private long? _lastReceiveBytes;
-        private long? _lastSendBytes;
-
-        public string AdapterId { get; } = adapterId;
-
-        public DateTime LastSeenUtc { get; private set; } = DateTime.MinValue;
-
-        public DateTime LastActiveUtc { get; private set; } = DateTime.MinValue;
-
-        public double LastActivityScore { get; private set; }
-
-        public void Update(ConnectionItem stat, DateTime now)
-        {
-            var previousReceiveBytes = _lastReceiveBytes;
-            var previousSendBytes = _lastSendBytes;
-            var receiveDelta = previousReceiveBytes.HasValue && stat.ReceiveBytes > previousReceiveBytes.Value;
-            var sendDelta = previousSendBytes.HasValue && stat.SendBytes > previousSendBytes.Value;
-            var trafficRate = Math.Max(stat.TotalBps, stat.ReceiveBps + stat.SendBps);
-            var hasLiveActivity = trafficRate > 0 || stat.InFlight > 0 || receiveDelta || sendDelta;
-
-            LastSeenUtc = now;
-            _lastReceiveBytes = stat.ReceiveBytes;
-            _lastSendBytes = stat.SendBytes;
-
-            if (hasLiveActivity)
-            {
-                LastActiveUtc = now;
-                LastActivityScore = Math.Max(trafficRate, stat.InFlight);
-            }
-        }
-
-        public bool IsRecentlyActive(DateTime now, TimeSpan holdTime) =>
-            LastActiveUtc != DateTime.MinValue && now - LastActiveUtc <= holdTime;
-    }
-
-    private string GetOverallConnectionStatus()
-    {
-        if (_adapters == null || !_adapters.Any()) return "No Connection";
-        
-        var connectedAdapters = _adapters.Where(a => a.State.ToLowerInvariant() == "connected").ToList();
-        var connectedCount = connectedAdapters.Count;
-        
-        if (connectedCount == 0) return "Disconnected";
-        
-        // Use health service for rolling average-based status when initialized
-        if (ConnectionHealthService.IsInitialized())
-        {
-            var health = ConnectionHealthService.GetOverallHealth();
-            
-            // Map ConnectionStatus enum to user-friendly strings
-            return health.Status switch
-            {
-                ConnectionStatus.Excellent => "Excellent Connection",
-                ConnectionStatus.Good => "Good Connection",
-                ConnectionStatus.Fair => "Fair Connection",
-                ConnectionStatus.Poor => "Poor Connection",
-                ConnectionStatus.Critical => "Critical Connection",
-                ConnectionStatus.Initializing => "Initializing Connection",
-                _ => "Unknown Connection"
-            };
-        }
-        
-        // Fallback to instant calculation if service not ready
-        var connectedStats = connectedAdapters
-            .Select(a => GetStatsForAdapter(a.AdapterId))
-            .Where(s => s != null)
-            .ToList();
-        
-        if (!connectedStats.Any()) return "Partial Connection";
-        
-        // Calculate quality metrics
-        var avgLatency = connectedStats.Average(s => s!.LatencyMs);
-        var avgPacketLoss = connectedStats.Average(s => s!.AverageLossPercent);
-        var totalSpeed = GetActualThroughputMbps();
-        
-        // Speedify-optimized thresholds (bonded connection adds latency overhead)
-        if (avgLatency < 100 && avgPacketLoss < 2 && totalSpeed > 50)
-            return "Excellent Connection";
-        else if (avgLatency < 180 && avgPacketLoss < 5 && totalSpeed > 20)
-            return "Good Connection";
-        else if (avgLatency < 300 && avgPacketLoss < 10 && totalSpeed > 5)
-            return "Fair Connection";
-        else if (connectedCount < _adapters.Count / 2)
-            return "Partial Connection";
-        else
-            return "Poor Connection";
-    }
-
-    private string GetAdapterBackgroundClass(Adapter adapter, ConnectionItem? currentStats)
-    {
-        var isOffline = adapter.State.ToLowerInvariant() == "disconnected" || adapter.State.ToLowerInvariant() == "offline";
-        if (isOffline) return "bg-slate-800/50";
-
-        var health = ConnectionHealthService.GetAdapterHealth(adapter.AdapterId);
-        return AdapterHealthPresenter.GetBackgroundClass(health, currentStats);
-    }
-
-    private int GetAverageLatency()
-    {
-        // Use health service for rolling average if initialized
-        if (ConnectionHealthService.IsInitialized())
-        {
-            var health = ConnectionHealthService.GetOverallHealth();
-            return (int)Math.Round(health.AverageLatency);
-        }
-        
-        // Fallback to instant calculation if service not ready
-        if (!_stats.Any()) return 0;
-        var connectedStats = _stats.Where(s => s.Connected == true).ToList();
-        return connectedStats.Any() ? (int)connectedStats.Average(s => s.LatencyMs) : 0;
-    }
-
-    private bool IsConnectionStable()
-    {
-        // Use health service for stability score if initialized
-        if (ConnectionHealthService.IsInitialized())
-        {
-            var health = ConnectionHealthService.GetOverallHealth();
-            // Consider connection stable if stability score > 0.7 (70%)
-            return health.StabilityScore > 0.7;
-        }
-        
-        // Default to stable if not enough data
-        return true;
-    }
-
-    private double GetTotalDownload()
-    {
-        return Math.Round(SpeedifyStatsUnits.RateFieldToMbps(GetActualReceiveBps()), 1);
-    }
-
-    private double GetTotalUpload()
-    {
-        return Math.Round(SpeedifyStatsUnits.RateFieldToMbps(GetActualSendBps()), 1);
-    }
-
-    private double GetActualThroughputMbps()
-    {
-        return SpeedifyStatsUnits.RateFieldToMbps(GetActualReceiveBps() + GetActualSendBps());
-    }
-
-    private double GetActualReceiveBps()
-    {
-        if (_aggregateStats?.Connected == true)
-        {
-            return _aggregateStats.ReceiveBps;
-        }
-
-        return _stats.Where(s => s.Connected).Sum(s => s.ReceiveBps);
-    }
-
-    private double GetActualSendBps()
-    {
-        if (_aggregateStats?.Connected == true)
-        {
-            return _aggregateStats.SendBps;
-        }
-
-        return _stats.Where(s => s.Connected).Sum(s => s.SendBps);
-    }
-
-    private string GetTransportProtocolLabel()
-    {
-        var configured = NormalizeTransportMode(_speedifySettings?.TransportMode);
-        var actual = GetActualTransportProtocol();
-
-        if (configured == "auto")
-        {
-            return FormatTransportMode(actual ?? configured);
-        }
-
-        if (string.IsNullOrWhiteSpace(configured))
-        {
-            return FormatTransportMode(actual);
-        }
-
-        if (!string.IsNullOrWhiteSpace(actual) && !TransportModesMatch(configured, actual))
-        {
-            return FormatTransportMode(actual);
-        }
-
-        return FormatTransportMode(configured);
-    }
-
-    private string? GetTransportDetailLabel()
-    {
-        var configured = NormalizeTransportMode(_speedifySettings?.TransportMode);
-        var actual = GetActualTransportProtocol();
-
-        if (configured == "auto" && !string.IsNullOrWhiteSpace(actual))
-        {
-            return "Auto selected";
-        }
-
-        if (!string.IsNullOrWhiteSpace(configured) &&
-            !string.IsNullOrWhiteSpace(actual) &&
-            !TransportModesMatch(configured, actual))
-        {
-            return $"Configured {FormatTransportMode(configured)}";
-        }
-
-        if (configured == "tcp-multi")
-        {
-            return "Multiple TCP sockets";
-        }
-
-        return null;
-    }
-
-    private string GetServerTransportLabel()
-    {
-        var protocol = GetTransportProtocolLabel();
-        var configured = NormalizeTransportMode(_speedifySettings?.TransportMode);
-
-        if (configured == "auto" && protocol != "Auto" && protocol != "Unknown")
-        {
-            return $"{protocol} (Auto)";
-        }
-
-        return protocol;
-    }
-
-    private string GetTransportTooltip()
-    {
-        var detail = GetTransportDetailLabel();
-        return string.IsNullOrWhiteSpace(detail)
-            ? "Speedify transport protocol"
-            : $"Speedify transport protocol: {detail}";
-    }
-
-    private string GetBondingModeLabel()
-    {
-        var mode = NormalizeTransportMode(_speedifySettings?.BondingMode);
-        return mode switch
-        {
-            "redundant" => $"Redundant x{Math.Max(1, _speedifySettings?.MaxRedundant ?? 1)}",
-            "streaming" => "Streaming",
-            "speed" => "Speed",
-            _ => "Mode unknown"
-        };
-    }
-
-    private string? GetActualTransportProtocol()
-    {
-        var protocol = _stats
-            .Where(s => s.Connected)
-            .Where(s => !IsSpeedifyAggregate(s))
-            .Where(s => !IsAuxiliaryConnection(s))
-            .Select(s => NormalizeTransportMode(s.Protocol))
-            .Where(s => !string.IsNullOrWhiteSpace(s))
-            .Where(s => s is not "auto" and not "proxy" and not "share")
-            .GroupBy(s => s)
-            .OrderByDescending(g => g.Count())
-            .ThenByDescending(g => _stats
-                .Where(s => NormalizeTransportMode(s.Protocol) == g.Key)
-                .Sum(s => s.ReceiveBps + s.SendBps))
-            .FirstOrDefault()
-            ?.Key;
-
-        return string.IsNullOrWhiteSpace(protocol) ? null : protocol;
-    }
-
-    private static bool IsAuxiliaryConnection(ConnectionItem stat)
-    {
-        return stat.ConnectionId.Contains("%proxy", StringComparison.OrdinalIgnoreCase) ||
-               stat.ConnectionId.Contains("%share", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool TransportModesMatch(string configured, string actual)
-    {
-        if (configured == actual)
-        {
-            return true;
-        }
+    private static string FormatLatency(double? value) => value.HasValue && value.Value > 0
+        ? $"{Math.Round(value.Value)} ms"
+        : "--";
 
-        return configured == "tcp-multi" && actual == "tcp";
-    }
-
-    private static string NormalizeTransportMode(string? mode)
-    {
-        return string.IsNullOrWhiteSpace(mode)
-            ? ""
-            : mode.Trim().ToLowerInvariant();
-    }
-
-    private static string FormatTransportMode(string? mode)
-    {
-        return NormalizeTransportMode(mode) switch
-        {
-            "tcp-multi" => "TCP Multi",
-            "tcp" => "TCP",
-            "udp" => "UDP",
-            "https" => "HTTPS",
-            "auto" => "Auto",
-            _ => "Unknown"
-        };
-    }
-
-    private static string FormatProcessDetail(LocalProcessTrafficItem process)
-    {
-        var pid = process.ProcessId.HasValue ? $"PID {process.ProcessId.Value} · " : "";
-        return pid + process.Command;
-    }
-
-    private RouterTrafficSummary GetCurrentRouterTrafficSummary()
-    {
-        var cached = _routerTrafficSummary ?? new RouterTrafficSummary();
-        return new RouterTrafficSummary
-        {
-            SpeedifyDownloadMbps = GetTotalDownload(),
-            SpeedifyUploadMbps = GetTotalUpload(),
-            CudyClientDownloadMbps = cached.CudyClientDownloadMbps,
-            CudyClientUploadMbps = cached.CudyClientUploadMbps,
-            CudyClientCount = cached.CudyClientCount,
-            LocalProcessTraffic = cached.LocalProcessTraffic
-        };
-    }
-
-    private int GetConnectedCount()
-    {
-        if (_adapters == null || !_adapters.Any())
-            return 0;
-        
-        var sortedAdapters = GetSortedAdapters();
-        return sortedAdapters.Count(a =>
-            a.State.Equals("connected", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private int GetTotalCount()
-    {
-        if (_adapters == null || !_adapters.Any())
-            return 0;
-        
-        var sortedAdapters = GetSortedAdapters();
-        return sortedAdapters.Count();
-    }
-
-    private string GetServerConnectionType()
-    {
-        if (_serverInfo == null) return "";
-        
-        if (_serverInfo.IsPrivate) return "Private";
-        if (_serverInfo.IsPremium) return "Premium";
-        return "Public";
-    }
-    
-    private string GetServerTypeColor()
-    {
-        if (_serverInfo == null) return "slate-400";
-        
-        if (_serverInfo.IsPrivate) return "purple-400";
-        if (_serverInfo.IsPremium) return "yellow-400";
-        return "cyan-400";
-    }
-    
-    private string GetServerBadgeClass()
-    {
-        if (_serverInfo == null) return "bg-slate-700 text-slate-300";
-        
-        if (_serverInfo.IsPrivate) return "bg-purple-500/20 text-purple-300 border border-purple-500/30";
-        if (_serverInfo.IsPremium) return "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30";
-        return "bg-cyan-500/20 text-cyan-300 border border-cyan-500/30";
-    }
-
-    private IEnumerable<DashboardAlert> GetDashboardAlerts()
-    {
-        if (!string.IsNullOrWhiteSpace(_error))
-        {
-            yield return Alert("Speedify CLI", _error, "fa-terminal", "border-red-500/35 bg-red-500/10");
-        }
-
-        if (!string.IsNullOrWhiteSpace(_speedifySettingsError))
-        {
-            yield return Alert("Speedify settings", _speedifySettingsError, "fa-sliders", "border-red-500/35 bg-red-500/10");
-        }
-
-        if (_autoSwitchStatus?.IsEnabled == true && !string.IsNullOrWhiteSpace(_autoSwitchStatus.ProbeApiError))
-        {
-            yield return Alert("External probe", _autoSwitchStatus.ProbeApiError!, "fa-satellite-dish", "border-amber-500/35 bg-amber-500/10");
-        }
-
-        if (!string.IsNullOrWhiteSpace(_cudyClientHealthError))
-        {
-            yield return Alert("Cudy clients", _cudyClientHealthError, "fa-wifi", "border-amber-500/35 bg-amber-500/10");
-        }
-
-        if (!string.IsNullOrWhiteSpace(_cudyApStatus?.LastError))
-        {
-            yield return Alert("Cudy AP automation", _cudyApStatus.LastError!, "fa-tower-broadcast", "border-amber-500/35 bg-amber-500/10");
-        }
+    private static string FormatPercent(double? value) => value.HasValue
+        ? $"{Math.Round(value.Value, 1)}%"
+        : "--";
 
-        if (XRouterService.IsConfigured && _localProcessTrafficHealth is { IsSupported: false })
-        {
-            yield return Alert("Local process traffic", _localProcessTrafficHealth.Message, "fa-magnifying-glass-chart", "border-blue-500/35 bg-blue-500/10");
-        }
-
-    }
-
-    private static DashboardAlert Alert(string title, string message, string icon, string cssClass)
-    {
-        return new DashboardAlert(title, message, icon, cssClass);
-    }
-
-    private bool IsRedundantMode()
-    {
-        return string.Equals(_speedifySettings?.BondingMode, "redundant", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private int GetMaxRedundantConnections()
-    {
-        return Math.Max(1, _speedifySettings?.MaxRedundant ?? 1);
-    }
+    private static string FormatDegrees(double? value) => value.HasValue
+        ? $"{Math.Round(value.Value, 1)} deg"
+        : "--";
 
-    private sealed record DashboardAlert(string Title, string Message, string Icon, string CssClass);
+    private static string FormatMode(string? mode) => string.IsNullOrWhiteSpace(mode)
+        ? "XBond"
+        : mode.Replace('-', ' ');
 
     public async ValueTask DisposeAsync()
     {
-        if (_autoRefreshTimer != null)
-        {
-            await _autoRefreshTimer.DisposeAsync();
-        }
-        
-        if (_serverInfoRefreshTimer != null)
-        {
-            await _serverInfoRefreshTimer.DisposeAsync();
-        }
-
-        if (_healthAlertRefreshTimer != null)
-        {
-            await _healthAlertRefreshTimer.DisposeAsync();
-        }
-
-        if (_routerTrafficRefreshTimer != null)
-        {
-            await _routerTrafficRefreshTimer.DisposeAsync();
-        }
-
-        if (_statsCts != null)
-        {
-            if (!_statsCts.IsCancellationRequested) await _statsCts.CancelAsync();
-            _statsCts.Dispose();
-            _statsCts = null;
-        }
-
-        if (_animatedUiModule != null)
-        {
-            try
-            {
-                await _animatedUiModule.InvokeVoidAsync("disableAutoAnimate", _adapterListElement);
-                await _animatedUiModule.DisposeAsync();
-            }
-            catch (JSDisconnectedException)
-            {
-            }
-        }
+        await _refreshCts.CancelAsync();
+        _timer.Dispose();
+        _refreshCts.Dispose();
     }
 }

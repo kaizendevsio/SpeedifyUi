@@ -5,360 +5,102 @@ using XNetwork.Utils;
 
 namespace XNetwork.Services;
 
-/// <summary>
-/// Background service that monitors connection health in real-time using ping-based measurements
-/// </summary>
-public class ConnectionHealthService : BackgroundService, IConnectionHealthService
+public class ConnectionHealthService(
+    ILogger<ConnectionHealthService> logger,
+    XBondStatsService xbondStatsService) : BackgroundService, IConnectionHealthService
 {
-    private readonly ILogger<ConnectionHealthService> _logger;
-    private readonly SpeedifyService _speedifyService;
-    private readonly ConcurrentDictionary<string, CircularBuffer<HealthSnapshot>> _adapterBuffers;
-    private readonly ConcurrentDictionary<string, DateTime> _adapterLastSeen;
-    private readonly ConnectionHealth _overallHealth;
-    private readonly SemaphoreSlim _initializationLock = new(1, 1);
+    private const string PingTarget = "1.1.1.1";
+    private const int PingIntervalMs = 500;
+    private const int PingTimeoutMs = 3000;
+    private const double FailedPingLatency = 9999.0;
+    private const int BufferSize = 30;
+    private const int MinSamplesForHealth = 3;
+
+    private readonly ConcurrentDictionary<string, CircularBuffer<HealthSnapshot>> _adapterBuffers = new();
+    private readonly ConcurrentDictionary<string, DateTime> _adapterLastSeen = new();
+    private readonly ConnectionHealth _overallHealth = new();
+    private readonly CircularBuffer<PingSnapshot> _pingBuffer = new(BufferSize);
+    private readonly Ping _ping = new();
     private bool _isInitialized;
 
-    // Ping-based health check fields
-    private readonly CircularBuffer<PingSnapshot> _pingBuffer;
-    private readonly Ping _ping;
+    public ConnectionHealth GetOverallHealth() => _overallHealth;
 
-    // Configuration constants for ping-based health
-    private const string PING_TARGET = "1.1.1.1"; // Cloudflare DNS
-    private const int PING_INTERVAL_MS = 500; // 2 pings per second
-    private const int PING_TIMEOUT_MS = 3000; // 3 second timeout
-    private const double FAILED_PING_LATENCY = 9999.0; // Sentinel for failed pings
-
-    // Configuration constants
-    private const int BUFFER_SIZE = 30; // 30 samples = 15 seconds at 500ms interval
-    private const int MIN_SAMPLES_FOR_HEALTH = 3; // Minimum samples before reporting
-    private const int STALE_ADAPTER_TIMEOUT_MINUTES = 5; // Clean up after 5 minutes
-    private const int CLEANUP_INTERVAL_SECONDS = 60; // Run cleanup every minute
-
-    // Ping-based health thresholds (from design document)
-    private static class PingThresholds
-    {
-        // Excellent - Gaming/VoIP quality
-        public const double EXCELLENT_LATENCY = 50;
-        public const double EXCELLENT_JITTER = 10;
-        public const double EXCELLENT_SUCCESS_RATE = 98;
-
-        // Good - Normal browsing/streaming
-        public const double GOOD_LATENCY = 80;
-        public const double GOOD_JITTER = 15;
-        public const double GOOD_SUCCESS_RATE = 95;
-
-        // Fair - Acceptable for most uses
-        public const double FAIR_LATENCY = 150;
-        public const double FAIR_JITTER = 30;
-        public const double FAIR_SUCCESS_RATE = 90;
-
-        // Poor - Degraded experience
-        public const double POOR_LATENCY = 300;
-        public const double POOR_JITTER = 60;
-        public const double POOR_SUCCESS_RATE = 80;
-
-        // Critical - Anything above poor thresholds
-    }
-
-    public ConnectionHealthService(
-        ILogger<ConnectionHealthService> logger,
-        SpeedifyService speedifyService)
-    {
-        _logger = logger;
-        _speedifyService = speedifyService;
-        _adapterBuffers = new ConcurrentDictionary<string, CircularBuffer<HealthSnapshot>>();
-        _adapterLastSeen = new ConcurrentDictionary<string, DateTime>();
-        _overallHealth = new ConnectionHealth();
-        
-        // Initialize ping-based health check
-        _pingBuffer = new CircularBuffer<PingSnapshot>(BUFFER_SIZE);
-        _ping = new Ping();
-    }
-
-    /// <inheritdoc/>
-    public ConnectionHealth GetOverallHealth()
-    {
-        return _overallHealth;
-    }
-
-    /// <inheritdoc/>
     public HealthMetrics? GetAdapterHealth(string adapterId)
     {
-        if (!_adapterBuffers.TryGetValue(adapterId, out var buffer))
-            return null;
-
-        return CalculateMetrics(buffer);
+        return _adapterBuffers.TryGetValue(adapterId, out var buffer) ? CalculateMetrics(buffer) : null;
     }
 
-    /// <inheritdoc/>
     public Dictionary<string, HealthMetrics> GetAllAdapterHealth()
     {
-        var result = new Dictionary<string, HealthMetrics>();
-
-        foreach (var kvp in _adapterBuffers)
-        {
-            var metrics = CalculateMetrics(kvp.Value);
-            if (metrics != null)
-                result[kvp.Key] = metrics;
-        }
-
-        return result;
+        return _adapterBuffers
+            .Select(item => new { item.Key, Metrics = CalculateMetrics(item.Value) })
+            .Where(item => item.Metrics is not null)
+            .ToDictionary(item => item.Key, item => item.Metrics!);
     }
 
-    /// <inheritdoc/>
-    public bool IsInitialized()
-    {
-        return _isInitialized;
-    }
+    public bool IsInitialized() => _isInitialized;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("ConnectionHealthService starting with ping-based health checks");
+        logger.LogInformation("ConnectionHealthService starting with XBond path health");
 
-        // Start cleanup task
+        var pingTask = RunPingLoopAsync(stoppingToken);
+        var xbondTask = RunXBondPathLoopAsync(stoppingToken);
         var cleanupTask = RunCleanupLoopAsync(stoppingToken);
 
-        // Start ping-based health monitoring task
-        var pingTask = RunPingLoopAsync(stoppingToken);
-
-        // Start stats monitoring task (still needed for other metrics)
-        var monitoringTask = RunMonitoringLoopAsync(stoppingToken);
-
-        // Wait for all tasks
-        await Task.WhenAll(cleanupTask, pingTask, monitoringTask);
-
-        _logger.LogInformation("ConnectionHealthService stopped");
+        await Task.WhenAll(pingTask, xbondTask, cleanupTask).ConfigureAwait(false);
     }
 
     private async Task RunPingLoopAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Starting ping-based health monitoring to {Target}", PING_TARGET);
-
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // Send ping and get snapshot
-                var snapshot = await SendPingAsync(stoppingToken);
-                
-                // Process the ping snapshot
-                ProcessPingSnapshot(snapshot);
-
-                // Mark as initialized after first successful update with sufficient samples
-                if (!_isInitialized && _overallHealth.SampleCount >= MIN_SAMPLES_FOR_HEALTH)
-                {
-                    await _initializationLock.WaitAsync(stoppingToken);
-                    try
-                    {
-                        _isInitialized = true;
-                        _logger.LogInformation("ConnectionHealthService initialized with {Count} ping samples", _overallHealth.SampleCount);
-                    }
-                    finally
-                    {
-                        _initializationLock.Release();
-                    }
-                }
-
-                // Wait for next ping interval
-                await Task.Delay(PING_INTERVAL_MS, stoppingToken);
+                ProcessPingSnapshot(await SendPingAsync(stoppingToken).ConfigureAwait(false));
+                _isInitialized = _overallHealth.SampleCount >= MinSamplesForHealth;
+                await Task.Delay(PingIntervalMs, stoppingToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Normal shutdown
                 break;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in ping loop");
-                // Wait before retrying
-                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                logger.LogWarning(ex, "Error in ping health loop");
+                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken).ConfigureAwait(false);
             }
-        }
-
-        _logger.LogInformation("Ping-based health monitoring stopped");
-    }
-
-    private async Task<PingSnapshot> SendPingAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            PingReply reply;
-            
-            // Linux doesn't support custom ping parameters (uses /bin/ping utility)
-            if (OperatingSystem.IsLinux())
-            {
-                reply = await _ping.SendPingAsync(PING_TARGET, PING_TIMEOUT_MS);
-            }
-            else
-            {
-                // Windows supports custom buffer and options
-                var buffer = new byte[32];
-                var options = new PingOptions(ttl: 128, dontFragment: true);
-                reply = await _ping.SendPingAsync(PING_TARGET, PING_TIMEOUT_MS, buffer, options);
-            }
-
-            if (reply.Status == IPStatus.Success)
-            {
-                return new PingSnapshot(
-                    latency: reply.RoundtripTime,
-                    isSuccessful: true
-                );
-            }
-            else
-            {
-                _logger.LogWarning("Ping to {Target} failed: {Status}", PING_TARGET, reply.Status);
-                return new PingSnapshot(
-                    latency: FAILED_PING_LATENCY,
-                    isSuccessful: false
-                );
-            }
-        }
-        catch (PingException ex)
-        {
-            _logger.LogWarning(ex, "Ping exception for {Target}", PING_TARGET);
-            return new PingSnapshot(
-                latency: FAILED_PING_LATENCY,
-                isSuccessful: false
-            );
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Unexpected error during ping to {Target}", PING_TARGET);
-            return new PingSnapshot(
-                latency: FAILED_PING_LATENCY,
-                isSuccessful: false
-            );
         }
     }
 
-    private void ProcessPingSnapshot(PingSnapshot snapshot)
-    {
-        // Add snapshot to buffer
-        _pingBuffer.Add(snapshot);
-
-        var snapshots = _pingBuffer.GetItems();
-        if (snapshots.Length < MIN_SAMPLES_FOR_HEALTH)
-            return;
-
-        // Calculate success rate
-        var successfulPings = snapshots.Count(s => s.IsSuccessful);
-        var failedPings = snapshots.Length - successfulPings;
-        var successRate = (double)successfulPings / snapshots.Length * 100.0;
-
-        // Calculate latency stats (only for successful pings)
-        var successfulLatencies = snapshots
-            .Where(s => s.IsSuccessful)
-            .Select(s => s.Latency)
-            .ToArray();
-
-        if (successfulLatencies.Length == 0)
-        {
-            // All pings failed - critical status
-            _overallHealth.UpdateMetrics(
-                ConnectionStatus.Critical,
-                latency: FAILED_PING_LATENCY,
-                packetLoss: 0,
-                speed: 0,
-                stability: 0,
-                samples: snapshots.Length,
-                jitter: 0,
-                successRate: 0
-            );
-            return;
-        }
-
-        var avgLatency = successfulLatencies.Average();
-        var minLatency = successfulLatencies.Min();
-        var maxLatency = successfulLatencies.Max();
-
-        // Calculate jitter (standard deviation of latency)
-        var variance = successfulLatencies.Average(l => Math.Pow(l - avgLatency, 2));
-        var jitter = Math.Sqrt(variance);
-
-        // Calculate stability score (inverse of coefficient of variation, clamped to 0-1)
-        var coefficientOfVariation = avgLatency > 0 ? jitter / avgLatency : 0;
-        var stabilityScore = Math.Max(0, Math.Min(1, 1 - coefficientOfVariation));
-
-        // Determine connection status based on ping metrics
-        var status = DetermineConnectionStatusFromPing(avgLatency, jitter, successRate);
-
-        _overallHealth.UpdateMetrics(
-            status,
-            avgLatency,
-            packetLoss: 0, // Not used in ping-based health
-            speed: 0, // Not used in ping-based health
-            stabilityScore,
-            snapshots.Length,
-            jitter,
-            successRate
-        );
-    }
-
-    private ConnectionStatus DetermineConnectionStatusFromPing(double avgLatency, double jitter, double successRate)
-    {
-        // Critical: Multiple severe indicators
-        if (avgLatency > PingThresholds.POOR_LATENCY ||
-            jitter > PingThresholds.POOR_JITTER ||
-            successRate < PingThresholds.POOR_SUCCESS_RATE)
-        {
-            return ConnectionStatus.Critical;
-        }
-
-        // Poor: One or more indicators in poor range
-        if (avgLatency > PingThresholds.FAIR_LATENCY ||
-            jitter > PingThresholds.FAIR_JITTER ||
-            successRate < PingThresholds.FAIR_SUCCESS_RATE)
-        {
-            return ConnectionStatus.Poor;
-        }
-
-        // Fair: Average performance
-        if (avgLatency > PingThresholds.GOOD_LATENCY ||
-            jitter > PingThresholds.GOOD_JITTER ||
-            successRate < PingThresholds.GOOD_SUCCESS_RATE)
-        {
-            return ConnectionStatus.Fair;
-        }
-
-        // Good: Better than average
-        if (avgLatency > PingThresholds.EXCELLENT_LATENCY ||
-            jitter > PingThresholds.EXCELLENT_JITTER ||
-            successRate < PingThresholds.EXCELLENT_SUCCESS_RATE)
-        {
-            return ConnectionStatus.Good;
-        }
-
-        // Excellent: Optimal performance
-        return ConnectionStatus.Excellent;
-    }
-
-    private async Task RunMonitoringLoopAsync(CancellationToken stoppingToken)
+    private async Task RunXBondPathLoopAsync(CancellationToken stoppingToken)
     {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                _logger.LogDebug("Starting stats stream monitoring");
-
-                await foreach (var connection in _speedifyService.GetStatsAsync(stoppingToken))
+                var snapshot = await xbondStatsService.GetSnapshotAsync(stoppingToken).ConfigureAwait(false);
+                foreach (var path in snapshot.Paths)
                 {
-                    // Process the connection snapshot for adapter-specific metrics
-                    ProcessConnectionSnapshot(connection);
-                    
-                    // Note: Overall health is now determined by ping loop, not stats
+                    var key = path.InterfaceName;
+                    var buffer = _adapterBuffers.GetOrAdd(key, _ => new CircularBuffer<HealthSnapshot>(BufferSize));
+                    buffer.Add(new HealthSnapshot(
+                        path.RttMs ?? FailedPingLatency,
+                        path.LossPercent,
+                        path.ThroughputMbps));
+                    _adapterLastSeen[key] = DateTime.UtcNow;
                 }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Normal shutdown
                 break;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error in stats monitoring loop");
-                // Wait before retrying
-                await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
+                logger.LogDebug(ex, "Error in XBond path health loop");
             }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);
         }
     }
 
@@ -368,118 +110,134 @@ public class ConnectionHealthService : BackgroundService, IConnectionHealthServi
         {
             try
             {
-                await Task.Delay(TimeSpan.FromSeconds(CLEANUP_INTERVAL_SECONDS), stoppingToken);
-                CleanupStaleAdapters();
+                await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken).ConfigureAwait(false);
+                var cutoff = DateTime.UtcNow.AddMinutes(-5);
+                foreach (var key in _adapterLastSeen.Where(item => item.Value < cutoff).Select(item => item.Key).ToArray())
+                {
+                    _adapterBuffers.TryRemove(key, out _);
+                    _adapterLastSeen.TryRemove(key, out _);
+                }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                // Normal shutdown
                 break;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error in cleanup loop");
-            }
         }
     }
 
-    private void ProcessConnectionSnapshot(ConnectionItem connection)
+    private async Task<PingSnapshot> SendPingAsync(CancellationToken cancellationToken)
     {
-        var speedMbps = SpeedifyStatsUnits.RateFieldToMbps(connection.ReceiveBps + connection.SendBps);
+        try
+        {
+            var reply = OperatingSystem.IsLinux()
+                ? await _ping.SendPingAsync(PingTarget, PingTimeoutMs).ConfigureAwait(false)
+                : await _ping.SendPingAsync(
+                    PingTarget,
+                    PingTimeoutMs,
+                    new byte[32],
+                    new PingOptions(ttl: 128, dontFragment: true)).ConfigureAwait(false);
 
-        var packetLoss = connection.AverageLossPercent;
-
-        // Create snapshot
-        var snapshot = new HealthSnapshot(
-            latency: connection.LatencyMs,
-            packetLoss: packetLoss,
-            speed: speedMbps
-        );
-
-        // Get or create buffer for this adapter
-        var buffer = _adapterBuffers.GetOrAdd(
-            connection.AdapterId,
-            _ => new CircularBuffer<HealthSnapshot>(BUFFER_SIZE)
-        );
-
-        // Add snapshot to buffer
-        buffer.Add(snapshot);
-
-        // Update last seen timestamp
-        _adapterLastSeen[connection.AdapterId] = DateTime.UtcNow;
+            return reply.Status == IPStatus.Success
+                ? new PingSnapshot(reply.RoundtripTime, isSuccessful: true)
+                : new PingSnapshot(FailedPingLatency, isSuccessful: false);
+        }
+        catch (Exception ex) when (ex is PingException or InvalidOperationException)
+        {
+            logger.LogDebug(ex, "Ping health probe failed");
+            return new PingSnapshot(FailedPingLatency, isSuccessful: false);
+        }
     }
 
-    // Note: UpdateOverallHealth is no longer used - overall health is determined by ping loop
-
-    private void CleanupStaleAdapters()
+    private void ProcessPingSnapshot(PingSnapshot snapshot)
     {
-        var cutoff = DateTime.UtcNow.AddMinutes(-STALE_ADAPTER_TIMEOUT_MINUTES);
-        var staleAdapters = _adapterLastSeen
-            .Where(kvp => kvp.Value < cutoff)
-            .Select(kvp => kvp.Key)
-            .ToList();
-
-        foreach (var adapterId in staleAdapters)
+        _pingBuffer.Add(snapshot);
+        var snapshots = _pingBuffer.GetItems();
+        if (snapshots.Length < MinSamplesForHealth)
         {
-            _adapterBuffers.TryRemove(adapterId, out _);
-            _adapterLastSeen.TryRemove(adapterId, out _);
-            _logger.LogDebug("Removed stale adapter: {AdapterId}", adapterId);
+            return;
         }
 
-        if (staleAdapters.Count > 0)
+        var successful = snapshots.Where(item => item.IsSuccessful).Select(item => item.Latency).ToArray();
+        if (successful.Length == 0)
         {
-            _logger.LogInformation("Cleaned up {Count} stale adapters", staleAdapters.Count);
+            _overallHealth.UpdateMetrics(ConnectionStatus.Critical, FailedPingLatency, 100, 0, 0, snapshots.Length, successRate: 0);
+            return;
         }
+
+        var successRate = successful.Length / (double)snapshots.Length * 100;
+        var average = successful.Average();
+        var jitter = Math.Sqrt(successful.Average(value => Math.Pow(value - average, 2)));
+        var stability = average > 0 ? Math.Clamp(1 - jitter / average, 0, 1) : 0;
+
+        _overallHealth.UpdateMetrics(
+            DetermineStatus(average, jitter, successRate),
+            average,
+            100 - successRate,
+            0,
+            stability,
+            snapshots.Length,
+            jitter,
+            successRate);
     }
 
-    private HealthMetrics? CalculateMetrics(CircularBuffer<HealthSnapshot> buffer)
+    private static ConnectionStatus DetermineStatus(double latency, double jitter, double successRate)
+    {
+        if (latency > 300 || jitter > 60 || successRate < 80)
+        {
+            return ConnectionStatus.Critical;
+        }
+
+        if (latency > 150 || jitter > 30 || successRate < 90)
+        {
+            return ConnectionStatus.Poor;
+        }
+
+        if (latency > 80 || jitter > 15 || successRate < 95)
+        {
+            return ConnectionStatus.Fair;
+        }
+
+        if (latency > 50 || jitter > 10 || successRate < 98)
+        {
+            return ConnectionStatus.Good;
+        }
+
+        return ConnectionStatus.Excellent;
+    }
+
+    private static HealthMetrics? CalculateMetrics(CircularBuffer<HealthSnapshot> buffer)
     {
         var snapshots = buffer.GetItems();
-        
-        if (snapshots.Length < MIN_SAMPLES_FOR_HEALTH)
+        if (snapshots.Length < MinSamplesForHealth)
+        {
             return null;
+        }
 
-        // Calculate averages
-        var avgLatency = snapshots.Average(s => s.Latency);
-        var avgPacketLoss = snapshots.Average(s => s.PacketLoss);
-        var avgSpeed = snapshots.Average(s => s.Speed);
-
-        // Calculate min/max latency
-        var minLatency = snapshots.Min(s => s.Latency);
-        var maxLatency = snapshots.Max(s => s.Latency);
-
-        // Calculate standard deviation of latency (jitter)
-        var latencyVariance = snapshots.Average(s => Math.Pow(s.Latency - avgLatency, 2));
-        var latencyStdDev = Math.Sqrt(latencyVariance);
-        var jitter = latencyStdDev;
-
-        // Calculate stability score (inverse of coefficient of variation, clamped to 0-1)
-        var coefficientOfVariation = avgLatency > 0 ? latencyStdDev / avgLatency : 0;
-        var stabilityScore = Math.Max(0, Math.Min(1, 1 - coefficientOfVariation));
-
-        // For adapter-specific metrics, status is not determined here
-        // Overall health status is determined by ping-based measurements
-        var status = ConnectionStatus.Unknown;
+        var averageLatency = snapshots.Average(item => item.Latency);
+        var averageLoss = snapshots.Average(item => item.PacketLoss);
+        var averageSpeed = snapshots.Average(item => item.Speed);
+        var minLatency = snapshots.Min(item => item.Latency);
+        var maxLatency = snapshots.Max(item => item.Latency);
+        var jitter = Math.Sqrt(snapshots.Average(item => Math.Pow(item.Latency - averageLatency, 2)));
+        var stability = averageLatency > 0 ? Math.Clamp(1 - jitter / averageLatency, 0, 1) : 0;
 
         return new HealthMetrics(
-            avgLatency,
-            avgPacketLoss,
-            avgSpeed,
+            averageLatency,
+            averageLoss,
+            averageSpeed,
             minLatency,
             maxLatency,
-            latencyStdDev,
-            stabilityScore,
-            snapshots.Length,
-            status,
             jitter,
-            successRate: 100 // Adapter metrics don't track success rate
-        );
+            stability,
+            snapshots.Length,
+            ConnectionStatus.Unknown,
+            jitter,
+            Math.Max(0, 100 - averageLoss));
     }
 
     public override void Dispose()
     {
-        _ping?.Dispose();
-        _initializationLock.Dispose();
+        _ping.Dispose();
         base.Dispose();
     }
 }

@@ -1,7 +1,7 @@
 [Unit]
-Description=XBond server canary NAT and forwarding
+Description=XBond server NAT and forwarding
 Documentation=man:systemd.service(5)
-After=network-online.target xbond-server-canary.service
+After=network-online.target xbond-server.service
 Wants=network-online.target
 
 [Service]

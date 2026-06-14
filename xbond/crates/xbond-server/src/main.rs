@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use xbond_core::{
-    is_ipv4_packet, CanaryTun, FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader,
+    is_ipv4_packet, XBondTun, FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader,
     XBondKey, XorFecBlock,
 };
 
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     let socket = Arc::new(UdpSocket::bind(&args.bind).await?);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let mut tun = match args.tun_name.as_deref() {
-        Some(name) => Some(CanaryTun::open(name, args.tun_mtu)?),
+        Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
         None => None,
     };
     let mut data_packets_received = 0u64;

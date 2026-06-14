@@ -1,5 +1,5 @@
 [Unit]
-Description=XBond client canary tunnel
+Description=XBond client tunnel
 Documentation=man:systemd.service(5)
 After=network-online.target
 Wants=network-online.target
@@ -7,14 +7,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/xbond/client.env
-ExecStart=/usr/local/bin/xbond-client canary-tunnel --config /etc/xbond/client.toml --tun-name xbond0 --tun-mtu 1400 --json-events
+ExecStart=/usr/local/bin/xbond-client tunnel --config /etc/xbond/client.toml --tun-name xbond0 --tun-mtu 1400 --json-events
 ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do /usr/sbin/ip link show xbond0 >/dev/null 2>&1 && /usr/sbin/ip addr replace 10.250.0.2/30 dev xbond0 && /usr/sbin/ip link set xbond0 mtu 1400 up && exit 0; sleep 0.2; done; exit 1'
 Restart=on-failure
 RestartSec=3
 RuntimeDirectory=xbond
 RuntimeDirectoryMode=0755
 
-# The canary tunnel opens /dev/net/tun and pins sockets to physical devices.
+# The XBond tunnel opens /dev/net/tun and pins sockets to physical devices.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 NoNewPrivileges=false
