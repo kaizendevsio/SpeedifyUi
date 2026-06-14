@@ -18,7 +18,7 @@
 - If parallel `dotnet build` and `dotnet test` collide on `obj` files, run `dotnet build-server shutdown` and rerun sequentially.
 
 ## Git And Workspace Notes
-- The active deployed branch has been `bugfix/settings-dropdown-refresh`; verify with `git status`/`git branch` before assuming.
+- The Speedify-based production history used `bugfix/settings-dropdown-refresh`; the XBond-only runtime experiment uses `feature/xband-only-runtime`. Verify with `git status`/`git branch` before assuming.
 - Untracked `scripts/` has been present and unrelated; do not add, delete, or modify it unless the user explicitly asks.
 - Local newline-only noise has appeared in `XNetwork/wwwroot/js/pwa.js` and `XNetwork/wwwroot/service-worker.js`; avoid committing those unless their content is intentionally changed.
 - Do not commit secrets such as Cudy admin passwords, probe API keys, private SSH keys, runtime `appsettings.json`, or files under `/home/xeon-network/.config/XNetwork`.
@@ -36,7 +36,7 @@
 ## XBond-Only Branch
 - 2026-06-15: Branch `feature/xband-only-runtime` is the XBond-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion = "xbond-2026.06.18"` with a changelog entry `XBond-only runtime branch.`
 - 2026-06-15: This branch intentionally has no Speedify/XBond toggle, no canary mode, no `speedify_cli` polling, no private reconnect, no auto server switching, no Speedify transport/bonding settings, no Speedify adapter encryption/rate-limit controls, and no `SpeedifyProbeAgent` project reference.
-- 2026-06-15: Dashboard and `/details` analytics read XBond runtime state through `XBondStatsService`, which normalizes `xbond-client status --json --config <path>` and runtime status from `/run/xbond/client-status.json`. Dashboard upload/download use XBond tunnel payload throughput counters, not duplicated per-path egress totals.
+- 2026-06-15: Dashboard and `/details` analytics read XBond runtime state through `XBondStatsService` and `XBondStatusService`, which read `/run/xbond/client-status.json` directly. Dashboard upload/download use XBond tunnel payload throughput counters, not duplicated per-path egress totals.
 - 2026-06-15: Rust command `xbond-client tunnel` replaces the old canary tunnel command. Deployment templates are `xbond-client.service`, `xbond-server.service`, and `xbond-server-nat.service`; service files should not use canary naming on this branch.
 - 2026-06-15: XBond tunnel scheduling recomputes roles every 1 second. Paths with `NO-CARRIER`/down interfaces, socket bind/connect failure, repeated send failures, missing live sockets, or full-loss health are put in cooldown/unavailable state and cannot be anchor.
 - 2026-06-15: XBond-only production routing remains IPv4-only for this milestone. The UI keeps scoped `/32` route diagnostics and service controls, but no automatic rollback feature is implemented on this branch.
@@ -116,6 +116,12 @@
 - 2026-06-15: Follow-up fixes on `feature/xband-only-runtime` hard-exclude down/NO-CARRIER, cooldown, repeated-send-failure, socket-missing, and full-loss paths from anchor/backup role assignment. If every path is bad, XBond reports no anchor instead of choosing the least bad path.
 - 2026-06-15: XBond defaults on `feature/xband-only-runtime` are now two-link duplicate mode: `anchor-duplicate-1` with one active backup. `AnchorFec` remains supported as an explicit mode but is not the default.
 - 2026-06-15: XNetwork now reads `/run/xbond/client-status.json` directly through `XBondStatusService` and computes roles/schedule in-process for dashboard and analytics, instead of spawning `xbond-client status` for every UI refresh.
+- 2026-06-15: XBond-only branch commits `c0177de` (`Create XBond-only runtime branch`) and `f0bef87` (`Fix XBond-only runtime scheduling gaps`) were pushed to `origin/feature/xband-only-runtime`.
+- 2026-06-15: `feature/xband-only-runtime` commit `f0bef87` was deployed to `xeon-network`; deployed `build-info.json` reported version `xbond-2026.06.18`, branch `feature/xband-only-runtime`, and commit `f0bef87`. Local app routes `/`, `/details`, `/xbond`, `/xrouter`, and `/settings` returned HTTP 200.
+- 2026-06-15: On `xeon-network`, `xbond-client.service` is active/enabled and runs `/usr/local/bin/xbond-client tunnel --config /etc/xbond/client.toml --tun-name xbond0 --tun-mtu 1400 --json-events`. Runtime config is `/etc/xbond/client.toml`, runtime status is `/run/xbond/client-status.json`, and `xbond0` uses `10.250.0.2/30`.
+- 2026-06-15: During post-deploy verification, XBond runtime status showed mode `anchor-duplicate-1`, server `45.77.241.247:8444`, Smart `enx103c59f1039c` as anchor, Dito `enxb8d4bcbcb0f0` as duplicate, Globe `enxb8d4bcc3bf30` as probe, and Starlink `enxc8a3627e60c1` unavailable because the interface was down/NO-CARRIER.
+- 2026-06-15: On `xeon-speedify-vultr-01`, `xbond-server.service` and `xbond-server-nat.service` are active/enabled, `xbond-server-canary.service` is inactive/disabled, `xbond-server` listens on UDP `0.0.0.0:8444`, and `xbonds0` uses `10.250.0.1/30`.
+- 2026-06-15: XBond live checks passed after the XBond-only deployment: `ping -I xbond0 10.250.0.1` passed 5/5 with about 59.6 ms average RTT, and a temporary scoped `1.1.1.1/32 dev xbond0 src 10.250.0.2` route passed 10/10 with about 60.3 ms average RTT. The temporary `/32` route was removed afterward; the Pi default route was not permanently replaced with `xbond0`.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.
