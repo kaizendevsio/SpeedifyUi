@@ -126,6 +126,7 @@
 - 2026-06-15: XBond-only runtime correction stopped and disabled `speedify.service` and `speedify-sharing.service` on `xeon-network`; both verified inactive/disabled. `xbond-client.service` is active/enabled and now owns the IPv4 default route through `xbond0`.
 - 2026-06-15: `xbond-client.service` now conflicts with Speedify services and runs `/usr/local/sbin/xbond-client-route-apply` after startup. That helper pins the XBond server IPv4 endpoint `45.77.241.247/32` to the best physical default route before installing `default dev xbond0 src 10.250.0.2 metric 1`, preventing the tunnel server endpoint from routing through the tunnel itself.
 - 2026-06-15: XBond realtime deadline was raised from 120 ms to 500 ms for reliability-first testing. With Speedify stopped/disabled, route `45.77.241.247` went via physical Smart `enx103c59f1039c`, route `1.1.1.1` went via `xbond0`, `ping -I xbond0 10.250.0.1` passed 30/30 with 0% loss, and `ping 1.1.1.1` passed 30/30 with 0% loss.
+- 2026-06-15: Live `xnetwork.service` on `xeon-network` was cleaned up for the XBond-only branch: the unit description is now `XNetwork Dashboard (Blazor Server)` and the stale `speedify_cli` comment was removed. The service remained active after `systemctl daemon-reload`.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.
