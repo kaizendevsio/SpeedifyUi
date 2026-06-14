@@ -1046,6 +1046,8 @@ fn write_tunnel_runtime_status(
         config,
         XBondRuntimeStatus {
             running: true,
+            mode: config.mode,
+            server_addr: config.server_addr.clone(),
             tunnel: XBondTunnelStatus {
                 state: "running".to_string(),
                 device_name: Some(tun.name().to_string()),

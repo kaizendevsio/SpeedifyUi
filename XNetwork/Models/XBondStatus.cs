@@ -11,7 +11,7 @@ public class XBondStatus
     public bool Running { get; set; }
 
     [JsonPropertyName("mode")]
-    public string Mode { get; set; } = "anchor-fec";
+    public string Mode { get; set; } = "anchor-duplicate-1";
 
     [JsonPropertyName("server_addr")]
     public string ServerAddress { get; set; } = "";
@@ -83,7 +83,7 @@ public class XBondStatus
 public class XBondSchedulePlan
 {
     [JsonPropertyName("mode")]
-    public string Mode { get; set; } = "anchor-fec";
+    public string Mode { get; set; } = "anchor-duplicate-1";
 
     [JsonPropertyName("anchor_path_id")]
     public int? AnchorPathId { get; set; }

@@ -41,8 +41,9 @@
 - 2026-06-15: XBond tunnel scheduling recomputes roles every 1 second. Paths with `NO-CARRIER`/down interfaces, socket bind/connect failure, repeated send failures, missing live sockets, or full-loss health are put in cooldown/unavailable state and cannot be anchor.
 - 2026-06-15: XBond-only production routing remains IPv4-only for this milestone. The UI keeps scoped `/32` route diagnostics and service controls, but no automatic rollback feature is implemented on this branch.
 
-## Speedify CLI
-- The app requires `speedify_cli` in PATH; successful commands return JSON and errors are on stderr as documented in `speedify-cli.md`.
+## Historical Speedify Branch Notes
+- The notes in this section describe the pre-`feature/xband-only-runtime` Speedify-based branch history. Do not use them as implementation instructions on `feature/xband-only-runtime`; that branch intentionally removes the Speedify runtime dependency and must not call `speedify_cli`.
+- Older Speedify-based app revisions required `speedify_cli` in PATH; successful commands return JSON and errors are on stderr as documented in `speedify-cli.md`.
 - All Speedify process execution belongs in `SpeedifyService`: terminating commands use `RunTerminatingCommand`, streaming stats use `StreamCommandOutputAsync("stats")`.
 - Streaming stats must buffer until a complete JSON `[]` array parses; keep the 32KB runaway safeguard and `Kill(true)` plus 2-second wait cleanup for canceled streams.
 - `GetStatsAsync` yields only per-connection `connection_stats` and intentionally filters the `speedify` aggregate plus `%proxy` connections; `GetStatsWithAggregateAsync` includes the `speedify` aggregate for dashboard actual throughput.
@@ -112,6 +113,9 @@
 - 2026-06-14: Post-boot-enable verification passed: XNetwork `/xbond` returned HTTP 200 and showed version `2026.06.17`; `ping -I xbond0 10.250.0.1` passed 5/5 with about 58.7 ms average RTT; a temporary scoped `1.1.1.1/32 dev xbond0 src 10.250.0.2` route passed 10/10 with about 58.8 ms average RTT, then was removed so `ip route get 1.1.1.1` returned to Speedify `connectify0`.
 - 2026-06-14: The older `xbond-server-lab.service` is intentionally disabled because it binds the same `0.0.0.0:8444/udp` port as `xbond-server-canary.service`; leaving both enabled would create a boot-time port race. The canary server still answers heartbeat traffic on `8444`, including a 3/3 Tailscale heartbeat test to `100.112.116.83:8444` with about 64.0 ms average RTT.
 - 2026-06-14: Live `xbond-client multi-ping --config /etc/xbond/client.toml --count 5` from `xeon-network` to public `45.77.241.247:8444` verified device-bound multipath delivery while the default route still pointed at Speedify `connectify0`: Smart, Dito, and Globe each returned 5/5 ACKs with 0% loss, while Starlink `enxc8a3627e60c1` was `NO-CARRIER` and returned 0/5. The current `anchor-duplicate-1` probe still selected path 1/Starlink as anchor, so dynamic anchor demotion for down or 100%-loss paths remains a needed improvement before production use.
+- 2026-06-15: Follow-up fixes on `feature/xband-only-runtime` hard-exclude down/NO-CARRIER, cooldown, repeated-send-failure, socket-missing, and full-loss paths from anchor/backup role assignment. If every path is bad, XBond reports no anchor instead of choosing the least bad path.
+- 2026-06-15: XBond defaults on `feature/xband-only-runtime` are now two-link duplicate mode: `anchor-duplicate-1` with one active backup. `AnchorFec` remains supported as an explicit mode but is not the default.
+- 2026-06-15: XNetwork now reads `/run/xbond/client-status.json` directly through `XBondStatusService` and computes roles/schedule in-process for dashboard and analytics, instead of spawning `xbond-client status` for every UI refresh.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.

@@ -22,6 +22,12 @@ public class XBondSettings
 
     public string ClientConfigPath { get; set; } = "/etc/xbond/client.toml";
 
+    public string RuntimeStatusPath { get; set; } = "/run/xbond/client-status.json";
+
+    public string ScheduleMode { get; set; } = "anchor-duplicate-1";
+
+    public int MaxActiveBackups { get; set; } = 1;
+
     public int StatusTimeoutSeconds { get; set; } = 2;
 
     public string PublicTestServerAddress { get; set; } = "45.77.241.247:8444";

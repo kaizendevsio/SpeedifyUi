@@ -16,8 +16,12 @@ pub struct PathHealthSnapshot {
 }
 
 impl PathHealthSnapshot {
+    pub fn is_realtime_eligible(&self) -> bool {
+        self.interface_up && !self.in_cooldown && self.loss_rate < 1.0
+    }
+
     pub fn score(&self) -> f64 {
-        if !self.interface_up || self.in_cooldown {
+        if !self.is_realtime_eligible() {
             return -1_000_000.0;
         }
 
@@ -62,7 +66,7 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
             let score = path.score();
             let role = if !path.interface_up {
                 PathRole::Unavailable
-            } else if path.in_cooldown {
+            } else if path.in_cooldown || path.loss_rate >= 1.0 {
                 PathRole::Cooldown
             } else {
                 PathRole::Probe
@@ -76,7 +80,7 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
     let mut anchor_assigned = false;
     let mut backups_assigned = 0usize;
     for scored_path in &mut scored {
-        if !scored_path.score.is_finite() {
+        if !scored_path.score.is_finite() || !scored_path.path.is_realtime_eligible() {
             continue;
         }
 
@@ -155,6 +159,36 @@ mod tests {
             roles
                 .iter()
                 .find(|path| path.path.name == "fiber")
+                .unwrap()
+                .role,
+            PathRole::Cooldown
+        );
+    }
+
+    #[test]
+    fn all_bad_paths_do_not_get_anchor() {
+        let mut offline = path(1, "offline", 15.0, 0.0, 0.0);
+        offline.interface_up = false;
+        let mut full_loss = path(2, "full-loss", 40.0, 1.0, 0.0);
+        full_loss.loss_rate = 1.0;
+
+        let roles = select_path_roles(&[offline, full_loss], 1);
+
+        assert!(roles.iter().all(|path| path.role != PathRole::Anchor));
+        assert!(roles.iter().all(|path| path.role != PathRole::Backup));
+    }
+
+    #[test]
+    fn full_loss_path_cannot_be_anchor() {
+        let full_loss = path(1, "full-loss", 15.0, 1.0, 0.0);
+        let roles = select_path_roles(&[full_loss, path(2, "stable", 50.0, 0.0, 0.0)], 1);
+
+        assert_eq!(roles[0].path.name, "stable");
+        assert_eq!(roles[0].role, PathRole::Anchor);
+        assert_eq!(
+            roles
+                .iter()
+                .find(|path| path.path.name == "full-loss")
                 .unwrap()
                 .role,
             PathRole::Cooldown

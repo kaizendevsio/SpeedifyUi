@@ -161,6 +161,10 @@ pub struct XBondRuntimeStatus {
     #[serde(default)]
     pub running: bool,
     #[serde(default)]
+    pub mode: ScheduleMode,
+    #[serde(default)]
+    pub server_addr: String,
+    #[serde(default)]
     pub tunnel: XBondTunnelStatus,
     #[serde(default)]
     pub paths: Vec<crate::health::PathHealthSnapshot>,

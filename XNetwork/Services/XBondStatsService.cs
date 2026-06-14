@@ -35,9 +35,7 @@ public sealed class XBondStatsService(XBondStatusService statusService)
                 ThroughputBps = path.ThroughputBps,
                 BindAddress = path.BindAddress ?? "",
                 BindDevice = path.BindDevice ?? "",
-                IsActive = activeIds.Contains(path.PathId) ||
-                           string.Equals(path.Role, "anchor", StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(path.Role, "backup", StringComparison.OrdinalIgnoreCase)
+                IsActive = activeIds.Contains(path.PathId)
             })
             .OrderBy(path => path.IsActive ? 0 : 1)
             .ThenBy(path => path.IsAnchor ? 0 : 1)

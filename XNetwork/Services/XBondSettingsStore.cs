@@ -102,6 +102,13 @@ public class XBondSettingsStore
         target.ClientConfigPath = string.IsNullOrWhiteSpace(source.ClientConfigPath)
             ? target.ClientConfigPath
             : source.ClientConfigPath;
+        target.RuntimeStatusPath = string.IsNullOrWhiteSpace(source.RuntimeStatusPath)
+            ? target.RuntimeStatusPath
+            : source.RuntimeStatusPath;
+        target.ScheduleMode = string.IsNullOrWhiteSpace(source.ScheduleMode)
+            ? target.ScheduleMode
+            : source.ScheduleMode;
+        target.MaxActiveBackups = source.MaxActiveBackups <= 0 ? target.MaxActiveBackups : source.MaxActiveBackups;
         target.StatusTimeoutSeconds = source.StatusTimeoutSeconds <= 0
             ? target.StatusTimeoutSeconds
             : source.StatusTimeoutSeconds;

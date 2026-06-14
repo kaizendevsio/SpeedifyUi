@@ -14,7 +14,7 @@ pub enum ScheduleMode {
 
 impl Default for ScheduleMode {
     fn default() -> Self {
-        Self::AnchorFec
+        Self::AnchorDuplicate1
     }
 }
 
@@ -226,5 +226,10 @@ mod tests {
         assert_eq!(transmissions[0].packet_kind, PacketKind::Data);
         assert_eq!(transmissions[1].packet_kind, PacketKind::Fec);
         assert_eq!(transmissions[2].packet_kind, PacketKind::Fec);
+    }
+
+    #[test]
+    fn default_mode_is_two_link_duplicate() {
+        assert_eq!(ScheduleMode::default(), ScheduleMode::AnchorDuplicate1);
     }
 }
