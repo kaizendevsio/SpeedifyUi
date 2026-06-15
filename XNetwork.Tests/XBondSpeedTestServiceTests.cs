@@ -114,4 +114,23 @@ public class XBondSpeedTestServiceTests
         Assert.Equal("/var/lib/xnetwork/diagnostics", candidates[0]);
         Assert.Contains(candidates, candidate => candidate.Contains("xnetwork", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void SummarizeIperfFailureDetails_ExtractsJsonError()
+    {
+        var details = XBondSpeedTestService.SummarizeIperfFailureDetails(
+            """
+            {
+              "start": {
+                "connected": [],
+                "version": "iperf 3.17.1"
+              },
+              "intervals": [],
+              "end": {},
+              "error": "unable to connect to server"
+            }
+            """);
+
+        Assert.Equal("unable to connect to server", details);
+    }
 }

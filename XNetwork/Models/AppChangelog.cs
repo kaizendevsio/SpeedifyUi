@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.28";
+    public const string CurrentVersion = "xbond-2026.06.29";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Polished XBond native iperf diagnostic messages.",
+            Changes =
+            [
+                "Native adapter iperf errors now show the concise iperf error instead of a raw JSON body.",
+                "Performance Matrix diagnostics still explain that native adapter tests need a separate public/native iperf endpoint."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.28",
             Date = "2026-06-15",
             Summary = "Fixed XBond performance matrix artifact and native endpoint reporting.",
             Changes =

@@ -608,7 +608,7 @@ public sealed class XBondSpeedTestService(
             {
                 run.Error = string.IsNullOrWhiteSpace(upload.Output)
                     ? $"{settings.IperfCommandPath} upload exited with code {upload.ExitCode}."
-                    : upload.Output;
+                    : SummarizeIperfFailureDetails(upload.Output);
                 if (isNativeAdapter)
                 {
                     run.Error = FormatNativeIperfFailure(
@@ -655,7 +655,7 @@ public sealed class XBondSpeedTestService(
             {
                 run.Error = string.IsNullOrWhiteSpace(download.Output)
                     ? $"{settings.IperfCommandPath} download exited with code {download.ExitCode}."
-                    : download.Output;
+                    : SummarizeIperfFailureDetails(download.Output);
                 if (isNativeAdapter)
                 {
                     run.Error = FormatNativeIperfFailure(
@@ -700,6 +700,36 @@ public sealed class XBondSpeedTestService(
         var adapter = string.IsNullOrWhiteSpace(interfaceName) ? "adapter" : $"adapter {interfaceName}";
         var message = $"{phase} failed for native {adapter}: {details}";
         return $"{message}. Native per-adapter iperf requires an iperf3 listener reachable outside XBond at {nativeHost}:{nativePort}; the standard XBond iperf endpoint is tunnel-only at {tunnelHost}:{tunnelPort}.";
+    }
+
+    public static string SummarizeIperfFailureDetails(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return "iperf3 returned no error details.";
+        }
+
+        try
+        {
+            var json = ExtractJsonObject(output);
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.TryGetProperty("error", out var error) &&
+                error.ValueKind == JsonValueKind.String &&
+                !string.IsNullOrWhiteSpace(error.GetString()))
+            {
+                return error.GetString()!;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        var compact = string.Join(
+            " ",
+            output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => line.Length > 0));
+        return compact.Length <= 240 ? compact : $"{compact[..237]}...";
     }
 
     private async Task<XBondMatrixSystemSample> CaptureSystemSampleAsync(CancellationToken cancellationToken)
