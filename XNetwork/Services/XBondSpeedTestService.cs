@@ -295,8 +295,7 @@ public sealed class XBondSpeedTestService(
     {
         var ttlSeconds = Math.Clamp(settings.PerformanceMatrixOverrideTtlSeconds, 10, 3600)
             .ToString(CultureInfo.InvariantCulture);
-        var command = await RunCommandAsync(
-            settings.ClientBinaryPath,
+        var command = await RunXBondClientCommandAsync(
             [
                 "override",
                 "set",
@@ -327,8 +326,7 @@ public sealed class XBondSpeedTestService(
     {
         try
         {
-            var command = await RunCommandAsync(
-                settings.ClientBinaryPath,
+            var command = await RunXBondClientCommandAsync(
                 [
                     "override",
                     "clear",
@@ -943,29 +941,22 @@ public sealed class XBondSpeedTestService(
             .ToArray();
     }
 
-    private static XBondClientConfig CloneConfig(XBondClientConfig config) => new()
+    private Task<CommandResult> RunXBondClientCommandAsync(
+        IReadOnlyList<string> arguments,
+        int timeoutSeconds,
+        CancellationToken cancellationToken)
     {
-        Enabled = config.Enabled,
-        SessionId = config.SessionId,
-        ServerAddress = config.ServerAddress,
-        Mode = config.Mode,
-        RedundancyPolicy = config.RedundancyPolicy,
-        MaxActiveBackups = config.MaxActiveBackups,
-        RealtimeDeadlineMs = config.RealtimeDeadlineMs,
-        InteractivePacketThresholdBytes = config.InteractivePacketThresholdBytes,
-        DuplicateLossThreshold = config.DuplicateLossThreshold,
-        BackupLossDisableThreshold = config.BackupLossDisableThreshold,
-        ReorderHoldMs = config.ReorderHoldMs,
-        RuntimeStatusPath = config.RuntimeStatusPath,
-        Paths = config.Paths.Select(path => new XBondClientPathConfig
+        if (settings.UseSudoForServiceManager && !string.IsNullOrWhiteSpace(settings.SudoPath))
         {
-            Id = path.Id,
-            Name = path.Name,
-            InterfaceName = path.InterfaceName,
-            BindAddress = path.BindAddress,
-            Enabled = path.Enabled
-        }).ToList()
-    };
+            return RunCommandAsync(
+                settings.SudoPath,
+                ["-n", settings.ClientBinaryPath, .. arguments],
+                timeoutSeconds,
+                cancellationToken);
+        }
+
+        return RunCommandAsync(settings.ClientBinaryPath, arguments, timeoutSeconds, cancellationToken);
+    }
 
     private static ProcCpuSample? CaptureProcCpuSample()
     {

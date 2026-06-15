@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.33";
+    public const string CurrentVersion = "xbond-2026.06.34";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Fixed operator diagnostic override permissions.",
+            Changes =
+            [
+                "Operator performance speed test diagnostics now call XBond override commands through non-interactive sudo when configured, matching the root-owned control socket.",
+                "This lets backend diagnostics use live overrides without making /run/xbond/client-control.sock world-writable.",
+                "The user-facing /xbond page remains limited to runtime status and the manual speed test."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.33",
             Date = "2026-06-16",
             Summary = "Added the Wifi route alias.",
             Changes =
