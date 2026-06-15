@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.34";
+    public const string CurrentVersion = "xbond-2026.06.35";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Tightened XBond operator tooling boundaries.",
+            Changes =
+            [
+                "Operator performance speed test deployments now have a paired deploy script for app, client, and server runtime changes.",
+                "Normal Settings no longer exposes the persisted Diagnostic policy or scoped route diagnostics.",
+                "Backend diagnostic overrides use an absolute XBond client path when running through sudo."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.34",
             Date = "2026-06-16",
             Summary = "Fixed operator diagnostic override permissions.",
             Changes =

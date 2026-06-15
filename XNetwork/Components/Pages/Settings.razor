@@ -5,7 +5,6 @@
 @inject XBondTrafficEngineService XBondTrafficEngineService
 @inject XBondStatusService XBondStatusService
 @inject XBondClientConfigService XBondClientConfigService
-@inject XBondScopedRouteService ScopedRouteService
 @inject XBondMssClampService MssClampService
 @inject NetworkMonitorService NetworkMonitorService
 
@@ -14,7 +13,7 @@
 <div class="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
     <section>
         <h1 class="text-2xl font-bold text-white">Settings</h1>
-        <p class="mt-1 text-sm text-slate-400">XBond runtime controls and router diagnostics.</p>
+        <p class="mt-1 text-sm text-slate-400">XBond runtime controls and router settings.</p>
     </section>
 
     @if (!string.IsNullOrWhiteSpace(_message))
@@ -77,7 +76,6 @@
                     <option value="balanced">Balanced</option>
                     <option value="reliable">Reliable</option>
                     <option value="fast">Fast</option>
-                    <option value="diagnostic">Diagnostic</option>
                 </select>
             </label>
             <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
@@ -155,33 +153,6 @@
     </section>
 
     <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
-        <div>
-            <h2 class="text-lg font-semibold text-white">Scoped IPv4 Diagnostics</h2>
-            <p class="mt-1 text-sm text-slate-400">Temporarily route one IPv4 host through XBond for testing. IPv6 is not supported in this branch.</p>
-        </div>
-        <div class="mt-4 flex flex-col gap-3 sm:flex-row">
-            <input class="rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-100 outline-none focus:border-cyan-500 sm:w-64" @bind="_routeTarget" />
-            <button type="button" class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40" disabled="@_busy" @onclick="TestScopedRouteAsync">
-                Run test
-            </button>
-            <button type="button" class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40" disabled="@_busy" @onclick="ClearScopedRouteAsync">
-                Clear route
-            </button>
-        </div>
-        @if (_routeTest is not null)
-        {
-            <div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
-                <p class="font-semibold text-white">@_routeTest.Message</p>
-                <p class="mt-1">Packets: @_routeTest.Received/@_routeTest.Sent, loss @Math.Round(_routeTest.LossRate * 100, 1)%</p>
-                @if (!string.IsNullOrWhiteSpace(_routeTest.Error))
-                {
-                    <p class="mt-1 text-rose-200">@_routeTest.Error</p>
-                }
-            </div>
-        }
-    </section>
-
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">TCP MSS Clamp</h2>
@@ -239,8 +210,6 @@
     private XBondAdapterConfigStatus? _xbondAdapterStatus;
     private XBondMssClampStatus? _mssClampStatus;
     private NetworkMonitorStatus? _networkMonitorStatus;
-    private XBondScopedRouteTestResult? _routeTest;
-    private string _routeTarget = "1.1.1.1";
     private string? _message;
     private string? _error;
     private string? _busyAdapter;
@@ -254,7 +223,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _routeTarget = ScopedRouteService.Settings.ScopedRouteDefaultTarget;
         await RefreshAsync();
         _ = RunRefreshLoopAsync();
     }
@@ -371,42 +339,6 @@
         {
             _busy = false;
             await RefreshAsync();
-        }
-    }
-
-    private async Task TestScopedRouteAsync()
-    {
-        _busy = true;
-        _message = null;
-        _error = null;
-        try
-        {
-            _routeTest = await ScopedRouteService.RunScopedRouteTestAsync(_routeTarget);
-            if (_routeTest.HasError)
-            {
-                _error = _routeTest.Error;
-            }
-        }
-        finally
-        {
-            _busy = false;
-        }
-    }
-
-    private async Task ClearScopedRouteAsync()
-    {
-        _busy = true;
-        _message = null;
-        _error = null;
-        try
-        {
-            var status = await ScopedRouteService.ClearScopedRouteAsync(_routeTarget);
-            _message = status.Message;
-            _error = status.Error;
-        }
-        finally
-        {
-            _busy = false;
         }
     }
 

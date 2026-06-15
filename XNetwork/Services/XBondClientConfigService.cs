@@ -658,7 +658,6 @@ public sealed class XBondClientConfigService(
         {
             "reliable" => "reliable",
             "fast" => "fast",
-            "diagnostic" => "diagnostic",
             _ => "balanced"
         };
     }

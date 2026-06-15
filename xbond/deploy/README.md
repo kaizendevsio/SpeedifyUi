@@ -2,6 +2,16 @@
 
 These files install the boot-enabled XBond tunnel. XBond is IPv4-only in this milestone; IPv6 traffic must remain disabled or routed outside XBond until IPv6 encapsulation is implemented.
 
+## Paired Runtime Deployment
+
+When changing Rust protocol, scheduler, status schema, routing, service templates, or shared client/server runtime code, deploy both ends together from the Windows workstation:
+
+```powershell
+.\deploy-xbond-paired.ps1
+```
+
+The paired deploy script updates `xeon-speedify-vultr-01` first, rebuilds and restarts `xbond-server.service` plus `xbond-server-nat.service`, then updates `xeon-network`, runs the app deploy, rebuilds and restarts `xbond-client.service`, and verifies app routes, the XBond default route, tunnel ping, and internet ping. Use the normal router `deploy.sh` only for app-only changes that do not affect XBond Rust runtime behavior.
+
 ## Router
 
 Install as root on `xeon-network`:

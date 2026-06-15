@@ -34,6 +34,7 @@
 - After deploy, verify with `systemctl is-active xnetwork.service`, `curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/`, and optionally external `curl http://100.112.183.104:8080/`.
 - Remote publish warnings should be reviewed normally on `feature/xband-only-runtime`; the old `SpeedifyService.cs` warning note no longer applies because that service is removed in this branch.
 - When changing XBond protocol, scheduler, status schema, config schema, service templates, routing behavior, or any shared Rust code used by both ends, deploy the matching `xbond-client` binary to `xeon-network` and `xbond-server` binary to `xeon-speedify-vultr-01` in the same work item. Do not leave client/server protocol or runtime behavior mismatched. After deployment, verify `xbond-client.service`, `xbond-server.service`, `xbond-server-nat.service`, app HTTP routes, `ip route get 8.8.8.8`, `ping -I xbond0 10.250.0.1`, and an internet ping through `xbond0`.
+- Preferred paired runtime deploy command from Windows is `.\deploy-xbond-paired.ps1`. Use the router-side `./deploy.sh` only for app-only changes that do not affect the Rust XBond runtime.
 
 ## XBond-Only Branch
 - 2026-06-15: Branch `feature/xband-only-runtime` is the XBond-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion`; it started at `xbond-2026.06.18` and has continued with `xbond-` prefixed changelog revisions.
@@ -159,6 +160,7 @@
 - 2026-06-16: XBond client/server hot-path packet sends use borrowed payload encoding before encryption to avoid an extra packet clone per selected path. Protocol/runtime changes still require paired deployment of `xbond-client` on `xeon-network` and `xbond-server` on `xeon-speedify-vultr-01`.
 - 2026-06-16: XNetwork version `xbond-2026.06.33` adds `/wifi` as an alias for the existing `/xrouter` Wifi page; keep `/xrouter` for compatibility.
 - 2026-06-16: XNetwork version `xbond-2026.06.34` makes backend XBond diagnostic overrides use `sudo -n xbond-client override ...` when service-control sudo is configured. The control socket remains root-owned; do not make `/run/xbond/client-control.sock` world-writable just so app diagnostics can use it.
+- 2026-06-16: XNetwork version `xbond-2026.06.35` adds `deploy-xbond-paired.ps1` for paired app/client/server deployment, removes persisted `Diagnostic` from normal Settings policy choices, hides scoped IPv4 route diagnostics from Settings, and uses an absolute `/usr/local/bin/xbond-client` path for sudo-backed diagnostic override commands.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.

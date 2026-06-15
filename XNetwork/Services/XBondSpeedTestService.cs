@@ -950,12 +950,24 @@ public sealed class XBondSpeedTestService(
         {
             return RunCommandAsync(
                 settings.SudoPath,
-                ["-n", settings.ClientBinaryPath, .. arguments],
+                ["-n", ResolveSudoClientBinaryPath(), .. arguments],
                 timeoutSeconds,
                 cancellationToken);
         }
 
         return RunCommandAsync(settings.ClientBinaryPath, arguments, timeoutSeconds, cancellationToken);
+    }
+
+    private string ResolveSudoClientBinaryPath()
+    {
+        if (Path.IsPathRooted(settings.ClientBinaryPath))
+        {
+            return settings.ClientBinaryPath;
+        }
+
+        return OperatingSystem.IsLinux()
+            ? $"/usr/local/bin/{settings.ClientBinaryPath}"
+            : settings.ClientBinaryPath;
     }
 
     private static ProcCpuSample? CaptureProcCpuSample()
