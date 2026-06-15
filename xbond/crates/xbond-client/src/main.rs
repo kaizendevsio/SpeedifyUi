@@ -15,9 +15,9 @@ use tokio::time;
 use xbond_core::{
     build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, ClientConfig,
     FrameReceiver, PacketKind, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate,
-    ProbePathStats, ReceiveOutcome, RouteVerification, ScheduledTransmission, XBondFecStatus,
-    XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTun,
-    XBondTunnelStatus, XorFecBlock,
+    ProbePathStats, ReceiveOutcome, RouteVerification, SchedulePlan, ScheduledTransmission,
+    XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus,
+    XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -272,8 +272,12 @@ struct TunnelPathRuntime {
     last_bytes_sent: u64,
     bytes_received: u64,
     last_bytes_received: u64,
+    duplicate_bytes_received: u64,
+    last_duplicate_bytes_received: u64,
     outbound_throughput_bps: u64,
     inbound_throughput_bps: u64,
+    duplicate_inbound_throughput_bps: u64,
+    raw_inbound_throughput_bps: u64,
     throughput_bps: u64,
     health_sequence: u64,
     pending_heartbeats: HashMap<u64, Instant>,
@@ -620,6 +624,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut pending_fec_source: Option<(u64, Vec<u8>)> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
     let mut sequence = 0u64;
+    let mut control_sequence = 1_000_000_000_000u64;
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
     let mut last_throughput_sample = Instant::now();
 
@@ -636,6 +641,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &sockets,
         &counters,
     )?;
+    send_tunnel_schedule_control(
+        &schedule,
+        &mut path_runtime,
+        &sockets,
+        &key,
+        session_id,
+        &mut control_sequence,
+        options.json_events,
+    )
+    .await?;
 
     loop {
         tokio::select! {
@@ -670,6 +685,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     ),
                 );
                 transmissions = build_transmission_plan(&schedule);
+                send_tunnel_schedule_control(
+                    &schedule,
+                    &mut path_runtime,
+                    &sockets,
+                    &key,
+                    session_id,
+                    &mut control_sequence,
+                    options.json_events,
+                ).await?;
                 write_tunnel_runtime_status(
                     &config,
                     &tun,
@@ -887,9 +911,21 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         }
                     }
                     ReceiveOutcome::Duplicate => {
+                        if is_data_like(inbound.frame.header.kind) {
+                            let runtime = path_runtime.entry(inbound.path_id).or_default();
+                            runtime.duplicate_bytes_received = runtime
+                                .duplicate_bytes_received
+                                .saturating_add(inbound.frame.payload.len() as u64);
+                        }
                         counters.duplicate_packets_dropped += 1;
                     }
                     ReceiveOutcome::Expired => {
+                        if is_data_like(inbound.frame.header.kind) {
+                            let runtime = path_runtime.entry(inbound.path_id).or_default();
+                            runtime.duplicate_bytes_received = runtime
+                                .duplicate_bytes_received
+                                .saturating_add(inbound.frame.payload.len() as u64);
+                        }
                         counters.late_packets_dropped += 1;
                     }
                     _ => {}
@@ -1017,6 +1053,8 @@ fn tunnel_health(
             if let Some(runtime) = path_runtime.get(&path.path_id) {
                 path.outbound_throughput_bps = runtime.outbound_throughput_bps;
                 path.inbound_throughput_bps = runtime.inbound_throughput_bps;
+                path.duplicate_inbound_throughput_bps = runtime.duplicate_inbound_throughput_bps;
+                path.raw_inbound_throughput_bps = runtime.raw_inbound_throughput_bps;
                 path.throughput_bps = runtime.throughput_bps;
                 path.rtt_ms = runtime.rtt_ms;
                 path.jitter_ms = runtime.jitter_ms;
@@ -1056,6 +1094,65 @@ fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>
 }
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
+
+async fn send_tunnel_schedule_control(
+    schedule: &SchedulePlan,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    key: &XBondKey,
+    session_id: u64,
+    control_sequence: &mut u64,
+    json_events: bool,
+) -> Result<()> {
+    if sockets.is_empty() {
+        return Ok(());
+    }
+
+    *control_sequence = control_sequence.saturating_add(1);
+    let sequence = *control_sequence;
+    let payload = serde_json::to_vec(schedule)?;
+
+    for (path_id, socket) in sockets {
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Control,
+                session_id,
+                sequence,
+                now_micros(),
+                *path_id,
+            ),
+            payload.clone(),
+        );
+        let encoded = frame.encode_sealed(key)?;
+        if let Err(error) = socket.send(&encoded).await {
+            record_tunnel_send_failure(path_runtime, *path_id);
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "schedule-control-send-failed",
+                        "path_id": path_id,
+                        "sequence": sequence,
+                        "error": error.to_string(),
+                    })
+                );
+            }
+        }
+    }
+
+    if json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "schedule-control-sent",
+                "sequence": sequence,
+                "schedule": schedule,
+            })
+        );
+    }
+
+    Ok(())
+}
 
 async fn send_tunnel_heartbeats(
     config: &ClientConfig,
@@ -1229,13 +1326,22 @@ fn update_tunnel_throughput(
         let inbound_delta = runtime
             .bytes_received
             .saturating_sub(runtime.last_bytes_received);
+        let duplicate_inbound_delta = runtime
+            .duplicate_bytes_received
+            .saturating_sub(runtime.last_duplicate_bytes_received);
         runtime.outbound_throughput_bps = ((outbound_delta as f64 * 8.0) / elapsed) as u64;
         runtime.inbound_throughput_bps = ((inbound_delta as f64 * 8.0) / elapsed) as u64;
+        runtime.duplicate_inbound_throughput_bps =
+            ((duplicate_inbound_delta as f64 * 8.0) / elapsed) as u64;
+        runtime.raw_inbound_throughput_bps = runtime
+            .inbound_throughput_bps
+            .saturating_add(runtime.duplicate_inbound_throughput_bps);
         runtime.throughput_bps = runtime
             .outbound_throughput_bps
-            .saturating_add(runtime.inbound_throughput_bps);
+            .saturating_add(runtime.raw_inbound_throughput_bps);
         runtime.last_bytes_sent = runtime.bytes_sent;
         runtime.last_bytes_received = runtime.bytes_received;
+        runtime.last_duplicate_bytes_received = runtime.duplicate_bytes_received;
     }
     let outbound_delta = counters
         .data_bytes_sent
@@ -1867,6 +1973,8 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             queue_depth: 0,
             outbound_throughput_bps: 0,
             inbound_throughput_bps: 0,
+            duplicate_inbound_throughput_bps: 0,
+            raw_inbound_throughput_bps: 0,
             throughput_bps: 0,
             interface_up: path.enabled && interface_is_live(path.interface_name.as_deref()),
             in_cooldown: false,

@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.23";
+    public const string CurrentVersion = "xbond-2026.06.24";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Fixed XBond return scheduling and duplicate receive visibility.",
+            Changes =
+            [
+                "XBond clients now send their live schedule to the server so return traffic follows the current anchor and backup paths.",
+                "Per-adapter Down values now include duplicate receive load, while the connection summary still shows useful tunnel download.",
+                "Path cards show duplicate downlink details when duplicate return traffic is present."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.23",
             Date = "2026-06-15",
             Summary = "Clarified dashboard path throughput labels.",
             Changes =

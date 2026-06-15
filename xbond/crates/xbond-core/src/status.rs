@@ -48,6 +48,10 @@ pub struct XBondPathStatus {
     pub outbound_throughput_bps: u64,
     #[serde(default)]
     pub inbound_throughput_bps: u64,
+    #[serde(default)]
+    pub duplicate_inbound_throughput_bps: u64,
+    #[serde(default)]
+    pub raw_inbound_throughput_bps: u64,
     pub throughput_bps: u64,
     pub interface_up: bool,
     pub in_cooldown: bool,
@@ -71,6 +75,8 @@ impl From<ScoredPath> for XBondPathStatus {
             queue_depth: value.path.queue_depth,
             outbound_throughput_bps: value.path.outbound_throughput_bps,
             inbound_throughput_bps: value.path.inbound_throughput_bps,
+            duplicate_inbound_throughput_bps: value.path.duplicate_inbound_throughput_bps,
+            raw_inbound_throughput_bps: value.path.raw_inbound_throughput_bps,
             throughput_bps: value.path.throughput_bps,
             interface_up: value.path.interface_up,
             in_cooldown: value.path.in_cooldown,

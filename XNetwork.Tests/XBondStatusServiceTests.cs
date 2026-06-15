@@ -67,6 +67,8 @@ public class XBondStatusServiceTests
                   "queue_depth": 3,
                   "outbound_throughput_bps": 4000000,
                   "inbound_throughput_bps": 8000000,
+                  "duplicate_inbound_throughput_bps": 2000000,
+                  "raw_inbound_throughput_bps": 10000000,
                   "throughput_bps": 12000000,
                   "interface_up": true,
                   "in_cooldown": false
@@ -117,7 +119,15 @@ public class XBondStatusServiceTests
         Assert.Equal(3, path.QueueDepth);
         Assert.Equal((ulong)4_000_000, path.OutboundThroughputBps);
         Assert.Equal((ulong)8_000_000, path.InboundThroughputBps);
+        Assert.Equal((ulong)2_000_000, path.DuplicateInboundThroughputBps);
+        Assert.Equal((ulong)10_000_000, path.RawInboundThroughputBps);
         Assert.Equal((ulong)12_000_000, path.ThroughputBps);
+
+        var snapshot = XBondStatsService.FromStatus(status);
+        var dashboardPath = Assert.Single(snapshot.Paths);
+        Assert.Equal(10, dashboardPath.DownloadMbps);
+        Assert.Equal(8, dashboardPath.UsefulDownloadMbps);
+        Assert.Equal(2, dashboardPath.DuplicateDownloadMbps);
     }
 
     [Fact]

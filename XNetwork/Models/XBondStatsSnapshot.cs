@@ -100,13 +100,25 @@ public sealed class XBondPathStatsSnapshot
 
     public ulong InboundThroughputBps { get; init; }
 
+    public ulong DuplicateInboundThroughputBps { get; init; }
+
+    public ulong RawInboundThroughputBps { get; init; }
+
     public ulong TotalThroughputBps => ThroughputBps > 0
         ? ThroughputBps
-        : OutboundThroughputBps + InboundThroughputBps;
+        : OutboundThroughputBps + RawPathInboundThroughputBps;
 
     public double ThroughputMbps => TotalThroughputBps / 1_000_000d;
 
-    public double DownloadMbps => InboundThroughputBps / 1_000_000d;
+    public ulong RawPathInboundThroughputBps => RawInboundThroughputBps > 0
+        ? RawInboundThroughputBps
+        : InboundThroughputBps + DuplicateInboundThroughputBps;
+
+    public double DownloadMbps => RawPathInboundThroughputBps / 1_000_000d;
+
+    public double UsefulDownloadMbps => InboundThroughputBps / 1_000_000d;
+
+    public double DuplicateDownloadMbps => DuplicateInboundThroughputBps / 1_000_000d;
 
     public double UploadMbps => OutboundThroughputBps / 1_000_000d;
 

@@ -175,6 +175,12 @@ public class XBondPathStatus
     [JsonPropertyName("inbound_throughput_bps")]
     public ulong InboundThroughputBps { get; set; }
 
+    [JsonPropertyName("duplicate_inbound_throughput_bps")]
+    public ulong DuplicateInboundThroughputBps { get; set; }
+
+    [JsonPropertyName("raw_inbound_throughput_bps")]
+    public ulong RawInboundThroughputBps { get; set; }
+
     [JsonPropertyName("interface_up")]
     public bool InterfaceUp { get; set; }
 

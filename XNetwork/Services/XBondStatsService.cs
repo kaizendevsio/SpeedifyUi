@@ -64,6 +64,8 @@ public sealed class XBondStatsService(
                 ThroughputBps = path.ThroughputBps,
                 OutboundThroughputBps = path.OutboundThroughputBps,
                 InboundThroughputBps = path.InboundThroughputBps,
+                DuplicateInboundThroughputBps = path.DuplicateInboundThroughputBps,
+                RawInboundThroughputBps = path.RawInboundThroughputBps,
                 BindAddress = path.BindAddress ?? "",
                 BindDevice = path.BindDevice ?? "",
                 IsActive = activeIds.Contains(path.PathId),

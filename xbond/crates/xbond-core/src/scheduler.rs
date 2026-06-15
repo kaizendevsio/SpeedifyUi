@@ -136,6 +136,8 @@ mod tests {
             queue_depth: 0,
             outbound_throughput_bps: 2_500_000,
             inbound_throughput_bps: 2_500_000,
+            duplicate_inbound_throughput_bps: 0,
+            raw_inbound_throughput_bps: 2_500_000,
             throughput_bps: 5_000_000,
             interface_up: true,
             in_cooldown: false,

@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use xbond_core::{
-    is_ipv4_packet, XBondTun, FrameReceiver, PacketKind, ReceiveOutcome, XBondFrame, XBondHeader,
-    XBondKey, XorFecBlock,
+    build_transmission_plan, is_ipv4_packet, FrameReceiver, PacketKind, ReceiveOutcome,
+    SchedulePlan, XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -41,6 +41,12 @@ struct InboundServerFrame {
     peer: SocketAddr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReturnTarget {
+    path_id: u16,
+    packet_kind: PacketKind,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -60,6 +66,7 @@ async fn main() -> Result<()> {
     let mut non_ipv4_packets_dropped = 0u64;
     let mut fec_recovery = FecRecovery::new(8192);
     let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
+    let mut return_schedule: Vec<ReturnTarget> = Vec::new();
     let mut reverse_sequence = 0u64;
     let mut last_session_id = 0u64;
 
@@ -127,9 +134,32 @@ async fn main() -> Result<()> {
             Some(inbound) = udp_frame_rx.recv() => {
                 let frame = inbound.frame;
                 let peer = inbound.peer;
+                if last_session_id != 0 && frame.header.session_id != last_session_id {
+                    peers.clear();
+                    return_schedule.clear();
+                }
                 last_session_id = frame.header.session_id;
                 if frame.header.path_id != 0 {
                     peers.insert(frame.header.path_id, peer);
+                }
+                if let Some(schedule) = parse_return_schedule(&frame) {
+                    return_schedule = schedule;
+                    if args.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "return-schedule-updated",
+                                "session_id": frame.header.session_id,
+                                "paths": return_schedule
+                                    .iter()
+                                    .map(|target| serde_json::json!({
+                                        "path_id": target.path_id,
+                                        "packet_kind": target.packet_kind,
+                                    }))
+                                    .collect::<Vec<_>>(),
+                            })
+                        );
+                    }
                 }
 
                 let should_ack = matches!(
@@ -261,26 +291,20 @@ async fn main() -> Result<()> {
 
                 reverse_sequence += 1;
                 let send_micros = now_micros();
-                let mut known_peers = peers.iter().collect::<Vec<_>>();
-                known_peers.sort_by_key(|(path_id, _)| **path_id);
+                let return_targets = select_return_targets(&return_schedule, &peers);
                 let mut sent_paths = 0usize;
-                for (index, (path_id, peer)) in known_peers.into_iter().enumerate() {
-                    let kind = if index == 0 {
-                        PacketKind::Data
-                    } else {
-                        PacketKind::Duplicate
-                    };
+                for (path_id, peer, kind) in return_targets {
                     let mut header = XBondHeader::new(
                         kind,
                         last_session_id,
                         reverse_sequence,
                         send_micros,
-                        *path_id,
+                        path_id,
                     );
                     header.flags = 1;
                     let frame = XBondFrame::new(header, packet.clone());
                     let encoded = frame.encode_sealed(&key)?;
-                    match socket.send_to(&encoded, *peer).await {
+                    match socket.send_to(&encoded, peer).await {
                         Ok(_) => sent_paths += 1,
                         Err(error) => {
                             if args.json_events {
@@ -494,6 +518,62 @@ fn is_tunnel_payload(kind: PacketKind) -> bool {
     )
 }
 
+fn parse_return_schedule(frame: &XBondFrame) -> Option<Vec<ReturnTarget>> {
+    if frame.header.kind != PacketKind::Control {
+        return None;
+    }
+
+    let schedule = serde_json::from_slice::<SchedulePlan>(&frame.payload).ok()?;
+    let targets = build_transmission_plan(&schedule)
+        .into_iter()
+        .filter(|transmission| {
+            matches!(
+                transmission.packet_kind,
+                PacketKind::Data | PacketKind::Duplicate
+            )
+        })
+        .map(|transmission| ReturnTarget {
+            path_id: transmission.path_id,
+            packet_kind: transmission.packet_kind,
+        })
+        .collect::<Vec<_>>();
+
+    (!targets.is_empty()).then_some(targets)
+}
+
+fn select_return_targets(
+    schedule: &[ReturnTarget],
+    peers: &HashMap<u16, SocketAddr>,
+) -> Vec<(u16, SocketAddr, PacketKind)> {
+    let scheduled = schedule
+        .iter()
+        .filter_map(|target| {
+            peers
+                .get(&target.path_id)
+                .map(|peer| (target.path_id, *peer, target.packet_kind))
+        })
+        .collect::<Vec<_>>();
+
+    if !scheduled.is_empty() {
+        return scheduled;
+    }
+
+    let mut fallback = peers.iter().collect::<Vec<_>>();
+    fallback.sort_by_key(|(path_id, _)| **path_id);
+    fallback
+        .into_iter()
+        .enumerate()
+        .map(|(index, (path_id, peer))| {
+            let kind = if index == 0 {
+                PacketKind::Data
+            } else {
+                PacketKind::Duplicate
+            };
+            (*path_id, *peer, kind)
+        })
+        .collect()
+}
+
 fn print_packet_event(
     event: &str,
     outcome: ReceiveOutcome,
@@ -596,6 +676,77 @@ mod tests {
         assert!(is_data_like(PacketKind::Duplicate));
         assert!(!is_data_like(PacketKind::Heartbeat));
         assert!(!is_data_like(PacketKind::Fec));
+    }
+
+    #[test]
+    fn control_frame_updates_return_schedule() {
+        let schedule = SchedulePlan {
+            mode: xbond_core::ScheduleMode::AnchorDuplicate1,
+            anchor_path_id: Some(5),
+            data_path_ids: vec![5],
+            duplicate_path_ids: vec![3],
+            fec_path_ids: Vec::new(),
+        };
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Control, 7, 1, 2, 5),
+            serde_json::to_vec(&schedule).unwrap(),
+        );
+
+        let targets = parse_return_schedule(&frame).unwrap();
+
+        assert_eq!(
+            targets,
+            vec![
+                ReturnTarget {
+                    path_id: 5,
+                    packet_kind: PacketKind::Data,
+                },
+                ReturnTarget {
+                    path_id: 3,
+                    packet_kind: PacketKind::Duplicate,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn scheduled_return_targets_follow_client_schedule_order() {
+        let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
+        let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
+        let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
+        let schedule = vec![
+            ReturnTarget {
+                path_id: 5,
+                packet_kind: PacketKind::Data,
+            },
+            ReturnTarget {
+                path_id: 3,
+                packet_kind: PacketKind::Duplicate,
+            },
+        ];
+
+        assert_eq!(
+            select_return_targets(&schedule, &peers),
+            vec![
+                (5, peer_5, PacketKind::Data),
+                (3, peer_3, PacketKind::Duplicate),
+            ]
+        );
+    }
+
+    #[test]
+    fn return_targets_fallback_to_sorted_peers_without_schedule() {
+        let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
+        let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
+        let peers = HashMap::from([(5, peer_5), (3, peer_3)]);
+
+        assert_eq!(
+            select_return_targets(&[], &peers),
+            vec![
+                (3, peer_3, PacketKind::Data),
+                (5, peer_5, PacketKind::Duplicate),
+            ]
+        );
     }
 
     #[test]

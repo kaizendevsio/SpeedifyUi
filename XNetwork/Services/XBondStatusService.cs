@@ -211,6 +211,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             ThroughputBps = path.ThroughputBps,
             OutboundThroughputBps = path.OutboundThroughputBps,
             InboundThroughputBps = path.InboundThroughputBps,
+            DuplicateInboundThroughputBps = path.DuplicateInboundThroughputBps,
+            RawInboundThroughputBps = path.RawInboundThroughputBps,
             InterfaceUp = path.InterfaceUp,
             InCooldown = path.InCooldown
         };

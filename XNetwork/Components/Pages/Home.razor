@@ -195,13 +195,19 @@
         <div class="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
             <span class="text-cyan-300"><i class="fas fa-clock mr-1 text-slate-500"></i>@FormatLatency(path.RttMs)</span>
             <span class="text-rose-300"><i class="fas fa-triangle-exclamation mr-1 text-slate-500"></i>@FormatPercent(path.LossPercent)</span>
-            <span class="text-cyan-300"><i class="fas fa-arrow-down mr-1 text-slate-500"></i>Down @SpeedFormatter.FormatSpeed(path.DownloadMbps)</span>
+            <span class="text-cyan-300" title="@DownloadTitle(path)">
+                <i class="fas fa-arrow-down mr-1 text-slate-500"></i>Down @SpeedFormatter.FormatSpeed(path.DownloadMbps)
+            </span>
             <span class="text-pink-300"><i class="fas fa-arrow-up mr-1 text-slate-500"></i>Up @SpeedFormatter.FormatSpeed(path.UploadMbps)</span>
         </div>
         <div class="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
             <span>Score @Math.Round(path.Score)</span>
             <span>Late @FormatPercent(path.LatePercent)</span>
             <span>Queue @path.QueueDepth</span>
+            @if (path.DuplicateDownloadMbps > 0)
+            {
+                <span>Duplicate down @SpeedFormatter.FormatSpeed(path.DuplicateDownloadMbps)</span>
+            }
             @if (path.InCooldown)
             {
                 <span class="text-amber-300">Cooldown</span>
@@ -257,6 +263,11 @@
     private static string FormatPercent(double? value) => value.HasValue
         ? $"{Math.Round(value.Value, 1)}%"
         : "--";
+
+    private static string DownloadTitle(XBondPathStatsSnapshot path) =>
+        path.DuplicateDownloadMbps > 0
+            ? $"Raw adapter receive: {SpeedFormatter.FormatSpeed(path.DownloadMbps)}. Useful tunnel receive: {SpeedFormatter.FormatSpeed(path.UsefulDownloadMbps)}. Duplicate receive: {SpeedFormatter.FormatSpeed(path.DuplicateDownloadMbps)}."
+            : $"Useful tunnel receive: {SpeedFormatter.FormatSpeed(path.UsefulDownloadMbps)}.";
 
     private static string FormatDegrees(double? value) => value.HasValue
         ? $"{Math.Round(value.Value, 1)} deg"
