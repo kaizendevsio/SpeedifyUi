@@ -37,6 +37,9 @@ fn open_platform_tun(name: &str, _mtu: u16) -> io::Result<XBondTun> {
     use std::ffi::CString;
     use std::os::fd::FromRawFd;
 
+    #[cfg(target_env = "musl")]
+    const TUNSETIFF: libc::c_int = 0x4004_54ca;
+    #[cfg(not(target_env = "musl"))]
     const TUNSETIFF: libc::c_ulong = 0x4004_54ca;
     const IFF_TUN: libc::c_short = 0x0001;
     const IFF_NO_PI: libc::c_short = 0x1000;
