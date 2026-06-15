@@ -60,7 +60,7 @@
 - 2026-06-15: XBond adaptive redundancy policy, return-path reorder buffering, and degraded-backup simulation were recovered from interrupted thread `019e87f9-e3d2-7041-95a2-cc2079af633f` and committed on `feature/xband-only-runtime` as `a1a571a` plus follow-up build cleanup `7ba234d`. The app version for that milestone is `xbond-2026.06.25`.
 - 2026-06-15: XBond return-path outage after a server-only rebuild was caused by `xbond-server` restarting its reverse packet sequence at zero while the still-running client reorder buffer expected a higher sequence. Commit `f85c86b` initializes the server reverse sequence from current microsecond time to avoid restart rewinds; it was deployed to Vultr and the router repo, with deployed build info showing version `xbond-2026.06.25`, branch `feature/xband-only-runtime`, commit `f85c86b`.
 - 2026-06-15: Post-`f85c86b` live verification on `xeon-network` showed default IPv4 route through `xbond0`, `ping -I xbond0 10.250.0.1` passed 5/5 at about 36 ms average, `ping 1.1.1.1` passed 10/10 at about 40 ms average, GitHub HTTPS returned HTTP 200 through XBond, and app routes `/`, `/details`, `/xbond`, `/settings`, and `/xrouter` returned HTTP 200.
-- 2026-06-15: XNetwork version `xbond-2026.06.26` changes the dashboard connection-health latency probe from Cloudflare DNS `1.1.1.1` to Google DNS `8.8.8.8`. XBond scoped route diagnostics keep their separate target control/default.
+- 2026-06-15: XNetwork version `xbond-2026.06.26` changes the dashboard connection-health latency probe from Cloudflare DNS `1.1.1.1` to Google DNS `8.8.8.8`.
 
 ## Historical Speedify Branch Notes
 - The notes in this section describe the pre-`feature/xband-only-runtime` Speedify-based branch history. Do not use them as implementation instructions on `feature/xband-only-runtime`; that branch intentionally removes the Speedify runtime dependency and must not call `speedify_cli`.
@@ -161,6 +161,7 @@
 - 2026-06-16: XNetwork version `xbond-2026.06.33` adds `/wifi` as an alias for the existing `/xrouter` Wifi page; keep `/xrouter` for compatibility.
 - 2026-06-16: XNetwork version `xbond-2026.06.34` makes backend XBond diagnostic overrides use `sudo -n xbond-client override ...` when service-control sudo is configured. The control socket remains root-owned; do not make `/run/xbond/client-control.sock` world-writable just so app diagnostics can use it.
 - 2026-06-16: XNetwork version `xbond-2026.06.35` adds `deploy-xbond-paired.ps1` for paired app/client/server deployment, removes persisted `Diagnostic` from normal Settings policy choices, hides scoped IPv4 route diagnostics from Settings, and uses an absolute `/usr/local/bin/xbond-client` path for sudo-backed diagnostic override commands.
+- 2026-06-16: XNetwork version `xbond-2026.06.36` aligns hidden XBond route/scope defaults with the dashboard latency probe by using Google DNS `8.8.8.8` instead of `1.1.1.1`; `/xbond` remains limited to runtime/path status plus the simple tunnel speed test.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.
@@ -186,7 +187,7 @@
 - Blazor reconnect is customized in `App.razor` with `components-reconnect-modal`, `wwwroot/js/blazorReconnect.js`, and reconnect CSS in `wwwroot/app.css`; the UI should stay a minimalist bottom-center toast with a spinner plus one status line, no action buttons, and a blurred background that transitions in/out. Rejected/expired circuits auto-reload after a short delay using a MutationObserver on the reconnect element class, not only the Blazor state-change event, because mobile/PWA sessions have shown the rejected class without the event handler triggering reload. Blazor autostart is disabled so the script can set 15s server timeout, 5s keepalive, fast early retry intervals, and background retries after built-in retry failure.
 - Server-side SignalR circuit timings are also tuned in `Program.cs` with `ClientTimeoutInterval=15s`, `HandshakeTimeout=15s`, and `KeepAliveInterval=5s`.
 - `Home.razor` runs a 3s adapter refresh, 10s server refresh, one Speedify stats stream, and a traffic breakdown timer only while the modal is open.
-- `ConnectionHealthService` pings `1.1.1.1` every 500ms and consumes its own Speedify stats stream; avoid adding unbounded extra `speedify_cli stats` consumers.
+- `ConnectionHealthService` pings `8.8.8.8` every 500ms; avoid adding unbounded extra health probe consumers.
 - `Statistics.razor` is the `/details` page; chart setup intentionally takes two render cycles using `_readyForChartInitializationStep` before initializing canvases and starting streaming.
 - `ConnectionSummary.razor` is the dashboard throughput card; it opens the Traffic Breakdown modal when XRouter/Cudy config is available.
 - JS interop can throw `JSDisconnectedException` during live chart updates or disposal; stop timers/streams or ignore it during disconnect cleanup.

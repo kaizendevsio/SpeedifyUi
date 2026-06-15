@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.35";
+    public const string CurrentVersion = "xbond-2026.06.36";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Aligned XBond route checks with the dashboard latency target.",
+            Changes =
+            [
+                "XBond speed test route verification now checks the route to Google DNS at 8.8.8.8.",
+                "Hidden operator scoped-route defaults also use 8.8.8.8 so app diagnostics no longer keep a stale Cloudflare target."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.35",
             Date = "2026-06-16",
             Summary = "Tightened XBond operator tooling boundaries.",
             Changes =

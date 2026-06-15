@@ -47,7 +47,7 @@ public sealed class XBondSpeedTestService(
 
             var route = await RunCommandAsync(
                 settings.RouteCommandPath,
-                ["route", "get", "1.1.1.1"],
+                ["route", "get", "8.8.8.8"],
                 timeoutSeconds: Math.Min(settings.ScopedRouteCommandTimeoutSeconds, 15),
                 cancellationToken).ConfigureAwait(false);
 

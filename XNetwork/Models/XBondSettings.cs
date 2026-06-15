@@ -60,7 +60,7 @@ public class XBondSettings
 
     public string PingCommandPath { get; set; } = "ping";
 
-    public string ScopedRouteDefaultTarget { get; set; } = "1.1.1.1";
+    public string ScopedRouteDefaultTarget { get; set; } = "8.8.8.8";
 
     public int ScopedRouteTestCount { get; set; } = 10;
 
