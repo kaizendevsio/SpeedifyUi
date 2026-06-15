@@ -1538,7 +1538,13 @@ fn write_tunnel_runtime_status(
     schedule: &SchedulePlan,
     return_reorder: &PacketReorderBuffer,
 ) -> Result<()> {
-    let paths = tunnel_health(config, path_runtime, sockets);
+    let paths = select_path_roles(
+        &tunnel_health(config, path_runtime, sockets),
+        config.max_active_backups,
+    )
+    .into_iter()
+    .map(|scored_path| scored_path.path)
+    .collect();
 
     write_runtime_status(
         config,
