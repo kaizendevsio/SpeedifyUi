@@ -32,6 +32,7 @@
 - Non-interactive `sudo systemctl restart xnetwork.service` is not available; the deploy script uses MainPID `kill -KILL` to trigger restart.
 - After deploy, verify with `systemctl is-active xnetwork.service`, `curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/`, and optionally external `curl http://100.112.183.104:8080/`.
 - Remote publish warnings should be reviewed normally on `feature/xband-only-runtime`; the old `SpeedifyService.cs` warning note no longer applies because that service is removed in this branch.
+- When changing XBond protocol, scheduler, status schema, config schema, service templates, routing behavior, or any shared Rust code used by both ends, deploy the matching `xbond-client` binary to `xeon-network` and `xbond-server` binary to `xeon-speedify-vultr-01` in the same work item. Do not leave client/server protocol or runtime behavior mismatched. After deployment, verify `xbond-client.service`, `xbond-server.service`, `xbond-server-nat.service`, app HTTP routes, `ip route get 8.8.8.8`, `ping -I xbond0 10.250.0.1`, and an internet ping through `xbond0`.
 
 ## XBond-Only Branch
 - 2026-06-15: Branch `feature/xband-only-runtime` is the XBond-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion`; it started at `xbond-2026.06.18` and has continued with `xbond-` prefixed changelog revisions.
