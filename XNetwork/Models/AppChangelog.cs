@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.20";
+    public const string CurrentVersion = "xbond-2026.06.21";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Added XBond tunnel speed testing.",
+            Changes =
+            [
+                "Adds a manual Tunnel Speed Test button to the XBond page.",
+                "Runs speedtest-cli through the current default route and reports download, upload, and ping.",
+                "Shows whether the default route was using xbond0 when the test started."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.20",
             Date = "2026-06-15",
             Summary = "Made XBond heartbeat diagnostics route-aware.",
             Changes =

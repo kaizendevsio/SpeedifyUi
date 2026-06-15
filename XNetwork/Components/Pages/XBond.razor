@@ -7,6 +7,7 @@
 @inject XBondTrafficEngineService TrafficEngineService
 @inject XBondLabService LabService
 @inject XBondScopedRouteService ScopedRouteService
+@inject XBondSpeedTestService SpeedTestService
 
 <PageTitle>XBond</PageTitle>
 
@@ -71,7 +72,7 @@
         </div>
     </section>
 
-    <section class="grid gap-4 lg:grid-cols-2">
+    <section class="grid gap-4 xl:grid-cols-3">
         <article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
             <h2 class="text-lg font-semibold text-white">Heartbeat Diagnostic</h2>
             <p class="mt-1 text-sm text-slate-400">Sends sealed XBond heartbeat packets to the configured server.</p>
@@ -109,6 +110,43 @@
                 </div>
             }
         </article>
+
+        <article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+            <h2 class="text-lg font-semibold text-white">Tunnel Speed Test</h2>
+            <p class="mt-1 text-sm text-slate-400">Runs a manual throughput test through the current default route.</p>
+            <button type="button" class="mt-4 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-40" disabled="@_busy" @onclick="RunSpeedTestAsync">
+                @(_busy ? "Running..." : "Run speed test")
+            </button>
+            @if (_speedTest is not null)
+            {
+                <div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+                    <p class="font-semibold text-white">@_speedTest.Message</p>
+                    <div class="mt-3 grid grid-cols-3 gap-3">
+                        <div>
+                            <p class="text-xs text-slate-500">Download</p>
+                            <p class="font-semibold text-white">@FormatSpeed(_speedTest.DownloadMbps)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Upload</p>
+                            <p class="font-semibold text-white">@FormatSpeed(_speedTest.UploadMbps)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Ping</p>
+                            <p class="font-semibold text-white">@FormatLatency(_speedTest.PingMs)</p>
+                        </div>
+                    </div>
+                    <p class="mt-3 text-xs text-slate-500">@FormatSpeedTestRoute(_speedTest)</p>
+                    @if (!string.IsNullOrWhiteSpace(_speedTest.ServerName))
+                    {
+                        <p class="mt-1 text-xs text-slate-500">@_speedTest.ServerName</p>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_speedTest.Error))
+                    {
+                        <p class="mt-1 text-rose-200">@_speedTest.Error</p>
+                    }
+                </div>
+            }
+        </article>
     </section>
 
     <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
@@ -139,6 +177,7 @@
     private XBondTrafficEngineStatus? _trafficStatus;
     private XBondPublicTestResult? _heartbeat;
     private XBondProbeResult? _multiPath;
+    private XBondSpeedTestResult? _speedTest;
     private XBondScopedRouteTestResult? _routeTest;
     private string _routeTarget = "1.1.1.1";
     private bool _busy;
@@ -204,6 +243,15 @@
         });
     }
 
+    private async Task RunSpeedTestAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            _speedTest = await SpeedTestService.RunAsync();
+            return _trafficStatus ?? new XBondTrafficEngineStatus();
+        });
+    }
+
     private async Task RunBusyAsync(Func<Task<XBondTrafficEngineStatus>> action)
     {
         _busy = true;
@@ -260,6 +308,11 @@
     private static string FormatLatency(double? value) => value.HasValue && value.Value > 0 ? $"{Math.Round(value.Value)} ms" : "--";
 
     private static string FormatPercent(double? value) => value.HasValue ? $"{Math.Round(value.Value, 1)}%" : "--";
+
+    private static string FormatSpeed(double? value) => value.HasValue ? SpeedFormatter.FormatSpeed(value.Value) : "--";
+
+    private static string FormatSpeedTestRoute(XBondSpeedTestResult result) =>
+        result.RouteUsesXBond ? "Route: XBond default" : "Route: not using XBond default";
 
     public async ValueTask DisposeAsync()
     {

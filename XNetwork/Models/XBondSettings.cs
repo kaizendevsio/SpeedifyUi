@@ -65,6 +65,12 @@ public class XBondSettings
     public int ScopedRoutePacketTimeoutSeconds { get; set; } = 2;
 
     public int ScopedRouteCommandTimeoutSeconds { get; set; } = 45;
+
+    public string SpeedTestCommandPath { get; set; } = "speedtest-cli";
+
+    public int SpeedTestCommandTimeoutSeconds { get; set; } = 180;
+
+    public int SpeedTestHttpTimeoutSeconds { get; set; } = 15;
 }
 
 public static class XBondTrafficEngineModes

@@ -156,6 +156,15 @@ public class XBondSettingsStore
         target.ScopedRouteCommandTimeoutSeconds = source.ScopedRouteCommandTimeoutSeconds <= 0
             ? target.ScopedRouteCommandTimeoutSeconds
             : source.ScopedRouteCommandTimeoutSeconds;
+        target.SpeedTestCommandPath = string.IsNullOrWhiteSpace(source.SpeedTestCommandPath)
+            ? target.SpeedTestCommandPath
+            : source.SpeedTestCommandPath;
+        target.SpeedTestCommandTimeoutSeconds = source.SpeedTestCommandTimeoutSeconds <= 0
+            ? target.SpeedTestCommandTimeoutSeconds
+            : source.SpeedTestCommandTimeoutSeconds;
+        target.SpeedTestHttpTimeoutSeconds = source.SpeedTestHttpTimeoutSeconds <= 0
+            ? target.SpeedTestHttpTimeoutSeconds
+            : source.SpeedTestHttpTimeoutSeconds;
     }
 
     private static string GetAppDataDirectory(IHostEnvironment environment)
