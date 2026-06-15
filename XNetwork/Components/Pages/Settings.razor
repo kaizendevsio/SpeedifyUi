@@ -4,6 +4,7 @@
 @implements IAsyncDisposable
 @inject XBondTrafficEngineService XBondTrafficEngineService
 @inject XBondStatusService XBondStatusService
+@inject XBondClientConfigService XBondClientConfigService
 @inject XBondScopedRouteService ScopedRouteService
 @inject NetworkMonitorService NetworkMonitorService
 
@@ -55,6 +56,55 @@
                 Disable boot
             </button>
         </div>
+    </section>
+
+    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+                <h2 class="text-lg font-semibold text-white">XBond Adapters</h2>
+                <p class="mt-1 text-sm text-slate-400">Add or remove connected WAN and Wi-Fi adapters from the XBond tunnel without editing client.toml.</p>
+            </div>
+            <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">
+                @ConfiguredAdapterCount in XBond
+            </span>
+        </div>
+
+        @if (_xbondAdapterStatus?.HasError == true)
+        {
+            <div class="mt-4 rounded-lg border border-rose-500/25 bg-rose-500/10 p-3 text-sm text-rose-100">@_xbondAdapterStatus.Error</div>
+        }
+        else if (_xbondAdapterStatus?.Adapters.Count > 0)
+        {
+            <div class="mt-4 grid gap-3">
+                @foreach (var adapter in _xbondAdapterStatus.Adapters)
+                {
+                    <article class="@AdapterConfigCardClass(adapter)">
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <h3 class="truncate font-semibold text-white">@adapter.Name</h3>
+                                    <span class="@AdapterConfigPillClass(adapter)">@AdapterConfigLabel(adapter)</span>
+                                </div>
+                                <p class="mt-1 break-all text-sm text-slate-400">@adapter.InterfaceName</p>
+                                <p class="mt-2 text-xs text-slate-500">@AdapterConfigDetail(adapter)</p>
+                            </div>
+                            <button type="button"
+                                    class="@AdapterConfigButtonClass(adapter)"
+                                    disabled="@(!CanToggleXBondAdapter(adapter))"
+                                    @onclick="() => ToggleXBondAdapterAsync(adapter)">
+                                @AdapterConfigButtonText(adapter)
+                            </button>
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-400">
+                No connected ethernet or Wi-Fi adapters were discovered.
+            </div>
+        }
     </section>
 
     <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
@@ -117,11 +167,13 @@
     private readonly CancellationTokenSource _refreshCts = new();
     private XBondTrafficEngineStatus? _trafficStatus;
     private XBondStatus? _xbondStatus;
+    private XBondAdapterConfigStatus? _xbondAdapterStatus;
     private NetworkMonitorStatus? _networkMonitorStatus;
     private XBondScopedRouteTestResult? _routeTest;
     private string _routeTarget = "1.1.1.1";
     private string? _message;
     private string? _error;
+    private string? _busyAdapter;
     private bool _busy;
 
     protected override async Task OnInitializedAsync()
@@ -149,6 +201,7 @@
     {
         _trafficStatus = await XBondTrafficEngineService.GetStatusAsync(_refreshCts.Token);
         _xbondStatus = await XBondStatusService.GetStatusAsync(_refreshCts.Token);
+        _xbondAdapterStatus = await XBondClientConfigService.GetStatusAsync(_refreshCts.Token);
         _networkMonitorStatus = NetworkMonitorService.GetStatus();
         StateHasChanged();
     }
@@ -181,6 +234,34 @@
         finally
         {
             _busy = false;
+            await RefreshAsync();
+        }
+    }
+
+    private async Task ToggleXBondAdapterAsync(XBondAdapterConfigRow adapter)
+    {
+        _busy = true;
+        _busyAdapter = adapter.InterfaceName;
+        _message = null;
+        _error = null;
+        try
+        {
+            _xbondAdapterStatus = await XBondClientConfigService.SetInterfaceEnabledAsync(
+                adapter.InterfaceName,
+                !adapter.IsConfigured);
+            if (_xbondAdapterStatus.HasError)
+            {
+                _error = _xbondAdapterStatus.Error;
+            }
+            else
+            {
+                _message = _xbondAdapterStatus.Message;
+            }
+        }
+        finally
+        {
+            _busy = false;
+            _busyAdapter = null;
             await RefreshAsync();
         }
     }
@@ -231,6 +312,56 @@
     private string ServicePillClass => _trafficStatus?.ClientServiceRunning == true
         ? "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200"
         : "rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200";
+
+    private int ConfiguredAdapterCount => _xbondAdapterStatus?.Adapters.Count(adapter => adapter.IsConfigured) ?? 0;
+
+    private bool CanToggleXBondAdapter(XBondAdapterConfigRow adapter) =>
+        _xbondAdapterStatus?.CanEdit == true &&
+        !_busy &&
+        string.IsNullOrWhiteSpace(_busyAdapter) &&
+        adapter.CanToggle;
+
+    private static string AdapterConfigCardClass(XBondAdapterConfigRow adapter) =>
+        adapter.IsConfigured
+            ? "rounded-lg border border-cyan-500/25 bg-cyan-500/10 p-4"
+            : "rounded-lg border border-slate-800 bg-slate-950/50 p-4";
+
+    private static string AdapterConfigPillClass(XBondAdapterConfigRow adapter)
+    {
+        if (adapter.IsConfigured)
+        {
+            return "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200";
+        }
+
+        return adapter.IsEligible
+            ? "rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-100"
+            : "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300";
+    }
+
+    private static string AdapterConfigLabel(XBondAdapterConfigRow adapter)
+    {
+        if (adapter.IsConfigured)
+        {
+            return "In XBond";
+        }
+
+        return adapter.IsEligible ? "Available" : "Unavailable";
+    }
+
+    private static string AdapterConfigDetail(XBondAdapterConfigRow adapter)
+    {
+        var type = string.IsNullOrWhiteSpace(adapter.Type) ? "adapter" : adapter.Type;
+        var state = string.IsNullOrWhiteSpace(adapter.State) ? "unknown" : adapter.State;
+        return $"{type}, {state}. {adapter.Detail}";
+    }
+
+    private static string AdapterConfigButtonClass(XBondAdapterConfigRow adapter) =>
+        adapter.IsConfigured
+            ? "rounded-lg border border-rose-500/40 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-100 disabled:cursor-not-allowed disabled:opacity-40"
+            : "rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40";
+
+    private static string AdapterConfigButtonText(XBondAdapterConfigRow adapter) =>
+        adapter.IsConfigured ? "Remove" : "Add";
 
     private static RenderFragment Info(string label, string value) => @<div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
         <p class="text-xs uppercase tracking-wide text-slate-500">@label</p>

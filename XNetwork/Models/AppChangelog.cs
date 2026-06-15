@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.18";
+    public const string CurrentVersion = "xbond-2026.06.19";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Added XBond adapter selection in Settings.",
+            Changes =
+            [
+                "Settings can now show connected ethernet and Wi-Fi adapters that are available for XBond.",
+                "Adapters can be added to or removed from the XBond tunnel without manually editing client.toml.",
+                "Saving adapter membership rewrites the XBond client config and restarts the XBond client service."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.18",
             Date = "2026-06-15",
             Summary = "XBond-only runtime branch.",
             Changes =

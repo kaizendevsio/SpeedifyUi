@@ -59,6 +59,11 @@ public class XBondTrafficEngineService(
         return RunServiceActionAsync("stop", cancellationToken);
     }
 
+    public Task<XBondTrafficEngineStatus> RestartAsync(CancellationToken cancellationToken = default)
+    {
+        return RunServiceActionAsync("restart", cancellationToken);
+    }
+
     public Task<XBondTrafficEngineStatus> EnableAtBootAsync(CancellationToken cancellationToken = default)
     {
         return RunServiceActionAsync("enable", cancellationToken);

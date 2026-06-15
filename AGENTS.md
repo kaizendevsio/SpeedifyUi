@@ -40,6 +40,7 @@
 - 2026-06-15: Rust command `xbond-client tunnel` replaces the old canary tunnel command. Deployment templates are `xbond-client.service`, `xbond-server.service`, and `xbond-server-nat.service`; service files should not use canary naming on this branch.
 - 2026-06-15: XBond tunnel scheduling recomputes roles every 1 second. Paths with `NO-CARRIER`/down interfaces, socket bind/connect failure, repeated send failures, missing live sockets, or full-loss health are put in cooldown/unavailable state and cannot be anchor.
 - 2026-06-15: XBond-only production routing remains IPv4-only for this milestone. The UI keeps scoped `/32` route diagnostics and service controls, but no automatic rollback feature is implemented on this branch.
+- 2026-06-15: Live `xeon-network` Wi-Fi is `wlan0` connected to SSID `XNetwork Wi-Fi Asia`, but production `/etc/xbond/client.toml` currently configures only Starlink, Smart, Dito, and Globe as XBond paths. `XBondStatsService` may surface connected ethernet/wifi interfaces that are not configured as synthetic dashboard rows with `not in XBond`; they must not be treated as tunnel paths until added to `/etc/xbond/client.toml` and `xbond-client.service` is restarted.
 
 ## Historical Speedify Branch Notes
 - The notes in this section describe the pre-`feature/xband-only-runtime` Speedify-based branch history. Do not use them as implementation instructions on `feature/xband-only-runtime`; that branch intentionally removes the Speedify runtime dependency and must not call `speedify_cli`.
