@@ -28,6 +28,16 @@ shopt -u dotglob nullglob
 echo "Publishing XNetwork..."
 dotnet publish XNetwork/XNetwork.csproj -c Release
 
+DIAGNOSTICS_DIR="/var/lib/xnetwork/diagnostics"
+echo "Ensuring diagnostics directory..."
+if install -d -m 0755 "$DIAGNOSTICS_DIR" 2>/dev/null; then
+  chown "$(id -u):$(id -g)" "$DIAGNOSTICS_DIR" 2>/dev/null || true
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0755 "$DIAGNOSTICS_DIR"
+else
+  echo "Warning: unable to create $DIAGNOSTICS_DIR; the app will use its local artifact fallback if needed." >&2
+fi
+
 APP_VERSION="$(sed -nE 's/.*CurrentVersion = "([^"]+)".*/\1/p' XNetwork/Models/AppChangelog.cs | head -n 1)"
 if [[ -z "$APP_VERSION" ]]; then
   echo "Unable to determine AppChangelog.CurrentVersion" >&2

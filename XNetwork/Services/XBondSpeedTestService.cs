@@ -488,8 +488,9 @@ public sealed class XBondSpeedTestService(
         await RunIperfPairIntoRunAsync(
             run,
             string.IsNullOrWhiteSpace(settings.NativeSpeedTestHost) ? settings.PublicTestServerAddress.Split(':')[0] : settings.NativeSpeedTestHost,
-            settings.ServerSpeedTestPort,
+            settings.NativeSpeedTestPort > 0 ? settings.NativeSpeedTestPort : settings.ServerSpeedTestPort,
             path.InterfaceName,
+            isNativeAdapter: true,
             cancellationToken).ConfigureAwait(false);
         return run;
     }
@@ -520,6 +521,7 @@ public sealed class XBondSpeedTestService(
             settings.ServerSpeedTestHost,
             settings.ServerSpeedTestPort,
             null,
+            isNativeAdapter: false,
             cancellationToken).ConfigureAwait(false);
 
         var after = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
@@ -583,13 +585,17 @@ public sealed class XBondSpeedTestService(
         string host,
         int port,
         string? bindDevice,
+        bool isNativeAdapter,
         CancellationToken cancellationToken)
     {
         var duration = Math.Clamp(settings.ServerSpeedTestDurationSeconds, 3, 60).ToString(CultureInfo.InvariantCulture);
         var portText = port.ToString(CultureInfo.InvariantCulture);
-        var timeoutSeconds = Math.Clamp(settings.ServerSpeedTestCommandTimeoutSeconds, 15, 300);
+        var timeoutSeconds = isNativeAdapter
+            ? Math.Clamp(settings.NativeSpeedTestCommandTimeoutSeconds, 5, 60)
+            : Math.Clamp(settings.ServerSpeedTestCommandTimeoutSeconds, 15, 300);
+        var connectTimeoutMs = Math.Clamp(settings.IperfConnectTimeoutMs, 500, 15_000).ToString(CultureInfo.InvariantCulture);
 
-        var uploadArgs = new List<string> { "--client", host, "--port", portText, "--time", duration, "--json" };
+        var uploadArgs = new List<string> { "--client", host, "--port", portText, "--time", duration, "--json", "--connect-timeout", connectTimeoutMs };
         if (!string.IsNullOrWhiteSpace(bindDevice))
         {
             uploadArgs.AddRange(["--bind-dev", bindDevice]);
@@ -603,6 +609,18 @@ public sealed class XBondSpeedTestService(
                 run.Error = string.IsNullOrWhiteSpace(upload.Output)
                     ? $"{settings.IperfCommandPath} upload exited with code {upload.ExitCode}."
                     : upload.Output;
+                if (isNativeAdapter)
+                {
+                    run.Error = FormatNativeIperfFailure(
+                        "Upload",
+                        bindDevice,
+                        host,
+                        port,
+                        settings.ServerSpeedTestHost,
+                        settings.ServerSpeedTestPort,
+                        run.Error);
+                }
+
                 return;
             }
 
@@ -611,11 +629,20 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            run.Error = $"Upload failed: {ex.Message}";
+            run.Error = isNativeAdapter
+                ? FormatNativeIperfFailure(
+                    "Upload",
+                    bindDevice,
+                    host,
+                    port,
+                    settings.ServerSpeedTestHost,
+                    settings.ServerSpeedTestPort,
+                    ex.Message)
+                : $"Upload failed: {ex.Message}";
             return;
         }
 
-        var downloadArgs = new List<string> { "--client", host, "--port", portText, "--time", duration, "--reverse", "--json" };
+        var downloadArgs = new List<string> { "--client", host, "--port", portText, "--time", duration, "--reverse", "--json", "--connect-timeout", connectTimeoutMs };
         if (!string.IsNullOrWhiteSpace(bindDevice))
         {
             downloadArgs.AddRange(["--bind-dev", bindDevice]);
@@ -629,6 +656,18 @@ public sealed class XBondSpeedTestService(
                 run.Error = string.IsNullOrWhiteSpace(download.Output)
                     ? $"{settings.IperfCommandPath} download exited with code {download.ExitCode}."
                     : download.Output;
+                if (isNativeAdapter)
+                {
+                    run.Error = FormatNativeIperfFailure(
+                        "Download",
+                        bindDevice,
+                        host,
+                        port,
+                        settings.ServerSpeedTestHost,
+                        settings.ServerSpeedTestPort,
+                        run.Error);
+                }
+
                 return;
             }
 
@@ -636,8 +675,31 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            run.Error = $"Download failed: {ex.Message}";
+            run.Error = isNativeAdapter
+                ? FormatNativeIperfFailure(
+                    "Download",
+                    bindDevice,
+                    host,
+                    port,
+                    settings.ServerSpeedTestHost,
+                    settings.ServerSpeedTestPort,
+                    ex.Message)
+                : $"Download failed: {ex.Message}";
         }
+    }
+
+    public static string FormatNativeIperfFailure(
+        string phase,
+        string? interfaceName,
+        string nativeHost,
+        int nativePort,
+        string tunnelHost,
+        int tunnelPort,
+        string details)
+    {
+        var adapter = string.IsNullOrWhiteSpace(interfaceName) ? "adapter" : $"adapter {interfaceName}";
+        var message = $"{phase} failed for native {adapter}: {details}";
+        return $"{message}. Native per-adapter iperf requires an iperf3 listener reachable outside XBond at {nativeHost}:{nativePort}; the standard XBond iperf endpoint is tunnel-only at {tunnelHost}:{tunnelPort}.";
     }
 
     private async Task<XBondMatrixSystemSample> CaptureSystemSampleAsync(CancellationToken cancellationToken)
@@ -747,17 +809,58 @@ public sealed class XBondSpeedTestService(
         object result,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(settings.PerformanceArtifactDirectory))
+        var json = JsonSerializer.Serialize(result, ArtifactJsonOptions);
+        var errors = new List<string>();
+
+        foreach (var directory in ResolveArtifactDirectoryCandidates(settings.PerformanceArtifactDirectory))
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var path = Path.Combine(directory, $"{prefix}-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
+                await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
+                return path;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                errors.Add($"{directory}: {ex.Message}");
+            }
+        }
+
+        if (errors.Count == 0)
         {
             return null;
         }
 
-        var directory = settings.PerformanceArtifactDirectory;
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, $"{prefix}-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
-        var json = JsonSerializer.Serialize(result, ArtifactJsonOptions);
-        await File.WriteAllTextAsync(path, json, cancellationToken).ConfigureAwait(false);
-        return path;
+        throw new IOException($"Unable to write XBond diagnostic artifact. {string.Join(" ", errors)}");
+    }
+
+    public static IReadOnlyList<string> ResolveArtifactDirectoryCandidates(string? configuredDirectory)
+    {
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(configuredDirectory))
+        {
+            candidates.Add(configuredDirectory);
+        }
+
+        var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (!string.IsNullOrWhiteSpace(localApplicationData))
+        {
+            candidates.Add(Path.Combine(localApplicationData, "XNetwork", "diagnostics"));
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            candidates.Add(Path.Combine(userProfile, ".local", "state", "xnetwork", "diagnostics"));
+        }
+
+        candidates.Add(Path.Combine(Path.GetTempPath(), "xnetwork-diagnostics"));
+
+        return candidates
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
     }
 
     private static XBondClientConfig CloneConfig(XBondClientConfig config) => new()

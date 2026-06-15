@@ -174,12 +174,27 @@ public class XBondSettingsStore
         target.ServerSpeedTestPort = source.ServerSpeedTestPort <= 0
             ? target.ServerSpeedTestPort
             : source.ServerSpeedTestPort;
+        target.NativeSpeedTestHost = string.IsNullOrWhiteSpace(source.NativeSpeedTestHost)
+            ? target.NativeSpeedTestHost
+            : source.NativeSpeedTestHost;
+        target.NativeSpeedTestPort = source.NativeSpeedTestPort <= 0
+            ? target.NativeSpeedTestPort
+            : source.NativeSpeedTestPort;
         target.ServerSpeedTestDurationSeconds = source.ServerSpeedTestDurationSeconds <= 0
             ? target.ServerSpeedTestDurationSeconds
             : source.ServerSpeedTestDurationSeconds;
         target.ServerSpeedTestCommandTimeoutSeconds = source.ServerSpeedTestCommandTimeoutSeconds <= 0
             ? target.ServerSpeedTestCommandTimeoutSeconds
             : source.ServerSpeedTestCommandTimeoutSeconds;
+        target.NativeSpeedTestCommandTimeoutSeconds = source.NativeSpeedTestCommandTimeoutSeconds <= 0
+            ? target.NativeSpeedTestCommandTimeoutSeconds
+            : source.NativeSpeedTestCommandTimeoutSeconds;
+        target.IperfConnectTimeoutMs = source.IperfConnectTimeoutMs <= 0
+            ? target.IperfConnectTimeoutMs
+            : source.IperfConnectTimeoutMs;
+        target.PerformanceArtifactDirectory = string.IsNullOrWhiteSpace(source.PerformanceArtifactDirectory)
+            ? target.PerformanceArtifactDirectory
+            : source.PerformanceArtifactDirectory;
     }
 
     private static string GetAppDataDirectory(IHostEnvironment environment)

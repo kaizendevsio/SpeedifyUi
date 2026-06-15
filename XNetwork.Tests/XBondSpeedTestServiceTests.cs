@@ -88,4 +88,30 @@ public class XBondSpeedTestServiceTests
 
         Assert.Equal((ulong)12, retransmits);
     }
+
+    [Fact]
+    public void FormatNativeIperfFailure_ExplainsTunnelOnlyEndpoint()
+    {
+        var message = XBondSpeedTestService.FormatNativeIperfFailure(
+            "Upload",
+            "wlan0",
+            "45.77.241.247",
+            5202,
+            "10.250.0.1",
+            5201,
+            "iperf3 timed out after 12 seconds.");
+
+        Assert.Contains("native adapter wlan0", message);
+        Assert.Contains("45.77.241.247:5202", message);
+        Assert.Contains("tunnel-only at 10.250.0.1:5201", message);
+    }
+
+    [Fact]
+    public void ResolveArtifactDirectoryCandidates_IncludesConfiguredAndFallbackPaths()
+    {
+        var candidates = XBondSpeedTestService.ResolveArtifactDirectoryCandidates("/var/lib/xnetwork/diagnostics");
+
+        Assert.Equal("/var/lib/xnetwork/diagnostics", candidates[0]);
+        Assert.Contains(candidates, candidate => candidate.Contains("xnetwork", StringComparison.OrdinalIgnoreCase));
+    }
 }

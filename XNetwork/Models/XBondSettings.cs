@@ -80,9 +80,15 @@ public class XBondSettings
 
     public string NativeSpeedTestHost { get; set; } = "45.77.241.247";
 
+    public int NativeSpeedTestPort { get; set; } = 5202;
+
     public int ServerSpeedTestDurationSeconds { get; set; } = 8;
 
     public int ServerSpeedTestCommandTimeoutSeconds { get; set; } = 45;
+
+    public int NativeSpeedTestCommandTimeoutSeconds { get; set; } = 12;
+
+    public int IperfConnectTimeoutMs { get; set; } = 3000;
 
     public string PerformanceArtifactDirectory { get; set; } = "/var/lib/xnetwork/diagnostics";
 

@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.27";
+    public const string CurrentVersion = "xbond-2026.06.28";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Fixed XBond performance matrix artifact and native endpoint reporting.",
+            Changes =
+            [
+                "Performance Matrix artifacts now fall back to a writable local diagnostics directory if /var/lib/xnetwork is not writable.",
+                "Deployments now create /var/lib/xnetwork/diagnostics for the XNetwork service user when privileges allow.",
+                "Native adapter iperf tests now report missing public/native iperf endpoints directly instead of waiting on long generic timeouts."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.27",
             Date = "2026-06-15",
             Summary = "Added XBond performance matrix diagnostics.",
             Changes =
