@@ -9,8 +9,8 @@ public sealed class XBondStatsService(
     public async Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
         var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-        var interfaceDisplayNames = await interfaceMetadataService.GetDisplayNamesAsync(cancellationToken).ConfigureAwait(false);
-        return FromStatus(status, interfaceDisplayNames);
+        var interfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
+        return FromStatus(status, interfaces);
     }
 
     public static XBondStatsSnapshot FromStatus(XBondStatus status)
@@ -22,12 +22,31 @@ public sealed class XBondStatsService(
         XBondStatus status,
         IReadOnlyDictionary<string, string> interfaceDisplayNames)
     {
+        return FromStatus(status, interfaceDisplayNames, []);
+    }
+
+    public static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces)
+    {
+        var interfaceDisplayNames = interfaces
+            .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
+            .ToDictionary(item => item.Device, item => item.DisplayName, StringComparer.OrdinalIgnoreCase);
+
+        return FromStatus(status, interfaceDisplayNames, interfaces);
+    }
+
+    private static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyDictionary<string, string> interfaceDisplayNames,
+        IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces)
+    {
         var activeIds = status.Schedule.DataPathIds
             .Concat(status.Schedule.DuplicatePathIds)
             .Concat(status.Schedule.FecPathIds)
             .ToHashSet();
 
-        var paths = status.Paths
+        var configuredPaths = status.Paths
             .Select(path => new XBondPathStatsSnapshot
             {
                 PathId = path.PathId,
@@ -45,8 +64,30 @@ public sealed class XBondStatsService(
                 ThroughputBps = path.ThroughputBps,
                 BindAddress = path.BindAddress ?? "",
                 BindDevice = path.BindDevice ?? "",
-                IsActive = activeIds.Contains(path.PathId)
-            })
+                IsActive = activeIds.Contains(path.PathId),
+                IsConfigured = true
+            });
+
+        var configuredInterfaceNames = configuredPaths
+            .Select(path => path.InterfaceName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var nextSyntheticPathId = -1;
+        var localInterfaces = interfaces
+            .Where(item => item.IsDashboardCandidate && !configuredInterfaceNames.Contains(item.Device))
+            .Select(item => new XBondPathStatsSnapshot
+            {
+                PathId = nextSyntheticPathId--,
+                InterfaceName = item.Device,
+                Name = string.IsNullOrWhiteSpace(item.DisplayName) ? item.Device : item.DisplayName,
+                Role = "standby",
+                InterfaceUp = true,
+                IsConfigured = false
+            });
+
+        var paths = configuredPaths
+            .Concat(localInterfaces)
             .OrderBy(path => path.IsActive ? 0 : 1)
             .ThenBy(path => path.IsAnchor ? 0 : 1)
             .ThenBy(path => path.InterfaceUp ? 0 : 1)

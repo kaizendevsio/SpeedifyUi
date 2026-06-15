@@ -26,11 +26,14 @@ public sealed class XBondStatsSnapshot
 
     public IReadOnlyList<XBondPathStatsSnapshot> Paths { get; init; } = [];
 
+    public IReadOnlyList<XBondPathStatsSnapshot> DashboardPaths =>
+        Paths.Where(path => path.ShowOnDashboard).ToArray();
+
     public IReadOnlyList<XBondPathStatsSnapshot> ActivePaths =>
-        Paths.Where(path => path.IsActive).ToArray();
+        DashboardPaths.Where(path => path.IsActive).ToArray();
 
     public IReadOnlyList<XBondPathStatsSnapshot> StandbyPaths =>
-        Paths.Where(path => !path.IsActive).ToArray();
+        DashboardPaths.Where(path => !path.IsActive).ToArray();
 
     public double DownloadMbps => RawStatus.InboundThroughputBps / 1_000_000d;
 
@@ -101,12 +104,21 @@ public sealed class XBondPathStatsSnapshot
 
     public bool IsActive { get; init; }
 
+    public bool IsConfigured { get; init; } = true;
+
+    public bool ShowOnDashboard => InterfaceUp || IsActive || InCooldown || !IsConfigured;
+
     public bool IsAnchor => string.Equals(Role, "anchor", StringComparison.OrdinalIgnoreCase);
 
     public string StateText
     {
         get
         {
+            if (!IsConfigured && InterfaceUp)
+            {
+                return "Connected, not in XBond";
+            }
+
             if (!InterfaceUp)
             {
                 return "No carrier";

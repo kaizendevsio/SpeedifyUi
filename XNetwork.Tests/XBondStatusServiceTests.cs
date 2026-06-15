@@ -266,6 +266,18 @@ public class XBondStatusServiceTests
     }
 
     [Fact]
+    public void ExtractPsk_PreservesEnvFileValueWithEqualsPadding()
+    {
+        var psk = XBondLabService.ExtractPsk(
+            """
+            # comment
+            XBOND_PSK=abc123==/with=suffix
+            """);
+
+        Assert.Equal("abc123==/with=suffix", psk);
+    }
+
+    [Fact]
     public void ParseMultiPingJson_MapsPerPathProbeResultAndRouteVerification()
     {
         var result = XBondLabService.ParseMultiPingJson(

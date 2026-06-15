@@ -11,20 +11,28 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
-    private IReadOnlyDictionary<string, string> _displayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<InterfaceMetadata> _interfaces = [];
     private DateTime _expiresAtUtc = DateTime.MinValue;
 
     public async Task<IReadOnlyDictionary<string, string>> GetDisplayNamesAsync(CancellationToken cancellationToken = default)
     {
+        var interfaces = await GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
+        return interfaces
+            .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
+            .ToDictionary(item => item.Device, item => item.DisplayName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task<IReadOnlyList<InterfaceMetadata>> GetInterfacesAsync(CancellationToken cancellationToken = default)
+    {
         if (!OperatingSystem.IsLinux())
         {
-            return _displayNames;
+            return _interfaces;
         }
 
         var now = DateTime.UtcNow;
         if (now < _expiresAtUtc)
         {
-            return _displayNames;
+            return _interfaces;
         }
 
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -33,12 +41,12 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
             now = DateTime.UtcNow;
             if (now < _expiresAtUtc)
             {
-                return _displayNames;
+                return _interfaces;
             }
 
-            _displayNames = await ReadNetworkManagerNamesAsync(cancellationToken).ConfigureAwait(false);
+            _interfaces = await ReadNetworkManagerInterfacesAsync(cancellationToken).ConfigureAwait(false);
             _expiresAtUtc = now + CacheDuration;
-            return _displayNames;
+            return _interfaces;
         }
         finally
         {
@@ -46,7 +54,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
         }
     }
 
-    private async Task<IReadOnlyDictionary<string, string>> ReadNetworkManagerNamesAsync(CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<InterfaceMetadata>> ReadNetworkManagerInterfacesAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -57,7 +65,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
 
             if (commandExists.ExitCode != 0)
             {
-                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                return [];
             }
 
             var result = await RunProcessAsync(
@@ -68,21 +76,23 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
             if (result.ExitCode != 0)
             {
                 logger.LogDebug("nmcli device status failed: {Error}", result.StandardError.Trim());
-                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                return [];
             }
 
-            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (device, name) in ParseNmcliDeviceStatus(result.StandardOutput))
-            {
-                names[device] = name;
-            }
+            var interfaces = ParseNmcliDeviceMetadata(result.StandardOutput)
+                .ToDictionary(item => item.Device, StringComparer.OrdinalIgnoreCase);
 
             foreach (var (device, provider) in await ReadGatewayProviderNamesAsync(cancellationToken).ConfigureAwait(false))
             {
-                names[device] = provider;
+                if (interfaces.TryGetValue(device, out var metadata))
+                {
+                    interfaces[device] = metadata with { DisplayName = provider };
+                }
             }
 
-            return names;
+            return interfaces.Values
+                .OrderBy(item => item.Device, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
         catch (OperationCanceledException)
         {
@@ -91,7 +101,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Unable to refresh interface display names from NetworkManager");
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            return [];
         }
     }
 
@@ -230,7 +240,14 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
 
     public static IReadOnlyDictionary<string, string> ParseNmcliDeviceStatus(string output)
     {
-        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return ParseNmcliDeviceMetadata(output)
+            .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
+            .ToDictionary(item => item.Device, item => item.DisplayName, StringComparer.OrdinalIgnoreCase);
+    }
+
+    public static IReadOnlyList<InterfaceMetadata> ParseNmcliDeviceMetadata(string output)
+    {
+        var interfaces = new List<InterfaceMetadata>();
         foreach (var rawLine in output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var parts = ParseTerseLine(rawLine);
@@ -240,16 +257,23 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
             }
 
             var device = parts[0].Trim();
+            var type = parts[1].Trim();
+            var state = parts[2].Trim();
             var connection = parts[3].Trim();
-            if (string.IsNullOrWhiteSpace(device) || IsGenericConnectionName(connection, device))
+            if (string.IsNullOrWhiteSpace(device))
             {
                 continue;
             }
 
-            names[device] = connection;
+            interfaces.Add(new InterfaceMetadata(
+                device,
+                type,
+                state,
+                connection,
+                IsGenericConnectionName(connection, device) ? "" : connection));
         }
 
-        return names;
+        return interfaces;
     }
 
     private static bool IsGenericConnectionName(string value, string device)
@@ -336,6 +360,25 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
 
     public sealed record GatewayRoute(string Device, string Gateway);
+
+    public sealed record InterfaceMetadata(
+        string Device,
+        string Type,
+        string State,
+        string ConnectionName,
+        string DisplayName)
+    {
+        public bool IsConnected => State.StartsWith("connected", StringComparison.OrdinalIgnoreCase);
+
+        public bool IsDashboardCandidate =>
+            IsConnected &&
+            (Type.Equals("ethernet", StringComparison.OrdinalIgnoreCase) ||
+             Type.Equals("wifi", StringComparison.OrdinalIgnoreCase)) &&
+            !Device.StartsWith("xbond", StringComparison.OrdinalIgnoreCase) &&
+            !Device.StartsWith("tailscale", StringComparison.OrdinalIgnoreCase) &&
+            !Device.StartsWith("p2p-", StringComparison.OrdinalIgnoreCase) &&
+            !Device.Equals("lo", StringComparison.OrdinalIgnoreCase);
+    }
 
     public sealed class ModemProviderResponse
     {

@@ -71,7 +71,7 @@
         <div class="mb-3 flex items-center gap-3">
             <h2 class="text-2xl font-bold text-white">Adapters</h2>
             <span class="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-300">
-                @((_snapshot?.Paths.Count(path => path.InterfaceUp)).GetValueOrDefault()) live
+                @((_snapshot?.DashboardPaths.Count(path => path.InterfaceUp)).GetValueOrDefault()) live
             </span>
         </div>
 
@@ -236,6 +236,11 @@
 
     private static string RoleLabel(XBondPathStatsSnapshot path)
     {
+        if (!path.IsConfigured)
+        {
+            return "not in XBond";
+        }
+
         if (path.IsActive && !path.IsAnchor && string.Equals(path.Role, "probe", StringComparison.OrdinalIgnoreCase))
         {
             return "backup";

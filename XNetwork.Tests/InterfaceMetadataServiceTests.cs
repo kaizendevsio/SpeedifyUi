@@ -23,6 +23,26 @@ public class InterfaceMetadataServiceTests
     }
 
     [Fact]
+    public void ParseNmcliDeviceMetadata_TracksConnectedDashboardCandidates()
+    {
+        var interfaces = InterfaceMetadataService.ParseNmcliDeviceMetadata(
+            """
+            wlan0:wifi:connected:XNetwork Wi-Fi Asia
+            tailscale0:tun:connected (externally):tailscale0
+            xbond0:tun:connected (externally):xbond0
+            enxc8a3627e60c1:ethernet:unavailable:
+            """);
+
+        var wifi = interfaces.Single(item => item.Device == "wlan0");
+        Assert.Equal("XNetwork Wi-Fi Asia", wifi.DisplayName);
+        Assert.True(wifi.IsDashboardCandidate);
+
+        Assert.False(interfaces.Single(item => item.Device == "tailscale0").IsDashboardCandidate);
+        Assert.False(interfaces.Single(item => item.Device == "xbond0").IsDashboardCandidate);
+        Assert.False(interfaces.Single(item => item.Device == "enxc8a3627e60c1").IsDashboardCandidate);
+    }
+
+    [Fact]
     public void XBondStatsService_UsesLiveInterfaceNameWhenAvailable()
     {
         var status = new XBondStatus
@@ -62,6 +82,58 @@ public class InterfaceMetadataServiceTests
 
         Assert.Equal("Smart Communications", snapshot.Paths[0].Name);
         Assert.Equal("Configured Dito", snapshot.Paths[1].Name);
+    }
+
+    [Fact]
+    public void XBondStatsService_AddsConnectedNonXbondInterfacesAndHidesNoCarrierFromDashboard()
+    {
+        var status = new XBondStatus
+        {
+            Schedule = new XBondSchedulePlan
+            {
+                DataPathIds = [2]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "Starlink",
+                    InterfaceName = "enxc8a3627e60c1",
+                    Role = "unavailable",
+                    InterfaceUp = false
+                },
+                new XBondPathStatus
+                {
+                    PathId = 2,
+                    Name = "Smart Communications",
+                    InterfaceName = "enx103c59f1039c",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    RttMs = 70
+                }
+            ]
+        };
+
+        var snapshot = XBondStatsService.FromStatus(
+            status,
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    "wlan0",
+                    "wifi",
+                    "connected",
+                    "XNetwork Wi-Fi Asia",
+                    "XNetwork Wi-Fi Asia")
+            ]);
+
+        Assert.Equal(3, snapshot.Paths.Count);
+        Assert.DoesNotContain(snapshot.DashboardPaths, path => path.Name == "Starlink");
+        Assert.Contains(snapshot.ActivePaths, path => path.Name == "Smart Communications");
+
+        var wifi = Assert.Single(snapshot.StandbyPaths, path => path.InterfaceName == "wlan0");
+        Assert.False(wifi.IsConfigured);
+        Assert.Equal("XNetwork Wi-Fi Asia", wifi.Name);
+        Assert.Equal("Connected, not in XBond", wifi.StateText);
     }
 
     [Fact]

@@ -1626,7 +1626,7 @@ fn verify_route(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let route_dev = token_after(&stdout, "dev");
-    let route_src = token_after(&stdout, "src");
+    let route_src = token_after(&stdout, "src").or_else(|| token_after(&stdout, "from"));
     let Some(route_dev) = route_dev else {
         return RouteVerification::failed("ip-route-get", "route output did not include dev");
     };
@@ -2094,6 +2094,7 @@ mod tests {
 
         assert_eq!(token_after(text, "dev").as_deref(), Some("eth0"));
         assert_eq!(token_after(text, "src").as_deref(), Some("192.0.2.10"));
+        assert_eq!(token_after(text, "from").as_deref(), Some("192.0.2.10"));
         assert_eq!(token_after(text, "missing"), None);
     }
 

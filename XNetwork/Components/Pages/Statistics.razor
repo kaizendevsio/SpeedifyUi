@@ -46,7 +46,7 @@
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-800/70 text-slate-300">
-                    @foreach (var path in _snapshot?.Paths ?? [])
+                    @foreach (var path in _snapshot?.DashboardPaths ?? [])
                     {
                         <tr>
                             <td class="py-3 pr-4">
