@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.32";
+    public const string CurrentVersion = "xbond-2026.06.33";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Added the Wifi route alias.",
+            Changes =
+            [
+                "The Wifi page now responds on both /xrouter and /wifi so operator route checks and navigation use the same user-facing name.",
+                "The manual XBond speed test remains the only user-facing diagnostic action on /xbond.",
+                "This is an app-only route fix; XBond runtime binaries remain on the matching deployed scheduler and diagnostics build."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.32",
             Date = "2026-06-16",
             Summary = "Improved XBond performance diagnostics and scheduling.",
             Changes =

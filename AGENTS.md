@@ -157,6 +157,7 @@
 - 2026-06-16: XNetwork version `xbond-2026.06.32` adds live XBond diagnostic overrides through local Unix socket `/run/xbond/client-control.sock`. Operator tooling can run `xbond-client override set --mode <mode> --policy diagnostic --ttl-seconds <n>` and `xbond-client override clear` without rewriting `/etc/xbond/client.toml` or restarting `xbond-client.service`.
 - 2026-06-16: XBond role selection now uses scheduler hysteresis: a better anchor must beat the current anchor by the configured margin for multiple scheduler ticks before replacing it, while hard-demoted paths such as down interfaces, repeated send failures, stale ACKs, full loss, or saturated queues are replaced immediately.
 - 2026-06-16: XBond client/server hot-path packet sends use borrowed payload encoding before encryption to avoid an extra packet clone per selected path. Protocol/runtime changes still require paired deployment of `xbond-client` on `xeon-network` and `xbond-server` on `xeon-speedify-vultr-01`.
+- 2026-06-16: XNetwork version `xbond-2026.06.33` adds `/wifi` as an alias for the existing `/xrouter` Wifi page; keep `/xrouter` for compatibility.
 
 ## Probe And Auto Server Switching
 - `SpeedifyProbeAgent` is a separate minimal API that scores Speedify servers from an external vantage point; deployed probe service has been `speedify-probe-agent` on VM `speedify-probe` with Tailscale IP `100.114.215.110` and API base `http://100.114.215.110:8090`.
