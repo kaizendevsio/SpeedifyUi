@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.29";
+    public const string CurrentVersion = "xbond-2026.06.30";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Simplified the XBond diagnostics page.",
+            Changes =
+            [
+                "The XBond page now exposes the manual tunnel speed test as the only user-facing diagnostic action.",
+                "Heartbeat, multi-path, bad-backup simulation, performance matrix, MTU sweep, and scoped-route controls remain operator tooling instead of normal UI."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.29",
             Date = "2026-06-15",
             Summary = "Polished XBond native iperf diagnostic messages.",
             Changes =
