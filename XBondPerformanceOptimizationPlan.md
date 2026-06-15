@@ -2,6 +2,8 @@
 
 Date: 2026-06-15
 
+Updated: 2026-06-16
+
 ## Goal
 
 Use diagnostics as engineering tooling, not as normal user-facing dashboard UI. The user-facing XBond page should expose the simple tunnel speed test only. Deep tests should be run by the agent/operator to identify Rust client/server bottlenecks and validate improvements.
@@ -24,6 +26,15 @@ Use diagnostics as engineering tooling, not as normal user-facing dashboard UI. 
 - Public speedtest through XBond was much lower than tunnel-local iperf at about `40 Mbps` down and `29 Mbps` up.
 - Client logs show repeated `xbond-client.service` restarts to switch `anchor-only`, `anchor-duplicate-1`, and `anchor-fec`.
 - Server logs show frequent `return-schedule-updated` events, including path flips during active traffic, so scheduler churn/hysteresis is a likely optimization target.
+
+## Implemented 2026-06-16
+
+- User-facing `/xbond` remains clean: the page exposes runtime/path status and the simple tunnel speed test only.
+- `xbond-client` now exposes local Unix control socket `/run/xbond/client-control.sock` plus `xbond-client override set/clear/status`; operator diagnostics can temporarily override mode/policy without rewriting config or restarting the tunnel.
+- `XBondSpeedTestService.RunPerformanceMatrixAsync` now uses live diagnostic overrides instead of `SaveConfigAndRestartAsync`.
+- Scheduler role selection now has hysteresis: strong candidates must remain better for multiple ticks before replacing the current anchor/backup, while hard-demoted paths are replaced immediately.
+- Server return-schedule logs now fire only for actual schedule/policy changes instead of every path-health refresh.
+- Client and server hot-path sends now encode borrowed payloads before encryption, avoiding an extra packet clone per selected path.
 
 ## Implementation Plan
 

@@ -86,13 +86,12 @@ impl PathHealthSnapshot {
             .map(|value| value.min(5_000) as f64 * 0.05)
             .unwrap_or_default();
         let send_failure_penalty = f64::from(self.send_failure_streak.min(10)) * 150.0;
-        let duplicate_help_penalty = if self.duplicate_usefulness <= 0.05
-            && self.raw_inbound_throughput_bps > 250_000
-        {
-            120.0
-        } else {
-            0.0
-        };
+        let duplicate_help_penalty =
+            if self.duplicate_usefulness <= 0.05 && self.raw_inbound_throughput_bps > 250_000 {
+                120.0
+            } else {
+                0.0
+            };
         let collapse_penalty = self.throughput_collapse_score.clamp(0.0, 1.0) * 500.0;
         let throughput_bonus = if self.throughput_bps == 0 {
             0.0
@@ -100,7 +99,12 @@ impl PathHealthSnapshot {
             (self.throughput_bps as f64).log10().min(9.0) * 10.0
         };
 
-        1_000.0 - rtt_penalty - jitter_penalty - loss_penalty - late_penalty - queue_penalty
+        1_000.0
+            - rtt_penalty
+            - jitter_penalty
+            - loss_penalty
+            - late_penalty
+            - queue_penalty
             - queue_pressure_penalty
             - stale_ack_penalty
             - send_failure_penalty
@@ -128,6 +132,81 @@ pub struct ScoredPath {
 }
 
 pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Vec<ScoredPath> {
+    let mut scored = score_paths(paths);
+    assign_best_available_roles(&mut scored, max_backups);
+    scored
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleSelectionState {
+    pub anchor_path_id: Option<u16>,
+    pub backup_path_ids: Vec<u16>,
+    pub anchor_candidate_path_id: Option<u16>,
+    pub anchor_candidate_ticks: u8,
+    pub backup_candidate_path_ids: Vec<u16>,
+    pub backup_candidate_ticks: u8,
+    pub schedule_change_count: u64,
+}
+
+impl Default for RoleSelectionState {
+    fn default() -> Self {
+        Self {
+            anchor_path_id: None,
+            backup_path_ids: Vec::new(),
+            anchor_candidate_path_id: None,
+            anchor_candidate_ticks: 0,
+            backup_candidate_path_ids: Vec::new(),
+            backup_candidate_ticks: 0,
+            schedule_change_count: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoleSelectionConfig {
+    pub anchor_switch_score_margin: f64,
+    pub backup_switch_score_margin: f64,
+    pub stable_ticks_required: u8,
+}
+
+impl Default for RoleSelectionConfig {
+    fn default() -> Self {
+        Self {
+            anchor_switch_score_margin: 150.0,
+            backup_switch_score_margin: 100.0,
+            stable_ticks_required: 5,
+        }
+    }
+}
+
+pub fn select_path_roles_with_state(
+    paths: &[PathHealthSnapshot],
+    max_backups: usize,
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+) -> Vec<ScoredPath> {
+    let mut scored = score_paths(paths);
+    let previous_anchor = state.anchor_path_id;
+    let previous_backups = state.backup_path_ids.clone();
+    let best_anchor_id = scored
+        .iter()
+        .find(|path| is_role_eligible(path))
+        .map(path_id);
+    let anchor_id = choose_anchor(&scored, state, best_anchor_id, config);
+    let backup_ids = choose_backups(&scored, state, anchor_id, max_backups, config);
+
+    assign_hysteresis_roles(&mut scored, anchor_id, &backup_ids);
+
+    if previous_anchor != anchor_id || previous_backups != backup_ids {
+        state.schedule_change_count = state.schedule_change_count.saturating_add(1);
+    }
+    state.anchor_path_id = anchor_id;
+    state.backup_path_ids = backup_ids;
+
+    scored
+}
+
+fn score_paths(paths: &[PathHealthSnapshot]) -> Vec<ScoredPath> {
     let mut scored: Vec<ScoredPath> = paths
         .iter()
         .cloned()
@@ -148,11 +227,14 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
         .collect();
 
     scored.sort_by(|a, b| b.score.total_cmp(&a.score));
+    scored
+}
 
+fn assign_best_available_roles(scored: &mut [ScoredPath], max_backups: usize) {
     let mut anchor_assigned = false;
     let mut backups_assigned = 0usize;
-    for scored_path in &mut scored {
-        if !scored_path.score.is_finite() || !scored_path.path.is_realtime_eligible() {
+    for scored_path in scored {
+        if !is_role_eligible(scored_path) {
             if scored_path.path.role_reason.is_none() {
                 scored_path.path.role_reason = scored_path.path.demotion_reason.clone();
             }
@@ -173,8 +255,199 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
                 Some("Healthy but currently kept as probe/standby.".to_string());
         }
     }
+}
 
+fn choose_anchor(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    best_anchor_id: Option<u16>,
+    config: RoleSelectionConfig,
+) -> Option<u16> {
+    let Some(best_anchor_id) = best_anchor_id else {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return None;
+    };
+
+    let Some(current_anchor_id) = state.anchor_path_id else {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(best_anchor_id);
+    };
+
+    let Some(current_anchor) = scored
+        .iter()
+        .find(|path| path.path.path_id == current_anchor_id && is_role_eligible(path))
+    else {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(best_anchor_id);
+    };
+
+    if current_anchor_id == best_anchor_id {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(current_anchor_id);
+    }
+
+    let best_score = score_for(scored, best_anchor_id).unwrap_or(f64::NEG_INFINITY);
+    if best_score - current_anchor.score < config.anchor_switch_score_margin {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(current_anchor_id);
+    }
+
+    if state.anchor_candidate_path_id == Some(best_anchor_id) {
+        state.anchor_candidate_ticks = state.anchor_candidate_ticks.saturating_add(1);
+    } else {
+        state.anchor_candidate_path_id = Some(best_anchor_id);
+        state.anchor_candidate_ticks = 1;
+    }
+
+    if state.anchor_candidate_ticks >= config.stable_ticks_required {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        Some(best_anchor_id)
+    } else {
+        Some(current_anchor_id)
+    }
+}
+
+fn choose_backups(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    anchor_id: Option<u16>,
+    max_backups: usize,
+    config: RoleSelectionConfig,
+) -> Vec<u16> {
+    if max_backups == 0 {
+        state.backup_candidate_path_ids.clear();
+        state.backup_candidate_ticks = 0;
+        return Vec::new();
+    }
+
+    let target = scored
+        .iter()
+        .filter(|path| is_role_eligible(path) && Some(path.path.path_id) != anchor_id)
+        .take(max_backups)
+        .map(path_id)
+        .collect::<Vec<_>>();
+
+    let current = state
+        .backup_path_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            Some(*id) != anchor_id
+                && scored
+                    .iter()
+                    .any(|path| path.path.path_id == *id && is_role_eligible(path))
+        })
+        .take(max_backups)
+        .collect::<Vec<_>>();
+
+    if current.len() < max_backups {
+        state.backup_candidate_path_ids.clear();
+        state.backup_candidate_ticks = 0;
+        return fill_backup_slots(scored, anchor_id, current, max_backups);
+    }
+
+    if current == target {
+        state.backup_candidate_path_ids.clear();
+        state.backup_candidate_ticks = 0;
+        return current;
+    }
+
+    let weakest_current_score = current
+        .iter()
+        .filter_map(|id| score_for(scored, *id))
+        .min_by(f64::total_cmp)
+        .unwrap_or(f64::NEG_INFINITY);
+    let best_new_score = target
+        .iter()
+        .filter(|id| !current.contains(id))
+        .filter_map(|id| score_for(scored, *id))
+        .max_by(f64::total_cmp)
+        .unwrap_or(f64::NEG_INFINITY);
+
+    if best_new_score - weakest_current_score < config.backup_switch_score_margin {
+        state.backup_candidate_path_ids.clear();
+        state.backup_candidate_ticks = 0;
+        return current;
+    }
+
+    if state.backup_candidate_path_ids == target {
+        state.backup_candidate_ticks = state.backup_candidate_ticks.saturating_add(1);
+    } else {
+        state.backup_candidate_path_ids = target.clone();
+        state.backup_candidate_ticks = 1;
+    }
+
+    if state.backup_candidate_ticks >= config.stable_ticks_required {
+        state.backup_candidate_path_ids.clear();
+        state.backup_candidate_ticks = 0;
+        target
+    } else {
+        current
+    }
+}
+
+fn fill_backup_slots(
+    scored: &[ScoredPath],
+    anchor_id: Option<u16>,
+    mut current: Vec<u16>,
+    max_backups: usize,
+) -> Vec<u16> {
+    for path in scored {
+        let id = path.path.path_id;
+        if current.len() >= max_backups {
+            break;
+        }
+        if Some(id) == anchor_id || current.contains(&id) || !is_role_eligible(path) {
+            continue;
+        }
+        current.push(id);
+    }
+    current
+}
+
+fn assign_hysteresis_roles(scored: &mut [ScoredPath], anchor_id: Option<u16>, backup_ids: &[u16]) {
+    for scored_path in scored {
+        if !is_role_eligible(scored_path) {
+            if scored_path.path.role_reason.is_none() {
+                scored_path.path.role_reason = scored_path.path.demotion_reason.clone();
+            }
+            continue;
+        }
+
+        if Some(scored_path.path.path_id) == anchor_id {
+            scored_path.role = PathRole::Anchor;
+            scored_path.path.role_reason =
+                Some("Selected as stable anchor by hysteresis scheduler.".to_string());
+        } else if backup_ids.contains(&scored_path.path.path_id) {
+            scored_path.role = PathRole::Backup;
+            scored_path.path.role_reason = Some("Selected as stable redundant backup.".to_string());
+        } else {
+            scored_path.role = PathRole::Probe;
+            scored_path.path.role_reason =
+                Some("Healthy but currently kept as probe/standby.".to_string());
+        }
+    }
+}
+
+fn path_id(path: &ScoredPath) -> u16 {
+    path.path.path_id
+}
+
+fn score_for(scored: &[ScoredPath], path_id: u16) -> Option<f64> {
     scored
+        .iter()
+        .find(|path| path.path.path_id == path_id)
+        .map(|path| path.score)
+}
+
+fn is_role_eligible(path: &ScoredPath) -> bool {
+    path.score.is_finite() && path.path.is_realtime_eligible()
 }
 
 #[cfg(test)]
@@ -328,5 +601,87 @@ mod tests {
         offline.interface_up = false;
 
         assert!(offline.score().is_finite());
+    }
+
+    #[test]
+    fn hysteresis_holds_anchor_until_candidate_is_stable() {
+        let mut state = RoleSelectionState {
+            anchor_path_id: Some(1),
+            backup_path_ids: vec![3],
+            ..RoleSelectionState::default()
+        };
+        let config = RoleSelectionConfig::default();
+
+        for _ in 0..config.stable_ticks_required.saturating_sub(1) {
+            let roles = select_path_roles_with_state(
+                &[
+                    path(1, "current", 100.0, 0.0, 0.0),
+                    path(2, "better", 10.0, 0.0, 0.0),
+                    path(3, "backup", 90.0, 0.0, 0.0),
+                ],
+                1,
+                &mut state,
+                config,
+            );
+
+            assert_eq!(
+                roles
+                    .iter()
+                    .find(|path| path.role == PathRole::Anchor)
+                    .unwrap()
+                    .path
+                    .path_id,
+                1
+            );
+        }
+
+        let roles = select_path_roles_with_state(
+            &[
+                path(1, "current", 100.0, 0.0, 0.0),
+                path(2, "better", 10.0, 0.0, 0.0),
+                path(3, "backup", 90.0, 0.0, 0.0),
+            ],
+            1,
+            &mut state,
+            config,
+        );
+
+        assert_eq!(
+            roles
+                .iter()
+                .find(|path| path.role == PathRole::Anchor)
+                .unwrap()
+                .path
+                .path_id,
+            2
+        );
+    }
+
+    #[test]
+    fn hysteresis_replaces_hard_demoted_anchor_immediately() {
+        let mut state = RoleSelectionState {
+            anchor_path_id: Some(1),
+            backup_path_ids: vec![2],
+            ..RoleSelectionState::default()
+        };
+        let mut current = path(1, "current", 15.0, 0.0, 0.0);
+        current.send_failure_streak = 2;
+
+        let roles = select_path_roles_with_state(
+            &[current, path(2, "backup", 70.0, 0.0, 0.0)],
+            1,
+            &mut state,
+            RoleSelectionConfig::default(),
+        );
+
+        assert_eq!(
+            roles
+                .iter()
+                .find(|path| path.role == PathRole::Anchor)
+                .unwrap()
+                .path
+                .path_id,
+            2
+        );
     }
 }

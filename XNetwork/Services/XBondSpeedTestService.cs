@@ -8,8 +8,7 @@ namespace XNetwork.Services;
 public sealed class XBondSpeedTestService(
     ILogger<XBondSpeedTestService> logger,
     XBondSettings settings,
-    XBondStatusService statusService,
-    XBondClientConfigService clientConfigService)
+    XBondStatusService statusService)
 {
     private static readonly JsonSerializerOptions ArtifactJsonOptions = new()
     {
@@ -238,10 +237,9 @@ public sealed class XBondSpeedTestService(
             return result;
         }
 
-        XBondClientConfig? originalConfig = null;
+        var overrideActive = false;
         try
         {
-            originalConfig = await clientConfigService.ReadCurrentConfigAsync(cancellationToken).ConfigureAwait(false);
             result.Before = await CaptureSystemSampleAsync(cancellationToken).ConfigureAwait(false);
 
             var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
@@ -257,11 +255,8 @@ public sealed class XBondSpeedTestService(
                          ("anchor-fec", "XBond anchor + FEC")
                      })
             {
-                var config = CloneConfig(originalConfig);
-                config.Mode = mode;
-                await clientConfigService
-                    .SaveConfigAndRestartAsync(config, $"Performance matrix switched XBond to {mode}.", cancellationToken)
-                    .ConfigureAwait(false);
+                await SetDiagnosticOverrideAsync(mode, cancellationToken).ConfigureAwait(false);
+                overrideActive = true;
                 await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(settings.PerformanceMatrixSettleSeconds, 1, 20)), cancellationToken)
                     .ConfigureAwait(false);
 
@@ -284,21 +279,9 @@ public sealed class XBondSpeedTestService(
         }
         finally
         {
-            if (originalConfig is not null)
+            if (overrideActive)
             {
-                try
-                {
-                    await clientConfigService
-                        .SaveConfigAndRestartAsync(originalConfig, "Performance matrix restored original XBond config.", cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Failed to restore XBond config after performance matrix");
-                    result.Error = string.IsNullOrWhiteSpace(result.Error)
-                        ? $"Restore failed: {ex.Message}"
-                        : $"{result.Error} Restore failed: {ex.Message}";
-                }
+                await ClearDiagnosticOverrideAsync(result, cancellationToken).ConfigureAwait(false);
             }
 
             result.CompletedAtUtc = DateTime.UtcNow;
@@ -306,6 +289,73 @@ public sealed class XBondSpeedTestService(
         }
 
         return result;
+    }
+
+    private async Task SetDiagnosticOverrideAsync(string mode, CancellationToken cancellationToken)
+    {
+        var ttlSeconds = Math.Clamp(settings.PerformanceMatrixOverrideTtlSeconds, 10, 3600)
+            .ToString(CultureInfo.InvariantCulture);
+        var command = await RunCommandAsync(
+            settings.ClientBinaryPath,
+            [
+                "override",
+                "set",
+                "--mode",
+                mode,
+                "--policy",
+                "diagnostic",
+                "--ttl-seconds",
+                ttlSeconds,
+                "--socket",
+                settings.ClientControlSocketPath,
+                "--json"
+            ],
+            timeoutSeconds: Math.Min(settings.ServiceCommandTimeoutSeconds, 15),
+            cancellationToken).ConfigureAwait(false);
+
+        if (command.ExitCode != 0)
+        {
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(command.Output)
+                ? $"Failed to set XBond diagnostic override {mode}."
+                : command.Output);
+        }
+    }
+
+    private async Task ClearDiagnosticOverrideAsync(
+        XBondPerformanceMatrixResult result,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var command = await RunCommandAsync(
+                settings.ClientBinaryPath,
+                [
+                    "override",
+                    "clear",
+                    "--socket",
+                    settings.ClientControlSocketPath,
+                    "--json"
+                ],
+                timeoutSeconds: Math.Min(settings.ServiceCommandTimeoutSeconds, 15),
+                cancellationToken).ConfigureAwait(false);
+
+            if (command.ExitCode != 0)
+            {
+                var error = string.IsNullOrWhiteSpace(command.Output)
+                    ? "Failed to clear XBond diagnostic override."
+                    : command.Output;
+                result.Error = string.IsNullOrWhiteSpace(result.Error)
+                    ? error
+                    : $"{result.Error} Clear override failed: {error}";
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to clear XBond diagnostic override");
+            result.Error = string.IsNullOrWhiteSpace(result.Error)
+                ? $"Clear override failed: {ex.Message}"
+                : $"{result.Error} Clear override failed: {ex.Message}";
+        }
     }
 
     public async Task<XBondMtuSweepResult> RunMtuSweepAsync(CancellationToken cancellationToken = default)

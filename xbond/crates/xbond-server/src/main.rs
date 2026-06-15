@@ -9,10 +9,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_transmission_plan, build_transmission_plan_for_packet, is_ipv4_packet, FrameReceiver,
-    PacketKind, PacketReorderBuffer, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderedPacket, ScheduleControlMessage, SchedulePlan, XBondFrame,
-    XBondHeader, XBondKey, XBondTun, XorFecBlock,
+    build_transmission_plan, build_transmission_plan_for_packet, encode_sealed_payload,
+    is_ipv4_packet, FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot,
+    ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
+    ScheduleControlMessage, SchedulePlan, XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -168,7 +168,11 @@ async fn main() -> Result<()> {
                     peers.insert(frame.header.path_id, peer);
                 }
                 if let Some(control) = parse_return_control(&frame) {
-                    let schedule_changed = return_control.as_ref() != Some(&control);
+                    let schedule_changed = return_control.as_ref().is_none_or(|previous| {
+                        previous.schedule != control.schedule
+                            || previous.policy != control.policy
+                            || previous.policy_config != control.policy_config
+                    });
                     return_control = Some(control);
                     if args.json_events && schedule_changed {
                         println!(
@@ -365,8 +369,7 @@ async fn main() -> Result<()> {
                         path_id,
                     );
                     header.flags = 1;
-                    let frame = XBondFrame::new(header, packet.clone());
-                    let encoded = frame.encode_sealed(&key)?;
+                    let encoded = encode_sealed_payload(&header, &packet, &key)?;
                     let send_result = if kind == PacketKind::Data {
                         socket.send_to(&encoded, peer).await
                     } else {

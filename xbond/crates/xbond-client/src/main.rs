@@ -8,18 +8,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
+#[cfg(unix)]
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use xbond_core::{
-    build_schedule, build_transmission_plan_for_packet, is_ipv4_packet, select_path_roles,
-    ClientConfig, FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot,
-    PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome, RedundancyPolicyConfig,
-    ReorderedPacket, RouteVerification, ScheduleControlMessage, SchedulePlan,
-    ScheduledTransmission, XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus,
-    XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTun,
-    XBondTunnelStatus, XorFecBlock,
+    build_schedule, build_transmission_plan_for_packet, encode_sealed_payload, is_ipv4_packet,
+    select_path_roles, select_path_roles_with_state, ClientConfig, FrameReceiver, PacketKind,
+    PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats,
+    ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket, RoleSelectionConfig,
+    RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
+    ScheduledTransmission, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader,
+    XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus,
+    XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -103,6 +109,40 @@ enum Command {
         json_events: bool,
         #[arg(long)]
         trace_packets: bool,
+        #[arg(long, default_value = "/run/xbond/client-control.sock")]
+        control_socket: PathBuf,
+    },
+    Override {
+        #[command(subcommand)]
+        action: OverrideCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OverrideCommand {
+    Set {
+        #[arg(long)]
+        mode: ScheduleMode,
+        #[arg(long, default_value = "diagnostic")]
+        policy: RedundancyPolicy,
+        #[arg(long, default_value_t = 60)]
+        ttl_seconds: u64,
+        #[arg(long, default_value = "/run/xbond/client-control.sock")]
+        socket: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    Clear {
+        #[arg(long, default_value = "/run/xbond/client-control.sock")]
+        socket: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    Status {
+        #[arg(long, default_value = "/run/xbond/client-control.sock")]
+        socket: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -191,6 +231,7 @@ async fn main() -> Result<()> {
             packet_limit,
             json_events,
             trace_packets,
+            control_socket,
         } => {
             run_tunnel(TunnelOptions {
                 config,
@@ -201,8 +242,12 @@ async fn main() -> Result<()> {
                 packet_limit,
                 json_events,
                 trace_packets,
+                control_socket,
             })
             .await?;
+        }
+        Command::Override { action } => {
+            run_override_command(action).await?;
         }
     }
     Ok(())
@@ -244,6 +289,79 @@ struct TunnelOptions {
     packet_limit: Option<u64>,
     json_events: bool,
     trace_packets: bool,
+    control_socket: PathBuf,
+}
+
+async fn run_override_command(action: OverrideCommand) -> Result<()> {
+    let (socket, json, request) = match action {
+        OverrideCommand::Set {
+            mode,
+            policy,
+            ttl_seconds,
+            socket,
+            json,
+        } => (
+            socket,
+            json,
+            ControlRequest::SetOverride {
+                mode,
+                redundancy_policy: policy,
+                ttl_seconds,
+            },
+        ),
+        OverrideCommand::Clear { socket, json } => (socket, json, ControlRequest::ClearOverride),
+        OverrideCommand::Status { socket, json } => (socket, json, ControlRequest::Status),
+    };
+
+    let response = send_control_request(&socket, request).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("{}", response.message);
+        if let Some(active) = response.active_override {
+            println!(
+                "override: {:?} / {:?}, expires in {}s",
+                active.mode, active.redundancy_policy, active.expires_in_seconds
+            );
+        }
+    }
+
+    if response.ok {
+        Ok(())
+    } else {
+        bail!(response.message)
+    }
+}
+
+#[cfg(unix)]
+async fn send_control_request(
+    socket: &PathBuf,
+    request: ControlRequest,
+) -> Result<ControlResponse> {
+    let mut stream = UnixStream::connect(socket).await.with_context(|| {
+        format!(
+            "failed to connect to XBond control socket {}",
+            socket.display()
+        )
+    })?;
+    let request_json = serde_json::to_vec(&request)?;
+    stream.write_all(&request_json).await?;
+    stream.write_all(b"\n").await?;
+
+    let mut reader = BufReader::new(stream);
+    let mut response_json = String::new();
+    reader.read_line(&mut response_json).await?;
+    let response = serde_json::from_str::<ControlResponse>(&response_json)
+        .context("invalid response from XBond control socket")?;
+    Ok(response)
+}
+
+#[cfg(not(unix))]
+async fn send_control_request(
+    _socket: &PathBuf,
+    _request: ControlRequest,
+) -> Result<ControlResponse> {
+    bail!("XBond live override control is only available on Unix-like systems")
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +436,58 @@ struct TunnelCounters {
     decoded_frames: u64,
     encode_micros_total: u64,
     decode_micros_total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "kebab-case")]
+enum ControlRequest {
+    SetOverride {
+        mode: ScheduleMode,
+        #[serde(default)]
+        redundancy_policy: RedundancyPolicy,
+        ttl_seconds: u64,
+    },
+    ClearOverride,
+    Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ControlResponse {
+    ok: bool,
+    message: String,
+    active_override: Option<XBondDiagnosticOverrideStatus>,
+}
+
+#[derive(Debug)]
+struct ControlEnvelope {
+    request: ControlRequest,
+    response_tx: oneshot::Sender<ControlResponse>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveScheduleOverride {
+    mode: ScheduleMode,
+    redundancy_policy: RedundancyPolicy,
+    expires_at: Instant,
+}
+
+impl ActiveScheduleOverride {
+    fn status(&self) -> XBondDiagnosticOverrideStatus {
+        XBondDiagnosticOverrideStatus {
+            mode: self.mode,
+            redundancy_policy: self.redundancy_policy,
+            expires_in_seconds: self
+                .expires_at
+                .saturating_duration_since(Instant::now())
+                .as_secs(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ScheduleControlSignature {
+    schedule: SchedulePlan,
+    redundancy_policy: RedundancyPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -548,6 +718,185 @@ async fn run_multi_ping(options: MultiPingOptions) -> Result<ProbeAggregate> {
     })
 }
 
+fn handle_control_request(
+    request: ControlRequest,
+    active_override: &mut Option<ActiveScheduleOverride>,
+) -> ControlResponse {
+    prune_expired_override(active_override);
+
+    match request {
+        ControlRequest::SetOverride {
+            mode,
+            redundancy_policy,
+            ttl_seconds,
+        } => {
+            let ttl_seconds = ttl_seconds.clamp(1, 3600);
+            *active_override = Some(ActiveScheduleOverride {
+                mode,
+                redundancy_policy,
+                expires_at: Instant::now() + Duration::from_secs(ttl_seconds),
+            });
+            ControlResponse {
+                ok: true,
+                message: format!(
+                    "XBond override set to {:?} / {:?} for {}s.",
+                    mode, redundancy_policy, ttl_seconds
+                ),
+                active_override: active_override.as_ref().map(ActiveScheduleOverride::status),
+            }
+        }
+        ControlRequest::ClearOverride => {
+            *active_override = None;
+            ControlResponse {
+                ok: true,
+                message: "XBond override cleared.".to_string(),
+                active_override: None,
+            }
+        }
+        ControlRequest::Status => ControlResponse {
+            ok: true,
+            message: if active_override.is_some() {
+                "XBond override is active.".to_string()
+            } else {
+                "No XBond override is active.".to_string()
+            },
+            active_override: active_override.as_ref().map(ActiveScheduleOverride::status),
+        },
+    }
+}
+
+fn prune_expired_override(active_override: &mut Option<ActiveScheduleOverride>) {
+    if active_override
+        .as_ref()
+        .is_some_and(|override_state| Instant::now() >= override_state.expires_at)
+    {
+        *active_override = None;
+    }
+}
+
+fn effective_mode_and_policy(
+    config: &ClientConfig,
+    active_override: &mut Option<ActiveScheduleOverride>,
+) -> (ScheduleMode, RedundancyPolicy) {
+    prune_expired_override(active_override);
+    active_override
+        .as_ref()
+        .map(|override_state| (override_state.mode, override_state.redundancy_policy))
+        .unwrap_or((config.mode, config.redundancy_policy))
+}
+
+fn schedule_control_signature(
+    schedule: &SchedulePlan,
+    redundancy_policy: RedundancyPolicy,
+) -> ScheduleControlSignature {
+    ScheduleControlSignature {
+        schedule: schedule.clone(),
+        redundancy_policy,
+    }
+}
+
+#[cfg(unix)]
+fn spawn_control_listener(
+    socket_path: PathBuf,
+    control_tx: mpsc::UnboundedSender<ControlEnvelope>,
+    json_events: bool,
+) -> Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    match std::fs::remove_file(&socket_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to remove old {}", socket_path.display()));
+        }
+    }
+
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path)
+        .with_context(|| format!("failed to bind {}", socket_path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .with_context(|| format!("failed to set {} nonblocking", socket_path.display()))?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to set permissions on {}", socket_path.display()))?;
+    let listener = UnixListener::from_std(listener)?;
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("xbond control socket accept error: {error}");
+                    time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            let control_tx = control_tx.clone();
+            tokio::spawn(async move {
+                if let Err(error) = handle_control_stream(stream, control_tx).await {
+                    eprintln!("xbond control socket request failed: {error}");
+                }
+            });
+        }
+    });
+
+    if json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "control-socket-listening",
+                "path": socket_path.display().to_string(),
+            })
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn handle_control_stream(
+    stream: UnixStream,
+    control_tx: mpsc::UnboundedSender<ControlEnvelope>,
+) -> Result<()> {
+    let mut reader = BufReader::new(stream);
+    let mut request_json = String::new();
+    reader
+        .read_line(&mut request_json)
+        .await
+        .context("failed to read control request")?;
+    let request = serde_json::from_str::<ControlRequest>(&request_json)
+        .context("invalid XBond control request")?;
+    let (response_tx, response_rx) = oneshot::channel();
+    control_tx
+        .send(ControlEnvelope {
+            request,
+            response_tx,
+        })
+        .map_err(|_| anyhow::anyhow!("XBond tunnel control loop is not available"))?;
+    let response = response_rx
+        .await
+        .context("XBond tunnel dropped control response")?;
+    let mut stream = reader.into_inner();
+    stream
+        .write_all(serde_json::to_string(&response)?.as_bytes())
+        .await?;
+    stream.write_all(b"\n").await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn spawn_control_listener(
+    _socket_path: PathBuf,
+    _control_tx: mpsc::UnboundedSender<ControlEnvelope>,
+    _json_events: bool,
+) -> Result<()> {
+    Ok(())
+}
+
 async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let config = read_config(&options.config)?;
     let key_text = std::env::var(&options.key_env)
@@ -562,6 +911,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         .collect::<HashMap<_, _>>();
     let mut sockets: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
     let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
+    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlEnvelope>();
+    spawn_control_listener(
+        options.control_socket.clone(),
+        control_tx,
+        options.json_events,
+    )?;
 
     let mut tun = XBondTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
         format!(
@@ -610,11 +965,21 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         duplicate_loss_threshold: config.duplicate_loss_threshold,
         backup_loss_disable_threshold: config.backup_loss_disable_threshold,
     };
+    let mut active_override: Option<ActiveScheduleOverride> = None;
+    let mut role_state = RoleSelectionState::default();
+    let role_config = RoleSelectionConfig::default();
     let mut health = tunnel_health(&config, &path_runtime, &sockets);
-    let mut schedule = build_schedule(
-        config.mode,
-        &select_path_roles(&health, config.max_active_backups),
+    let mut roles = select_path_roles_with_state(
+        &health,
+        config.max_active_backups,
+        &mut role_state,
+        role_config,
     );
+    let (mut effective_mode, mut effective_policy) =
+        effective_mode_and_policy(&config, &mut active_override);
+    let mut schedule = build_schedule(effective_mode, &roles);
+    let mut last_control_signature: Option<ScheduleControlSignature>;
+    let mut last_control_sent_at: Instant;
 
     if options.json_events {
         println!(
@@ -623,7 +988,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 "event": "tunnel-started",
                 "tun": tun.name(),
                 "server": config.server_addr,
-                "mode": config.mode,
+                "mode": effective_mode,
+                "policy": effective_policy,
                 "session_id": session_id,
                 "schedule": schedule,
             })
@@ -633,7 +999,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             "xbond XBond tunnel opened {} -> {} ({:?}); no routes were changed",
             tun.name(),
             config.server_addr,
-            config.mode
+            effective_mode
         );
     }
 
@@ -657,15 +1023,19 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &config,
         &tun,
         options.tun_mtu,
-        &path_runtime,
-        &sockets,
         &counters,
+        &roles,
         &schedule,
+        effective_mode,
+        effective_policy,
+        active_override.as_ref(),
+        role_state.schedule_change_count,
         &return_reorder,
     )?;
     send_tunnel_schedule_control(
         &config,
         &schedule,
+        effective_policy,
         &mut path_runtime,
         &sockets,
         &key,
@@ -675,6 +1045,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         options.trace_packets,
     )
     .await?;
+    last_control_signature = Some(schedule_control_signature(&schedule, effective_policy));
+    last_control_sent_at = Instant::now();
 
     loop {
         tokio::select! {
@@ -702,29 +1074,46 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut last_throughput_sample,
                 );
                 health = tunnel_health(&config, &path_runtime, &sockets);
-                schedule = build_schedule(
-                    config.mode,
-                    &select_path_roles(&health, config.max_active_backups),
+                roles = select_path_roles_with_state(
+                    &health,
+                    config.max_active_backups,
+                    &mut role_state,
+                    role_config,
                 );
-                send_tunnel_schedule_control(
-                    &config,
-                    &schedule,
-                    &mut path_runtime,
-                    &sockets,
-                    &key,
-                    session_id,
-                    &mut control_sequence,
-                    options.json_events,
-                    options.trace_packets,
-                ).await?;
+                (effective_mode, effective_policy) =
+                    effective_mode_and_policy(&config, &mut active_override);
+                schedule = build_schedule(effective_mode, &roles);
+                let control_signature =
+                    schedule_control_signature(&schedule, effective_policy);
+                if last_control_signature.as_ref() != Some(&control_signature)
+                    || last_control_sent_at.elapsed() >= Duration::from_secs(5)
+                {
+                    send_tunnel_schedule_control(
+                        &config,
+                        &schedule,
+                        effective_policy,
+                        &mut path_runtime,
+                        &sockets,
+                        &key,
+                        session_id,
+                        &mut control_sequence,
+                        options.json_events,
+                        options.trace_packets,
+                    ).await?;
+                    last_control_signature = Some(control_signature);
+                    last_control_sent_at = Instant::now();
+                }
                 write_tunnel_runtime_status(
                     &config,
                     &tun,
                     options.tun_mtu,
-                    &path_runtime,
-                    &sockets,
                     &counters,
+                    &roles,
                     &schedule,
+                    effective_mode,
+                    effective_policy,
+                    active_override.as_ref(),
+                    role_state.schedule_change_count,
                     &return_reorder,
                 )?;
             }
@@ -737,6 +1126,54 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut path_runtime,
                     &mut counters,
                 )?;
+            }
+
+            Some(envelope) = control_rx.recv() => {
+                let mut response =
+                    handle_control_request(envelope.request, &mut active_override);
+                (effective_mode, effective_policy) =
+                    effective_mode_and_policy(&config, &mut active_override);
+                schedule = build_schedule(effective_mode, &roles);
+                let control_signature =
+                    schedule_control_signature(&schedule, effective_policy);
+                if response.ok {
+                    match send_tunnel_schedule_control(
+                        &config,
+                        &schedule,
+                        effective_policy,
+                        &mut path_runtime,
+                        &sockets,
+                        &key,
+                        session_id,
+                        &mut control_sequence,
+                        options.json_events,
+                        options.trace_packets,
+                    ).await {
+                        Ok(()) => {
+                            last_control_signature = Some(control_signature);
+                            last_control_sent_at = Instant::now();
+                        }
+                        Err(error) => {
+                            response.ok = false;
+                            response.message =
+                                format!("XBond override applied locally, but schedule control failed: {error}");
+                        }
+                    }
+                }
+                write_tunnel_runtime_status(
+                    &config,
+                    &tun,
+                    options.tun_mtu,
+                    &counters,
+                    &roles,
+                    &schedule,
+                    effective_mode,
+                    effective_policy,
+                    active_override.as_ref(),
+                    role_state.schedule_change_count,
+                    &return_reorder,
+                )?;
+                let _ = envelope.response_tx.send(response);
             }
 
             Some(packet) = tun_packet_rx.recv() => {
@@ -762,7 +1199,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
                 let packet_transmissions = build_transmission_plan_for_packet(
                     &schedule,
-                    config.redundancy_policy,
+                    effective_policy,
                     packet.len(),
                     &health,
                     policy_config,
@@ -793,17 +1230,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     let Some(socket) = sockets.get(&transmission.path_id) else {
                         continue;
                     };
-                    let frame = XBondFrame::new(
-                        XBondHeader::new(
-                            transmission.packet_kind,
-                            session_id,
-                            sequence,
-                            send_micros,
-                            transmission.path_id,
-                        ),
-                        packet.clone(),
+                    let header = XBondHeader::new(
+                        transmission.packet_kind,
+                        session_id,
+                        sequence,
+                        send_micros,
+                        transmission.path_id,
                     );
-                    let encoded = encode_tunnel_frame(&frame, &key, &mut counters)?;
+                    let encoded = encode_tunnel_payload(&header, &packet, &key, &mut counters)?;
                     let send_result = if transmission.packet_kind == PacketKind::Data {
                         socket.send(&encoded).await
                     } else {
@@ -855,17 +1289,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 counters.fec_packets_skipped += 1;
                                 continue;
                             };
-                            let frame = XBondFrame::new(
-                                XBondHeader::new(
-                                    PacketKind::Fec,
-                                    session_id,
-                                    base_sequence,
-                                    send_micros,
-                                    transmission.path_id,
-                                ),
-                                fec_payload.clone(),
+                            let header = XBondHeader::new(
+                                PacketKind::Fec,
+                                session_id,
+                                base_sequence,
+                                send_micros,
+                                transmission.path_id,
                             );
-                            let encoded = encode_tunnel_frame(&frame, &key, &mut counters)?;
+                            let encoded =
+                                encode_tunnel_payload(&header, &fec_payload, &key, &mut counters)?;
                             match socket.try_send(&encoded) {
                                 Ok(_) => {
                                     record_tunnel_send_success(
@@ -912,7 +1344,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "fec_packets_sent": counters.fec_packets_sent,
                             "fec_packets_skipped": counters.fec_packets_skipped,
                             "schedule": schedule,
-                            "policy": config.redundancy_policy,
+                            "policy": effective_policy,
                         })
                     );
                 }
@@ -1162,7 +1594,8 @@ fn tunnel_health(
                         .as_millis()
                         .min(u128::from(u64::MAX)) as u64
                 });
-                path.queue_pressure = (runtime.pending_heartbeats.len() as f64 / 3.0).clamp(0.0, 1.0);
+                path.queue_pressure =
+                    (runtime.pending_heartbeats.len() as f64 / 3.0).clamp(0.0, 1.0);
                 let duplicate_total = runtime
                     .duplicate_useful_packets
                     .saturating_add(runtime.duplicate_late_packets);
@@ -1236,13 +1669,14 @@ fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>
     runtime.send_failures = runtime.send_failures.saturating_add(1);
 }
 
-fn encode_tunnel_frame(
-    frame: &XBondFrame,
+fn encode_tunnel_payload(
+    header: &XBondHeader,
+    payload: &[u8],
     key: &XBondKey,
     counters: &mut TunnelCounters,
 ) -> Result<Vec<u8>> {
     let started = Instant::now();
-    let encoded = frame.encode_sealed(key)?;
+    let encoded = encode_sealed_payload(header, payload, key)?;
     counters.encoded_frames = counters.encoded_frames.saturating_add(1);
     counters.encode_micros_total = counters
         .encode_micros_total
@@ -1256,6 +1690,7 @@ const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
 async fn send_tunnel_schedule_control(
     config: &ClientConfig,
     schedule: &SchedulePlan,
+    redundancy_policy: RedundancyPolicy,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     sockets: &HashMap<u16, Arc<UdpSocket>>,
     key: &XBondKey,
@@ -1272,7 +1707,7 @@ async fn send_tunnel_schedule_control(
     let sequence = *control_sequence;
     let payload = serde_json::to_vec(&ScheduleControlMessage {
         schedule: schedule.clone(),
-        redundancy_policy: config.redundancy_policy,
+        redundancy_policy,
         policy_config: RedundancyPolicyConfig {
             interactive_packet_threshold_bytes: config.interactive_packet_threshold_bytes,
             duplicate_loss_threshold: config.duplicate_loss_threshold,
@@ -1532,26 +1967,27 @@ fn write_tunnel_runtime_status(
     config: &ClientConfig,
     tun: &XBondTun,
     tun_mtu: u16,
-    path_runtime: &HashMap<u16, TunnelPathRuntime>,
-    sockets: &HashMap<u16, Arc<UdpSocket>>,
     counters: &TunnelCounters,
+    roles: &[xbond_core::ScoredPath],
     schedule: &SchedulePlan,
+    effective_mode: ScheduleMode,
+    effective_policy: RedundancyPolicy,
+    active_override: Option<&ActiveScheduleOverride>,
+    schedule_change_count: u64,
     return_reorder: &PacketReorderBuffer,
 ) -> Result<()> {
-    let paths = select_path_roles(
-        &tunnel_health(config, path_runtime, sockets),
-        config.max_active_backups,
-    )
-    .into_iter()
-    .map(|scored_path| scored_path.path)
-    .collect();
+    let paths = roles
+        .iter()
+        .cloned()
+        .map(|scored_path| scored_path.path)
+        .collect();
 
     write_runtime_status(
         config,
         XBondRuntimeStatus {
             running: true,
-            mode: config.mode,
-            redundancy_policy: config.redundancy_policy,
+            mode: effective_mode,
+            redundancy_policy: effective_policy,
             server_addr: config.server_addr.clone(),
             tunnel: XBondTunnelStatus {
                 state: "running".to_string(),
@@ -1572,7 +2008,7 @@ fn write_tunnel_runtime_status(
             inbound_throughput_bps: counters.inbound_throughput_bps,
             fec_packets_sent: counters.fec_packets_sent,
             fec_packets_skipped: counters.fec_packets_skipped,
-            fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
+            fec: fec_status_for_mode(effective_mode, XBondFecStatus::default()),
             late_packets_dropped: counters.late_packets_dropped,
             reorder: XBondReorderStatus {
                 return_path: return_reorder.stats(),
@@ -1585,6 +2021,8 @@ fn write_tunnel_runtime_status(
                 encoded_frames: counters.encoded_frames,
                 decoded_frames: counters.decoded_frames,
             },
+            diagnostic_override: active_override.map(ActiveScheduleOverride::status),
+            schedule_change_count,
             message: Some("XBond tunnel is running.".to_string()),
             ..XBondRuntimeStatus::default()
         },

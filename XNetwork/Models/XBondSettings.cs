@@ -24,6 +24,8 @@ public class XBondSettings
 
     public string RuntimeStatusPath { get; set; } = "/run/xbond/client-status.json";
 
+    public string ClientControlSocketPath { get; set; } = "/run/xbond/client-control.sock";
+
     public string ScheduleMode { get; set; } = "anchor-duplicate-1";
 
     public int MaxActiveBackups { get; set; } = 1;
@@ -93,6 +95,8 @@ public class XBondSettings
     public string PerformanceArtifactDirectory { get; set; } = "/var/lib/xnetwork/diagnostics";
 
     public int PerformanceMatrixSettleSeconds { get; set; } = 4;
+
+    public int PerformanceMatrixOverrideTtlSeconds { get; set; } = 120;
 
     public string IptablesCommandPath { get; set; } = "iptables";
 

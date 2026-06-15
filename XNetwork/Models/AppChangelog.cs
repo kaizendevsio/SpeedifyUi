@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.31";
+    public const string CurrentVersion = "xbond-2026.06.32";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Improved XBond performance diagnostics and scheduling.",
+            Changes =
+            [
+                "Operator performance speed test diagnostics can temporarily override the live XBond mode without rewriting config or restarting the tunnel.",
+                "The XBond scheduler now uses hysteresis so a better path must stay better before replacing the current anchor, while hard-demoted paths are replaced immediately.",
+                "Client and server packet sends avoid an extra payload clone before encryption on the hot path."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.31",
             Date = "2026-06-15",
             Summary = "Removed remaining XBond page controls.",
             Changes =

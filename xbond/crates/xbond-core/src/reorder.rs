@@ -114,14 +114,12 @@ impl PacketReorderBuffer {
             let gap_expired = oldest_packet.release_after_micros <= now_micros;
             let capacity_exceeded = self.pending.len() > self.capacity;
             if gap_expired || capacity_exceeded {
-                self.stats.released_gap_packets =
-                    self.stats.released_gap_packets.saturating_add(1);
+                self.stats.released_gap_packets = self.stats.released_gap_packets.saturating_add(1);
                 if gap_expired {
                     self.stats.timeout_releases = self.stats.timeout_releases.saturating_add(1);
                 }
                 if capacity_exceeded {
-                    self.stats.capacity_releases =
-                        self.stats.capacity_releases.saturating_add(1);
+                    self.stats.capacity_releases = self.stats.capacity_releases.saturating_add(1);
                 }
                 self.next_sequence = Some(oldest_sequence);
                 continue;
@@ -266,8 +264,13 @@ mod tests {
     fn reset_allows_lower_sequence_for_new_session() {
         let mut buffer = PacketReorderBuffer::new(16, 25_000);
 
-        assert_eq!(buffer.push(100, 1, b"old".to_vec(), 1_000, 100_000).len(), 1);
-        assert!(buffer.push(0, 1, b"late".to_vec(), 2_000, 100_000).is_empty());
+        assert_eq!(
+            buffer.push(100, 1, b"old".to_vec(), 1_000, 100_000).len(),
+            1
+        );
+        assert!(buffer
+            .push(0, 1, b"late".to_vec(), 2_000, 100_000)
+            .is_empty());
 
         buffer.reset();
 

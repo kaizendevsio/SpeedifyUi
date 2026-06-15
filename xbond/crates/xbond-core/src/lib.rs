@@ -12,11 +12,14 @@ pub mod tun;
 pub use config::{ClientConfig, PathConfig};
 pub use crypto::XBondKey;
 pub use fec::{FecError, XorFecBlock};
-pub use health::{select_path_roles, PathHealthSnapshot, PathRole, ScoredPath};
+pub use health::{
+    select_path_roles, select_path_roles_with_state, PathHealthSnapshot, PathRole,
+    RoleSelectionConfig, RoleSelectionState, ScoredPath,
+};
 pub use probe::{ProbeAggregate, ProbePathStats, RouteVerification};
 pub use protocol::{
-    DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind, ReceiveOutcome, ReceiveStats,
-    XBondFrame, XBondHeader,
+    encode_payload, encode_sealed_payload, DuplicateOutcome, DuplicateWindow, FrameReceiver,
+    PacketKind, ReceiveOutcome, ReceiveStats, XBondFrame, XBondHeader,
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use scheduler::{
@@ -25,7 +28,7 @@ pub use scheduler::{
     ScheduledTransmission,
 };
 pub use status::{
-    PathIsolationStatus, XBondFecStatus, XBondPathStatus, XBondProcessStatus,
-    XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
+    PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondPathStatus,
+    XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
 };
 pub use tun::{is_ipv4_packet, XBondTun};

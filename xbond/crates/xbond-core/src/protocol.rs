@@ -96,33 +96,57 @@ impl XBondFrame {
     pub fn encode(&self) -> Result<Vec<u8>, ProtocolError> {
         let payload_len = u16::try_from(self.payload.len())
             .map_err(|_| ProtocolError::PayloadTooLarge(self.payload.len()))?;
-        Ok(self.encode_with_payload(&self.payload, payload_len))
+        Ok(encode_header_with_payload(
+            &self.header,
+            &self.payload,
+            payload_len,
+        ))
     }
 
     pub fn encode_sealed(&self, key: &XBondKey) -> Result<Vec<u8>, ProtocolError> {
-        let sealed_payload = key.seal(&self.header, &self.payload)?;
-        let payload_len = u16::try_from(sealed_payload.len())
-            .map_err(|_| ProtocolError::PayloadTooLarge(sealed_payload.len()))?;
-        Ok(self.encode_with_payload(&sealed_payload, payload_len))
+        encode_sealed_payload(&self.header, &self.payload, key)
     }
+}
 
-    fn encode_with_payload(&self, payload: &[u8], payload_len: u16) -> Vec<u8> {
-        let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
-        out.extend_from_slice(&MAGIC);
-        out.push(VERSION);
-        out.push(self.header.kind.as_u8());
-        out.push(self.header.flags);
-        out.push(HEADER_LEN as u8);
-        out.extend_from_slice(&self.header.session_id.to_be_bytes());
-        out.extend_from_slice(&self.header.sequence.to_be_bytes());
-        out.extend_from_slice(&self.header.send_micros.to_be_bytes());
-        out.extend_from_slice(&self.header.path_id.to_be_bytes());
-        out.extend_from_slice(&payload_len.to_be_bytes());
-        out.extend_from_slice(&0u32.to_be_bytes());
-        out.extend_from_slice(payload);
-        out
-    }
+pub fn encode_payload(header: &XBondHeader, payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+    let payload_len =
+        u16::try_from(payload.len()).map_err(|_| ProtocolError::PayloadTooLarge(payload.len()))?;
+    Ok(encode_header_with_payload(header, payload, payload_len))
+}
 
+pub fn encode_sealed_payload(
+    header: &XBondHeader,
+    payload: &[u8],
+    key: &XBondKey,
+) -> Result<Vec<u8>, ProtocolError> {
+    let sealed_payload = key.seal(header, payload)?;
+    let payload_len = u16::try_from(sealed_payload.len())
+        .map_err(|_| ProtocolError::PayloadTooLarge(sealed_payload.len()))?;
+    Ok(encode_header_with_payload(
+        header,
+        &sealed_payload,
+        payload_len,
+    ))
+}
+
+fn encode_header_with_payload(header: &XBondHeader, payload: &[u8], payload_len: u16) -> Vec<u8> {
+    let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+    out.extend_from_slice(&MAGIC);
+    out.push(VERSION);
+    out.push(header.kind.as_u8());
+    out.push(header.flags);
+    out.push(HEADER_LEN as u8);
+    out.extend_from_slice(&header.session_id.to_be_bytes());
+    out.extend_from_slice(&header.sequence.to_be_bytes());
+    out.extend_from_slice(&header.send_micros.to_be_bytes());
+    out.extend_from_slice(&header.path_id.to_be_bytes());
+    out.extend_from_slice(&payload_len.to_be_bytes());
+    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+impl XBondFrame {
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
         if bytes.len() < HEADER_LEN {
             return Err(ProtocolError::FrameTooShort(bytes.len()));

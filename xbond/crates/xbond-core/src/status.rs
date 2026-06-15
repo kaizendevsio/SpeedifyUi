@@ -208,6 +208,13 @@ pub struct XBondProcessStatus {
     pub decoded_frames: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XBondDiagnosticOverrideStatus {
+    pub mode: ScheduleMode,
+    pub redundancy_policy: RedundancyPolicy,
+    pub expires_in_seconds: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondRuntimeStatus {
     #[serde(default)]
@@ -256,6 +263,10 @@ pub struct XBondRuntimeStatus {
     pub reorder: XBondReorderStatus,
     #[serde(default)]
     pub process: XBondProcessStatus,
+    #[serde(default)]
+    pub diagnostic_override: Option<XBondDiagnosticOverrideStatus>,
+    #[serde(default)]
+    pub schedule_change_count: u64,
     #[serde(default)]
     pub message: Option<String>,
 }
