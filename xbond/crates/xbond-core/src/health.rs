@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PathHealthSnapshot {
     pub path_id: u16,
     pub name: String,
@@ -59,7 +59,7 @@ pub enum PathRole {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredPath {
     pub path: PathHealthSnapshot,
     pub score: f64,

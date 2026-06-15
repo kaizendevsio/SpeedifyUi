@@ -81,6 +81,16 @@ public class XBondSettings
     public int ServerSpeedTestDurationSeconds { get; set; } = 8;
 
     public int ServerSpeedTestCommandTimeoutSeconds { get; set; } = 45;
+
+    public string TrafficControlCommandPath { get; set; } = "tc";
+
+    public int SimulationDelayMs { get; set; } = 350;
+
+    public int SimulationJitterMs { get; set; } = 120;
+
+    public double SimulationLossPercent { get; set; } = 20;
+
+    public string SimulationRateLimit { get; set; } = "5mbit";
 }
 
 public static class XBondTrafficEngineModes

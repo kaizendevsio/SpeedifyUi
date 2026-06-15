@@ -13,6 +13,9 @@ public class XBondStatus
     [JsonPropertyName("mode")]
     public string Mode { get; set; } = "anchor-duplicate-1";
 
+    [JsonPropertyName("redundancy_policy")]
+    public string RedundancyPolicy { get; set; } = "balanced";
+
     [JsonPropertyName("server_addr")]
     public string ServerAddress { get; set; } = "";
 

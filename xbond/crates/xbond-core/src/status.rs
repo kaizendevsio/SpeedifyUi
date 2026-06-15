@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::health::{PathRole, ScoredPath};
-use crate::scheduler::{ScheduleMode, SchedulePlan};
+use crate::scheduler::{RedundancyPolicy, ScheduleMode, SchedulePlan};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XBondStatus {
     pub enabled: bool,
     pub running: bool,
     pub mode: ScheduleMode,
+    pub redundancy_policy: RedundancyPolicy,
     pub server_addr: String,
     pub tunnel: XBondTunnelStatus,
     pub anchor_path_id: Option<u16>,
@@ -174,6 +175,8 @@ pub struct XBondRuntimeStatus {
     pub running: bool,
     #[serde(default)]
     pub mode: ScheduleMode,
+    #[serde(default)]
+    pub redundancy_policy: RedundancyPolicy,
     #[serde(default)]
     pub server_addr: String,
     #[serde(default)]

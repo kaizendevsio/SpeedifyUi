@@ -4,6 +4,7 @@ pub mod fec;
 pub mod health;
 pub mod probe;
 pub mod protocol;
+pub mod reorder;
 pub mod scheduler;
 pub mod status;
 pub mod tun;
@@ -17,8 +18,11 @@ pub use protocol::{
     DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind, ReceiveOutcome, ReceiveStats,
     XBondFrame, XBondHeader,
 };
+pub use reorder::{PacketReorderBuffer, ReorderedPacket};
 pub use scheduler::{
-    build_schedule, build_transmission_plan, ScheduleMode, SchedulePlan, ScheduledTransmission,
+    build_schedule, build_transmission_plan, build_transmission_plan_for_packet, RedundancyPolicy,
+    RedundancyPolicyConfig, ScheduleControlMessage, ScheduleMode, SchedulePlan,
+    ScheduledTransmission,
 };
 pub use status::{
     PathIsolationStatus, XBondFecStatus, XBondPathStatus, XBondRuntimeStatus, XBondStatus,

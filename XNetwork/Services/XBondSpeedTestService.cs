@@ -7,7 +7,8 @@ namespace XNetwork.Services;
 
 public sealed class XBondSpeedTestService(
     ILogger<XBondSpeedTestService> logger,
-    XBondSettings settings)
+    XBondSettings settings,
+    XBondStatusService statusService)
 {
     private readonly SemaphoreSlim _testLock = new(1, 1);
 
@@ -73,6 +74,134 @@ public sealed class XBondSpeedTestService(
         }
         finally
         {
+            result.CompletedAtUtc = DateTime.UtcNow;
+            _testLock.Release();
+        }
+
+        return result;
+    }
+
+    public async Task<XBondSpeedTestResult> RunBadNetworkSimulationAsync(CancellationToken cancellationToken = default)
+    {
+        var result = new XBondSpeedTestResult
+        {
+            StartedAtUtc = DateTime.UtcNow,
+            IsSimulation = true
+        };
+
+        if (!OperatingSystem.IsLinux())
+        {
+            result.Error = "XBond network simulations are only available on Linux.";
+            result.Message = result.Error;
+            result.CompletedAtUtc = DateTime.UtcNow;
+            return result;
+        }
+
+        if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            result.Error = "Another XBond speed test is already running.";
+            result.Message = result.Error;
+            result.CompletedAtUtc = DateTime.UtcNow;
+            return result;
+        }
+
+        string? simulatedInterface = null;
+        try
+        {
+            var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
+            var backup = status.Paths
+                .Where(path => string.Equals(path.Role, "backup", StringComparison.OrdinalIgnoreCase))
+                .Where(path => path.InterfaceUp && !string.IsNullOrWhiteSpace(path.InterfaceName))
+                .OrderByDescending(path => path.LossRate)
+                .ThenByDescending(path => path.RttMs ?? 0)
+                .FirstOrDefault();
+
+            if (backup is null)
+            {
+                result.Error = "No live backup path is available for degraded-path simulation.";
+                result.Message = result.Error;
+                return result;
+            }
+
+            simulatedInterface = backup.InterfaceName!;
+            result.SimulatedInterface = simulatedInterface;
+            result.SimulationProfile =
+                $"delay {settings.SimulationDelayMs}ms {settings.SimulationJitterMs}ms loss {settings.SimulationLossPercent:0.#}% rate {settings.SimulationRateLimit}";
+            result.XBondServerHost = settings.ServerSpeedTestHost;
+            result.XBondServerPort = settings.ServerSpeedTestPort;
+
+            var tcApply = await RunCommandAsync(
+                settings.SudoPath,
+                [
+                    "-n",
+                    settings.TrafficControlCommandPath,
+                    "qdisc",
+                    "replace",
+                    "dev",
+                    simulatedInterface,
+                    "root",
+                    "netem",
+                    "delay",
+                    $"{settings.SimulationDelayMs}ms",
+                    $"{settings.SimulationJitterMs}ms",
+                    "loss",
+                    $"{settings.SimulationLossPercent.ToString("0.#", CultureInfo.InvariantCulture)}%",
+                    "rate",
+                    settings.SimulationRateLimit
+                ],
+                timeoutSeconds: 15,
+                cancellationToken).ConfigureAwait(false);
+            if (tcApply.ExitCode != 0)
+            {
+                result.Error = string.IsNullOrWhiteSpace(tcApply.Output)
+                    ? $"Unable to apply netem on {simulatedInterface}."
+                    : tcApply.Output;
+                result.Message = "XBond degraded-path simulation failed.";
+                return result;
+            }
+
+            await RunServerSpeedTestAsync(result, cancellationToken).ConfigureAwait(false);
+            result.Message = result.ServerTestSucceeded
+                ? "Degraded backup simulation completed."
+                : "Degraded backup simulation completed with partial results.";
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "XBond degraded-path simulation failed");
+            result.Error = ex.Message;
+            result.Message = "XBond degraded-path simulation failed.";
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(simulatedInterface))
+            {
+                try
+                {
+                    await RunCommandAsync(
+                        settings.SudoPath,
+                        [
+                            "-n",
+                            settings.TrafficControlCommandPath,
+                            "qdisc",
+                            "del",
+                            "dev",
+                            simulatedInterface,
+                            "root"
+                        ],
+                        timeoutSeconds: 15,
+                        cancellationToken).ConfigureAwait(false);
+                    result.SimulationCleanupSucceeded = true;
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Failed to cleanup XBond degraded-path simulation on {Interface}", simulatedInterface);
+                    result.SimulationCleanupSucceeded = false;
+                    result.Error = string.IsNullOrWhiteSpace(result.Error)
+                        ? $"Simulation cleanup failed: {ex.Message}"
+                        : $"{result.Error} Cleanup failed: {ex.Message}";
+                }
+            }
+
             result.CompletedAtUtc = DateTime.UtcNow;
             _testLock.Release();
         }

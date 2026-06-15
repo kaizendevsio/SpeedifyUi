@@ -1,6 +1,52 @@
 use serde::{Deserialize, Serialize};
 
-use crate::health::{PathRole, ScoredPath};
+use crate::health::{PathHealthSnapshot, PathRole, ScoredPath};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RedundancyPolicy {
+    Reliable,
+    Balanced,
+    Fast,
+    Diagnostic,
+}
+
+impl Default for RedundancyPolicy {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
+impl std::str::FromStr for RedundancyPolicy {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "reliable" => Ok(Self::Reliable),
+            "balanced" => Ok(Self::Balanced),
+            "fast" => Ok(Self::Fast),
+            "diagnostic" => Ok(Self::Diagnostic),
+            other => Err(format!("unknown redundancy policy: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RedundancyPolicyConfig {
+    pub interactive_packet_threshold_bytes: usize,
+    pub duplicate_loss_threshold: f64,
+    pub backup_loss_disable_threshold: f64,
+}
+
+impl Default for RedundancyPolicyConfig {
+    fn default() -> Self {
+        Self {
+            interactive_packet_threshold_bytes: 768,
+            duplicate_loss_threshold: 0.02,
+            backup_loss_disable_threshold: 0.35,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -90,6 +136,17 @@ pub struct ScheduledTransmission {
     pub packet_kind: crate::protocol::PacketKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleControlMessage {
+    pub schedule: SchedulePlan,
+    #[serde(default)]
+    pub redundancy_policy: RedundancyPolicy,
+    #[serde(default)]
+    pub policy_config: RedundancyPolicyConfig,
+    #[serde(default)]
+    pub paths: Vec<PathHealthSnapshot>,
+}
+
 pub fn build_transmission_plan(schedule: &SchedulePlan) -> Vec<ScheduledTransmission> {
     let mut transmissions = Vec::new();
 
@@ -117,6 +174,74 @@ pub fn build_transmission_plan(schedule: &SchedulePlan) -> Vec<ScheduledTransmis
     transmissions
 }
 
+pub fn build_transmission_plan_for_packet(
+    schedule: &SchedulePlan,
+    policy: RedundancyPolicy,
+    packet_len: usize,
+    paths: &[PathHealthSnapshot],
+    policy_config: RedundancyPolicyConfig,
+) -> Vec<ScheduledTransmission> {
+    if matches!(
+        policy,
+        RedundancyPolicy::Reliable | RedundancyPolicy::Diagnostic
+    ) || matches!(schedule.mode, ScheduleMode::FullDuplicateDebug)
+    {
+        return build_transmission_plan(schedule);
+    }
+
+    if matches!(schedule.mode, ScheduleMode::AnchorOnly) {
+        return build_transmission_plan(schedule);
+    }
+
+    let mut plan = SchedulePlan {
+        mode: schedule.mode,
+        anchor_path_id: schedule.anchor_path_id,
+        data_path_ids: schedule.data_path_ids.clone(),
+        duplicate_path_ids: Vec::new(),
+        fec_path_ids: Vec::new(),
+    };
+
+    let anchor_loss = schedule
+        .anchor_path_id
+        .and_then(|anchor_id| paths.iter().find(|path| path.path_id == anchor_id))
+        .map(|path| path.loss_rate.clamp(0.0, 1.0))
+        .unwrap_or(0.0);
+
+    let small_packet = packet_len <= policy_config.interactive_packet_threshold_bytes;
+    let anchor_degraded = anchor_loss >= policy_config.duplicate_loss_threshold;
+
+    let should_duplicate = match policy {
+        RedundancyPolicy::Reliable | RedundancyPolicy::Diagnostic => true,
+        RedundancyPolicy::Balanced => small_packet || anchor_degraded,
+        RedundancyPolicy::Fast => anchor_degraded,
+    };
+
+    let healthy_backup_ids = schedule
+        .duplicate_path_ids
+        .iter()
+        .chain(schedule.fec_path_ids.iter())
+        .copied()
+        .filter(|path_id| {
+            paths
+                .iter()
+                .find(|path| path.path_id == *path_id)
+                .is_some_and(|path| {
+                    path.interface_up
+                        && !path.in_cooldown
+                        && path.loss_rate < policy_config.backup_loss_disable_threshold
+                })
+        })
+        .collect::<Vec<_>>();
+
+    if should_duplicate {
+        plan.duplicate_path_ids = healthy_backup_ids;
+    } else if matches!(schedule.mode, ScheduleMode::AnchorFec) {
+        plan.fec_path_ids = healthy_backup_ids;
+    }
+
+    build_transmission_plan(&plan)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::health::{select_path_roles, PathHealthSnapshot};
@@ -142,6 +267,12 @@ mod tests {
             interface_up: true,
             in_cooldown: false,
         }
+    }
+
+    fn path_with_loss(path_id: u16, rtt_ms: f64, loss_rate: f64) -> PathHealthSnapshot {
+        let mut path = path(path_id, rtt_ms, 0.0);
+        path.loss_rate = loss_rate;
+        path
     }
 
     #[test]
@@ -235,5 +366,108 @@ mod tests {
     #[test]
     fn default_mode_is_two_link_duplicate() {
         assert_eq!(ScheduleMode::default(), ScheduleMode::AnchorDuplicate1);
+    }
+
+    #[test]
+    fn balanced_policy_keeps_duplicate_for_small_packets() {
+        let roles = select_path_roles(&[path(1, 20.0, 0.0), path(2, 60.0, 0.0)], 1);
+        let health = roles
+            .iter()
+            .map(|role| role.path.clone())
+            .collect::<Vec<_>>();
+        let plan = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+
+        let transmissions = build_transmission_plan_for_packet(
+            &plan,
+            RedundancyPolicy::Balanced,
+            180,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert_eq!(
+            transmissions
+                .iter()
+                .map(|transmission| transmission.packet_kind)
+                .collect::<Vec<_>>(),
+            vec![PacketKind::Data, PacketKind::Duplicate]
+        );
+    }
+
+    #[test]
+    fn balanced_policy_uses_anchor_only_for_healthy_bulk_packets() {
+        let roles = select_path_roles(&[path(1, 20.0, 0.0), path(2, 60.0, 0.0)], 1);
+        let health = roles
+            .iter()
+            .map(|role| role.path.clone())
+            .collect::<Vec<_>>();
+        let plan = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+
+        let transmissions = build_transmission_plan_for_packet(
+            &plan,
+            RedundancyPolicy::Balanced,
+            1_200,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert_eq!(
+            transmissions
+                .iter()
+                .map(|transmission| transmission.packet_kind)
+                .collect::<Vec<_>>(),
+            vec![PacketKind::Data]
+        );
+    }
+
+    #[test]
+    fn balanced_policy_duplicates_bulk_when_anchor_has_loss() {
+        let roles = select_path_roles(&[path_with_loss(1, 20.0, 0.03), path(2, 60.0, 0.0)], 1);
+        let health = roles
+            .iter()
+            .map(|role| role.path.clone())
+            .collect::<Vec<_>>();
+        let plan = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+
+        let transmissions = build_transmission_plan_for_packet(
+            &plan,
+            RedundancyPolicy::Balanced,
+            1_200,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert!(transmissions
+            .iter()
+            .any(|transmission| transmission.packet_kind == PacketKind::Duplicate));
+    }
+
+    #[test]
+    fn balanced_policy_skips_bad_backup_duplicates() {
+        let roles = select_path_roles(
+            &[path_with_loss(1, 20.0, 0.03), path_with_loss(2, 60.0, 0.5)],
+            1,
+        );
+        let health = roles
+            .iter()
+            .map(|role| role.path.clone())
+            .collect::<Vec<_>>();
+        let plan = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+
+        let transmissions = build_transmission_plan_for_packet(
+            &plan,
+            RedundancyPolicy::Balanced,
+            1_200,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert_eq!(
+            transmissions
+                .iter()
+                .map(|transmission| transmission.packet_kind)
+                .collect::<Vec<_>>(),
+            vec![PacketKind::Data]
+        );
     }
 }

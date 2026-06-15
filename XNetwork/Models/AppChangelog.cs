@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.24";
+    public const string CurrentVersion = "xbond-2026.06.25";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Added adaptive XBond redundancy and degraded-path diagnostics.",
+            Changes =
+            [
+                "XBond now supports redundancy policies so healthy bulk traffic can avoid unnecessary duplicate sends while small or lossy traffic stays protected.",
+                "Client and server tunnel receive paths now use a bounded reorder buffer before writing packets to the tunnel device.",
+                "Settings exposes XBond policy thresholds, and the XBond diagnostics page can run a bounded bad-backup simulation."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.24",
             Date = "2026-06-15",
             Summary = "Fixed XBond return scheduling and duplicate receive visibility.",
             Changes =

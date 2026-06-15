@@ -58,6 +58,14 @@ public class XBondSpeedTestResult
 
     public string? PublicTestError { get; set; }
 
+    public bool IsSimulation { get; set; }
+
+    public string? SimulatedInterface { get; set; }
+
+    public string? SimulationProfile { get; set; }
+
+    public bool SimulationCleanupSucceeded { get; set; }
+
     public string ServerName { get; set; } = "";
 
     public string ServerLocation { get; set; } = "";

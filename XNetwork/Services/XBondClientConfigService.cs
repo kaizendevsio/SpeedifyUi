@@ -126,6 +126,57 @@ public sealed class XBondClientConfigService(
         }
     }
 
+    public async Task<XBondAdapterConfigStatus> SetPolicyAsync(
+        string redundancyPolicy,
+        int interactivePacketThresholdBytes,
+        double duplicateLossThreshold,
+        double backupLossDisableThreshold,
+        int reorderHoldMs,
+        CancellationToken cancellationToken = default)
+    {
+        if (!settings.AllowServiceControl)
+        {
+            return ErrorStatus("XBond policy changes are locked by configuration.");
+        }
+
+        if (!await _operationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return ErrorStatus("Another XBond config change is already running.");
+        }
+
+        try
+        {
+            var config = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+            config.RedundancyPolicy = NormalizePolicy(redundancyPolicy);
+            config.InteractivePacketThresholdBytes = Math.Clamp(interactivePacketThresholdBytes, 64, 1_500);
+            config.DuplicateLossThreshold = Math.Clamp(duplicateLossThreshold, 0.0, 1.0);
+            config.BackupLossDisableThreshold = Math.Clamp(backupLossDisableThreshold, 0.0, 1.0);
+            config.ReorderHoldMs = Math.Clamp(reorderHoldMs, 0, 250);
+
+            await WriteConfigAsync(config, cancellationToken).ConfigureAwait(false);
+            var serviceStatus = await trafficEngineService.RestartAsync(cancellationToken).ConfigureAwait(false);
+            var refreshed = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+            var refreshedInterfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
+            var status = BuildStatus(refreshed, refreshedInterfaces, "XBond policy saved.");
+            if (serviceStatus.HasError)
+            {
+                status.Error = serviceStatus.Error;
+                status.Message = "XBond policy was saved, but restarting the tunnel failed.";
+            }
+
+            return status;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException)
+        {
+            logger.LogWarning(ex, "Failed to change XBond policy");
+            return ErrorStatus(ex.Message);
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
     private async Task<XBondClientConfig> ReadConfigAsync(CancellationToken cancellationToken)
     {
         var path = ConfigPath();
@@ -251,6 +302,14 @@ public sealed class XBondClientConfigService(
         {
             CanEdit = settings.AllowServiceControl && OperatingSystem.IsLinux(),
             Message = message ?? "Choose which connected adapters XBond should use.",
+            Mode = config.Mode,
+            RedundancyPolicy = config.RedundancyPolicy,
+            MaxActiveBackups = config.MaxActiveBackups,
+            RealtimeDeadlineMs = config.RealtimeDeadlineMs,
+            InteractivePacketThresholdBytes = config.InteractivePacketThresholdBytes,
+            DuplicateLossThreshold = config.DuplicateLossThreshold,
+            BackupLossDisableThreshold = config.BackupLossDisableThreshold,
+            ReorderHoldMs = config.ReorderHoldMs,
             Adapters = rows.Values
                 .OrderByDescending(row => row.IsConfigured)
                 .ThenByDescending(row => row.IsConnected)
@@ -320,8 +379,13 @@ public sealed class XBondClientConfigService(
         builder.AppendLine($"session_id = {config.SessionId}");
         builder.AppendLine($"server_addr = {Quote(config.ServerAddress)}");
         builder.AppendLine($"mode = {Quote(config.Mode)}");
+        builder.AppendLine($"redundancy_policy = {Quote(config.RedundancyPolicy)}");
         builder.AppendLine($"max_active_backups = {Math.Max(0, config.MaxActiveBackups)}");
         builder.AppendLine($"realtime_deadline_ms = {Math.Max(1, config.RealtimeDeadlineMs)}");
+        builder.AppendLine($"interactive_packet_threshold_bytes = {Math.Clamp(config.InteractivePacketThresholdBytes, 64, 1_500)}");
+        builder.AppendLine($"duplicate_loss_threshold = {FormatDouble(Math.Clamp(config.DuplicateLossThreshold, 0.0, 1.0))}");
+        builder.AppendLine($"backup_loss_disable_threshold = {FormatDouble(Math.Clamp(config.BackupLossDisableThreshold, 0.0, 1.0))}");
+        builder.AppendLine($"reorder_hold_ms = {Math.Clamp(config.ReorderHoldMs, 0, 250)}");
         builder.AppendLine($"runtime_status_path = {Quote(config.RuntimeStatusPath)}");
 
         foreach (var path in config.Paths.OrderBy(path => path.Id))
@@ -358,11 +422,26 @@ public sealed class XBondClientConfigService(
             case "mode":
                 config.Mode = Unquote(value);
                 break;
+            case "redundancy_policy":
+                config.RedundancyPolicy = NormalizePolicy(Unquote(value));
+                break;
             case "max_active_backups":
                 config.MaxActiveBackups = ParseInt(value, config.MaxActiveBackups);
                 break;
             case "realtime_deadline_ms":
                 config.RealtimeDeadlineMs = ParseInt(value, config.RealtimeDeadlineMs);
+                break;
+            case "interactive_packet_threshold_bytes":
+                config.InteractivePacketThresholdBytes = ParseInt(value, config.InteractivePacketThresholdBytes);
+                break;
+            case "duplicate_loss_threshold":
+                config.DuplicateLossThreshold = ParseDouble(value, config.DuplicateLossThreshold);
+                break;
+            case "backup_loss_disable_threshold":
+                config.BackupLossDisableThreshold = ParseDouble(value, config.BackupLossDisableThreshold);
+                break;
+            case "reorder_hold_ms":
+                config.ReorderHoldMs = ParseInt(value, config.ReorderHoldMs);
                 break;
             case "runtime_status_path":
                 config.RuntimeStatusPath = Unquote(value);
@@ -404,6 +483,8 @@ public sealed class XBondClientConfigService(
             config.Mode = settings.ScheduleMode;
         }
 
+        config.RedundancyPolicy = NormalizePolicy(config.RedundancyPolicy);
+
         if (config.MaxActiveBackups < 0)
         {
             config.MaxActiveBackups = settings.MaxActiveBackups;
@@ -412,6 +493,26 @@ public sealed class XBondClientConfigService(
         if (config.RealtimeDeadlineMs <= 0)
         {
             config.RealtimeDeadlineMs = 500;
+        }
+
+        if (config.InteractivePacketThresholdBytes <= 0)
+        {
+            config.InteractivePacketThresholdBytes = 768;
+        }
+
+        if (config.DuplicateLossThreshold <= 0)
+        {
+            config.DuplicateLossThreshold = 0.02;
+        }
+
+        if (config.BackupLossDisableThreshold <= 0)
+        {
+            config.BackupLossDisableThreshold = 0.35;
+        }
+
+        if (config.ReorderHoldMs < 0)
+        {
+            config.ReorderHoldMs = 25;
         }
 
         if (string.IsNullOrWhiteSpace(config.RuntimeStatusPath))
@@ -510,14 +611,30 @@ public sealed class XBondClientConfigService(
 
     private static string FormatBool(bool value) => value ? "true" : "false";
 
+    private static string FormatDouble(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
+
     private static bool ParseBool(string value, bool fallback) =>
         bool.TryParse(value.Trim(), out var parsed) ? parsed : fallback;
 
     private static int ParseInt(string value, int fallback) =>
         int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
 
+    private static double ParseDouble(string value, double fallback) =>
+        double.TryParse(value.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
+
     private static ulong ParseUlong(string value, ulong fallback) =>
         ulong.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
+
+    private static string NormalizePolicy(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "reliable" => "reliable",
+            "fast" => "fast",
+            "diagnostic" => "diagnostic",
+            _ => "balanced"
+        };
+    }
 
     private async Task<CommandResult> RunProcessAsync(
         string fileName,

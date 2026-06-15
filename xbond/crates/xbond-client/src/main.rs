@@ -13,11 +13,12 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, ClientConfig,
-    FrameReceiver, PacketKind, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate,
-    ProbePathStats, ReceiveOutcome, RouteVerification, SchedulePlan, ScheduledTransmission,
-    XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus,
-    XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    build_schedule, build_transmission_plan_for_packet, is_ipv4_packet, select_path_roles,
+    ClientConfig, FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot,
+    PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome, RedundancyPolicyConfig,
+    ReorderedPacket, RouteVerification, ScheduleControlMessage, SchedulePlan,
+    ScheduledTransmission, XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus,
+    XBondRuntimeStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -595,14 +596,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         options.json_events,
     )
     .await?;
+    let policy_config = RedundancyPolicyConfig {
+        interactive_packet_threshold_bytes: config.interactive_packet_threshold_bytes,
+        duplicate_loss_threshold: config.duplicate_loss_threshold,
+        backup_loss_disable_threshold: config.backup_loss_disable_threshold,
+    };
+    let mut health = tunnel_health(&config, &path_runtime, &sockets);
     let mut schedule = build_schedule(
         config.mode,
-        &select_path_roles(
-            &tunnel_health(&config, &path_runtime, &sockets),
-            config.max_active_backups,
-        ),
+        &select_path_roles(&health, config.max_active_backups),
     );
-    let mut transmissions = build_transmission_plan(&schedule);
 
     if options.json_events {
         println!(
@@ -628,9 +631,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut counters = TunnelCounters::default();
     let mut pending_fec_source: Option<(u64, Vec<u8>)> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
+    let mut return_reorder = PacketReorderBuffer::new(8192, config.reorder_hold_ms * 1_000);
     let mut sequence = 0u64;
     let mut control_sequence = 1_000_000_000_000u64;
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
+    let mut reorder_tick =
+        time::interval(Duration::from_millis(config.reorder_hold_ms.clamp(5, 100)));
     let mut last_throughput_sample = Instant::now();
 
     update_tunnel_throughput(
@@ -647,6 +653,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &counters,
     )?;
     send_tunnel_schedule_control(
+        &config,
         &schedule,
         &mut path_runtime,
         &sockets,
@@ -683,15 +690,13 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut counters,
                     &mut last_throughput_sample,
                 );
+                health = tunnel_health(&config, &path_runtime, &sockets);
                 schedule = build_schedule(
                     config.mode,
-                    &select_path_roles(
-                        &tunnel_health(&config, &path_runtime, &sockets),
-                        config.max_active_backups,
-                    ),
+                    &select_path_roles(&health, config.max_active_backups),
                 );
-                transmissions = build_transmission_plan(&schedule);
                 send_tunnel_schedule_control(
+                    &config,
                     &schedule,
                     &mut path_runtime,
                     &sockets,
@@ -708,6 +713,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &path_runtime,
                     &sockets,
                     &counters,
+                )?;
+            }
+
+            _ = reorder_tick.tick() => {
+                let ready = return_reorder.drain_ready(now_micros());
+                write_reordered_return_packets(
+                    &mut tun,
+                    ready,
+                    &mut path_runtime,
+                    &mut counters,
                 )?;
             }
 
@@ -732,7 +747,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     continue;
                 }
 
-                if transmissions.is_empty() {
+                let packet_transmissions = build_transmission_plan_for_packet(
+                    &schedule,
+                    config.redundancy_policy,
+                    packet.len(),
+                    &health,
+                    policy_config,
+                );
+
+                if packet_transmissions.is_empty() {
                     if options.json_events && options.trace_packets {
                         println!(
                             "{}",
@@ -750,7 +773,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     .data_bytes_sent
                     .saturating_add(packet.len() as u64);
                 let send_micros = now_micros();
-                for transmission in transmissions
+                for transmission in packet_transmissions
                     .iter()
                     .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
                 {
@@ -804,10 +827,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     }
                 }
 
-                let fec_transmissions = transmissions
+                let fec_transmissions = packet_transmissions
                     .iter()
                     .filter(|transmission| transmission.packet_kind == PacketKind::Fec);
-                if transmissions
+                if packet_transmissions
                     .iter()
                     .any(|transmission| transmission.packet_kind == PacketKind::Fec)
                 {
@@ -876,6 +899,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "fec_packets_sent": counters.fec_packets_sent,
                             "fec_packets_skipped": counters.fec_packets_skipped,
                             "schedule": schedule,
+                            "policy": config.redundancy_policy,
                         })
                     );
                 }
@@ -905,24 +929,34 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 match outcome {
                     ReceiveOutcome::Accepted if is_data_like(inbound.frame.header.kind) => {
                         if is_ipv4_packet(&inbound.frame.payload) {
-                            tun.write_packet(&inbound.frame.payload).with_context(|| {
-                                format!("failed to write return packet to XBond TUN {}", tun.name())
-                            })?;
-                            counters.data_packets_received += 1;
-                            counters.data_bytes_received = counters
-                                .data_bytes_received
-                                .saturating_add(inbound.frame.payload.len() as u64);
-                            let runtime = path_runtime.entry(inbound.path_id).or_default();
-                            runtime.bytes_received = runtime
-                                .bytes_received
-                                .saturating_add(inbound.frame.payload.len() as u64);
+                            let sequence = inbound.frame.header.sequence;
+                            let path_id = inbound.path_id;
+                            let payload_len = inbound.frame.payload.len();
+                            let frame_deadline = inbound
+                                .frame
+                                .header
+                                .send_micros
+                                .saturating_add(config.realtime_deadline_ms * 1_000);
+                            let ready = return_reorder.push(
+                                sequence,
+                                path_id,
+                                inbound.frame.payload,
+                                now_micros(),
+                                frame_deadline,
+                            );
+                            write_reordered_return_packets(
+                                &mut tun,
+                                ready,
+                                &mut path_runtime,
+                                &mut counters,
+                            )?;
                             if options.json_events && options.trace_packets {
                                 println!(
                                     "{}",
                                     serde_json::json!({
                                         "event": "packet-received",
-                                        "sequence": inbound.frame.header.sequence,
-                                        "bytes": inbound.frame.payload.len(),
+                                        "sequence": sequence,
+                                        "bytes": payload_len,
                                         "data_packets_received": counters.data_packets_received,
                                     })
                                 );
@@ -953,6 +987,29 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
             else => break,
         };
+    }
+
+    Ok(())
+}
+
+fn write_reordered_return_packets(
+    tun: &mut XBondTun,
+    packets: Vec<ReorderedPacket>,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    counters: &mut TunnelCounters,
+) -> Result<()> {
+    for packet in packets {
+        tun.write_packet(&packet.payload).with_context(|| {
+            format!("failed to write return packet to XBond TUN {}", tun.name())
+        })?;
+        counters.data_packets_received += 1;
+        counters.data_bytes_received = counters
+            .data_bytes_received
+            .saturating_add(packet.payload.len() as u64);
+        let runtime = path_runtime.entry(packet.path_id).or_default();
+        runtime.bytes_received = runtime
+            .bytes_received
+            .saturating_add(packet.payload.len() as u64);
     }
 
     Ok(())
@@ -1112,6 +1169,7 @@ const TUNNEL_HEALTH_WINDOW: usize = 20;
 const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
 
 async fn send_tunnel_schedule_control(
+    config: &ClientConfig,
     schedule: &SchedulePlan,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     sockets: &HashMap<u16, Arc<UdpSocket>>,
@@ -1127,7 +1185,16 @@ async fn send_tunnel_schedule_control(
 
     *control_sequence = control_sequence.saturating_add(1);
     let sequence = *control_sequence;
-    let payload = serde_json::to_vec(schedule)?;
+    let payload = serde_json::to_vec(&ScheduleControlMessage {
+        schedule: schedule.clone(),
+        redundancy_policy: config.redundancy_policy,
+        policy_config: RedundancyPolicyConfig {
+            interactive_packet_threshold_bytes: config.interactive_packet_threshold_bytes,
+            duplicate_loss_threshold: config.duplicate_loss_threshold,
+            backup_loss_disable_threshold: config.backup_loss_disable_threshold,
+        },
+        paths: tunnel_health(config, path_runtime, sockets),
+    })?;
 
     for (path_id, socket) in sockets {
         let frame = XBondFrame::new(
@@ -1389,6 +1456,7 @@ fn write_tunnel_runtime_status(
         XBondRuntimeStatus {
             running: true,
             mode: config.mode,
+            redundancy_policy: config.redundancy_policy,
             server_addr: config.server_addr.clone(),
             tunnel: XBondTunnelStatus {
                 state: "running".to_string(),
@@ -1867,6 +1935,7 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         enabled: config.enabled,
         running: runtime.running,
         mode: config.mode,
+        redundancy_policy: config.redundancy_policy,
         server_addr: config.server_addr,
         tunnel: runtime.tunnel,
         anchor_path_id: schedule.anchor_path_id,

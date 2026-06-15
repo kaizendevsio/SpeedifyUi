@@ -20,6 +20,8 @@ public sealed class XBondStatsSnapshot
 
     public string Mode => RawStatus.Mode;
 
+    public string RedundancyPolicy => RawStatus.RedundancyPolicy;
+
     public DateTime UpdatedAtUtc => RawStatus.UpdatedAtUtc;
 
     public int? AnchorPathId => RawStatus.AnchorPathId;

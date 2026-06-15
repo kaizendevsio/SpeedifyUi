@@ -30,6 +30,7 @@ public class XBondStatusServiceTests
               "enabled": true,
               "running": true,
               "mode": "anchor-fec",
+              "redundancy_policy": "balanced",
               "server_addr": "45.77.241.247:8444",
               "tunnel": {
                 "state": "running",
@@ -93,6 +94,7 @@ public class XBondStatusServiceTests
 
         Assert.True(status.Enabled);
         Assert.True(status.Running);
+        Assert.Equal("balanced", status.RedundancyPolicy);
         Assert.Equal(1, status.AnchorPathId);
         Assert.Equal([1], status.Schedule.DataPathIds);
         Assert.Equal([2], status.Schedule.FecPathIds);
@@ -138,6 +140,7 @@ public class XBondStatusServiceTests
             {
               "running": true,
               "mode": "anchor-duplicate-1",
+              "redundancy_policy": "fast",
               "server_addr": "45.77.241.247:8444",
               "tunnel": {
                 "state": "running",
@@ -203,6 +206,7 @@ public class XBondStatusServiceTests
 
         Assert.True(status.Running);
         Assert.Equal("anchor-duplicate-1", status.Mode);
+        Assert.Equal("fast", status.RedundancyPolicy);
         Assert.Equal(2, status.AnchorPathId);
         Assert.Equal([2], status.Schedule.DataPathIds);
         Assert.Equal([3], status.Schedule.DuplicatePathIds);

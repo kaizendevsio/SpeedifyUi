@@ -10,9 +10,19 @@ public sealed class XBondClientConfig
 
     public string Mode { get; set; } = "anchor-duplicate-1";
 
+    public string RedundancyPolicy { get; set; } = "balanced";
+
     public int MaxActiveBackups { get; set; } = 1;
 
     public int RealtimeDeadlineMs { get; set; } = 500;
+
+    public int InteractivePacketThresholdBytes { get; set; } = 768;
+
+    public double DuplicateLossThreshold { get; set; } = 0.02;
+
+    public double BackupLossDisableThreshold { get; set; } = 0.35;
+
+    public int ReorderHoldMs { get; set; } = 25;
 
     public string RuntimeStatusPath { get; set; } = "/run/xbond/client-status.json";
 
@@ -41,6 +51,22 @@ public sealed class XBondAdapterConfigStatus
     public bool CanEdit { get; set; }
 
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public string Mode { get; set; } = "anchor-duplicate-1";
+
+    public string RedundancyPolicy { get; set; } = "balanced";
+
+    public int MaxActiveBackups { get; set; } = 1;
+
+    public int RealtimeDeadlineMs { get; set; } = 500;
+
+    public int InteractivePacketThresholdBytes { get; set; } = 768;
+
+    public double DuplicateLossThreshold { get; set; } = 0.02;
+
+    public double BackupLossDisableThreshold { get; set; } = 0.35;
+
+    public int ReorderHoldMs { get; set; } = 25;
 
     public List<XBondAdapterConfigRow> Adapters { get; set; } = new();
 

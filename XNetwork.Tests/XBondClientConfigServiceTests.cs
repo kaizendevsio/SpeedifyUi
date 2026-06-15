@@ -13,8 +13,13 @@ public class XBondClientConfigServiceTests
             session_id = 42
             server_addr = "45.77.241.247:8444"
             mode = "anchor-duplicate-1"
+            redundancy_policy = "balanced"
             max_active_backups = 1
             realtime_deadline_ms = 500
+            interactive_packet_threshold_bytes = 768
+            duplicate_loss_threshold = 0.02
+            backup_loss_disable_threshold = 0.35
+            reorder_hold_ms = 25
             runtime_status_path = "/run/xbond/client-status.json"
 
             [[paths]]
@@ -34,8 +39,13 @@ public class XBondClientConfigServiceTests
         Assert.Equal((ulong)42, config.SessionId);
         Assert.Equal("45.77.241.247:8444", config.ServerAddress);
         Assert.Equal("anchor-duplicate-1", config.Mode);
+        Assert.Equal("balanced", config.RedundancyPolicy);
         Assert.Equal(1, config.MaxActiveBackups);
         Assert.Equal(500, config.RealtimeDeadlineMs);
+        Assert.Equal(768, config.InteractivePacketThresholdBytes);
+        Assert.Equal(0.02, config.DuplicateLossThreshold);
+        Assert.Equal(0.35, config.BackupLossDisableThreshold);
+        Assert.Equal(25, config.ReorderHoldMs);
         Assert.Equal("/run/xbond/client-status.json", config.RuntimeStatusPath);
 
         Assert.Collection(
@@ -65,8 +75,13 @@ public class XBondClientConfigServiceTests
             session_id = 1
             server_addr = "45.77.241.247:8444"
             mode = "anchor-duplicate-1"
+            redundancy_policy = "fast"
             max_active_backups = 1
             realtime_deadline_ms = 500
+            interactive_packet_threshold_bytes = 512
+            duplicate_loss_threshold = 0.05
+            backup_loss_disable_threshold = 0.25
+            reorder_hold_ms = 15
             runtime_status_path = "/run/xbond/client-status.json"
 
             [[paths]]
@@ -86,6 +101,11 @@ public class XBondClientConfigServiceTests
         var rendered = XBondClientConfigService.RenderConfig(config);
 
         Assert.Contains("server_addr = \"45.77.241.247:8444\"", rendered);
+        Assert.Contains("redundancy_policy = \"fast\"", rendered);
+        Assert.Contains("interactive_packet_threshold_bytes = 512", rendered);
+        Assert.Contains("duplicate_loss_threshold = 0.05", rendered);
+        Assert.Contains("backup_loss_disable_threshold = 0.25", rendered);
+        Assert.Contains("reorder_hold_ms = 15", rendered);
         Assert.Contains("runtime_status_path = \"/run/xbond/client-status.json\"", rendered);
         Assert.Contains("name = \"XNetwork Wi-Fi Asia\"", rendered);
         Assert.Contains("interface_name = \"wlan0\"", rendered);

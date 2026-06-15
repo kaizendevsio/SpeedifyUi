@@ -59,6 +59,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             Enabled = true,
             Running = runtime.Running,
             Mode = mode,
+            RedundancyPolicy = string.IsNullOrWhiteSpace(runtime.RedundancyPolicy)
+                ? "balanced"
+                : runtime.RedundancyPolicy,
             ServerAddress = string.IsNullOrWhiteSpace(runtime.ServerAddress)
                 ? settings.PublicTestServerAddress
                 : runtime.ServerAddress,
@@ -225,6 +228,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             Enabled = false,
             Running = false,
             Mode = "anchor-duplicate-1",
+            RedundancyPolicy = "balanced",
             Message = message,
             UpdatedAtUtc = DateTime.UtcNow
         };
@@ -237,6 +241,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             Enabled = true,
             Running = false,
             Mode = "anchor-duplicate-1",
+            RedundancyPolicy = "balanced",
             Message = "XBond runtime status is unavailable",
             Error = error,
             UpdatedAtUtc = DateTime.UtcNow
@@ -250,6 +255,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
 
         [JsonPropertyName("mode")]
         public string Mode { get; set; } = "anchor-duplicate-1";
+
+        [JsonPropertyName("redundancy_policy")]
+        public string RedundancyPolicy { get; set; } = "balanced";
 
         [JsonPropertyName("server_addr")]
         public string ServerAddress { get; set; } = "";

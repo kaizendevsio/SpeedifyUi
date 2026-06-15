@@ -9,8 +9,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_transmission_plan, is_ipv4_packet, FrameReceiver, PacketKind, ReceiveOutcome,
-    SchedulePlan, XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
+    build_transmission_plan, build_transmission_plan_for_packet, is_ipv4_packet, FrameReceiver,
+    PacketKind, PacketReorderBuffer, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
+    RedundancyPolicyConfig, ReorderedPacket, ScheduleControlMessage, ScheduleMode, SchedulePlan,
+    XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -45,10 +47,12 @@ struct InboundServerFrame {
     peer: SocketAddr,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ReturnTarget {
-    path_id: u16,
-    packet_kind: PacketKind,
+#[derive(Debug, Clone, PartialEq)]
+struct ReturnControl {
+    schedule: SchedulePlan,
+    policy: RedundancyPolicy,
+    policy_config: RedundancyPolicyConfig,
+    paths: Vec<PathHealthSnapshot>,
 }
 
 #[tokio::main]
@@ -69,10 +73,14 @@ async fn main() -> Result<()> {
     let mut invalid_fec_packets_dropped = 0u64;
     let mut non_ipv4_packets_dropped = 0u64;
     let mut fec_recovery = FecRecovery::new(8192);
+    let mut reorder = PacketReorderBuffer::new(8192, args.realtime_deadline_ms.min(50) * 1_000);
     let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
-    let mut return_schedule: Vec<ReturnTarget> = Vec::new();
+    let mut return_control: Option<ReturnControl> = None;
     let mut reverse_sequence = 0u64;
     let mut last_session_id = 0u64;
+    let mut reorder_tick = time::interval(Duration::from_millis(
+        args.realtime_deadline_ms.clamp(5, 50),
+    ));
 
     let (udp_frame_tx, mut udp_frame_rx) = mpsc::unbounded_channel::<InboundServerFrame>();
     let recv_socket = socket.clone();
@@ -145,26 +153,28 @@ async fn main() -> Result<()> {
                 let peer = inbound.peer;
                 if last_session_id != 0 && frame.header.session_id != last_session_id {
                     peers.clear();
-                    return_schedule.clear();
+                    return_control = None;
                 }
                 last_session_id = frame.header.session_id;
                 if frame.header.path_id != 0 {
                     peers.insert(frame.header.path_id, peer);
                 }
-                if let Some(schedule) = parse_return_schedule(&frame) {
-                    let schedule_changed = return_schedule != schedule;
-                    return_schedule = schedule;
+                if let Some(control) = parse_return_control(&frame) {
+                    let schedule_changed = return_control.as_ref() != Some(&control);
+                    return_control = Some(control);
                     if args.json_events && schedule_changed {
                         println!(
                             "{}",
                             serde_json::json!({
                                 "event": "return-schedule-updated",
                                 "session_id": frame.header.session_id,
-                                "paths": return_schedule
+                                "policy": return_control.as_ref().map(|control| control.policy),
+                                "paths": return_control.as_ref().map(|control| build_transmission_plan(&control.schedule))
+                                    .unwrap_or_default()
                                     .iter()
-                                    .map(|target| serde_json::json!({
-                                        "path_id": target.path_id,
-                                        "packet_kind": target.packet_kind,
+                                    .map(|transmission| serde_json::json!({
+                                        "path_id": transmission.path_id,
+                                        "packet_kind": transmission.packet_kind,
                                     }))
                                     .collect::<Vec<_>>(),
                             })
@@ -224,9 +234,17 @@ async fn main() -> Result<()> {
                     if fec_recovery.mark_delivered(frame.header.session_id, frame.header.sequence) {
                         if is_ipv4_packet(&frame.payload) {
                             if let Some(tun) = &mut tun {
-                                tun.write_packet(&frame.payload)?;
-                                data_packets_forwarded += 1;
-                                forwarded_packets += 1;
+                                let ready = reorder.push(
+                                    frame.header.sequence,
+                                    frame.header.path_id,
+                                    frame.payload.clone(),
+                                    now_micros(),
+                                    frame.header.send_micros.saturating_add(args.realtime_deadline_ms * 1_000),
+                                );
+                                let delivered = write_reordered_packets(tun, ready)?;
+                                data_packets_forwarded =
+                                    data_packets_forwarded.saturating_add(delivered);
+                                forwarded_packets = forwarded_packets.saturating_add(delivered);
                             }
                         } else {
                             non_ipv4_packets_dropped += 1;
@@ -240,11 +258,19 @@ async fn main() -> Result<()> {
                         }
                         if is_ipv4_packet(&recovered.payload) {
                             if let Some(tun) = &mut tun {
-                                tun.write_packet(&recovered.payload)?;
+                                let ready = reorder.push(
+                                    recovered.sequence,
+                                    0,
+                                    recovered.payload,
+                                    now_micros(),
+                                    now_micros(),
+                                );
+                                let delivered = write_reordered_packets(tun, ready)?;
+                                data_packets_forwarded =
+                                    data_packets_forwarded.saturating_add(delivered);
+                                forwarded_packets = forwarded_packets.saturating_add(delivered);
                             }
-                            data_packets_forwarded += 1;
                             fec_packets_recovered += 1;
-                            forwarded_packets += 1;
                         } else {
                             non_ipv4_packets_dropped += 1;
                         }
@@ -260,11 +286,19 @@ async fn main() -> Result<()> {
                                 }
                                 if is_ipv4_packet(&recovered.payload) {
                                     if let Some(tun) = &mut tun {
-                                        tun.write_packet(&recovered.payload)?;
+                                        let ready = reorder.push(
+                                            recovered.sequence,
+                                            0,
+                                            recovered.payload,
+                                            now_micros(),
+                                            now_micros(),
+                                        );
+                                        let delivered = write_reordered_packets(tun, ready)?;
+                                        data_packets_forwarded =
+                                            data_packets_forwarded.saturating_add(delivered);
+                                        forwarded_packets = forwarded_packets.saturating_add(delivered);
                                     }
-                                    data_packets_forwarded += 1;
                                     fec_packets_recovered += 1;
-                                    forwarded_packets += 1;
                                 } else {
                                     non_ipv4_packets_dropped += 1;
                                 }
@@ -294,6 +328,13 @@ async fn main() -> Result<()> {
                 }
             }
 
+            _ = reorder_tick.tick() => {
+                if let Some(tun) = &mut tun {
+                    let delivered = write_reordered_packets(tun, reorder.drain_ready(now_micros()))?;
+                    data_packets_forwarded = data_packets_forwarded.saturating_add(delivered);
+                }
+            }
+
             Some(packet) = tun_packet_rx.recv() => {
                 if !is_ipv4_packet(&packet) || peers.is_empty() || last_session_id == 0 {
                     continue;
@@ -301,7 +342,11 @@ async fn main() -> Result<()> {
 
                 reverse_sequence += 1;
                 let send_micros = now_micros();
-                let return_targets = select_return_targets(&return_schedule, &peers);
+                let return_targets = select_return_targets(
+                    return_control.as_ref(),
+                    &peers,
+                    packet.len(),
+                );
                 let mut sent_paths = 0usize;
                 for (path_id, peer, kind) in return_targets {
                     let mut header = XBondHeader::new(
@@ -537,41 +582,82 @@ fn is_tunnel_payload(kind: PacketKind) -> bool {
     )
 }
 
-fn parse_return_schedule(frame: &XBondFrame) -> Option<Vec<ReturnTarget>> {
+fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
     if frame.header.kind != PacketKind::Control {
         return None;
     }
 
-    let schedule = serde_json::from_slice::<SchedulePlan>(&frame.payload).ok()?;
-    let targets = build_transmission_plan(&schedule)
-        .into_iter()
-        .filter(|transmission| {
-            matches!(
-                transmission.packet_kind,
-                PacketKind::Data | PacketKind::Duplicate
-            )
-        })
-        .map(|transmission| ReturnTarget {
-            path_id: transmission.path_id,
-            packet_kind: transmission.packet_kind,
-        })
-        .collect::<Vec<_>>();
+    if let Ok(control) = serde_json::from_slice::<ScheduleControlMessage>(&frame.payload) {
+        return Some(ReturnControl {
+            schedule: control.schedule,
+            policy: control.redundancy_policy,
+            policy_config: control.policy_config,
+            paths: control.paths,
+        });
+    }
 
-    (!targets.is_empty()).then_some(targets)
+    let schedule = serde_json::from_slice::<SchedulePlan>(&frame.payload).ok()?;
+    Some(ReturnControl {
+        schedule,
+        policy: RedundancyPolicy::Reliable,
+        policy_config: RedundancyPolicyConfig::default(),
+        paths: Vec::new(),
+    })
 }
 
 fn select_return_targets(
-    schedule: &[ReturnTarget],
+    control: Option<&ReturnControl>,
     peers: &HashMap<u16, SocketAddr>,
+    packet_len: usize,
 ) -> Vec<(u16, SocketAddr, PacketKind)> {
-    let scheduled = schedule
-        .iter()
-        .filter_map(|target| {
-            peers
-                .get(&target.path_id)
-                .map(|peer| (target.path_id, *peer, target.packet_kind))
+    let scheduled = control
+        .map(|control| {
+            let mut paths = control.paths.clone();
+            if paths.is_empty() {
+                paths = peers
+                    .keys()
+                    .map(|path_id| PathHealthSnapshot {
+                        path_id: *path_id,
+                        name: format!("path-{path_id}"),
+                        interface_name: None,
+                        rtt_ms: None,
+                        jitter_ms: None,
+                        loss_rate: 0.0,
+                        late_rate: 0.0,
+                        queue_depth: 0,
+                        outbound_throughput_bps: 0,
+                        inbound_throughput_bps: 0,
+                        duplicate_inbound_throughput_bps: 0,
+                        raw_inbound_throughput_bps: 0,
+                        throughput_bps: 0,
+                        interface_up: true,
+                        in_cooldown: false,
+                    })
+                    .collect();
+            }
+
+            build_transmission_plan_for_packet(
+                &control.schedule,
+                control.policy,
+                packet_len,
+                &paths,
+                control.policy_config,
+            )
+            .into_iter()
+            .filter(|transmission| {
+                matches!(
+                    transmission.packet_kind,
+                    PacketKind::Data | PacketKind::Duplicate
+                )
+            })
+            .filter_map(|transmission| {
+                peers
+                    .get(&transmission.path_id)
+                    .map(|peer| (transmission.path_id, *peer, transmission.packet_kind))
+            })
+            .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>();
+        .unwrap_or_default();
 
     if !scheduled.is_empty() {
         return scheduled;
@@ -591,6 +677,16 @@ fn select_return_targets(
             (*path_id, *peer, kind)
         })
         .collect()
+}
+
+fn write_reordered_packets(tun: &mut XBondTun, packets: Vec<ReorderedPacket>) -> Result<u64> {
+    let mut delivered = 0u64;
+    for packet in packets {
+        tun.write_packet(&packet.payload)?;
+        delivered += 1;
+    }
+
+    Ok(delivered)
 }
 
 fn print_packet_event(
@@ -700,7 +796,7 @@ mod tests {
     #[test]
     fn control_frame_updates_return_schedule() {
         let schedule = SchedulePlan {
-            mode: xbond_core::ScheduleMode::AnchorDuplicate1,
+            mode: ScheduleMode::AnchorDuplicate1,
             anchor_path_id: Some(5),
             data_path_ids: vec![5],
             duplicate_path_ids: vec![3],
@@ -711,21 +807,10 @@ mod tests {
             serde_json::to_vec(&schedule).unwrap(),
         );
 
-        let targets = parse_return_schedule(&frame).unwrap();
+        let control = parse_return_control(&frame).unwrap();
 
-        assert_eq!(
-            targets,
-            vec![
-                ReturnTarget {
-                    path_id: 5,
-                    packet_kind: PacketKind::Data,
-                },
-                ReturnTarget {
-                    path_id: 3,
-                    packet_kind: PacketKind::Duplicate,
-                },
-            ]
-        );
+        assert_eq!(control.schedule, schedule);
+        assert_eq!(control.policy, RedundancyPolicy::Reliable);
     }
 
     #[test]
@@ -733,19 +818,21 @@ mod tests {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
         let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
-        let schedule = vec![
-            ReturnTarget {
-                path_id: 5,
-                packet_kind: PacketKind::Data,
+        let control = ReturnControl {
+            schedule: SchedulePlan {
+                mode: ScheduleMode::AnchorDuplicate1,
+                anchor_path_id: Some(5),
+                data_path_ids: vec![5],
+                duplicate_path_ids: vec![3],
+                fec_path_ids: Vec::new(),
             },
-            ReturnTarget {
-                path_id: 3,
-                packet_kind: PacketKind::Duplicate,
-            },
-        ];
+            policy: RedundancyPolicy::Reliable,
+            policy_config: RedundancyPolicyConfig::default(),
+            paths: Vec::new(),
+        };
 
         assert_eq!(
-            select_return_targets(&schedule, &peers),
+            select_return_targets(Some(&control), &peers, 1_200),
             vec![
                 (5, peer_5, PacketKind::Data),
                 (3, peer_3, PacketKind::Duplicate),
@@ -760,12 +847,56 @@ mod tests {
         let peers = HashMap::from([(5, peer_5), (3, peer_3)]);
 
         assert_eq!(
-            select_return_targets(&[], &peers),
+            select_return_targets(None, &peers, 1_200),
             vec![
                 (3, peer_3, PacketKind::Data),
                 (5, peer_5, PacketKind::Duplicate),
             ]
         );
+    }
+
+    #[test]
+    fn balanced_return_targets_do_not_duplicate_healthy_bulk_packets() {
+        let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
+        let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
+        let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
+        let control = ReturnControl {
+            schedule: SchedulePlan {
+                mode: ScheduleMode::AnchorDuplicate1,
+                anchor_path_id: Some(5),
+                data_path_ids: vec![5],
+                duplicate_path_ids: vec![3],
+                fec_path_ids: Vec::new(),
+            },
+            policy: RedundancyPolicy::Balanced,
+            policy_config: RedundancyPolicyConfig::default(),
+            paths: vec![healthy_path(5, 20.0, 0.0), healthy_path(3, 60.0, 0.0)],
+        };
+
+        assert_eq!(
+            select_return_targets(Some(&control), &peers, 1_200),
+            vec![(5, peer_5, PacketKind::Data)]
+        );
+    }
+
+    fn healthy_path(path_id: u16, rtt_ms: f64, loss_rate: f64) -> PathHealthSnapshot {
+        PathHealthSnapshot {
+            path_id,
+            name: format!("path-{path_id}"),
+            interface_name: None,
+            rtt_ms: Some(rtt_ms),
+            jitter_ms: Some(5.0),
+            loss_rate,
+            late_rate: 0.0,
+            queue_depth: 0,
+            outbound_throughput_bps: 1_000_000,
+            inbound_throughput_bps: 1_000_000,
+            duplicate_inbound_throughput_bps: 0,
+            raw_inbound_throughput_bps: 1_000_000,
+            throughput_bps: 2_000_000,
+            interface_up: true,
+            in_cooldown: false,
+        }
     }
 
     #[test]
