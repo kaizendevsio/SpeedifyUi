@@ -31,11 +31,8 @@ public class XBondLabService(
         try
         {
             var key = ReadPsk();
-            var ping = await RunPingAsync(key, cancellationToken).ConfigureAwait(false);
+            var ping = await RunHeartbeatProbeAsync(key, cancellationToken).ConfigureAwait(false);
             CopyPingResult(ping, result);
-            result.Message = result.Succeeded
-                ? "XBond heartbeat completed successfully."
-                : "XBond heartbeat completed with packet loss.";
         }
         catch (Exception ex)
         {
@@ -50,12 +47,6 @@ public class XBondLabService(
         }
 
         return result;
-    }
-
-    public static XBondPublicTestResult ParsePingJson(string json)
-    {
-        return JsonSerializer.Deserialize<XBondPublicTestResult>(json, JsonOptions)
-            ?? throw new JsonException("XBond ping JSON was empty.");
     }
 
     public static XBondProbeResult ParseMultiPingJson(string json)
@@ -105,47 +96,48 @@ public class XBondLabService(
         return result;
     }
 
-    private async Task<XBondPublicTestResult> RunPingAsync(string key, CancellationToken cancellationToken)
+    private async Task<XBondPublicTestResult> RunHeartbeatProbeAsync(string key, CancellationToken cancellationToken)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(settings.PublicTestCommandTimeoutSeconds, 5, 120)));
         var diagnosticPath = await SelectHeartbeatPathAsync(timeoutCts.Token).ConfigureAwait(false);
         var pathId = diagnosticPath?.PathId > 0 ? diagnosticPath.PathId : settings.PublicTestPathId;
-
-        var startInfo = new ProcessStartInfo
+        if (pathId <= 0)
         {
-            FileName = settings.ClientBinaryPath,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        startInfo.Environment[settings.PublicTestKeyEnvironmentVariable] = key;
-        startInfo.ArgumentList.Add("ping");
-        startInfo.ArgumentList.Add("--server");
-        startInfo.ArgumentList.Add(settings.PublicTestServerAddress);
-        if (!string.IsNullOrWhiteSpace(diagnosticPath?.InterfaceName))
-        {
-            startInfo.ArgumentList.Add("--interface");
-            startInfo.ArgumentList.Add(diagnosticPath.InterfaceName);
+            return ErrorResult("No live XBond path is available for heartbeat diagnostics.");
         }
 
-        startInfo.ArgumentList.Add("--path-id");
-        startInfo.ArgumentList.Add(pathId.ToString());
-        startInfo.ArgumentList.Add("--count");
-        startInfo.ArgumentList.Add(settings.PublicTestCount.ToString());
-        startInfo.ArgumentList.Add("--interval-ms");
-        startInfo.ArgumentList.Add(settings.PublicTestIntervalMs.ToString());
-        startInfo.ArgumentList.Add("--timeout-ms");
-        startInfo.ArgumentList.Add(settings.PublicTestPacketTimeoutMs.ToString());
-        startInfo.ArgumentList.Add("--key-env");
-        startInfo.ArgumentList.Add(settings.PublicTestKeyEnvironmentVariable);
-        startInfo.ArgumentList.Add("--json");
+        var probe = await RunMultiPingAsync(key, timeoutCts.Token, [pathId]).ConfigureAwait(false);
+        var path = probe.Paths.FirstOrDefault(path => path.PathId == pathId) ?? probe.Paths.FirstOrDefault();
+        if (path is null)
+        {
+            return ErrorResult("XBond heartbeat diagnostic returned no path result.");
+        }
 
-        return await RunJsonCommandAsync(startInfo, ParsePingJson, timeoutCts.Token).ConfigureAwait(false);
+        var received = path.Acks;
+        var sent = path.Sent;
+        var result = new XBondPublicTestResult
+        {
+            Server = settings.PublicTestServerAddress,
+            Bind = path.Bind,
+            PathId = path.PathId,
+            Sent = sent,
+            Received = received,
+            Lost = Math.Max(0, sent - received),
+            LossRate = sent <= 0 ? 1.0 : Math.Max(0, sent - received) / (double)sent,
+            MinRttMs = path.AvgRttMs,
+            AvgRttMs = path.AvgRttMs,
+            MaxRttMs = path.AvgRttMs,
+            Message = BuildHeartbeatMessage(probe, path)
+        };
+
+        return result;
     }
 
-    private async Task<XBondProbeResult> RunMultiPingAsync(string key, CancellationToken cancellationToken)
+    private async Task<XBondProbeResult> RunMultiPingAsync(
+        string key,
+        CancellationToken cancellationToken,
+        IReadOnlyCollection<int>? explicitPathIds = null)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(settings.PublicTestCommandTimeoutSeconds, 5, 120)));
@@ -165,7 +157,8 @@ public class XBondLabService(
         startInfo.ArgumentList.Add("--server");
         startInfo.ArgumentList.Add(settings.PublicTestServerAddress);
 
-        var pathIds = await SelectMultiPathIdsAsync(timeoutCts.Token).ConfigureAwait(false);
+        var pathIds = explicitPathIds?.Where(pathId => pathId > 0).Distinct().ToArray()
+            ?? await SelectMultiPathIdsAsync(timeoutCts.Token).ConfigureAwait(false);
         foreach (var pathId in pathIds)
         {
             startInfo.ArgumentList.Add("--path-id");
@@ -189,6 +182,26 @@ public class XBondLabService(
         startInfo.ArgumentList.Add("--json");
 
         return await RunJsonCommandAsync(startInfo, ParseMultiPingJson, timeoutCts.Token).ConfigureAwait(false);
+    }
+
+    private static string BuildHeartbeatMessage(XBondProbeResult probe, XBondProbePathResult path)
+    {
+        if (path.Sent > 0 && path.Acks == path.Sent && path.RouteVerified)
+        {
+            return "XBond heartbeat completed successfully.";
+        }
+
+        if (path.Sent > 0 && path.Acks == path.Sent)
+        {
+            return "XBond heartbeat completed with route-verification warnings.";
+        }
+
+        if (probe.HasAnyPathResponse)
+        {
+            return "XBond heartbeat completed with path loss or degradation.";
+        }
+
+        return "XBond heartbeat completed with packet loss.";
     }
 
     private static async Task<T> RunJsonCommandAsync<T>(

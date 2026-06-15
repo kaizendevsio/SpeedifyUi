@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.19";
+    public const string CurrentVersion = "xbond-2026.06.20";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Made XBond heartbeat diagnostics route-aware.",
+            Changes =
+            [
+                "The Heartbeat diagnostic now uses the same route-aware XBond multi-ping verifier as the multi-path diagnostic.",
+                "This avoids false packet-loss reports from the older single-socket ping diagnostic while the live XBond tunnel is running.",
+                "Heartbeat results still show ACK count and RTT for the selected live XBond path."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.19",
             Date = "2026-06-15",
             Summary = "Added XBond adapter selection in Settings.",
             Changes =

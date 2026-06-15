@@ -233,39 +233,6 @@ public class XBondStatusServiceTests
     }
 
     [Fact]
-    public void ParsePingJson_MapsPublicHeartbeatResult()
-    {
-        var result = XBondLabService.ParsePingJson(
-            """
-            {
-              "server": "45.77.241.247:8444",
-              "bind": "10.202.0.2:34581",
-              "path_id": 1,
-              "session_id": 1781369695905869,
-              "sent": 10,
-              "received": 10,
-              "lost": 0,
-              "loss_rate": 0.0,
-              "min_rtt_ms": 46.632,
-              "avg_rtt_ms": 59.1474,
-              "max_rtt_ms": 126.739,
-              "replies": [
-                { "sequence": 1, "rtt_ms": 49.213 }
-              ]
-            }
-            """);
-
-        Assert.True(result.Succeeded);
-        Assert.Equal("45.77.241.247:8444", result.Server);
-        Assert.Equal("10.202.0.2:34581", result.Bind);
-        Assert.Equal(10, result.Sent);
-        Assert.Equal(10, result.Received);
-        Assert.Equal(0, result.Lost);
-        Assert.Equal(59.1474, result.AvgRttMs);
-        Assert.Equal((ulong)1, Assert.Single(result.Replies).Sequence);
-    }
-
-    [Fact]
     public void ExtractPsk_PreservesEnvFileValueWithEqualsPadding()
     {
         var psk = XBondLabService.ExtractPsk(
