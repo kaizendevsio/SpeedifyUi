@@ -46,6 +46,7 @@
 - 2026-06-15: XNetwork version `xbond-2026.06.21` adds a manual Tunnel Speed Test card on `/xbond`. It runs `speedtest-cli --secure --json` on `xeon-network`, parses speedtest-cli bit/s JSON into Mbps, and shows whether the default route was using `xbond0` when the test started.
 - 2026-06-15: XNetwork version `xbond-2026.06.22` splits XBond per-path throughput into inbound/download and outbound/upload counters. `throughput_bps` remains total throughput for compatibility, while `inbound_throughput_bps` and `outbound_throughput_bps` drive the dashboard, `/xbond`, and `/details` path displays.
 - 2026-06-15: XBond tunnel-local iperf diagnostics use `xbond-iperf3.service` on `xeon-speedify-vultr-01`, bound to `10.250.0.1:5201/tcp`, with a UFW allow rule only from Pi tunnel IP `10.250.0.2` on `xbonds0`. Point-in-time Pi-to-Vultr tunnel tests measured about 18.2 Mbps upload and 17.8 Mbps download, matching the slow public speedtest range and pointing to the XBond tunnel/dataplane path rather than weak Wi-Fi RF.
+- 2026-06-15: XNetwork version `xbond-2026.06.23` clarifies dashboard adapter throughput labels by showing explicit `Down` and `Up` text beside each per-path value.
 
 ## Historical Speedify Branch Notes
 - The notes in this section describe the pre-`feature/xband-only-runtime` Speedify-based branch history. Do not use them as implementation instructions on `feature/xband-only-runtime`; that branch intentionally removes the Speedify runtime dependency and must not call `speedify_cli`.

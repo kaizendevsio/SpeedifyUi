@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.22";
+    public const string CurrentVersion = "xbond-2026.06.23";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Clarified dashboard path throughput labels.",
+            Changes =
+            [
+                "Dashboard adapter cards now label per-path XBond throughput as Down and Up.",
+                "Keeps the split XBond path throughput and dual server/public speed test from the prior revision."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.22",
             Date = "2026-06-15",
             Summary = "Split XBond path throughput and added server speed testing.",
             Changes =
