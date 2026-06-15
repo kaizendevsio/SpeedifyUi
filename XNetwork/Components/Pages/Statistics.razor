@@ -21,8 +21,8 @@
     </section>
 
     <section class="grid gap-4 lg:grid-cols-2">
-        @ChartPanel("Download", _downloadHistory, "Mbps", "text-cyan-300")
-        @ChartPanel("Upload", _uploadHistory, "Mbps", "text-pink-300")
+        @ChartPanel("Download", _downloadHistory, "speed", "text-cyan-300")
+        @ChartPanel("Upload", _uploadHistory, "speed", "text-pink-300")
         @ChartPanel("Average RTT", _latencyHistory, "ms", "text-emerald-300")
         @ChartPanel("Path Loss", _lossHistory, "%", "text-amber-300")
     </section>
@@ -142,16 +142,29 @@
             return "";
         }
 
-        var max = Math.Max(1, values.Max());
+        var finiteValues = values.Where(double.IsFinite).ToArray();
+        if (finiteValues.Length == 0)
+        {
+            return "";
+        }
+
+        var min = finiteValues.Min();
+        var max = finiteValues.Max();
+        var range = max - min;
         return string.Join(' ', values.Select((value, index) =>
         {
             var x = values.Count == 1 ? 300 : index * 300d / (values.Count - 1);
-            var y = 110 - Math.Clamp(value / max, 0, 1) * 100;
+            var normalized = range <= 0.000001
+                ? max > 0 ? 0.5 : 0
+                : Math.Clamp((value - min) / range, 0, 1);
+            var y = 110 - normalized * 100;
             return $"{Math.Round(x, 1)},{Math.Round(y, 1)}";
         }));
     }
 
-    private static string FormatChartValue(double value, string unit) => $"{Math.Round(value, 1)} {unit}";
+    private static string FormatChartValue(double value, string unit) => unit == "speed"
+        ? SpeedFormatter.FormatSpeed(value)
+        : $"{Math.Round(value, 1)} {unit}";
 
     private string FormatUpdated() => _snapshot is null
         ? "--"

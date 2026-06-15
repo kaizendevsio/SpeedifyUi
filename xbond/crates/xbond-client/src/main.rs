@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
@@ -13,11 +13,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, XBondTun,
-    ClientConfig, FrameReceiver, PacketKind, PathHealthSnapshot, PathIsolationStatus,
-    ProbeAggregate, ProbePathStats, ReceiveOutcome, RouteVerification, XBondFecStatus, XBondFrame,
-    XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
-    ScheduledTransmission, XorFecBlock,
+    build_schedule, build_transmission_plan, is_ipv4_packet, select_path_roles, ClientConfig,
+    FrameReceiver, PacketKind, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate,
+    ProbePathStats, ReceiveOutcome, RouteVerification, ScheduledTransmission, XBondFecStatus,
+    XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondRuntimeStatus, XBondStatus, XBondTun,
+    XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -261,6 +261,7 @@ struct PreparedProbePath {
 
 #[derive(Debug)]
 struct InboundTunnelFrame {
+    path_id: u16,
     frame: XBondFrame,
 }
 
@@ -270,6 +271,13 @@ struct TunnelPathRuntime {
     bytes_sent: u64,
     last_bytes_sent: u64,
     throughput_bps: u64,
+    health_sequence: u64,
+    pending_heartbeats: HashMap<u64, Instant>,
+    health_window: VecDeque<bool>,
+    rtt_samples_ms: VecDeque<f64>,
+    rtt_ms: Option<f64>,
+    jitter_ms: Option<f64>,
+    loss_rate: f64,
 }
 
 #[derive(Debug, Default)]
@@ -538,12 +546,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             options.tun_name
         )
     })?;
-    let tun_reader = tun.try_clone().with_context(|| {
-        format!(
-            "failed to clone XBond TUN {} for packet reader",
-            tun.name()
-        )
-    })?;
+    let tun_reader = tun
+        .try_clone()
+        .with_context(|| format!("failed to clone XBond TUN {} for packet reader", tun.name()))?;
     let (tun_packet_tx, mut tun_packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let tun_name = tun.name().to_string();
     let tun_read_mtu = usize::from(options.tun_mtu).max(2048);
@@ -638,6 +643,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut path_runtime,
                     &inbound_tx,
                     &key,
+                    options.json_events,
+                ).await?;
+                send_tunnel_heartbeats(
+                    &config,
+                    &mut path_runtime,
+                    &sockets,
+                    &key,
+                    session_id,
                     options.json_events,
                 ).await?;
                 update_tunnel_throughput(
@@ -822,6 +835,25 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             Some(inbound) = inbound_rx.recv() => {
+                if is_expected_ack(&inbound.frame, session_id, inbound.frame.header.sequence) {
+                    record_tunnel_heartbeat_ack(
+                        &mut path_runtime,
+                        inbound.path_id,
+                        &inbound.frame,
+                    );
+                    if options.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "health-heartbeat-ack",
+                                "path_id": inbound.path_id,
+                                "sequence": inbound.frame.header.sequence,
+                            })
+                        );
+                    }
+                    continue;
+                }
+
                 let outcome = inbound_receiver.observe(&inbound.frame, now_micros());
                 match outcome {
                     ReceiveOutcome::Accepted if is_data_like(inbound.frame.header.kind) => {
@@ -893,7 +925,8 @@ async fn ensure_tunnel_sockets(
             continue;
         }
 
-        let socket = match create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref()) {
+        let socket = match create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref())
+        {
             Ok((socket, _isolation)) => socket,
             Err(error) => {
                 record_tunnel_send_failure(path_runtime, *path_id);
@@ -928,7 +961,7 @@ async fn ensure_tunnel_sockets(
         }
 
         let socket = Arc::new(socket);
-        spawn_tunnel_receiver(socket.clone(), inbound_tx.clone(), key.clone());
+        spawn_tunnel_receiver(*path_id, socket.clone(), inbound_tx.clone(), key.clone());
         sockets.insert(*path_id, socket);
     }
 
@@ -936,6 +969,7 @@ async fn ensure_tunnel_sockets(
 }
 
 fn spawn_tunnel_receiver(
+    path_id: u16,
     socket: Arc<UdpSocket>,
     inbound_tx: mpsc::UnboundedSender<InboundTunnelFrame>,
     key: XBondKey,
@@ -949,7 +983,10 @@ fn spawn_tunnel_receiver(
             let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
                 continue;
             };
-            if inbound_tx.send(InboundTunnelFrame { frame }).is_err() {
+            if inbound_tx
+                .send(InboundTunnelFrame { path_id, frame })
+                .is_err()
+            {
                 break;
             }
         }
@@ -971,6 +1008,9 @@ fn tunnel_health(
 
             if let Some(runtime) = path_runtime.get(&path.path_id) {
                 path.throughput_bps = runtime.throughput_bps;
+                path.rtt_ms = runtime.rtt_ms;
+                path.jitter_ms = runtime.jitter_ms;
+                path.loss_rate = runtime.loss_rate;
                 if runtime.send_failures >= 2 {
                     path.in_cooldown = true;
                     path.loss_rate = 1.0;
@@ -1000,12 +1040,172 @@ fn record_tunnel_send_success(
     }
 }
 
-fn record_tunnel_send_failure(
-    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    path_id: u16,
-) {
+fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>, path_id: u16) {
     let runtime = path_runtime.entry(path_id).or_default();
     runtime.send_failures = runtime.send_failures.saturating_add(1);
+}
+
+const TUNNEL_HEALTH_WINDOW: usize = 20;
+
+async fn send_tunnel_heartbeats(
+    config: &ClientConfig,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    key: &XBondKey,
+    session_id: u64,
+    json_events: bool,
+) -> Result<()> {
+    let timeout = tunnel_heartbeat_timeout(config);
+    let path_ids = sockets.keys().copied().collect::<Vec<_>>();
+    for path_id in path_ids {
+        let Some(socket) = sockets.get(&path_id) else {
+            continue;
+        };
+
+        {
+            let runtime = path_runtime.entry(path_id).or_default();
+            expire_tunnel_heartbeats(runtime, timeout);
+            if runtime.pending_heartbeats.len() >= 3 {
+                continue;
+            }
+        }
+
+        let sequence = {
+            let runtime = path_runtime.entry(path_id).or_default();
+            runtime.health_sequence = runtime.health_sequence.saturating_add(1);
+            runtime.health_sequence
+        };
+
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Heartbeat,
+                session_id,
+                sequence,
+                now_micros(),
+                path_id,
+            ),
+            b"health".to_vec(),
+        );
+        let encoded = frame.encode_sealed(key)?;
+        match socket.send(&encoded).await {
+            Ok(_) => {
+                let runtime = path_runtime.entry(path_id).or_default();
+                runtime.pending_heartbeats.insert(sequence, Instant::now());
+            }
+            Err(error) => {
+                record_tunnel_send_failure(path_runtime, path_id);
+                if let Some(runtime) = path_runtime.get_mut(&path_id) {
+                    record_tunnel_health_sample(runtime, false, None);
+                }
+                if json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "health-heartbeat-send-failed",
+                            "path_id": path_id,
+                            "error": error.to_string(),
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn tunnel_heartbeat_timeout(config: &ClientConfig) -> Duration {
+    Duration::from_millis(config.realtime_deadline_ms.saturating_mul(3).max(1_500))
+}
+
+fn expire_tunnel_heartbeats(runtime: &mut TunnelPathRuntime, timeout: Duration) {
+    let now = Instant::now();
+    let expired = runtime
+        .pending_heartbeats
+        .iter()
+        .filter_map(|(sequence, sent_at)| {
+            (now.duration_since(*sent_at) >= timeout).then_some(*sequence)
+        })
+        .collect::<Vec<_>>();
+
+    for sequence in expired {
+        if runtime.pending_heartbeats.remove(&sequence).is_some() {
+            record_tunnel_health_sample(runtime, false, None);
+        }
+    }
+}
+
+fn record_tunnel_heartbeat_ack(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    path_id: u16,
+    frame: &XBondFrame,
+) {
+    let runtime = path_runtime.entry(path_id).or_default();
+    if runtime
+        .pending_heartbeats
+        .remove(&frame.header.sequence)
+        .is_none()
+    {
+        return;
+    }
+
+    let rtt_ms = now_micros().saturating_sub(frame.header.send_micros) as f64 / 1_000.0;
+    runtime.send_failures = 0;
+    record_tunnel_health_sample(runtime, true, Some(rtt_ms));
+}
+
+fn record_tunnel_health_sample(
+    runtime: &mut TunnelPathRuntime,
+    delivered: bool,
+    rtt_ms: Option<f64>,
+) {
+    if runtime.health_window.len() == TUNNEL_HEALTH_WINDOW {
+        runtime.health_window.pop_front();
+    }
+    runtime.health_window.push_back(delivered);
+
+    if let Some(rtt_ms) = rtt_ms.filter(|value| value.is_finite()) {
+        if runtime.rtt_samples_ms.len() == TUNNEL_HEALTH_WINDOW {
+            runtime.rtt_samples_ms.pop_front();
+        }
+        runtime.rtt_samples_ms.push_back(rtt_ms);
+    }
+
+    refresh_tunnel_health(runtime);
+}
+
+fn refresh_tunnel_health(runtime: &mut TunnelPathRuntime) {
+    runtime.loss_rate = if runtime.health_window.is_empty() {
+        0.0
+    } else {
+        let missed = runtime
+            .health_window
+            .iter()
+            .filter(|delivered| !**delivered)
+            .count();
+        missed as f64 / runtime.health_window.len() as f64
+    };
+
+    if runtime.rtt_samples_ms.is_empty() {
+        runtime.rtt_ms = None;
+        runtime.jitter_ms = None;
+        return;
+    }
+
+    let average = runtime.rtt_samples_ms.iter().sum::<f64>() / runtime.rtt_samples_ms.len() as f64;
+    runtime.rtt_ms = Some(average);
+
+    runtime.jitter_ms = if runtime.rtt_samples_ms.len() < 2 {
+        Some(0.0)
+    } else {
+        let deltas = runtime
+            .rtt_samples_ms
+            .iter()
+            .zip(runtime.rtt_samples_ms.iter().skip(1))
+            .map(|(left, right)| (right - left).abs())
+            .collect::<Vec<_>>();
+        Some(deltas.iter().sum::<f64>() / deltas.len() as f64)
+    };
 }
 
 fn update_tunnel_throughput(
@@ -1557,12 +1757,10 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
 
 fn path_isolation_from_config(path: &xbond_core::PathConfig) -> PathIsolationStatus {
     match path.interface_name.as_deref() {
-        Some(interface_name) if is_tunnel_interface(interface_name) => {
-            PathIsolationStatus::failed(
-                "so-bindtodevice",
-                format!("refusing to isolate path to tunnel interface {interface_name}"),
-            )
-        }
+        Some(interface_name) if is_tunnel_interface(interface_name) => PathIsolationStatus::failed(
+            "so-bindtodevice",
+            format!("refusing to isolate path to tunnel interface {interface_name}"),
+        ),
         Some(interface_name) => PathIsolationStatus::requested(
             "so-bindtodevice",
             format!(
@@ -1844,6 +2042,19 @@ mod tests {
         assert_eq!(result.min_rtt_ms(), Some(10.0));
         assert_eq!(result.avg_rtt_ms(), Some(15.0));
         assert_eq!(result.max_rtt_ms(), Some(20.0));
+    }
+
+    #[test]
+    fn tunnel_health_samples_track_rtt_jitter_and_loss() {
+        let mut runtime = TunnelPathRuntime::default();
+
+        record_tunnel_health_sample(&mut runtime, true, Some(40.0));
+        record_tunnel_health_sample(&mut runtime, false, None);
+        record_tunnel_health_sample(&mut runtime, true, Some(70.0));
+
+        assert_eq!(runtime.rtt_ms, Some(55.0));
+        assert_eq!(runtime.jitter_ms, Some(30.0));
+        assert!((runtime.loss_rate - (1.0 / 3.0)).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -51,6 +51,7 @@ builder.Services.AddSingleton(sp =>
     return settings;
 });
 builder.Services.AddSingleton<XBondStatusService>();
+builder.Services.AddSingleton<InterfaceMetadataService>();
 builder.Services.AddSingleton<XBondStatsService>();
 builder.Services.AddSingleton<XBondLabService>();
 builder.Services.AddSingleton<XBondTrafficEngineService>();

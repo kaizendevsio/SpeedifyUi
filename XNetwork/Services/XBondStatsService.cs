@@ -2,15 +2,25 @@ using XNetwork.Models;
 
 namespace XNetwork.Services;
 
-public sealed class XBondStatsService(XBondStatusService statusService)
+public sealed class XBondStatsService(
+    XBondStatusService statusService,
+    InterfaceMetadataService interfaceMetadataService)
 {
     public async Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
         var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-        return FromStatus(status);
+        var interfaceDisplayNames = await interfaceMetadataService.GetDisplayNamesAsync(cancellationToken).ConfigureAwait(false);
+        return FromStatus(status, interfaceDisplayNames);
     }
 
     public static XBondStatsSnapshot FromStatus(XBondStatus status)
+    {
+        return FromStatus(status, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    public static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyDictionary<string, string> interfaceDisplayNames)
     {
         var activeIds = status.Schedule.DataPathIds
             .Concat(status.Schedule.DuplicatePathIds)
@@ -21,8 +31,8 @@ public sealed class XBondStatsService(XBondStatusService statusService)
             .Select(path => new XBondPathStatsSnapshot
             {
                 PathId = path.PathId,
-                Name = string.IsNullOrWhiteSpace(path.Name) ? $"Path {path.PathId}" : path.Name,
                 InterfaceName = path.InterfaceName ?? path.BindDevice ?? $"path-{path.PathId}",
+                Name = ResolvePathName(path, interfaceDisplayNames),
                 Role = path.Role,
                 InterfaceUp = path.InterfaceUp,
                 InCooldown = path.InCooldown,
@@ -49,5 +59,20 @@ public sealed class XBondStatsService(XBondStatusService statusService)
             RawStatus = status,
             Paths = paths
         };
+    }
+
+    private static string ResolvePathName(
+        XBondPathStatus path,
+        IReadOnlyDictionary<string, string> interfaceDisplayNames)
+    {
+        var interfaceName = path.InterfaceName ?? path.BindDevice;
+        if (!string.IsNullOrWhiteSpace(interfaceName) &&
+            interfaceDisplayNames.TryGetValue(interfaceName, out var displayName) &&
+            !string.IsNullOrWhiteSpace(displayName))
+        {
+            return displayName;
+        }
+
+        return string.IsNullOrWhiteSpace(path.Name) ? $"Path {path.PathId}" : path.Name;
     }
 }
