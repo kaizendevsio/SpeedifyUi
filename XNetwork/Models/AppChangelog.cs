@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.25";
+    public const string CurrentVersion = "xbond-2026.06.26";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Changed dashboard latency probe target.",
+            Changes =
+            [
+                "Dashboard connection health now probes Google DNS at 8.8.8.8 instead of Cloudflare DNS at 1.1.1.1.",
+                "XBond route diagnostics keep their separate target control unchanged."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.25",
             Date = "2026-06-15",
             Summary = "Added adaptive XBond redundancy and degraded-path diagnostics.",
             Changes =

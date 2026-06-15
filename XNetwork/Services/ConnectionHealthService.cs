@@ -9,7 +9,7 @@ public class ConnectionHealthService(
     ILogger<ConnectionHealthService> logger,
     XBondStatsService xbondStatsService) : BackgroundService, IConnectionHealthService
 {
-    private const string PingTarget = "1.1.1.1";
+    private const string PingTarget = "8.8.8.8";
     private const int PingIntervalMs = 500;
     private const int PingTimeoutMs = 3000;
     private const double FailedPingLatency = 9999.0;
