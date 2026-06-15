@@ -63,4 +63,60 @@ public class InterfaceMetadataServiceTests
         Assert.Equal("Smart Communications", snapshot.Paths[0].Name);
         Assert.Equal("Configured Dito", snapshot.Paths[1].Name);
     }
+
+    [Fact]
+    public void ParseDefaultRoutes_ReadsGatewayRoutesFromLinuxJson()
+    {
+        var routes = InterfaceMetadataService.ParseDefaultRoutes(
+            """
+            [
+              {"dst":"default","dev":"xbond0","prefsrc":"10.250.0.2"},
+              {"dst":"default","gateway":"192.168.3.1","dev":"enx103c59f1039c"},
+              {"dst":"default","gateway":"192.168.4.1","dev":"enxb8d4bcbcb0f0"}
+            ]
+            """);
+
+        Assert.Collection(
+            routes,
+            route =>
+            {
+                Assert.Equal("enx103c59f1039c", route.Device);
+                Assert.Equal("192.168.3.1", route.Gateway);
+            },
+            route =>
+            {
+                Assert.Equal("enxb8d4bcbcb0f0", route.Device);
+                Assert.Equal("192.168.4.1", route.Gateway);
+            });
+    }
+
+    [Fact]
+    public void SelectProviderName_UsesF50NetworkProvider()
+    {
+        var provider = InterfaceMetadataService.SelectProviderName(new InterfaceMetadataService.ModemProviderResponse
+        {
+            NetworkProvider = "SMART",
+            Operator = "",
+            Error = null
+        });
+
+        Assert.Equal("SMART", provider);
+    }
+
+    [Fact]
+    public void SelectProviderName_IgnoresBlockedOrEmptyResponses()
+    {
+        var blocked = InterfaceMetadataService.SelectProviderName(new InterfaceMetadataService.ModemProviderResponse
+        {
+            NetworkProvider = "SMART",
+            Error = "none secure connection"
+        });
+        var noService = InterfaceMetadataService.SelectProviderName(new InterfaceMetadataService.ModemProviderResponse
+        {
+            NetworkProvider = "Limited Service"
+        });
+
+        Assert.Null(blocked);
+        Assert.Null(noService);
+    }
 }

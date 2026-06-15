@@ -1,10 +1,15 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace XNetwork.Services;
 
 public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> logger)
 {
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private IReadOnlyDictionary<string, string> _displayNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private DateTime _expiresAtUtc = DateTime.MinValue;
@@ -66,7 +71,18 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
                 return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             }
 
-            return ParseNmcliDeviceStatus(result.StandardOutput);
+            var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (device, name) in ParseNmcliDeviceStatus(result.StandardOutput))
+            {
+                names[device] = name;
+            }
+
+            foreach (var (device, provider) in await ReadGatewayProviderNamesAsync(cancellationToken).ConfigureAwait(false))
+            {
+                names[device] = provider;
+            }
+
+            return names;
         }
         catch (OperationCanceledException)
         {
@@ -77,6 +93,139 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
             logger.LogDebug(ex, "Unable to refresh interface display names from NetworkManager");
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> ReadGatewayProviderNamesAsync(CancellationToken cancellationToken)
+    {
+        var routesResult = await RunProcessAsync(
+            "ip",
+            ["-j", "route", "show", "default"],
+            cancellationToken).ConfigureAwait(false);
+
+        if (routesResult.ExitCode != 0)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var routes = ParseDefaultRoutes(routesResult.StandardOutput);
+        var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var route in routes)
+        {
+            if (ShouldSkipGatewayProbe(route.Device, route.Gateway))
+            {
+                continue;
+            }
+
+            string? provider;
+            try
+            {
+                provider = await ReadModemProviderAsync(route.Gateway, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                continue;
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Unable to read modem provider from gateway {Gateway}", route.Gateway);
+                continue;
+            }
+
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                names[route.Device] = provider;
+            }
+        }
+
+        return names;
+    }
+
+    private static async Task<string?> ReadModemProviderAsync(string gateway, CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(2));
+
+        using var client = new HttpClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"http://{gateway}/goform/goform_get_cmd_process?isTest=false&cmd=network_type,network_provider,operator,signalbar,wan_ipaddr,modem_main_state");
+        request.Headers.Referrer = new Uri($"http://{gateway}/index.html");
+        request.Headers.TryAddWithoutValidation("Origin", $"http://{gateway}");
+        request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
+
+        using var response = await client.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+        if (response.StatusCode != HttpStatusCode.OK)
+        {
+            return null;
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<ModemProviderResponse>(
+            JsonOptions,
+            timeoutCts.Token).ConfigureAwait(false);
+        return SelectProviderName(payload);
+    }
+
+    public static IReadOnlyList<GatewayRoute> ParseDefaultRoutes(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return [];
+        }
+
+        try
+        {
+            var routes = JsonSerializer.Deserialize<List<IpRoute>>(output, JsonOptions) ?? [];
+            return routes
+                .Where(route => !string.IsNullOrWhiteSpace(route.Device) && !string.IsNullOrWhiteSpace(route.Gateway))
+                .Select(route => new GatewayRoute(route.Device!, route.Gateway!))
+                .ToArray();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    public static string? SelectProviderName(ModemProviderResponse? payload)
+    {
+        if (payload is null || !string.IsNullOrWhiteSpace(payload.Error))
+        {
+            return null;
+        }
+
+        return FirstUsefulProvider(payload.NetworkProvider) ??
+               FirstUsefulProvider(payload.Operator);
+    }
+
+    private static string? FirstUsefulProvider(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Equals("Limited Service", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("No Service", StringComparison.OrdinalIgnoreCase) ||
+            trimmed.Equals("Searching", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private static bool ShouldSkipGatewayProbe(string device, string gateway)
+    {
+        if (device.StartsWith("xbond", StringComparison.OrdinalIgnoreCase) ||
+            device.StartsWith("tailscale", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(device, "lo", StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(gateway))
+        {
+            return true;
+        }
+
+        return !IPAddress.TryParse(gateway, out var address) || address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork;
     }
 
     public static IReadOnlyDictionary<string, string> ParseNmcliDeviceStatus(string output)
@@ -185,4 +334,27 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
     }
 
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
+
+    public sealed record GatewayRoute(string Device, string Gateway);
+
+    public sealed class ModemProviderResponse
+    {
+        [JsonPropertyName("network_provider")]
+        public string? NetworkProvider { get; init; }
+
+        [JsonPropertyName("operator")]
+        public string? Operator { get; init; }
+
+        [JsonPropertyName("Error")]
+        public string? Error { get; init; }
+    }
+
+    private sealed class IpRoute
+    {
+        [JsonPropertyName("dev")]
+        public string? Device { get; init; }
+
+        [JsonPropertyName("gateway")]
+        public string? Gateway { get; init; }
+    }
 }
