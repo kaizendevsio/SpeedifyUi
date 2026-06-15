@@ -62,6 +62,8 @@ public sealed class XBondStatsService(
                 LatePercent = path.LateRate * 100,
                 QueueDepth = path.QueueDepth,
                 ThroughputBps = path.ThroughputBps,
+                OutboundThroughputBps = path.OutboundThroughputBps,
+                InboundThroughputBps = path.InboundThroughputBps,
                 BindAddress = path.BindAddress ?? "",
                 BindDevice = path.BindDevice ?? "",
                 IsActive = activeIds.Contains(path.PathId),

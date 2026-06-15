@@ -209,6 +209,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             LateRate = path.LateRate,
             QueueDepth = path.QueueDepth,
             ThroughputBps = path.ThroughputBps,
+            OutboundThroughputBps = path.OutboundThroughputBps,
+            InboundThroughputBps = path.InboundThroughputBps,
             InterfaceUp = path.InterfaceUp,
             InCooldown = path.InCooldown
         };

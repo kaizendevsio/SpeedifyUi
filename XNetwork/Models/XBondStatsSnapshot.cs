@@ -96,7 +96,19 @@ public sealed class XBondPathStatsSnapshot
 
     public ulong ThroughputBps { get; init; }
 
-    public double ThroughputMbps => ThroughputBps / 1_000_000d;
+    public ulong OutboundThroughputBps { get; init; }
+
+    public ulong InboundThroughputBps { get; init; }
+
+    public ulong TotalThroughputBps => ThroughputBps > 0
+        ? ThroughputBps
+        : OutboundThroughputBps + InboundThroughputBps;
+
+    public double ThroughputMbps => TotalThroughputBps / 1_000_000d;
+
+    public double DownloadMbps => InboundThroughputBps / 1_000_000d;
+
+    public double UploadMbps => OutboundThroughputBps / 1_000_000d;
 
     public string BindAddress { get; init; } = "";
 

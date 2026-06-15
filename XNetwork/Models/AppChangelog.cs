@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.21";
+    public const string CurrentVersion = "xbond-2026.06.22";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Split XBond path throughput and added server speed testing.",
+            Changes =
+            [
+                "Dashboard and analytics now show per-path download and upload separately.",
+                "XBond runtime status now reports per-path inbound and outbound throughput.",
+                "Tunnel Speed Test now runs Pi to Vultr iperf throughput before the public speedtest."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.21",
             Date = "2026-06-15",
             Summary = "Added XBond tunnel speed testing.",
             Changes =

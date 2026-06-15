@@ -165,6 +165,21 @@ public class XBondSettingsStore
         target.SpeedTestHttpTimeoutSeconds = source.SpeedTestHttpTimeoutSeconds <= 0
             ? target.SpeedTestHttpTimeoutSeconds
             : source.SpeedTestHttpTimeoutSeconds;
+        target.IperfCommandPath = string.IsNullOrWhiteSpace(source.IperfCommandPath)
+            ? target.IperfCommandPath
+            : source.IperfCommandPath;
+        target.ServerSpeedTestHost = string.IsNullOrWhiteSpace(source.ServerSpeedTestHost)
+            ? target.ServerSpeedTestHost
+            : source.ServerSpeedTestHost;
+        target.ServerSpeedTestPort = source.ServerSpeedTestPort <= 0
+            ? target.ServerSpeedTestPort
+            : source.ServerSpeedTestPort;
+        target.ServerSpeedTestDurationSeconds = source.ServerSpeedTestDurationSeconds <= 0
+            ? target.ServerSpeedTestDurationSeconds
+            : source.ServerSpeedTestDurationSeconds;
+        target.ServerSpeedTestCommandTimeoutSeconds = source.ServerSpeedTestCommandTimeoutSeconds <= 0
+            ? target.ServerSpeedTestCommandTimeoutSeconds
+            : source.ServerSpeedTestCommandTimeoutSeconds;
     }
 
     private static string GetAppDataDirectory(IHostEnvironment environment)

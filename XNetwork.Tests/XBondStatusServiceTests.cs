@@ -65,6 +65,8 @@ public class XBondStatusServiceTests
                   "loss_rate": 0.01,
                   "late_rate": 0.02,
                   "queue_depth": 3,
+                  "outbound_throughput_bps": 4000000,
+                  "inbound_throughput_bps": 8000000,
                   "throughput_bps": 12000000,
                   "interface_up": true,
                   "in_cooldown": false
@@ -113,6 +115,8 @@ public class XBondStatusServiceTests
         Assert.True(path.PathIsolation.Active);
         Assert.Equal(1.2, path.JitterMs);
         Assert.Equal(3, path.QueueDepth);
+        Assert.Equal((ulong)4_000_000, path.OutboundThroughputBps);
+        Assert.Equal((ulong)8_000_000, path.InboundThroughputBps);
         Assert.Equal((ulong)12_000_000, path.ThroughputBps);
     }
 

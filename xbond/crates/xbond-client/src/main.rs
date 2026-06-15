@@ -270,6 +270,10 @@ struct TunnelPathRuntime {
     send_failures: u32,
     bytes_sent: u64,
     last_bytes_sent: u64,
+    bytes_received: u64,
+    last_bytes_received: u64,
+    outbound_throughput_bps: u64,
+    inbound_throughput_bps: u64,
     throughput_bps: u64,
     health_sequence: u64,
     pending_heartbeats: HashMap<u64, Instant>,
@@ -865,6 +869,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             counters.data_bytes_received = counters
                                 .data_bytes_received
                                 .saturating_add(inbound.frame.payload.len() as u64);
+                            let runtime = path_runtime.entry(inbound.path_id).or_default();
+                            runtime.bytes_received = runtime
+                                .bytes_received
+                                .saturating_add(inbound.frame.payload.len() as u64);
                             if options.json_events {
                                 println!(
                                     "{}",
@@ -1007,6 +1015,8 @@ fn tunnel_health(
             }
 
             if let Some(runtime) = path_runtime.get(&path.path_id) {
+                path.outbound_throughput_bps = runtime.outbound_throughput_bps;
+                path.inbound_throughput_bps = runtime.inbound_throughput_bps;
                 path.throughput_bps = runtime.throughput_bps;
                 path.rtt_ms = runtime.rtt_ms;
                 path.jitter_ms = runtime.jitter_ms;
@@ -1215,9 +1225,17 @@ fn update_tunnel_throughput(
 ) {
     let elapsed = last_sample.elapsed().as_secs_f64().max(0.001);
     for runtime in path_runtime.values_mut() {
-        let delta = runtime.bytes_sent.saturating_sub(runtime.last_bytes_sent);
-        runtime.throughput_bps = ((delta as f64 * 8.0) / elapsed) as u64;
+        let outbound_delta = runtime.bytes_sent.saturating_sub(runtime.last_bytes_sent);
+        let inbound_delta = runtime
+            .bytes_received
+            .saturating_sub(runtime.last_bytes_received);
+        runtime.outbound_throughput_bps = ((outbound_delta as f64 * 8.0) / elapsed) as u64;
+        runtime.inbound_throughput_bps = ((inbound_delta as f64 * 8.0) / elapsed) as u64;
+        runtime.throughput_bps = runtime
+            .outbound_throughput_bps
+            .saturating_add(runtime.inbound_throughput_bps);
         runtime.last_bytes_sent = runtime.bytes_sent;
+        runtime.last_bytes_received = runtime.bytes_received;
     }
     let outbound_delta = counters
         .data_bytes_sent
@@ -1847,6 +1865,8 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             loss_rate: 0.0,
             late_rate: 0.0,
             queue_depth: 0,
+            outbound_throughput_bps: 0,
+            inbound_throughput_bps: 0,
             throughput_bps: 0,
             interface_up: path.enabled && interface_is_live(path.interface_name.as_deref()),
             in_cooldown: false,

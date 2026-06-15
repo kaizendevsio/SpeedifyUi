@@ -48,4 +48,25 @@ public class XBondSpeedTestServiceTests
         Assert.Equal(2, result.UploadMbps);
         Assert.Equal(10, result.PingMs);
     }
+
+    [Fact]
+    public void ParseIperfBitsPerSecond_ReadsRequestedSummary()
+    {
+        var bitsPerSecond = XBondSpeedTestService.ParseIperfBitsPerSecond(
+            """
+            {
+              "end": {
+                "sum_sent": {
+                  "bits_per_second": 18239899.997
+                },
+                "sum_received": {
+                  "bits_per_second": 16441950.069
+                }
+              }
+            }
+            """,
+            "sum_received");
+
+        Assert.Equal(16441950.069, bitsPerSecond);
+    }
 }

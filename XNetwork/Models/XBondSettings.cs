@@ -71,6 +71,16 @@ public class XBondSettings
     public int SpeedTestCommandTimeoutSeconds { get; set; } = 180;
 
     public int SpeedTestHttpTimeoutSeconds { get; set; } = 15;
+
+    public string IperfCommandPath { get; set; } = "iperf3";
+
+    public string ServerSpeedTestHost { get; set; } = "10.250.0.1";
+
+    public int ServerSpeedTestPort { get; set; } = 5201;
+
+    public int ServerSpeedTestDurationSeconds { get; set; } = 8;
+
+    public int ServerSpeedTestCommandTimeoutSeconds { get; set; } = 45;
 }
 
 public static class XBondTrafficEngineModes

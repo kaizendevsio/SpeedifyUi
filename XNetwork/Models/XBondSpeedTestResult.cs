@@ -12,6 +12,52 @@ public class XBondSpeedTestResult
 
     public double? PingMs { get; set; }
 
+    public double? ServerDownloadMbps { get; set; }
+
+    public double? ServerUploadMbps { get; set; }
+
+    public string XBondServerHost { get; set; } = "";
+
+    public int XBondServerPort { get; set; }
+
+    public string XBondServerEndpoint => XBondServerPort > 0
+        ? $"{XBondServerHost}:{XBondServerPort}"
+        : XBondServerHost;
+
+    public string? ServerTestError { get; set; }
+
+    public double? PublicDownloadMbps
+    {
+        get => DownloadMbps;
+        set => DownloadMbps = value;
+    }
+
+    public double? PublicUploadMbps
+    {
+        get => UploadMbps;
+        set => UploadMbps = value;
+    }
+
+    public double? PublicPingMs
+    {
+        get => PingMs;
+        set => PingMs = value;
+    }
+
+    public string PublicServerName
+    {
+        get => ServerName;
+        set => ServerName = value;
+    }
+
+    public string PublicServerLocation
+    {
+        get => ServerLocation;
+        set => ServerLocation = value;
+    }
+
+    public string? PublicTestError { get; set; }
+
     public string ServerName { get; set; } = "";
 
     public string ServerLocation { get; set; } = "";
@@ -30,5 +76,9 @@ public class XBondSpeedTestResult
 
     public bool HasError => !string.IsNullOrWhiteSpace(Error);
 
-    public bool Succeeded => !HasError && DownloadMbps.HasValue && UploadMbps.HasValue;
+    public bool ServerTestSucceeded => ServerDownloadMbps.HasValue && ServerUploadMbps.HasValue;
+
+    public bool PublicTestSucceeded => PublicDownloadMbps.HasValue && PublicUploadMbps.HasValue;
+
+    public bool Succeeded => !HasError && ServerTestSucceeded && PublicTestSucceeded;
 }

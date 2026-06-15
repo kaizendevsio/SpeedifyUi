@@ -134,6 +134,8 @@ mod tests {
             loss_rate: 0.0,
             late_rate,
             queue_depth: 0,
+            outbound_throughput_bps: 2_500_000,
+            inbound_throughput_bps: 2_500_000,
             throughput_bps: 5_000_000,
             interface_up: true,
             in_cooldown: false,

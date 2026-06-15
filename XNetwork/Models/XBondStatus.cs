@@ -169,6 +169,12 @@ public class XBondPathStatus
     [JsonPropertyName("throughput_bps")]
     public ulong ThroughputBps { get; set; }
 
+    [JsonPropertyName("outbound_throughput_bps")]
+    public ulong OutboundThroughputBps { get; set; }
+
+    [JsonPropertyName("inbound_throughput_bps")]
+    public ulong InboundThroughputBps { get; set; }
+
     [JsonPropertyName("interface_up")]
     public bool InterfaceUp { get; set; }
 

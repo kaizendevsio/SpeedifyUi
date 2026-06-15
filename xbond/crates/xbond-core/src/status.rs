@@ -44,6 +44,10 @@ pub struct XBondPathStatus {
     pub loss_rate: f64,
     pub late_rate: f64,
     pub queue_depth: u32,
+    #[serde(default)]
+    pub outbound_throughput_bps: u64,
+    #[serde(default)]
+    pub inbound_throughput_bps: u64,
     pub throughput_bps: u64,
     pub interface_up: bool,
     pub in_cooldown: bool,
@@ -65,6 +69,8 @@ impl From<ScoredPath> for XBondPathStatus {
             loss_rate: value.path.loss_rate,
             late_rate: value.path.late_rate,
             queue_depth: value.path.queue_depth,
+            outbound_throughput_bps: value.path.outbound_throughput_bps,
+            inbound_throughput_bps: value.path.inbound_throughput_bps,
             throughput_bps: value.path.throughput_bps,
             interface_up: value.path.interface_up,
             in_cooldown: value.path.in_cooldown,

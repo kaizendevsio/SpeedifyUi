@@ -10,6 +10,10 @@ pub struct PathHealthSnapshot {
     pub loss_rate: f64,
     pub late_rate: f64,
     pub queue_depth: u32,
+    #[serde(default)]
+    pub outbound_throughput_bps: u64,
+    #[serde(default)]
+    pub inbound_throughput_bps: u64,
     pub throughput_bps: u64,
     pub interface_up: bool,
     pub in_cooldown: bool,
@@ -116,6 +120,8 @@ mod tests {
             loss_rate,
             late_rate,
             queue_depth: 0,
+            outbound_throughput_bps: 5_000_000,
+            inbound_throughput_bps: 5_000_000,
             throughput_bps: 10_000_000,
             interface_up: true,
             in_cooldown: false,

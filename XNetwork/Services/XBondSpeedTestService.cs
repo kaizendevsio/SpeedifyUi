@@ -36,6 +36,9 @@ public sealed class XBondSpeedTestService(
 
         try
         {
+            result.XBondServerHost = settings.ServerSpeedTestHost;
+            result.XBondServerPort = settings.ServerSpeedTestPort;
+
             var route = await RunCommandAsync(
                 settings.RouteCommandPath,
                 ["route", "get", "1.1.1.1"],
@@ -46,30 +49,21 @@ public sealed class XBondSpeedTestService(
             result.RouteUsesXBond = route.ExitCode == 0 &&
                                     route.Output.Contains($"dev {settings.TunnelDevice}", StringComparison.Ordinal);
 
-            var speedTest = await RunCommandAsync(
-                settings.SpeedTestCommandPath,
-                [
-                    "--secure",
-                    "--json",
-                    "--timeout",
-                    Math.Clamp(settings.SpeedTestHttpTimeoutSeconds, 5, 60).ToString()
-                ],
-                timeoutSeconds: Math.Clamp(settings.SpeedTestCommandTimeoutSeconds, 30, 600),
-                cancellationToken).ConfigureAwait(false);
+            await RunServerSpeedTestAsync(result, cancellationToken).ConfigureAwait(false);
+            await RunPublicSpeedTestAsync(result, cancellationToken).ConfigureAwait(false);
 
-            if (speedTest.ExitCode != 0)
+            if (!result.ServerTestSucceeded && !result.PublicTestSucceeded)
             {
-                result.Error = string.IsNullOrWhiteSpace(speedTest.Output)
-                    ? $"{settings.SpeedTestCommandPath} exited with code {speedTest.ExitCode}."
-                    : speedTest.Output;
-                result.Message = "XBond speed test failed.";
+                result.Error = "Both XBond server and public speed tests failed.";
+                result.Message = "XBond speed tests failed.";
                 return result;
             }
 
-            ApplySpeedTestJson(result, speedTest.Output);
             result.Message = result.RouteUsesXBond
-                ? "XBond speed test completed."
-                : $"Speed test completed, but the default route was not using {settings.TunnelDevice}.";
+                ? result.Succeeded
+                    ? "XBond speed tests completed."
+                    : "XBond speed tests completed with partial results."
+                : $"Speed tests completed, but the default route was not using {settings.TunnelDevice}.";
         }
         catch (Exception ex)
         {
@@ -99,27 +93,137 @@ public sealed class XBondSpeedTestService(
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
 
-        result.DownloadMbps = TryGetDouble(root, "download") is { } downloadBps
+        result.PublicDownloadMbps = TryGetDouble(root, "download") is { } downloadBps
             ? downloadBps / 1_000_000d
             : null;
-        result.UploadMbps = TryGetDouble(root, "upload") is { } uploadBps
+        result.PublicUploadMbps = TryGetDouble(root, "upload") is { } uploadBps
             ? uploadBps / 1_000_000d
             : null;
-        result.PingMs = TryGetDouble(root, "ping");
+        result.PublicPingMs = TryGetDouble(root, "ping");
 
         if (root.TryGetProperty("server", out var server))
         {
             var sponsor = TryGetString(server, "sponsor");
             var name = TryGetString(server, "name");
             var country = TryGetString(server, "country");
-            result.ServerName = string.Join(" ", new[] { sponsor, name }.Where(value => !string.IsNullOrWhiteSpace(value)));
-            result.ServerLocation = string.Join(", ", new[] { name, country }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            result.PublicServerName = string.Join(" ", new[] { sponsor, name }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            result.PublicServerLocation = string.Join(", ", new[] { name, country }.Where(value => !string.IsNullOrWhiteSpace(value)));
         }
 
         if (root.TryGetProperty("client", out var client))
         {
             result.ClientIsp = TryGetString(client, "isp") ?? "";
             result.ClientIp = TryGetString(client, "ip") ?? "";
+        }
+    }
+
+    public static double? ParseIperfBitsPerSecond(string output, string sumProperty)
+    {
+        var json = ExtractJsonObject(output);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        if (root.TryGetProperty("error", out var error))
+        {
+            throw new JsonException(error.GetString() ?? "iperf3 returned an error.");
+        }
+
+        if (!root.TryGetProperty("end", out var end) ||
+            !end.TryGetProperty(sumProperty, out var sum) ||
+            TryGetDouble(sum, "bits_per_second") is not { } bitsPerSecond)
+        {
+            return null;
+        }
+
+        return bitsPerSecond;
+    }
+
+    private async Task RunServerSpeedTestAsync(
+        XBondSpeedTestResult result,
+        CancellationToken cancellationToken)
+    {
+        var duration = Math.Clamp(settings.ServerSpeedTestDurationSeconds, 3, 60).ToString(CultureInfo.InvariantCulture);
+        var port = settings.ServerSpeedTestPort.ToString(CultureInfo.InvariantCulture);
+        var timeoutSeconds = Math.Clamp(settings.ServerSpeedTestCommandTimeoutSeconds, 15, 300);
+
+        try
+        {
+            var upload = await RunCommandAsync(
+                settings.IperfCommandPath,
+                ["--client", settings.ServerSpeedTestHost, "--port", port, "--time", duration, "--json"],
+                timeoutSeconds,
+                cancellationToken).ConfigureAwait(false);
+
+            if (upload.ExitCode != 0)
+            {
+                result.ServerTestError = string.IsNullOrWhiteSpace(upload.Output)
+                    ? $"{settings.IperfCommandPath} upload exited with code {upload.ExitCode}."
+                    : upload.Output;
+                return;
+            }
+
+            result.ServerUploadMbps = ParseIperfBitsPerSecond(upload.Output, "sum_sent") / 1_000_000d;
+        }
+        catch (Exception ex)
+        {
+            result.ServerTestError = $"Pi to Vultr upload failed: {ex.Message}";
+            return;
+        }
+
+        try
+        {
+            var download = await RunCommandAsync(
+                settings.IperfCommandPath,
+                ["--client", settings.ServerSpeedTestHost, "--port", port, "--time", duration, "--reverse", "--json"],
+                timeoutSeconds,
+                cancellationToken).ConfigureAwait(false);
+
+            if (download.ExitCode != 0)
+            {
+                result.ServerTestError = string.IsNullOrWhiteSpace(download.Output)
+                    ? $"{settings.IperfCommandPath} download exited with code {download.ExitCode}."
+                    : download.Output;
+                return;
+            }
+
+            result.ServerDownloadMbps = ParseIperfBitsPerSecond(download.Output, "sum_received") / 1_000_000d;
+        }
+        catch (Exception ex)
+        {
+            result.ServerTestError = $"Vultr to Pi download failed: {ex.Message}";
+        }
+    }
+
+    private async Task RunPublicSpeedTestAsync(
+        XBondSpeedTestResult result,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var speedTest = await RunCommandAsync(
+                settings.SpeedTestCommandPath,
+                [
+                    "--secure",
+                    "--json",
+                    "--timeout",
+                    Math.Clamp(settings.SpeedTestHttpTimeoutSeconds, 5, 60).ToString()
+                ],
+                timeoutSeconds: Math.Clamp(settings.SpeedTestCommandTimeoutSeconds, 30, 600),
+                cancellationToken).ConfigureAwait(false);
+
+            if (speedTest.ExitCode != 0)
+            {
+                result.PublicTestError = string.IsNullOrWhiteSpace(speedTest.Output)
+                    ? $"{settings.SpeedTestCommandPath} exited with code {speedTest.ExitCode}."
+                    : speedTest.Output;
+                return;
+            }
+
+            ApplySpeedTestJson(result, speedTest.Output);
+        }
+        catch (Exception ex)
+        {
+            result.PublicTestError = $"Public speedtest failed: {ex.Message}";
         }
     }
 
