@@ -4,9 +4,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
+use tokio::time;
 use xbond_core::{
     build_transmission_plan, is_ipv4_packet, FrameReceiver, PacketKind, ReceiveOutcome,
     SchedulePlan, XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
@@ -27,6 +28,9 @@ struct Args {
 
     #[arg(long)]
     json_events: bool,
+
+    #[arg(long)]
+    trace_packets: bool,
 
     #[arg(long)]
     tun_name: Option<String>,
@@ -76,8 +80,13 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
         loop {
-            let Ok((len, peer)) = recv_socket.recv_from(&mut buf).await else {
-                break;
+            let (len, peer) = match recv_socket.recv_from(&mut buf).await {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("xbond server UDP recv error: {error}");
+                    time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
             };
             let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &recv_key) else {
                 continue;
@@ -143,8 +152,9 @@ async fn main() -> Result<()> {
                     peers.insert(frame.header.path_id, peer);
                 }
                 if let Some(schedule) = parse_return_schedule(&frame) {
+                    let schedule_changed = return_schedule != schedule;
                     return_schedule = schedule;
-                    if args.json_events {
+                    if args.json_events && schedule_changed {
                         println!(
                             "{}",
                             serde_json::json!({
@@ -191,7 +201,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                if args.json_events {
+                if args.json_events && args.trace_packets {
                     print_packet_event(
                         event_name(outcome),
                         outcome,
@@ -267,7 +277,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                if args.json_events && is_tunnel_payload(frame.header.kind) {
+                if args.json_events && args.trace_packets && is_tunnel_payload(frame.header.kind) {
                     print_data_event(
                         &frame,
                         forwarded_packets,
@@ -304,7 +314,16 @@ async fn main() -> Result<()> {
                     header.flags = 1;
                     let frame = XBondFrame::new(header, packet.clone());
                     let encoded = frame.encode_sealed(&key)?;
-                    match socket.send_to(&encoded, peer).await {
+                    let send_result = if kind == PacketKind::Data {
+                        socket.send_to(&encoded, peer).await
+                    } else {
+                        match socket.try_send_to(&encoded, peer) {
+                            Ok(bytes) => Ok(bytes),
+                            Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
+                            Err(error) => Err(error),
+                        }
+                    };
+                    match send_result {
                         Ok(_) => sent_paths += 1,
                         Err(error) => {
                             if args.json_events {
@@ -323,7 +342,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                if args.json_events {
+                if args.json_events && args.trace_packets {
                     println!(
                         "{}",
                         serde_json::json!({

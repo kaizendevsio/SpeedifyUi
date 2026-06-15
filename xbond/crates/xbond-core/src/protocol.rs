@@ -277,8 +277,10 @@ impl FrameReceiver {
 
     pub fn observe(&mut self, frame: &XBondFrame, now_micros: u64) -> ReceiveOutcome {
         let duplicate_class = match frame.header.kind {
+            PacketKind::Data | PacketKind::Duplicate => 0,
             PacketKind::Fec => 1,
-            _ => 0,
+            PacketKind::Heartbeat => 2,
+            PacketKind::Control => 3,
         };
         if self.duplicate_window.observe_key_class(
             frame.header.session_id,
@@ -475,5 +477,29 @@ mod tests {
 
         assert_eq!(receiver.observe(&data, 1_050), ReceiveOutcome::Accepted);
         assert_eq!(receiver.observe(&fec, 1_060), ReceiveOutcome::Accepted);
+    }
+
+    #[test]
+    fn frame_receiver_accepts_health_frames_for_same_sequence_as_data() {
+        let mut receiver = FrameReceiver::new(100, 16);
+        let data = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 1, 10, 1_000, 1),
+            b"data".to_vec(),
+        );
+        let heartbeat = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 1, 10, 1_000, 2),
+            b"health".to_vec(),
+        );
+        let control = XBondFrame::new(
+            XBondHeader::new(PacketKind::Control, 1, 10, 1_000, 3),
+            b"control".to_vec(),
+        );
+
+        assert_eq!(receiver.observe(&data, 1_050), ReceiveOutcome::Accepted);
+        assert_eq!(
+            receiver.observe(&heartbeat, 1_060),
+            ReceiveOutcome::Accepted
+        );
+        assert_eq!(receiver.observe(&control, 1_070), ReceiveOutcome::Accepted);
     }
 }

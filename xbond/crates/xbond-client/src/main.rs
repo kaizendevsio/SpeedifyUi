@@ -99,6 +99,8 @@ enum Command {
         packet_limit: Option<u64>,
         #[arg(long)]
         json_events: bool,
+        #[arg(long)]
+        trace_packets: bool,
     },
 }
 
@@ -186,6 +188,7 @@ async fn main() -> Result<()> {
             key_env,
             packet_limit,
             json_events,
+            trace_packets,
         } => {
             run_tunnel(TunnelOptions {
                 config,
@@ -195,6 +198,7 @@ async fn main() -> Result<()> {
                 key_env,
                 packet_limit,
                 json_events,
+                trace_packets,
             })
             .await?;
         }
@@ -237,6 +241,7 @@ struct TunnelOptions {
     key_env: String,
     packet_limit: Option<u64>,
     json_events: bool,
+    trace_packets: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -649,6 +654,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         session_id,
         &mut control_sequence,
         options.json_events,
+        options.trace_packets,
     )
     .await?;
 
@@ -693,6 +699,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     session_id,
                     &mut control_sequence,
                     options.json_events,
+                    options.trace_packets,
                 ).await?;
                 write_tunnel_runtime_status(
                     &config,
@@ -713,7 +720,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
 
                 if !is_ipv4_packet(&packet) {
-                    if options.json_events {
+                    if options.json_events && options.trace_packets {
                         println!(
                             "{}",
                             serde_json::json!({
@@ -726,7 +733,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
 
                 if transmissions.is_empty() {
-                    if options.json_events {
+                    if options.json_events && options.trace_packets {
                         println!(
                             "{}",
                             serde_json::json!({
@@ -761,7 +768,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         packet.clone(),
                     );
                     let encoded = frame.encode_sealed(&key)?;
-                    match socket.send(&encoded).await {
+                    let send_result = if transmission.packet_kind == PacketKind::Data {
+                        socket.send(&encoded).await
+                    } else {
+                        match socket.try_send(&encoded) {
+                            Ok(bytes) => Ok(bytes),
+                            Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
+                            Err(error) => Err(error),
+                        }
+                    };
+                    match send_result {
                         Ok(_) => {
                             record_tunnel_send_success(
                                 &mut path_runtime,
@@ -814,7 +830,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 fec_payload.clone(),
                             );
                             let encoded = frame.encode_sealed(&key)?;
-                            match socket.send(&encoded).await {
+                            match socket.try_send(&encoded) {
                                 Ok(_) => {
                                     record_tunnel_send_success(
                                         &mut path_runtime,
@@ -822,6 +838,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                         encoded.len() as u64,
                                         &mut counters,
                                     );
+                                }
+                                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                                    counters.fec_packets_skipped += 1;
                                 }
                                 Err(error) => {
                                     counters.fec_packets_skipped += 1;
@@ -845,7 +864,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     }
                 }
 
-                if options.json_events {
+                if options.json_events && options.trace_packets {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -869,7 +888,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         inbound.path_id,
                         &inbound.frame,
                     );
-                    if options.json_events {
+                    if options.json_events && options.trace_packets {
                         println!(
                             "{}",
                             serde_json::json!({
@@ -897,7 +916,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             runtime.bytes_received = runtime
                                 .bytes_received
                                 .saturating_add(inbound.frame.payload.len() as u64);
-                            if options.json_events {
+                            if options.json_events && options.trace_packets {
                                 println!(
                                     "{}",
                                     serde_json::json!({
@@ -934,15 +953,6 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
             else => break,
         };
-
-        write_tunnel_runtime_status(
-            &config,
-            &tun,
-            options.tun_mtu,
-            &path_runtime,
-            &sockets,
-            &counters,
-        )?;
     }
 
     Ok(())
@@ -1021,8 +1031,13 @@ fn spawn_tunnel_receiver(
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
         loop {
-            let Ok(len) = socket.recv(&mut buf).await else {
-                break;
+            let len = match socket.recv(&mut buf).await {
+                Ok(len) => len,
+                Err(error) => {
+                    eprintln!("xbond path receiver for path {path_id} hit UDP recv error: {error}");
+                    time::sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
             };
             let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
                 continue;
@@ -1094,6 +1109,7 @@ fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>
 }
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
+const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
 
 async fn send_tunnel_schedule_control(
     schedule: &SchedulePlan,
@@ -1103,6 +1119,7 @@ async fn send_tunnel_schedule_control(
     session_id: u64,
     control_sequence: &mut u64,
     json_events: bool,
+    trace_packets: bool,
 ) -> Result<()> {
     if sockets.is_empty() {
         return Ok(());
@@ -1140,7 +1157,7 @@ async fn send_tunnel_schedule_control(
         }
     }
 
-    if json_events {
+    if json_events && trace_packets {
         println!(
             "{}",
             serde_json::json!({
@@ -1179,8 +1196,9 @@ async fn send_tunnel_heartbeats(
 
         let sequence = {
             let runtime = path_runtime.entry(path_id).or_default();
-            runtime.health_sequence = runtime.health_sequence.saturating_add(1);
-            runtime.health_sequence
+            runtime.health_sequence =
+                (runtime.health_sequence.saturating_add(1)) & HEARTBEAT_SEQUENCE_MASK;
+            ((path_id as u64) << 48) | runtime.health_sequence
         };
 
         let frame = XBondFrame::new(
