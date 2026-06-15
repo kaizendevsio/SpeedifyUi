@@ -431,6 +431,8 @@ public class XBondLabService(
         target.AvgRttMs = source.AvgRttMs;
         target.MaxRttMs = source.MaxRttMs;
         target.Replies = source.Replies;
+        target.Message = source.Message;
+        target.Error = source.Error;
     }
 
     private static void CopyProbeResult(XBondProbeResult source, XBondProbeResult target)
