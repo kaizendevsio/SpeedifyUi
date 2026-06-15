@@ -137,6 +137,12 @@ impl PacketReorderBuffer {
         self.pending.len()
     }
 
+    pub fn reset(&mut self) {
+        self.next_sequence = None;
+        self.pending.clear();
+        self.stats.pending_depth = 0;
+    }
+
     pub fn stats(&self) -> ReorderStats {
         ReorderStats {
             pending_depth: self.pending.len() as u64,
@@ -254,5 +260,25 @@ mod tests {
         assert_eq!(buffer.stats().pending_depth, 0);
         assert_eq!(buffer.stats().released_gap_packets, 1);
         assert_eq!(buffer.stats().timeout_releases, 1);
+    }
+
+    #[test]
+    fn reset_allows_lower_sequence_for_new_session() {
+        let mut buffer = PacketReorderBuffer::new(16, 25_000);
+
+        assert_eq!(buffer.push(100, 1, b"old".to_vec(), 1_000, 100_000).len(), 1);
+        assert!(buffer.push(0, 1, b"late".to_vec(), 2_000, 100_000).is_empty());
+
+        buffer.reset();
+
+        assert_eq!(
+            buffer.push(0, 1, b"new".to_vec(), 3_000, 100_000),
+            vec![ReorderedPacket {
+                sequence: 0,
+                path_id: 1,
+                payload: b"new".to_vec()
+            }]
+        );
+        assert_eq!(buffer.pending_len(), 0);
     }
 }

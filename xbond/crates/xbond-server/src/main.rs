@@ -78,6 +78,7 @@ async fn main() -> Result<()> {
     let mut return_control: Option<ReturnControl> = None;
     let mut reverse_sequence = initial_reverse_sequence();
     let mut last_session_id = 0u64;
+    let mut reorder_session_id = 0u64;
     let mut reorder_tick = time::interval(Duration::from_millis(
         args.realtime_deadline_ms.clamp(5, 50),
     ));
@@ -156,6 +157,13 @@ async fn main() -> Result<()> {
                     return_control = None;
                 }
                 last_session_id = frame.header.session_id;
+                if is_tunnel_payload(frame.header.kind)
+                    && reorder_session_id != frame.header.session_id
+                {
+                    reorder.reset();
+                    fec_recovery = FecRecovery::new(8192);
+                    reorder_session_id = frame.header.session_id;
+                }
                 if frame.header.path_id != 0 {
                     peers.insert(frame.header.path_id, peer);
                 }
