@@ -52,7 +52,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
     {
         var mode = string.IsNullOrWhiteSpace(runtime.Mode) ? settings.ScheduleMode : runtime.Mode;
         var paths = SelectPathRoles(runtime.Paths, settings.MaxActiveBackups);
-        var schedule = BuildSchedule(mode, paths);
+        var schedule = runtime.Schedule ?? BuildSchedule(mode, paths);
+        ApplyRuntimeScheduleRoles(paths, schedule);
 
         return new XBondStatus
         {
@@ -82,6 +83,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             FecPacketsSkipped = runtime.FecPacketsSkipped,
             Fec = runtime.Fec ?? new XBondFecStatus(),
             LatePacketsDropped = runtime.LatePacketsDropped,
+            Reorder = runtime.Reorder ?? new XBondReorderStatus(),
+            Process = runtime.Process ?? new XBondProcessStatus(),
             Message = string.IsNullOrWhiteSpace(runtime.Message)
                 ? "XBond runtime status loaded."
                 : runtime.Message,
@@ -172,6 +175,48 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         };
     }
 
+    private static void ApplyRuntimeScheduleRoles(
+        IReadOnlyCollection<XBondPathStatus> paths,
+        XBondSchedulePlan schedule)
+    {
+        var hasSchedule = schedule.AnchorPathId.HasValue ||
+                          schedule.DataPathIds.Count > 0 ||
+                          schedule.DuplicatePathIds.Count > 0 ||
+                          schedule.FecPathIds.Count > 0;
+        if (!hasSchedule)
+        {
+            return;
+        }
+
+        var activeBackupIds = schedule.DuplicatePathIds
+            .Concat(schedule.FecPathIds)
+            .ToHashSet();
+
+        foreach (var path in paths)
+        {
+            if (!path.InterfaceUp)
+            {
+                path.Role = "unavailable";
+            }
+            else if (path.InCooldown || !string.IsNullOrWhiteSpace(path.DemotionReason))
+            {
+                path.Role = "cooldown";
+            }
+            else if (schedule.AnchorPathId == path.PathId)
+            {
+                path.Role = "anchor";
+            }
+            else if (activeBackupIds.Contains(path.PathId))
+            {
+                path.Role = "backup";
+            }
+            else
+            {
+                path.Role = "probe";
+            }
+        }
+    }
+
     private static bool IsRealtimeEligible(XBondPathStatus path) =>
         path.InterfaceUp && !path.InCooldown && path.LossRate < 1.0;
 
@@ -217,7 +262,14 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             DuplicateInboundThroughputBps = path.DuplicateInboundThroughputBps,
             RawInboundThroughputBps = path.RawInboundThroughputBps,
             InterfaceUp = path.InterfaceUp,
-            InCooldown = path.InCooldown
+            InCooldown = path.InCooldown,
+            SendFailureStreak = path.SendFailureStreak,
+            StaleAckMs = path.StaleAckMs,
+            QueuePressure = path.QueuePressure,
+            DuplicateUsefulness = path.DuplicateUsefulness,
+            ThroughputCollapseScore = path.ThroughputCollapseScore,
+            DemotionReason = path.DemotionReason,
+            RoleReason = path.RoleReason
         };
     }
 
@@ -265,6 +317,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         [JsonPropertyName("tunnel")]
         public XBondTunnelStatus? Tunnel { get; set; }
 
+        [JsonPropertyName("schedule")]
+        public XBondSchedulePlan? Schedule { get; set; }
+
         [JsonPropertyName("paths")]
         public List<XBondPathStatus> Paths { get; set; } = new();
 
@@ -306,6 +361,12 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
 
         [JsonPropertyName("late_packets_dropped")]
         public ulong LatePacketsDropped { get; set; }
+
+        [JsonPropertyName("reorder")]
+        public XBondReorderStatus? Reorder { get; set; }
+
+        [JsonPropertyName("process")]
+        public XBondProcessStatus? Process { get; set; }
 
         [JsonPropertyName("message")]
         public string? Message { get; set; }

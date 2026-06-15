@@ -13,6 +13,33 @@ public sealed class XBondClientConfigService(
 {
     private readonly SemaphoreSlim _operationLock = new(1, 1);
 
+    public async Task<XBondClientConfig> ReadCurrentConfigAsync(CancellationToken cancellationToken = default) =>
+        await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+
+    public async Task<XBondAdapterConfigStatus> SaveConfigAndRestartAsync(
+        XBondClientConfig config,
+        string message,
+        CancellationToken cancellationToken = default)
+    {
+        if (!settings.AllowServiceControl)
+        {
+            return ErrorStatus("XBond config changes are locked by configuration.");
+        }
+
+        await WriteConfigAsync(config, cancellationToken).ConfigureAwait(false);
+        var serviceStatus = await trafficEngineService.RestartAsync(cancellationToken).ConfigureAwait(false);
+        var refreshed = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+        var refreshedInterfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
+        var status = BuildStatus(refreshed, refreshedInterfaces, message);
+        if (serviceStatus.HasError)
+        {
+            status.Error = serviceStatus.Error;
+            status.Message = "XBond config was saved, but restarting the tunnel failed.";
+        }
+
+        return status;
+    }
+
     public async Task<XBondAdapterConfigStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
         try

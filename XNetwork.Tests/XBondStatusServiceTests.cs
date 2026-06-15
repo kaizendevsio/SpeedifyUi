@@ -72,7 +72,13 @@ public class XBondStatusServiceTests
                   "raw_inbound_throughput_bps": 10000000,
                   "throughput_bps": 12000000,
                   "interface_up": true,
-                  "in_cooldown": false
+                  "in_cooldown": false,
+                  "send_failure_streak": 1,
+                  "stale_ack_ms": 1200,
+                  "queue_pressure": 0.25,
+                  "duplicate_usefulness": 0.8,
+                  "throughput_collapse_score": 0.1,
+                  "role_reason": "Best currently healthy path."
                 }
               ],
               "data_packets_sent": 8,
@@ -88,6 +94,23 @@ public class XBondStatusServiceTests
                 "message": "FEC is enabled"
               },
               "late_packets_dropped": 1,
+              "reorder": {
+                "return_path": {
+                  "pending_depth": 1,
+                  "held_packets": 2,
+                  "released_gap_packets": 3,
+                  "late_duplicates": 4,
+                  "timeout_releases": 5,
+                  "capacity_releases": 6
+                }
+              },
+              "process": {
+                "rss_bytes": 123456,
+                "encode_micros_total": 90,
+                "decode_micros_total": 40,
+                "encoded_frames": 9,
+                "decoded_frames": 4
+              },
               "message": "live"
             }
             """);
@@ -109,6 +132,10 @@ public class XBondStatusServiceTests
         Assert.True(status.Fec.Configured);
         Assert.False(status.Fec.ProductionReady);
         Assert.Equal((ulong)1, status.LatePacketsDropped);
+        Assert.Equal((ulong)1, status.Reorder.ReturnPath.PendingDepth);
+        Assert.Equal((ulong)4, status.Reorder.ReturnPath.LateDuplicates);
+        Assert.Equal((ulong)123456, status.Process.RssBytes);
+        Assert.Equal((ulong)9, status.Process.EncodedFrames);
 
         var path = Assert.Single(status.Paths);
         Assert.Equal("fiber", path.Name);
@@ -124,6 +151,12 @@ public class XBondStatusServiceTests
         Assert.Equal((ulong)2_000_000, path.DuplicateInboundThroughputBps);
         Assert.Equal((ulong)10_000_000, path.RawInboundThroughputBps);
         Assert.Equal((ulong)12_000_000, path.ThroughputBps);
+        Assert.Equal(1, path.SendFailureStreak);
+        Assert.Equal((ulong)1200, path.StaleAckMs);
+        Assert.Equal(0.25, path.QueuePressure);
+        Assert.Equal(0.8, path.DuplicateUsefulness);
+        Assert.Equal(0.1, path.ThroughputCollapseScore);
+        Assert.Equal("Best currently healthy path.", path.RoleReason);
 
         var snapshot = XBondStatsService.FromStatus(status);
         var dashboardPath = Assert.Single(snapshot.Paths);

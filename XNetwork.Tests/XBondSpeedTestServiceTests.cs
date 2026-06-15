@@ -69,4 +69,23 @@ public class XBondSpeedTestServiceTests
 
         Assert.Equal(16441950.069, bitsPerSecond);
     }
+
+    [Fact]
+    public void ParseIperfRetransmits_ReadsTcpRetransmitCount()
+    {
+        var retransmits = XBondSpeedTestService.ParseIperfRetransmits(
+            """
+            {
+              "end": {
+                "sum_sent": {
+                  "bits_per_second": 18239899.997,
+                  "retransmits": 12
+                }
+              }
+            }
+            """,
+            "sum_sent");
+
+        Assert.Equal((ulong)12, retransmits);
+    }
 }

@@ -58,6 +58,7 @@ builder.Services.AddSingleton<XBondTrafficEngineService>();
 builder.Services.AddSingleton<XBondClientConfigService>();
 builder.Services.AddSingleton<XBondScopedRouteService>();
 builder.Services.AddSingleton<XBondSpeedTestService>();
+builder.Services.AddSingleton<XBondMssClampService>();
 
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>

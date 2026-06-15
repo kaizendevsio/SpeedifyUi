@@ -18,14 +18,14 @@ pub use protocol::{
     DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind, ReceiveOutcome, ReceiveStats,
     XBondFrame, XBondHeader,
 };
-pub use reorder::{PacketReorderBuffer, ReorderedPacket};
+pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use scheduler::{
     build_schedule, build_transmission_plan, build_transmission_plan_for_packet, RedundancyPolicy,
     RedundancyPolicyConfig, ScheduleControlMessage, ScheduleMode, SchedulePlan,
     ScheduledTransmission,
 };
 pub use status::{
-    PathIsolationStatus, XBondFecStatus, XBondPathStatus, XBondRuntimeStatus, XBondStatus,
-    XBondTunnelStatus,
+    PathIsolationStatus, XBondFecStatus, XBondPathStatus, XBondProcessStatus,
+    XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
 };
 pub use tun::{is_ipv4_packet, XBondTun};

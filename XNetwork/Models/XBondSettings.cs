@@ -78,9 +78,23 @@ public class XBondSettings
 
     public int ServerSpeedTestPort { get; set; } = 5201;
 
+    public string NativeSpeedTestHost { get; set; } = "45.77.241.247";
+
     public int ServerSpeedTestDurationSeconds { get; set; } = 8;
 
     public int ServerSpeedTestCommandTimeoutSeconds { get; set; } = 45;
+
+    public string PerformanceArtifactDirectory { get; set; } = "/var/lib/xnetwork/diagnostics";
+
+    public int PerformanceMatrixSettleSeconds { get; set; } = 4;
+
+    public string IptablesCommandPath { get; set; } = "iptables";
+
+    public bool MssClampEnabled { get; set; }
+
+    public int MssClampValue { get; set; } = 1360;
+
+    public int[] MtuSweepValues { get; set; } = [1200, 1280, 1360, 1400, 1420];
 
     public string TrafficControlCommandPath { get; set; } = "tc";
 
@@ -134,4 +148,21 @@ public class XBondTrafficEngineStatus
     public bool HasError => !string.IsNullOrWhiteSpace(Error);
 
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+}
+
+public class XBondMssClampStatus
+{
+    public bool IsSupported { get; set; }
+
+    public bool IsEnabled { get; set; }
+
+    public int MssValue { get; set; }
+
+    public string TunnelDevice { get; set; } = "xbond0";
+
+    public string Message { get; set; } = "";
+
+    public string? Error { get; set; }
+
+    public bool HasError => !string.IsNullOrWhiteSpace(Error);
 }

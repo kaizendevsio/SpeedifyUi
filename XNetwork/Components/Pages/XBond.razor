@@ -69,6 +69,10 @@
                     </div>
                     <p class="mt-3 text-xs text-slate-500">
                         @path.StateText, score @Math.Round(path.Score)
+                        @if (!string.IsNullOrWhiteSpace(path.DecisionText))
+                        {
+                            <span>, @path.DecisionText</span>
+                        }
                         @if (path.DuplicateDownloadMbps > 0)
                         {
                             <span>, duplicate down @SpeedFormatter.FormatSpeed(path.DuplicateDownloadMbps)</span>
@@ -127,6 +131,12 @@
             <button type="button" class="ml-0 mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 disabled:opacity-40 sm:ml-2" disabled="@_busy" @onclick="RunSimulationTestAsync">
                 Simulate bad backup
             </button>
+            <button type="button" class="mt-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 disabled:opacity-40" disabled="@_busy" @onclick="RunPerformanceMatrixAsync">
+                Run matrix
+            </button>
+            <button type="button" class="ml-0 mt-2 rounded-lg border border-slate-600 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:opacity-40 sm:ml-2" disabled="@_busy" @onclick="RunMtuSweepAsync">
+                MTU sweep
+            </button>
             @if (_speedTest is not null)
             {
                 @SpeedTestResult(_speedTest)
@@ -134,6 +144,14 @@
             @if (_simulationTest is not null)
             {
                 @SpeedTestResult(_simulationTest)
+            }
+            @if (_matrix is not null)
+            {
+                @PerformanceMatrixResult(_matrix)
+            }
+            @if (_mtuSweep is not null)
+            {
+                @MtuSweepResult(_mtuSweep)
             }
         </article>
     </section>
@@ -168,6 +186,8 @@
     private XBondProbeResult? _multiPath;
     private XBondSpeedTestResult? _speedTest;
     private XBondSpeedTestResult? _simulationTest;
+    private XBondPerformanceMatrixResult? _matrix;
+    private XBondMtuSweepResult? _mtuSweep;
     private XBondScopedRouteTestResult? _routeTest;
     private string _routeTarget = "1.1.1.1";
     private bool _busy;
@@ -247,6 +267,24 @@
         await RunBusyAsync(async () =>
         {
             _simulationTest = await SpeedTestService.RunBadNetworkSimulationAsync();
+            return _trafficStatus ?? new XBondTrafficEngineStatus();
+        });
+    }
+
+    private async Task RunPerformanceMatrixAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            _matrix = await SpeedTestService.RunPerformanceMatrixAsync();
+            return _trafficStatus ?? new XBondTrafficEngineStatus();
+        });
+    }
+
+    private async Task RunMtuSweepAsync()
+    {
+        await RunBusyAsync(async () =>
+        {
+            _mtuSweep = await SpeedTestService.RunMtuSweepAsync();
             return _trafficStatus ?? new XBondTrafficEngineStatus();
         });
     }
@@ -380,6 +418,63 @@
         @if (!string.IsNullOrWhiteSpace(result.Error))
         {
             <p class="mt-1 text-rose-200">@result.Error</p>
+        }
+    </div>;
+
+    private static RenderFragment PerformanceMatrixResult(XBondPerformanceMatrixResult result) => @<div class="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-500/5 p-3 text-sm text-slate-300">
+        <div class="flex items-center justify-between gap-3">
+            <p class="font-semibold text-white">@result.Message</p>
+            <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-100">@result.BottleneckSummary</span>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(result.ArtifactPath))
+        {
+            <p class="mt-1 break-all text-xs text-slate-500">@result.ArtifactPath</p>
+        }
+        <div class="mt-3 grid gap-2">
+            @foreach (var run in result.Runs)
+            {
+                <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <p class="font-semibold text-white">@run.Name</p>
+                            <p class="mt-1 text-xs text-slate-500">@run.Kind @run.InterfaceName @run.Mode</p>
+                        </div>
+                        <span class="text-xs text-slate-400">@run.Bottleneck</span>
+                    </div>
+                    <div class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                        <span>Down <strong class="text-cyan-200">@FormatSpeed(run.DownloadMbps)</strong></span>
+                        <span>Up <strong class="text-pink-200">@FormatSpeed(run.UploadMbps)</strong></span>
+                        <span>RTT <strong class="text-white">@FormatLatency(run.RttMs)</strong></span>
+                        <span>Loss <strong class="text-white">@FormatPercent(run.LossPercent)</strong></span>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(run.Error))
+                    {
+                        <p class="mt-2 text-xs text-rose-200">@run.Error</p>
+                    }
+                </div>
+            }
+        </div>
+        @if (!string.IsNullOrWhiteSpace(result.Error))
+        {
+            <p class="mt-2 text-rose-200">@result.Error</p>
+        }
+    </div>;
+
+    private static RenderFragment MtuSweepResult(XBondMtuSweepResult result) => @<div class="mt-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+        <p class="font-semibold text-white">@result.Message</p>
+        <p class="mt-1 text-xs text-slate-500">Current MTU @result.CurrentMtu, recommended MTU @result.RecommendedMtu, recommended MSS @result.RecommendedMss.</p>
+        <div class="mt-3 grid gap-2">
+            @foreach (var probe in result.Probes)
+            {
+                <div class="flex items-center justify-between rounded-md border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs">
+                    <span>MTU @probe.Mtu / payload @probe.PayloadSize</span>
+                    <span class="@(probe.Succeeded ? "text-emerald-200" : "text-rose-200")">@(probe.Succeeded ? "passed" : "failed")</span>
+                </div>
+            }
+        </div>
+        @if (!string.IsNullOrWhiteSpace(result.Error))
+        {
+            <p class="mt-2 text-rose-200">@result.Error</p>
         }
     </div>;
 

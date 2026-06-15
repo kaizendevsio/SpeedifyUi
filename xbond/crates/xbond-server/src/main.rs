@@ -632,6 +632,13 @@ fn select_return_targets(
                         throughput_bps: 0,
                         interface_up: true,
                         in_cooldown: false,
+                        send_failure_streak: 0,
+                        stale_ack_ms: None,
+                        queue_pressure: 0.0,
+                        duplicate_usefulness: 1.0,
+                        throughput_collapse_score: 0.0,
+                        demotion_reason: None,
+                        role_reason: None,
                     })
                     .collect();
             }
@@ -911,6 +918,13 @@ mod tests {
             throughput_bps: 2_000_000,
             interface_up: true,
             in_cooldown: false,
+            send_failure_streak: 0,
+            stale_ack_ms: None,
+            queue_pressure: 0.0,
+            duplicate_usefulness: 1.0,
+            throughput_collapse_score: 0.0,
+            demotion_reason: None,
+            role_reason: None,
         }
     }
 

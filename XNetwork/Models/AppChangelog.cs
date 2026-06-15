@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.26";
+    public const string CurrentVersion = "xbond-2026.06.27";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Added XBond performance matrix diagnostics.",
+            Changes =
+            [
+                "XBond diagnostics can now run native adapter, anchor-only, duplicate, FEC, and public speed tests from one matrix.",
+                "Runtime status now exposes reorder counters, path demotion reasons, stale ACK age, send failures, duplicate usefulness, throughput collapse, and process memory.",
+                "Added an MTU sweep diagnostic with a recommended MTU/MSS result."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.26",
             Date = "2026-06-15",
             Summary = "Changed dashboard latency probe target.",
             Changes =

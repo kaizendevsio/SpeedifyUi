@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::health::{PathRole, ScoredPath};
+use crate::reorder::ReorderStats;
 use crate::scheduler::{RedundancyPolicy, ScheduleMode, SchedulePlan};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,8 @@ pub struct XBondStatus {
     pub fec_packets_skipped: u64,
     pub fec: XBondFecStatus,
     pub late_packets_dropped: u64,
+    pub reorder: XBondReorderStatus,
+    pub process: XBondProcessStatus,
     pub message: String,
 }
 
@@ -56,6 +59,20 @@ pub struct XBondPathStatus {
     pub throughput_bps: u64,
     pub interface_up: bool,
     pub in_cooldown: bool,
+    #[serde(default)]
+    pub send_failure_streak: u32,
+    #[serde(default)]
+    pub stale_ack_ms: Option<u64>,
+    #[serde(default)]
+    pub queue_pressure: f64,
+    #[serde(default)]
+    pub duplicate_usefulness: f64,
+    #[serde(default)]
+    pub throughput_collapse_score: f64,
+    #[serde(default)]
+    pub demotion_reason: Option<String>,
+    #[serde(default)]
+    pub role_reason: Option<String>,
 }
 
 impl From<ScoredPath> for XBondPathStatus {
@@ -81,6 +98,13 @@ impl From<ScoredPath> for XBondPathStatus {
             throughput_bps: value.path.throughput_bps,
             interface_up: value.path.interface_up,
             in_cooldown: value.path.in_cooldown,
+            send_failure_streak: value.path.send_failure_streak,
+            stale_ack_ms: value.path.stale_ack_ms,
+            queue_pressure: value.path.queue_pressure,
+            duplicate_usefulness: value.path.duplicate_usefulness,
+            throughput_collapse_score: value.path.throughput_collapse_score,
+            demotion_reason: value.path.demotion_reason,
+            role_reason: value.path.role_reason,
         }
     }
 }
@@ -170,6 +194,21 @@ impl Default for XBondFecStatus {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct XBondReorderStatus {
+    pub return_path: ReorderStats,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct XBondProcessStatus {
+    pub process_cpu_percent: Option<f64>,
+    pub rss_bytes: Option<u64>,
+    pub encode_micros_total: u64,
+    pub decode_micros_total: u64,
+    pub encoded_frames: u64,
+    pub decoded_frames: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondRuntimeStatus {
     #[serde(default)]
     pub running: bool,
@@ -181,6 +220,10 @@ pub struct XBondRuntimeStatus {
     pub server_addr: String,
     #[serde(default)]
     pub tunnel: XBondTunnelStatus,
+    #[serde(default)]
+    pub anchor_path_id: Option<u16>,
+    #[serde(default)]
+    pub schedule: Option<SchedulePlan>,
     #[serde(default)]
     pub paths: Vec<crate::health::PathHealthSnapshot>,
     #[serde(default)]
@@ -209,6 +252,10 @@ pub struct XBondRuntimeStatus {
     pub fec: XBondFecStatus,
     #[serde(default)]
     pub late_packets_dropped: u64,
+    #[serde(default)]
+    pub reorder: XBondReorderStatus,
+    #[serde(default)]
+    pub process: XBondProcessStatus,
     #[serde(default)]
     pub message: Option<String>,
 }

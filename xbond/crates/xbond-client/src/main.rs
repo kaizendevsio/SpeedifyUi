@@ -18,7 +18,8 @@ use xbond_core::{
     PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome, RedundancyPolicyConfig,
     ReorderedPacket, RouteVerification, ScheduleControlMessage, SchedulePlan,
     ScheduledTransmission, XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus,
-    XBondRuntimeStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTun,
+    XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -292,6 +293,10 @@ struct TunnelPathRuntime {
     rtt_ms: Option<f64>,
     jitter_ms: Option<f64>,
     loss_rate: f64,
+    last_ack_at: Option<Instant>,
+    duplicate_useful_packets: u64,
+    duplicate_late_packets: u64,
+    peak_throughput_bps: u64,
 }
 
 #[derive(Debug, Default)]
@@ -309,6 +314,10 @@ struct TunnelCounters {
     last_data_bytes_received: u64,
     outbound_throughput_bps: u64,
     inbound_throughput_bps: u64,
+    encoded_frames: u64,
+    decoded_frames: u64,
+    encode_micros_total: u64,
+    decode_micros_total: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -651,6 +660,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &path_runtime,
         &sockets,
         &counters,
+        &schedule,
+        &return_reorder,
     )?;
     send_tunnel_schedule_control(
         &config,
@@ -713,6 +724,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &path_runtime,
                     &sockets,
                     &counters,
+                    &schedule,
+                    &return_reorder,
                 )?;
             }
 
@@ -790,7 +803,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         ),
                         packet.clone(),
                     );
-                    let encoded = frame.encode_sealed(&key)?;
+                    let encoded = encode_tunnel_frame(&frame, &key, &mut counters)?;
                     let send_result = if transmission.packet_kind == PacketKind::Data {
                         socket.send(&encoded).await
                     } else {
@@ -852,7 +865,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 ),
                                 fec_payload.clone(),
                             );
-                            let encoded = frame.encode_sealed(&key)?;
+                            let encoded = encode_tunnel_frame(&frame, &key, &mut counters)?;
                             match socket.try_send(&encoded) {
                                 Ok(_) => {
                                     record_tunnel_send_success(
@@ -906,6 +919,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             Some(inbound) = inbound_rx.recv() => {
+                counters.decoded_frames = counters.decoded_frames.saturating_add(1);
                 if is_expected_ack(&inbound.frame, session_id, inbound.frame.header.sequence) {
                     record_tunnel_heartbeat_ack(
                         &mut path_runtime,
@@ -928,6 +942,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 let outcome = inbound_receiver.observe(&inbound.frame, now_micros());
                 match outcome {
                     ReceiveOutcome::Accepted if is_data_like(inbound.frame.header.kind) => {
+                        if inbound.frame.header.kind == PacketKind::Duplicate {
+                            let runtime = path_runtime.entry(inbound.path_id).or_default();
+                            runtime.duplicate_useful_packets =
+                                runtime.duplicate_useful_packets.saturating_add(1);
+                        }
                         if is_ipv4_packet(&inbound.frame.payload) {
                             let sequence = inbound.frame.header.sequence;
                             let path_id = inbound.path_id;
@@ -969,6 +988,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             runtime.duplicate_bytes_received = runtime
                                 .duplicate_bytes_received
                                 .saturating_add(inbound.frame.payload.len() as u64);
+                            runtime.duplicate_late_packets =
+                                runtime.duplicate_late_packets.saturating_add(1);
                         }
                         counters.duplicate_packets_dropped += 1;
                     }
@@ -978,6 +999,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             runtime.duplicate_bytes_received = runtime
                                 .duplicate_bytes_received
                                 .saturating_add(inbound.frame.payload.len() as u64);
+                            runtime.duplicate_late_packets =
+                                runtime.duplicate_late_packets.saturating_add(1);
                         }
                         counters.late_packets_dropped += 1;
                     }
@@ -1131,6 +1154,25 @@ fn tunnel_health(
                 path.rtt_ms = runtime.rtt_ms;
                 path.jitter_ms = runtime.jitter_ms;
                 path.loss_rate = runtime.loss_rate;
+                path.queue_depth = runtime.pending_heartbeats.len() as u32;
+                path.send_failure_streak = runtime.send_failures;
+                path.stale_ack_ms = runtime.last_ack_at.map(|last_ack_at| {
+                    Instant::now()
+                        .duration_since(last_ack_at)
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64
+                });
+                path.queue_pressure = (runtime.pending_heartbeats.len() as f64 / 3.0).clamp(0.0, 1.0);
+                let duplicate_total = runtime
+                    .duplicate_useful_packets
+                    .saturating_add(runtime.duplicate_late_packets);
+                path.duplicate_usefulness = if duplicate_total == 0 {
+                    1.0
+                } else {
+                    runtime.duplicate_useful_packets as f64 / duplicate_total as f64
+                };
+                path.throughput_collapse_score =
+                    throughput_collapse_score(runtime.peak_throughput_bps, runtime.throughput_bps);
                 if runtime.send_failures >= 2 {
                     path.in_cooldown = true;
                     path.loss_rate = 1.0;
@@ -1140,6 +1182,35 @@ fn tunnel_health(
             path
         })
         .collect()
+}
+
+fn throughput_collapse_score(peak_bps: u64, current_bps: u64) -> f64 {
+    if peak_bps < 1_000_000 {
+        return 0.0;
+    }
+
+    let current_ratio = current_bps as f64 / peak_bps as f64;
+    (1.0 - current_ratio).clamp(0.0, 1.0)
+}
+
+fn current_process_rss_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let rss_kb = status.lines().find_map(|line| {
+            let value = line.strip_prefix("VmRSS:")?.trim();
+            value
+                .split_whitespace()
+                .next()
+                .and_then(|number| number.parse::<u64>().ok())
+        })?;
+        return Some(rss_kb.saturating_mul(1024));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 fn record_tunnel_send_success(
@@ -1163,6 +1234,20 @@ fn record_tunnel_send_success(
 fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>, path_id: u16) {
     let runtime = path_runtime.entry(path_id).or_default();
     runtime.send_failures = runtime.send_failures.saturating_add(1);
+}
+
+fn encode_tunnel_frame(
+    frame: &XBondFrame,
+    key: &XBondKey,
+    counters: &mut TunnelCounters,
+) -> Result<Vec<u8>> {
+    let started = Instant::now();
+    let encoded = frame.encode_sealed(key)?;
+    counters.encoded_frames = counters.encoded_frames.saturating_add(1);
+    counters.encode_micros_total = counters
+        .encode_micros_total
+        .saturating_add(started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
+    Ok(encoded)
 }
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
@@ -1343,6 +1428,7 @@ fn record_tunnel_heartbeat_ack(
 
     let rtt_ms = now_micros().saturating_sub(frame.header.send_micros) as f64 / 1_000.0;
     runtime.send_failures = 0;
+    runtime.last_ack_at = Some(Instant::now());
     record_tunnel_health_sample(runtime, true, Some(rtt_ms));
 }
 
@@ -1424,6 +1510,7 @@ fn update_tunnel_throughput(
         runtime.throughput_bps = runtime
             .outbound_throughput_bps
             .saturating_add(runtime.raw_inbound_throughput_bps);
+        runtime.peak_throughput_bps = runtime.peak_throughput_bps.max(runtime.throughput_bps);
         runtime.last_bytes_sent = runtime.bytes_sent;
         runtime.last_bytes_received = runtime.bytes_received;
         runtime.last_duplicate_bytes_received = runtime.duplicate_bytes_received;
@@ -1448,6 +1535,8 @@ fn write_tunnel_runtime_status(
     path_runtime: &HashMap<u16, TunnelPathRuntime>,
     sockets: &HashMap<u16, Arc<UdpSocket>>,
     counters: &TunnelCounters,
+    schedule: &SchedulePlan,
+    return_reorder: &PacketReorderBuffer,
 ) -> Result<()> {
     let paths = tunnel_health(config, path_runtime, sockets);
 
@@ -1464,6 +1553,8 @@ fn write_tunnel_runtime_status(
                 mtu: Some(tun_mtu),
                 message: "Bidirectional XBond tunnel is open.".to_string(),
             },
+            anchor_path_id: schedule.anchor_path_id,
+            schedule: Some(schedule.clone()),
             paths,
             data_packets_sent: counters.data_packets_sent,
             duplicate_packets_sent: counters.duplicate_packets_sent,
@@ -1477,6 +1568,17 @@ fn write_tunnel_runtime_status(
             fec_packets_skipped: counters.fec_packets_skipped,
             fec: fec_status_for_mode(config.mode, XBondFecStatus::default()),
             late_packets_dropped: counters.late_packets_dropped,
+            reorder: XBondReorderStatus {
+                return_path: return_reorder.stats(),
+            },
+            process: XBondProcessStatus {
+                process_cpu_percent: None,
+                rss_bytes: current_process_rss_bytes(),
+                encode_micros_total: counters.encode_micros_total,
+                decode_micros_total: counters.decode_micros_total,
+                encoded_frames: counters.encoded_frames,
+                decoded_frames: counters.decoded_frames,
+            },
             message: Some("XBond tunnel is running.".to_string()),
             ..XBondRuntimeStatus::default()
         },
@@ -1912,7 +2014,10 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         runtime.paths.clone()
     };
     let roles = select_path_roles(&health, config.max_active_backups);
-    let schedule = build_schedule(config.mode, &roles);
+    let schedule = runtime
+        .schedule
+        .clone()
+        .unwrap_or_else(|| build_schedule(config.mode, &roles));
     let config_by_id = config
         .paths
         .iter()
@@ -1938,7 +2043,7 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         redundancy_policy: config.redundancy_policy,
         server_addr: config.server_addr,
         tunnel: runtime.tunnel,
-        anchor_path_id: schedule.anchor_path_id,
+        anchor_path_id: runtime.anchor_path_id.or(schedule.anchor_path_id),
         schedule,
         paths,
         data_packets_sent: runtime.data_packets_sent,
@@ -1954,6 +2059,8 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         fec_packets_skipped: runtime.fec_packets_skipped,
         fec: fec_status_for_mode(config.mode, runtime.fec),
         late_packets_dropped: runtime.late_packets_dropped,
+        reorder: runtime.reorder,
+        process: runtime.process,
         message: runtime.message.unwrap_or_else(|| {
             if config.runtime_status_path.is_some() {
                 "XBond prototype status is config-derived until the runtime status file exists."
@@ -2065,6 +2172,13 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             throughput_bps: 0,
             interface_up: path.enabled && interface_is_live(path.interface_name.as_deref()),
             in_cooldown: false,
+            send_failure_streak: 0,
+            stale_ack_ms: None,
+            queue_pressure: 0.0,
+            duplicate_usefulness: 1.0,
+            throughput_collapse_score: 0.0,
+            demotion_reason: None,
+            role_reason: None,
         })
         .collect()
 }

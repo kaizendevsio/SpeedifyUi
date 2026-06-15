@@ -67,6 +67,10 @@ public sealed class XBondStatsSnapshot
 
     public ulong DataBytesReceived => RawStatus.DataBytesReceived;
 
+    public XBondReorderStatus Reorder => RawStatus.Reorder;
+
+    public XBondProcessStatus Process => RawStatus.Process;
+
     public bool Ipv6Supported => false;
 }
 
@@ -83,6 +87,20 @@ public sealed class XBondPathStatsSnapshot
     public bool InterfaceUp { get; init; }
 
     public bool InCooldown { get; init; }
+
+    public string? DemotionReason { get; init; }
+
+    public string? RoleReason { get; init; }
+
+    public int SendFailureStreak { get; init; }
+
+    public ulong? StaleAckMs { get; init; }
+
+    public double QueuePressure { get; init; }
+
+    public double DuplicateUsefulness { get; init; } = 1.0;
+
+    public double ThroughputCollapseScore { get; init; }
 
     public double Score { get; init; }
 
@@ -152,10 +170,16 @@ public sealed class XBondPathStatsSnapshot
 
             if (InCooldown)
             {
-                return "Cooldown";
+                return string.IsNullOrWhiteSpace(DemotionReason) ? "Cooldown" : DemotionReason;
             }
 
             return IsActive ? "Active" : "Standby";
         }
     }
+
+    public string DecisionText => !string.IsNullOrWhiteSpace(DemotionReason)
+        ? DemotionReason
+        : !string.IsNullOrWhiteSpace(RoleReason)
+            ? RoleReason
+            : StateText;
 }

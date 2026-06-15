@@ -21,11 +21,53 @@ pub struct PathHealthSnapshot {
     pub throughput_bps: u64,
     pub interface_up: bool,
     pub in_cooldown: bool,
+    #[serde(default)]
+    pub send_failure_streak: u32,
+    #[serde(default)]
+    pub stale_ack_ms: Option<u64>,
+    #[serde(default)]
+    pub queue_pressure: f64,
+    #[serde(default)]
+    pub duplicate_usefulness: f64,
+    #[serde(default)]
+    pub throughput_collapse_score: f64,
+    #[serde(default)]
+    pub demotion_reason: Option<String>,
+    #[serde(default)]
+    pub role_reason: Option<String>,
 }
 
 impl PathHealthSnapshot {
     pub fn is_realtime_eligible(&self) -> bool {
-        self.interface_up && !self.in_cooldown && self.loss_rate < 1.0
+        self.hard_demotion_reason().is_none()
+    }
+
+    pub fn hard_demotion_reason(&self) -> Option<&'static str> {
+        if !self.interface_up {
+            return Some("No carrier or interface is down.");
+        }
+
+        if self.in_cooldown {
+            return Some("Path is in cooldown after recent failures.");
+        }
+
+        if self.loss_rate >= 1.0 {
+            return Some("Path has 100% heartbeat loss.");
+        }
+
+        if self.send_failure_streak >= 2 {
+            return Some("Repeated socket send failures.");
+        }
+
+        if self.stale_ack_ms.is_some_and(|age| age >= 5_000) {
+            return Some("Heartbeat ACKs are stale.");
+        }
+
+        if self.queue_pressure >= 1.0 {
+            return Some("Path send queue is saturated.");
+        }
+
+        None
     }
 
     pub fn score(&self) -> f64 {
@@ -38,6 +80,20 @@ impl PathHealthSnapshot {
         let loss_penalty = self.loss_rate.clamp(0.0, 1.0) * 800.0;
         let late_penalty = self.late_rate.clamp(0.0, 1.0) * 1_000.0;
         let queue_penalty = f64::from(self.queue_depth.min(10_000)) * 0.1;
+        let queue_pressure_penalty = self.queue_pressure.clamp(0.0, 1.0) * 400.0;
+        let stale_ack_penalty = self
+            .stale_ack_ms
+            .map(|value| value.min(5_000) as f64 * 0.05)
+            .unwrap_or_default();
+        let send_failure_penalty = f64::from(self.send_failure_streak.min(10)) * 150.0;
+        let duplicate_help_penalty = if self.duplicate_usefulness <= 0.05
+            && self.raw_inbound_throughput_bps > 250_000
+        {
+            120.0
+        } else {
+            0.0
+        };
+        let collapse_penalty = self.throughput_collapse_score.clamp(0.0, 1.0) * 500.0;
         let throughput_bonus = if self.throughput_bps == 0 {
             0.0
         } else {
@@ -45,6 +101,11 @@ impl PathHealthSnapshot {
         };
 
         1_000.0 - rtt_penalty - jitter_penalty - loss_penalty - late_penalty - queue_penalty
+            - queue_pressure_penalty
+            - stale_ack_penalty
+            - send_failure_penalty
+            - duplicate_help_penalty
+            - collapse_penalty
             + throughput_bonus
     }
 }
@@ -70,11 +131,14 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
     let mut scored: Vec<ScoredPath> = paths
         .iter()
         .cloned()
-        .map(|path| {
+        .map(|mut path| {
+            path.demotion_reason = path
+                .hard_demotion_reason()
+                .map(std::string::ToString::to_string);
             let score = path.score();
             let role = if !path.interface_up {
                 PathRole::Unavailable
-            } else if path.in_cooldown || path.loss_rate >= 1.0 {
+            } else if path.demotion_reason.is_some() {
                 PathRole::Cooldown
             } else {
                 PathRole::Probe
@@ -89,15 +153,24 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
     let mut backups_assigned = 0usize;
     for scored_path in &mut scored {
         if !scored_path.score.is_finite() || !scored_path.path.is_realtime_eligible() {
+            if scored_path.path.role_reason.is_none() {
+                scored_path.path.role_reason = scored_path.path.demotion_reason.clone();
+            }
             continue;
         }
 
         if !anchor_assigned {
             scored_path.role = PathRole::Anchor;
+            scored_path.path.role_reason = Some("Best currently healthy path.".to_string());
             anchor_assigned = true;
         } else if backups_assigned < max_backups && scored_path.score > -100_000.0 {
             scored_path.role = PathRole::Backup;
+            scored_path.path.role_reason =
+                Some("Healthy backup selected for redundancy.".to_string());
             backups_assigned += 1;
+        } else {
+            scored_path.path.role_reason =
+                Some("Healthy but currently kept as probe/standby.".to_string());
         }
     }
 
@@ -131,6 +204,13 @@ mod tests {
             throughput_bps: 10_000_000,
             interface_up: true,
             in_cooldown: false,
+            send_failure_streak: 0,
+            stale_ack_ms: None,
+            queue_pressure: 0.0,
+            duplicate_usefulness: 1.0,
+            throughput_collapse_score: 0.0,
+            demotion_reason: None,
+            role_reason: None,
         }
     }
 
@@ -201,6 +281,41 @@ mod tests {
             roles
                 .iter()
                 .find(|path| path.path.name == "full-loss")
+                .unwrap()
+                .role,
+            PathRole::Cooldown
+        );
+    }
+
+    #[test]
+    fn stale_ack_path_cannot_be_anchor() {
+        let mut stale = path(1, "stale", 15.0, 0.0, 0.0);
+        stale.stale_ack_ms = Some(6_000);
+        let roles = select_path_roles(&[stale, path(2, "stable", 50.0, 0.0, 0.0)], 1);
+
+        assert_eq!(roles[0].path.name, "stable");
+        assert_eq!(roles[0].role, PathRole::Anchor);
+        let stale = roles.iter().find(|path| path.path.name == "stale").unwrap();
+        assert_eq!(stale.role, PathRole::Cooldown);
+        assert!(stale
+            .path
+            .demotion_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("stale")));
+    }
+
+    #[test]
+    fn repeated_send_failures_cannot_be_anchor() {
+        let mut failing = path(1, "failing", 15.0, 0.0, 0.0);
+        failing.send_failure_streak = 2;
+        let roles = select_path_roles(&[failing, path(2, "stable", 50.0, 0.0, 0.0)], 1);
+
+        assert_eq!(roles[0].path.name, "stable");
+        assert_eq!(roles[0].role, PathRole::Anchor);
+        assert_eq!(
+            roles
+                .iter()
+                .find(|path| path.path.name == "failing")
                 .unwrap()
                 .role,
             PathRole::Cooldown

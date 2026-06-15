@@ -70,6 +70,12 @@ public class XBondStatus
     [JsonPropertyName("late_packets_dropped")]
     public ulong LatePacketsDropped { get; set; }
 
+    [JsonPropertyName("reorder")]
+    public XBondReorderStatus Reorder { get; set; } = new();
+
+    [JsonPropertyName("process")]
+    public XBondProcessStatus Process { get; set; } = new();
+
     [JsonPropertyName("message")]
     public string Message { get; set; } = "XBond status is unavailable";
 
@@ -189,6 +195,27 @@ public class XBondPathStatus
 
     [JsonPropertyName("in_cooldown")]
     public bool InCooldown { get; set; }
+
+    [JsonPropertyName("send_failure_streak")]
+    public int SendFailureStreak { get; set; }
+
+    [JsonPropertyName("stale_ack_ms")]
+    public ulong? StaleAckMs { get; set; }
+
+    [JsonPropertyName("queue_pressure")]
+    public double QueuePressure { get; set; }
+
+    [JsonPropertyName("duplicate_usefulness")]
+    public double DuplicateUsefulness { get; set; } = 1.0;
+
+    [JsonPropertyName("throughput_collapse_score")]
+    public double ThroughputCollapseScore { get; set; }
+
+    [JsonPropertyName("demotion_reason")]
+    public string? DemotionReason { get; set; }
+
+    [JsonPropertyName("role_reason")]
+    public string? RoleReason { get; set; }
 }
 
 public class XBondPathIsolationStatus
@@ -204,4 +231,52 @@ public class XBondPathIsolationStatus
 
     [JsonPropertyName("message")]
     public string Message { get; set; } = "No bind-device isolation requested.";
+}
+
+public class XBondReorderStatus
+{
+    [JsonPropertyName("return_path")]
+    public XBondReorderCounters ReturnPath { get; set; } = new();
+}
+
+public class XBondReorderCounters
+{
+    [JsonPropertyName("pending_depth")]
+    public ulong PendingDepth { get; set; }
+
+    [JsonPropertyName("held_packets")]
+    public ulong HeldPackets { get; set; }
+
+    [JsonPropertyName("released_gap_packets")]
+    public ulong ReleasedGapPackets { get; set; }
+
+    [JsonPropertyName("late_duplicates")]
+    public ulong LateDuplicates { get; set; }
+
+    [JsonPropertyName("timeout_releases")]
+    public ulong TimeoutReleases { get; set; }
+
+    [JsonPropertyName("capacity_releases")]
+    public ulong CapacityReleases { get; set; }
+}
+
+public class XBondProcessStatus
+{
+    [JsonPropertyName("process_cpu_percent")]
+    public double? ProcessCpuPercent { get; set; }
+
+    [JsonPropertyName("rss_bytes")]
+    public ulong? RssBytes { get; set; }
+
+    [JsonPropertyName("encode_micros_total")]
+    public ulong EncodeMicrosTotal { get; set; }
+
+    [JsonPropertyName("decode_micros_total")]
+    public ulong DecodeMicrosTotal { get; set; }
+
+    [JsonPropertyName("encoded_frames")]
+    public ulong EncodedFrames { get; set; }
+
+    [JsonPropertyName("decoded_frames")]
+    public ulong DecodedFrames { get; set; }
 }
