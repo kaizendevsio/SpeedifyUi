@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.30";
+    public const string CurrentVersion = "xbond-2026.06.31";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-15",
+            Summary = "Removed remaining XBond page controls.",
+            Changes =
+            [
+                "The XBond page is now read-only except for the manual tunnel speed test.",
+                "Service start, stop, boot, and deep diagnostic controls remain operator tooling instead of normal UI."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.30",
             Date = "2026-06-15",
             Summary = "Simplified the XBond diagnostics page.",
             Changes =

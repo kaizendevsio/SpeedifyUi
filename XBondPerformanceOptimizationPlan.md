@@ -77,3 +77,8 @@ Use diagnostics as engineering tooling, not as normal user-facing dashboard UI. 
 - Native adapter baseline is available when deliberately enabled.
 - A bad backup no longer drags down a healthy anchor during bulk traffic.
 - XBond tunnel-local throughput moves closer to native adapter throughput, with measured evidence for each optimization.
+
+## Implementation Status
+
+- 2026-06-15: `/xbond` cleanup implemented through app version `xbond-2026.06.31`. The page now keeps runtime summary, service status, path roles, and the manual tunnel speed test; service start/stop/boot controls and deep diagnostic buttons are hidden from the user-facing page.
+- 2026-06-15: Added a source-level regression test so heartbeat, multi-path, bad-backup, matrix, MTU, scoped route, and service-control labels are not reintroduced into `XBond.razor`.
