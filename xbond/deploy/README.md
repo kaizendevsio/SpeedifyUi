@@ -23,7 +23,7 @@ systemctl enable --now xbond-client.service
 Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
-The XBond client unit conflicts with `speedify.service` and `speedify-sharing.service`, reapplies `10.250.0.2/30` to `xbond0`, pins the XBond server IPv4 endpoint to the best physical default route, and installs the IPv4 default route through `xbond0` after each service start.
+The XBond client unit conflicts with `speedify.service` and `speedify-sharing.service`, reapplies `10.250.0.2/30` to `xbond0`, clears stale single-path `/32` pins for the XBond server IPv4 endpoint, and installs the IPv4 default route through `xbond0` after each service start. XBond data sockets bind directly to their physical interfaces, so a single server `/32` route must not force all paths through one adapter.
 Use `xbond-client-rollback [target-ip]` to remove one scoped `/32` route, or run it without arguments to remove all `/32` routes on `xbond0`.
 
 ## Server
