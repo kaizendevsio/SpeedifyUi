@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     let mut reorder = PacketReorderBuffer::new(8192, args.realtime_deadline_ms.min(50) * 1_000);
     let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
     let mut return_control: Option<ReturnControl> = None;
-    let mut reverse_sequence = 0u64;
+    let mut reverse_sequence = initial_reverse_sequence();
     let mut last_session_id = 0u64;
     let mut reorder_tick = time::interval(Duration::from_millis(
         args.realtime_deadline_ms.clamp(5, 50),
@@ -755,6 +755,10 @@ fn now_micros() -> u64 {
         .unwrap_or_default()
 }
 
+fn initial_reverse_sequence() -> u64 {
+    now_micros()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -792,6 +796,16 @@ mod tests {
         assert!(is_data_like(PacketKind::Duplicate));
         assert!(!is_data_like(PacketKind::Heartbeat));
         assert!(!is_data_like(PacketKind::Fec));
+    }
+
+    #[test]
+    fn reverse_sequence_starts_from_current_time_to_avoid_restart_rewinds() {
+        let before = now_micros();
+        let sequence = initial_reverse_sequence();
+        let after = now_micros();
+
+        assert!(sequence >= before);
+        assert!(sequence <= after);
     }
 
     #[test]
