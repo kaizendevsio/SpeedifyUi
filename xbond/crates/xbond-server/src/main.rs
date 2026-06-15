@@ -11,8 +11,8 @@ use tokio::time;
 use xbond_core::{
     build_transmission_plan, build_transmission_plan_for_packet, is_ipv4_packet, FrameReceiver,
     PacketKind, PacketReorderBuffer, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderedPacket, ScheduleControlMessage, ScheduleMode, SchedulePlan,
-    XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
+    RedundancyPolicyConfig, ReorderedPacket, ScheduleControlMessage, SchedulePlan, XBondFrame,
+    XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -758,6 +758,7 @@ fn now_micros() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use xbond_core::ScheduleMode;
 
     #[test]
     fn ack_preserves_heartbeat_or_control_kind() {
