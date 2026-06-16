@@ -10,10 +10,11 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_transmission_plan, encode_sealed_payload, is_ipv4_packet, precompute_transmission_plans,
-    FrameReceiver, PacketKind, PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot,
-    ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
-    ScheduleControlMessage, SchedulePlan, XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
+    build_transmission_plan, encode_sealed_payload_into, is_ipv4_packet,
+    precompute_transmission_plans, FrameReceiver, PacketKind, PacketReorderBuffer,
+    PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
+    RedundancyPolicyConfig, ReorderedPacket, ScheduleControlMessage, SchedulePlan, XBondFrame,
+    XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -61,6 +62,28 @@ struct InboundServerFrame {
     peer: SocketAddr,
 }
 
+#[derive(Debug)]
+struct ReturnSendWork {
+    packet_kind: PacketKind,
+    peer: SocketAddr,
+    frame: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct ReturnSendReport {
+    path_id: u16,
+    packet_kind: PacketKind,
+    encoded_bytes: u64,
+    success: bool,
+    peer: SocketAddr,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct ReturnSenderHandle {
+    tx: mpsc::Sender<ReturnSendWork>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ReturnControl {
     schedule: SchedulePlan,
@@ -89,6 +112,7 @@ async fn main() -> Result<()> {
     let mut fec_recovery = FecRecovery::new(8192);
     let mut reorder = PacketReorderBuffer::new(8192, args.realtime_deadline_ms.min(50) * 1_000);
     let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
+    let mut return_senders: HashMap<u16, ReturnSenderHandle> = HashMap::new();
     let mut return_control: Option<ReturnControl> = None;
     let mut reverse_sequence = initial_reverse_sequence();
     let mut last_session_id = 0u64;
@@ -99,6 +123,7 @@ async fn main() -> Result<()> {
 
     let (udp_frame_tx, mut udp_frame_rx) =
         mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
+    let (send_report_tx, mut send_report_rx) = mpsc::unbounded_channel::<ReturnSendReport>();
     let recv_socket = socket.clone();
     let recv_key = key.clone();
     tokio::spawn(async move {
@@ -171,6 +196,7 @@ async fn main() -> Result<()> {
                 let peer = inbound.peer;
                 if last_session_id != 0 && frame.header.session_id != last_session_id {
                     peers.clear();
+                    return_senders.clear();
                     return_control = None;
                 }
                 last_session_id = frame.header.session_id;
@@ -253,22 +279,34 @@ async fn main() -> Result<()> {
 
                 let mut forwarded_packets = 0u64;
                 let mut dropped_reason = None;
+                let trace_tunnel_payload =
+                    (args.json_events && args.trace_packets && is_tunnel_payload(frame.header.kind))
+                        .then(|| (frame.header.clone(), frame.payload.len()));
                 if outcome == ReceiveOutcome::Accepted && is_data_like(frame.header.kind) {
                     data_packets_received += 1;
-                    let recovered_packets = fec_recovery.observe_data(
-                        frame.header.session_id,
-                        frame.header.sequence,
-                        frame.payload.clone(),
-                    );
-                    if fec_recovery.mark_delivered(frame.header.session_id, frame.header.sequence) {
-                        if is_ipv4_packet(&frame.payload) {
+                    let header = frame.header.clone();
+                    let payload = frame.payload;
+                    let fec_is_active = return_control
+                        .as_ref()
+                        .is_some_and(|control| !control.schedule.fec_path_ids.is_empty());
+                    let recovered_packets = if fec_is_active {
+                        fec_recovery.observe_data(
+                            header.session_id,
+                            header.sequence,
+                            payload.clone(),
+                        )
+                    } else {
+                        Vec::new()
+                    };
+                    if fec_recovery.mark_delivered(header.session_id, header.sequence) {
+                        if is_ipv4_packet(&payload) {
                             if let Some(tun) = &mut tun {
                                 let ready = reorder.push(
-                                    frame.header.sequence,
-                                    frame.header.path_id,
-                                    frame.payload.clone(),
+                                    header.sequence,
+                                    header.path_id,
+                                    payload,
                                     now_micros(),
-                                    frame.header.send_micros.saturating_add(args.realtime_deadline_ms * 1_000),
+                                    header.send_micros.saturating_add(args.realtime_deadline_ms * 1_000),
                                 );
                                 let delivered = write_reordered_packets(tun, ready)?;
                                 data_packets_forwarded =
@@ -282,7 +320,7 @@ async fn main() -> Result<()> {
                     }
 
                     for recovered in recovered_packets {
-                        if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence) {
+                        if !fec_recovery.mark_delivered(header.session_id, recovered.sequence) {
                             continue;
                         }
                         if is_ipv4_packet(&recovered.payload) {
@@ -306,10 +344,11 @@ async fn main() -> Result<()> {
                     }
                 } else if outcome == ReceiveOutcome::Accepted && frame.header.kind == PacketKind::Fec {
                     fec_packets_received += 1;
+                    let session_id = frame.header.session_id;
                     match XorFecBlock::decode(&frame.payload) {
                         Ok(block) => {
-                            for recovered in fec_recovery.observe_fec(frame.header.session_id, block) {
-                                if !fec_recovery.mark_delivered(frame.header.session_id, recovered.sequence)
+                            for recovered in fec_recovery.observe_fec(session_id, block) {
+                                if !fec_recovery.mark_delivered(session_id, recovered.sequence)
                                 {
                                     continue;
                                 }
@@ -340,9 +379,10 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                if args.json_events && args.trace_packets && is_tunnel_payload(frame.header.kind) {
+                if let Some((header, payload_len)) = trace_tunnel_payload {
                     print_data_event(
-                        &frame,
+                        &header,
+                        payload_len,
                         forwarded_packets,
                         dropped_reason,
                         TunnelCounters {
@@ -353,6 +393,22 @@ async fn main() -> Result<()> {
                             invalid_fec_packets_dropped,
                             non_ipv4_packets_dropped,
                         },
+                    );
+                }
+            }
+
+            Some(report) = send_report_rx.recv() => {
+                let _ = report.encoded_bytes;
+                if !report.success && args.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "return-path-sender-failed",
+                            "peer": report.peer.to_string(),
+                            "path_id": report.path_id,
+                            "packet_kind": report.packet_kind,
+                            "error": report.error.unwrap_or_else(|| "unknown send failure".to_string()),
+                        })
                     );
                 }
             }
@@ -378,6 +434,16 @@ async fn main() -> Result<()> {
                 );
                 let mut sent_paths = 0usize;
                 for (path_id, peer, kind) in return_targets {
+                    let sender = return_senders
+                        .entry(path_id)
+                        .or_insert_with(|| {
+                            spawn_return_sender(
+                                path_id,
+                                socket.clone(),
+                                args.tun_queue_capacity.max(1),
+                                send_report_tx.clone(),
+                            )
+                        });
                     let mut header = XBondHeader::new(
                         kind,
                         last_session_id,
@@ -386,18 +452,31 @@ async fn main() -> Result<()> {
                         path_id,
                     );
                     header.flags = 1;
-                    let encoded = encode_sealed_payload(&header, &packet, &key)?;
-                    let send_result = if kind == PacketKind::Data {
-                        socket.send_to(&encoded, peer).await
+                    let encoded = encode_return_payload(&header, &packet, &key)?;
+                    let work = ReturnSendWork {
+                        packet_kind: kind,
+                        peer,
+                        frame: encoded,
+                    };
+                    let enqueue_result = if kind == PacketKind::Data {
+                        sender.tx.send(work).await.map_err(|_| {
+                            std::io::Error::new(
+                                ErrorKind::BrokenPipe,
+                                "XBond return path sender stopped",
+                            )
+                        })
                     } else {
-                        match socket.try_send_to(&encoded, peer) {
-                            Ok(bytes) => Ok(bytes),
-                            Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
-                            Err(error) => Err(error),
+                        match sender.tx.try_send(work) {
+                            Ok(()) => Ok(()),
+                            Err(mpsc::error::TrySendError::Full(_)) => continue,
+                            Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+                                ErrorKind::BrokenPipe,
+                                "XBond duplicate return path sender stopped",
+                            )),
                         }
                     };
-                    match send_result {
-                        Ok(_) => sent_paths += 1,
+                    match enqueue_result {
+                        Ok(()) => sent_paths += 1,
                         Err(error) => {
                             if args.json_events {
                                 println!(
@@ -452,6 +531,46 @@ async fn bind_udp_socket(bind_addr: &str, socket_buffer_bytes: usize) -> Result<
     socket.set_nonblocking(true)?;
     let std_socket: std::net::UdpSocket = socket.into();
     Ok(UdpSocket::from_std(std_socket)?)
+}
+
+fn spawn_return_sender(
+    path_id: u16,
+    socket: Arc<UdpSocket>,
+    capacity: usize,
+    report_tx: mpsc::UnboundedSender<ReturnSendReport>,
+) -> ReturnSenderHandle {
+    let (tx, mut rx) = mpsc::channel::<ReturnSendWork>(capacity.max(1));
+    tokio::spawn(async move {
+        while let Some(work) = rx.recv().await {
+            let encoded_bytes = work.frame.len() as u64;
+            let report = match socket.send_to(&work.frame, work.peer).await {
+                Ok(_) => ReturnSendReport {
+                    path_id,
+                    packet_kind: work.packet_kind,
+                    encoded_bytes,
+                    success: true,
+                    peer: work.peer,
+                    error: None,
+                },
+                Err(error) => ReturnSendReport {
+                    path_id,
+                    packet_kind: work.packet_kind,
+                    encoded_bytes,
+                    success: false,
+                    peer: work.peer,
+                    error: Some(error.to_string()),
+                },
+            };
+            let _ = report_tx.send(report);
+        }
+    });
+    ReturnSenderHandle { tx }
+}
+
+fn encode_return_payload(header: &XBondHeader, payload: &[u8], key: &XBondKey) -> Result<Vec<u8>> {
+    let mut encoded = Vec::with_capacity(payload.len().saturating_add(64));
+    encode_sealed_payload_into(header, payload, key, &mut encoded)?;
+    Ok(encoded)
 }
 
 fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
@@ -766,7 +885,8 @@ fn print_packet_event(
 }
 
 fn print_data_event(
-    frame: &XBondFrame,
+    header: &XBondHeader,
+    payload_len: usize,
     forwarded_packets: u64,
     dropped_reason: Option<&str>,
     counters: TunnelCounters,
@@ -775,11 +895,11 @@ fn print_data_event(
         "{}",
         serde_json::json!({
             "event": "data-decapsulated",
-            "session_id": frame.header.session_id,
-            "sequence": frame.header.sequence,
-            "path_id": frame.header.path_id,
-            "packet_kind": frame.header.kind,
-            "bytes": frame.payload.len(),
+            "session_id": header.session_id,
+            "sequence": header.sequence,
+            "path_id": header.path_id,
+            "packet_kind": header.kind,
+            "bytes": payload_len,
             "forwarded_to_tun": forwarded_packets > 0,
             "forwarded_packets": forwarded_packets,
             "dropped_reason": dropped_reason,

@@ -3,7 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::crypto::{CryptoError, XBondKey};
+use crate::crypto::{CryptoError, XBondKey, TAG_LEN};
 
 pub const MAGIC: [u8; 4] = *b"XBND";
 pub const VERSION: u8 = 1;
@@ -119,18 +119,44 @@ pub fn encode_sealed_payload(
     payload: &[u8],
     key: &XBondKey,
 ) -> Result<Vec<u8>, ProtocolError> {
-    let sealed_payload = key.seal(header, payload)?;
-    let payload_len = u16::try_from(sealed_payload.len())
-        .map_err(|_| ProtocolError::PayloadTooLarge(sealed_payload.len()))?;
-    Ok(encode_header_with_payload(
-        header,
-        &sealed_payload,
-        payload_len,
-    ))
+    let sealed_len = payload
+        .len()
+        .checked_add(TAG_LEN)
+        .ok_or(ProtocolError::PayloadTooLarge(usize::MAX))?;
+    let mut out = Vec::with_capacity(HEADER_LEN + sealed_len);
+    encode_sealed_payload_into(header, payload, key, &mut out)?;
+    Ok(out)
+}
+
+pub fn encode_sealed_payload_into(
+    header: &XBondHeader,
+    payload: &[u8],
+    key: &XBondKey,
+    out: &mut Vec<u8>,
+) -> Result<(), ProtocolError> {
+    let sealed_len = payload
+        .len()
+        .checked_add(TAG_LEN)
+        .ok_or(ProtocolError::PayloadTooLarge(usize::MAX))?;
+    let payload_len =
+        u16::try_from(sealed_len).map_err(|_| ProtocolError::PayloadTooLarge(sealed_len))?;
+
+    out.clear();
+    write_header(header, payload_len, out);
+    out.extend_from_slice(payload);
+    let tag = key.seal_in_place_detached(header, &mut out[HEADER_LEN..])?;
+    out.extend_from_slice(&tag);
+    Ok(())
 }
 
 fn encode_header_with_payload(header: &XBondHeader, payload: &[u8], payload_len: u16) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
+    write_header(header, payload_len, &mut out);
+    out.extend_from_slice(payload);
+    out
+}
+
+fn write_header(header: &XBondHeader, payload_len: u16, out: &mut Vec<u8>) {
     out.extend_from_slice(&MAGIC);
     out.push(VERSION);
     out.push(header.kind.as_u8());
@@ -142,62 +168,95 @@ fn encode_header_with_payload(header: &XBondHeader, payload: &[u8], payload_len:
     out.extend_from_slice(&header.path_id.to_be_bytes());
     out.extend_from_slice(&payload_len.to_be_bytes());
     out.extend_from_slice(&0u32.to_be_bytes());
-    out.extend_from_slice(payload);
-    out
 }
 
 impl XBondFrame {
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        if bytes.len() < HEADER_LEN {
-            return Err(ProtocolError::FrameTooShort(bytes.len()));
-        }
-        if bytes[0..4] != MAGIC {
-            return Err(ProtocolError::BadMagic);
-        }
-        if bytes[4] != VERSION {
-            return Err(ProtocolError::UnsupportedVersion(bytes[4]));
-        }
-        let header_len = bytes[7] as usize;
-        if header_len != HEADER_LEN {
-            return Err(ProtocolError::UnsupportedHeaderLength(header_len));
-        }
-
-        let kind = PacketKind::try_from(bytes[5])?;
-        let flags = bytes[6];
-        let session_id = read_u64(bytes, 8);
-        let sequence = read_u64(bytes, 16);
-        let send_micros = read_u64(bytes, 24);
-        let path_id = read_u16(bytes, 32);
-        let payload_len = read_u16(bytes, 34) as usize;
-        let expected_len = HEADER_LEN + payload_len;
-        if bytes.len() != expected_len {
-            return Err(ProtocolError::LengthMismatch {
-                expected: expected_len,
-                actual: bytes.len(),
-            });
-        }
-
+        let parsed = parse_frame(bytes)?;
         Ok(Self {
-            header: XBondHeader {
-                kind,
-                flags,
-                session_id,
-                sequence,
-                send_micros,
-                path_id,
-            },
-            payload: bytes[HEADER_LEN..].to_vec(),
+            header: parsed.header,
+            payload: parsed.payload.to_vec(),
         })
     }
 
     pub fn decode_sealed(bytes: &[u8], key: &XBondKey) -> Result<Self, ProtocolError> {
-        let sealed_frame = Self::decode(bytes)?;
-        let payload = key.open(&sealed_frame.header, &sealed_frame.payload)?;
-        Ok(Self {
-            header: sealed_frame.header,
-            payload,
-        })
+        decode_sealed_payload(bytes, key)
     }
+}
+
+pub fn decode_sealed_payload(bytes: &[u8], key: &XBondKey) -> Result<XBondFrame, ProtocolError> {
+    let parsed = parse_frame(bytes)?;
+    let payload = key.open(&parsed.header, parsed.payload)?;
+    Ok(XBondFrame {
+        header: parsed.header,
+        payload,
+    })
+}
+
+pub fn decode_sealed_payload_into(
+    bytes: &[u8],
+    key: &XBondKey,
+    payload_out: &mut Vec<u8>,
+) -> Result<XBondHeader, ProtocolError> {
+    let parsed = parse_frame(bytes)?;
+    if parsed.payload.len() < TAG_LEN {
+        return Err(ProtocolError::Crypto(CryptoError::OpenFailed));
+    }
+
+    let tag_index = parsed.payload.len() - TAG_LEN;
+    let (ciphertext, tag) = parsed.payload.split_at(tag_index);
+    payload_out.clear();
+    payload_out.extend_from_slice(ciphertext);
+    key.open_in_place_detached(&parsed.header, payload_out.as_mut_slice(), tag)?;
+    Ok(parsed.header)
+}
+
+struct ParsedFrame<'a> {
+    header: XBondHeader,
+    payload: &'a [u8],
+}
+
+fn parse_frame(bytes: &[u8]) -> Result<ParsedFrame<'_>, ProtocolError> {
+    if bytes.len() < HEADER_LEN {
+        return Err(ProtocolError::FrameTooShort(bytes.len()));
+    }
+    if bytes[0..4] != MAGIC {
+        return Err(ProtocolError::BadMagic);
+    }
+    if bytes[4] != VERSION {
+        return Err(ProtocolError::UnsupportedVersion(bytes[4]));
+    }
+    let header_len = bytes[7] as usize;
+    if header_len != HEADER_LEN {
+        return Err(ProtocolError::UnsupportedHeaderLength(header_len));
+    }
+
+    let kind = PacketKind::try_from(bytes[5])?;
+    let flags = bytes[6];
+    let session_id = read_u64(bytes, 8);
+    let sequence = read_u64(bytes, 16);
+    let send_micros = read_u64(bytes, 24);
+    let path_id = read_u16(bytes, 32);
+    let payload_len = read_u16(bytes, 34) as usize;
+    let expected_len = HEADER_LEN + payload_len;
+    if bytes.len() != expected_len {
+        return Err(ProtocolError::LengthMismatch {
+            expected: expected_len,
+            actual: bytes.len(),
+        });
+    }
+
+    Ok(ParsedFrame {
+        header: XBondHeader {
+            kind,
+            flags,
+            session_id,
+            sequence,
+            send_micros,
+            path_id,
+        },
+        payload: &bytes[HEADER_LEN..],
+    })
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -381,6 +440,35 @@ mod tests {
         let decoded = XBondFrame::decode_sealed(&encoded, &key).unwrap();
 
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn sealed_payload_into_matches_owned_encoding() {
+        let key = XBondKey::from_passphrase("test-key");
+        let header = XBondHeader::new(PacketKind::Duplicate, 42, 8, 123_456, 3);
+        let payload = b"hello";
+        let owned = encode_sealed_payload(&header, payload, &key).unwrap();
+        let mut encoded = Vec::new();
+
+        encode_sealed_payload_into(&header, payload, &key, &mut encoded).unwrap();
+
+        assert_eq!(encoded, owned);
+    }
+
+    #[test]
+    fn sealed_payload_into_decoder_accepts_existing_wire_frame() {
+        let key = XBondKey::from_passphrase("test-key");
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 42, 9, 123_456, 4),
+            b"hello".to_vec(),
+        );
+        let encoded = frame.encode_sealed(&key).unwrap();
+        let mut payload = Vec::new();
+
+        let header = decode_sealed_payload_into(&encoded, &key, &mut payload).unwrap();
+
+        assert_eq!(header, frame.header);
+        assert_eq!(payload, frame.payload);
     }
 
     #[test]

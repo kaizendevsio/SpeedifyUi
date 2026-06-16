@@ -18,15 +18,14 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use xbond_core::{
-    build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload, is_ipv4_packet,
+    build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload_into, is_ipv4_packet,
     precompute_transmission_plans, select_path_roles, select_path_roles_with_state, ClientConfig,
     FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus,
     ProbeAggregate, ProbePathStats, ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig,
     ReorderedPacket, RoleSelectionConfig, RoleSelectionState, RouteVerification,
-    ScheduleControlMessage, ScheduleMode, SchedulePlan, ScheduledTransmission,
-    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus,
-    XBondTun, XBondTunnelStatus, XorFecBlock,
+    ScheduleControlMessage, ScheduleMode, SchedulePlan, XBondDiagnosticOverrideStatus,
+    XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondProcessStatus,
+    XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -389,6 +388,26 @@ struct PreparedProbePath {
 struct InboundTunnelFrame {
     path_id: u16,
     frame: XBondFrame,
+}
+
+#[derive(Debug)]
+struct PathSendWork {
+    packet_kind: PacketKind,
+    frame: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct PathSendReport {
+    path_id: u16,
+    packet_kind: PacketKind,
+    encoded_bytes: u64,
+    success: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug)]
+struct PathSenderHandle {
+    tx: mpsc::Sender<PathSendWork>,
 }
 
 #[derive(Debug, Default)]
@@ -918,8 +937,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         .map(|spec| (spec.path_id, spec))
         .collect::<HashMap<_, _>>();
     let mut sockets: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
+    let mut senders: HashMap<u16, PathSenderHandle> = HashMap::new();
     let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlEnvelope>();
+    let (send_report_tx, mut send_report_rx) = mpsc::unbounded_channel::<PathSendReport>();
     spawn_control_listener(
         options.control_socket.clone(),
         control_tx,
@@ -964,8 +985,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &config,
         &specs_by_id,
         &mut sockets,
+        &mut senders,
         &mut path_runtime,
         &inbound_tx,
+        &send_report_tx,
         &key,
         options.json_events,
     )
@@ -1069,8 +1092,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &config,
                     &specs_by_id,
                     &mut sockets,
+                    &mut senders,
                     &mut path_runtime,
                     &inbound_tx,
+                    &send_report_tx,
                     &key,
                     options.json_events,
                 ).await?;
@@ -1198,6 +1223,31 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 let _ = envelope.response_tx.send(response);
             }
 
+            Some(report) = send_report_rx.recv() => {
+                if report.success {
+                    record_tunnel_send_report_success(
+                        &mut path_runtime,
+                        report.path_id,
+                        report.packet_kind,
+                        report.encoded_bytes,
+                        &mut counters,
+                    );
+                } else {
+                    record_tunnel_send_failure(&mut path_runtime, report.path_id);
+                    if options.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "path-sender-send-failed",
+                                "path_id": report.path_id,
+                                "packet_kind": report.packet_kind,
+                                "error": report.error.unwrap_or_else(|| "unknown send failure".to_string()),
+                            })
+                        );
+                    }
+                }
+            }
+
             Some(packet) = tun_packet_rx.recv() => {
                 if options
                     .packet_limit
@@ -1246,7 +1296,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     .iter()
                     .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
                 {
-                    let Some(socket) = sockets.get(&transmission.path_id) else {
+                    let Some(sender) = senders.get(&transmission.path_id) else {
                         continue;
                     };
                     let header = XBondHeader::new(
@@ -1257,28 +1307,33 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         transmission.path_id,
                     );
                     let encoded = encode_tunnel_payload(&header, &packet, &key, &mut counters)?;
-                    let send_result = if transmission.packet_kind == PacketKind::Data {
-                        socket.send(&encoded).await
+                    let work = PathSendWork {
+                        packet_kind: transmission.packet_kind,
+                        frame: encoded,
+                    };
+                    let enqueue_result = if transmission.packet_kind == PacketKind::Data {
+                        sender.tx.send(work).await.map_err(|_| {
+                            std::io::Error::new(
+                                ErrorKind::BrokenPipe,
+                                "XBond primary path sender stopped",
+                            )
+                        })
                     } else {
-                        match socket.try_send(&encoded) {
-                            Ok(bytes) => Ok(bytes),
-                            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        match sender.tx.try_send(work) {
+                            Ok(()) => Ok(()),
+                            Err(mpsc::error::TrySendError::Full(_)) => {
                                 counters.duplicate_send_skips =
                                     counters.duplicate_send_skips.saturating_add(1);
                                 continue;
                             }
-                            Err(error) => Err(error),
+                            Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+                                ErrorKind::BrokenPipe,
+                                "XBond duplicate path sender stopped",
+                            )),
                         }
                     };
-                    match send_result {
-                        Ok(_) => {
-                            record_tunnel_send_success(
-                                &mut path_runtime,
-                                transmission,
-                                encoded.len() as u64,
-                                &mut counters,
-                            );
-                        }
+                    match enqueue_result {
+                        Ok(()) => {}
                         Err(error) => {
                             record_tunnel_send_failure(&mut path_runtime, transmission.path_id);
                             if options.json_events {
@@ -1308,7 +1363,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         let fec_payload =
                             XorFecBlock::encode(base_sequence, &first_payload, &packet)?;
                         for transmission in fec_transmissions {
-                            let Some(socket) = sockets.get(&transmission.path_id) else {
+                            let Some(sender) = senders.get(&transmission.path_id) else {
                                 counters.fec_packets_skipped += 1;
                                 counters.fec_send_skips =
                                     counters.fec_send_skips.saturating_add(1);
@@ -1323,21 +1378,17 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             );
                             let encoded =
                                 encode_tunnel_payload(&header, &fec_payload, &key, &mut counters)?;
-                            match socket.try_send(&encoded) {
-                                Ok(_) => {
-                                    record_tunnel_send_success(
-                                        &mut path_runtime,
-                                        transmission,
-                                        encoded.len() as u64,
-                                        &mut counters,
-                                    );
-                                }
-                                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            match sender.tx.try_send(PathSendWork {
+                                packet_kind: PacketKind::Fec,
+                                frame: encoded,
+                            }) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(_)) => {
                                     counters.fec_packets_skipped += 1;
                                     counters.fec_send_skips =
                                         counters.fec_send_skips.saturating_add(1);
                                 }
-                                Err(error) => {
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
                                     counters.fec_packets_skipped += 1;
                                     counters.fec_send_skips =
                                         counters.fec_send_skips.saturating_add(1);
@@ -1349,7 +1400,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                                 "event": "fec-send-failed",
                                                 "sequence": base_sequence,
                                                 "path_id": transmission.path_id,
-                                                "error": error.to_string(),
+                                                "error": "XBond FEC path sender stopped",
                                             })
                                         );
                                     }
@@ -1503,8 +1554,10 @@ async fn ensure_tunnel_sockets(
     config: &ClientConfig,
     specs_by_id: &HashMap<u16, ProbePathSpec>,
     sockets: &mut HashMap<u16, Arc<UdpSocket>>,
+    senders: &mut HashMap<u16, PathSenderHandle>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     inbound_tx: &mpsc::Sender<InboundTunnelFrame>,
+    send_report_tx: &mpsc::UnboundedSender<PathSendReport>,
     key: &XBondKey,
     json_events: bool,
 ) -> Result<()> {
@@ -1513,10 +1566,20 @@ async fn ensure_tunnel_sockets(
 
         if !interface_is_live(spec.interface_name.as_deref()) {
             sockets.remove(path_id);
+            senders.remove(path_id);
             continue;
         }
 
-        if sockets.contains_key(path_id) {
+        if let Some(socket) = sockets.get(path_id) {
+            if !senders.contains_key(path_id) {
+                let sender = spawn_tunnel_sender(
+                    *path_id,
+                    socket.clone(),
+                    config.tun_queue_capacity.max(1),
+                    send_report_tx.clone(),
+                );
+                senders.insert(*path_id, sender);
+            }
             continue;
         }
 
@@ -1560,10 +1623,49 @@ async fn ensure_tunnel_sockets(
 
         let socket = Arc::new(socket);
         spawn_tunnel_receiver(*path_id, socket.clone(), inbound_tx.clone(), key.clone());
+        let sender = spawn_tunnel_sender(
+            *path_id,
+            socket.clone(),
+            config.tun_queue_capacity.max(1),
+            send_report_tx.clone(),
+        );
+        senders.insert(*path_id, sender);
         sockets.insert(*path_id, socket);
     }
 
     Ok(())
+}
+
+fn spawn_tunnel_sender(
+    path_id: u16,
+    socket: Arc<UdpSocket>,
+    capacity: usize,
+    report_tx: mpsc::UnboundedSender<PathSendReport>,
+) -> PathSenderHandle {
+    let (tx, mut rx) = mpsc::channel::<PathSendWork>(capacity.max(1));
+    tokio::spawn(async move {
+        while let Some(work) = rx.recv().await {
+            let encoded_bytes = work.frame.len() as u64;
+            let report = match socket.send(&work.frame).await {
+                Ok(_) => PathSendReport {
+                    path_id,
+                    packet_kind: work.packet_kind,
+                    encoded_bytes,
+                    success: true,
+                    error: None,
+                },
+                Err(error) => PathSendReport {
+                    path_id,
+                    packet_kind: work.packet_kind,
+                    encoded_bytes,
+                    success: false,
+                    error: Some(error.to_string()),
+                },
+            };
+            let _ = report_tx.send(report);
+        }
+    });
+    PathSenderHandle { tx }
 }
 
 fn spawn_tunnel_receiver(
@@ -1679,17 +1781,18 @@ fn current_process_rss_bytes() -> Option<u64> {
     }
 }
 
-fn record_tunnel_send_success(
+fn record_tunnel_send_report_success(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    transmission: &ScheduledTransmission,
+    path_id: u16,
+    packet_kind: PacketKind,
     bytes: u64,
     counters: &mut TunnelCounters,
 ) {
-    let runtime = path_runtime.entry(transmission.path_id).or_default();
+    let runtime = path_runtime.entry(path_id).or_default();
     runtime.send_failures = 0;
     runtime.bytes_sent = runtime.bytes_sent.saturating_add(bytes);
 
-    match transmission.packet_kind {
+    match packet_kind {
         PacketKind::Data => counters.data_packets_sent += 1,
         PacketKind::Duplicate => counters.duplicate_packets_sent += 1,
         PacketKind::Fec => counters.fec_packets_sent += 1,
@@ -1709,7 +1812,8 @@ fn encode_tunnel_payload(
     counters: &mut TunnelCounters,
 ) -> Result<Vec<u8>> {
     let started = Instant::now();
-    let encoded = encode_sealed_payload(header, payload, key)?;
+    let mut encoded = Vec::with_capacity(payload.len().saturating_add(64));
+    encode_sealed_payload_into(header, payload, key, &mut encoded)?;
     counters.encoded_frames = counters.encoded_frames.saturating_add(1);
     counters.encode_micros_total = counters
         .encode_micros_total

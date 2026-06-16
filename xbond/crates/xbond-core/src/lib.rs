@@ -21,8 +21,9 @@ pub use health::{
 };
 pub use probe::{ProbeAggregate, ProbePathStats, RouteVerification};
 pub use protocol::{
-    encode_payload, encode_sealed_payload, DuplicateOutcome, DuplicateWindow, FrameReceiver,
-    PacketKind, ReceiveOutcome, ReceiveStats, XBondFrame, XBondHeader,
+    decode_sealed_payload, decode_sealed_payload_into, encode_payload, encode_sealed_payload,
+    encode_sealed_payload_into, DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind,
+    ReceiveOutcome, ReceiveStats, XBondFrame, XBondHeader,
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use scheduler::{

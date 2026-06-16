@@ -1,8 +1,10 @@
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
+use chacha20poly1305::aead::{Aead, AeadInPlace, KeyInit, Payload};
+use chacha20poly1305::{Key, Tag, XChaCha20Poly1305, XNonce};
 use thiserror::Error;
 
 use crate::protocol::{PacketKind, XBondHeader};
+
+pub const TAG_LEN: usize = 16;
 
 #[derive(Clone)]
 pub struct XBondKey {
@@ -46,6 +48,39 @@ impl XBondKey {
                     aad: &associated_data(header),
                 },
             )
+            .map_err(|_| CryptoError::OpenFailed)
+    }
+
+    pub fn seal_in_place_detached(
+        &self,
+        header: &XBondHeader,
+        plaintext: &mut [u8],
+    ) -> Result<[u8; TAG_LEN], CryptoError> {
+        let nonce = nonce_for(header);
+        let aad = associated_data(header);
+        let tag = self
+            .cipher
+            .encrypt_in_place_detached(&nonce, &aad, plaintext)
+            .map_err(|_| CryptoError::SealFailed)?;
+        let mut tag_bytes = [0u8; TAG_LEN];
+        tag_bytes.copy_from_slice(tag.as_slice());
+        Ok(tag_bytes)
+    }
+
+    pub fn open_in_place_detached(
+        &self,
+        header: &XBondHeader,
+        ciphertext: &mut [u8],
+        tag: &[u8],
+    ) -> Result<(), CryptoError> {
+        if tag.len() != TAG_LEN {
+            return Err(CryptoError::OpenFailed);
+        }
+
+        let nonce = nonce_for(header);
+        let aad = associated_data(header);
+        self.cipher
+            .decrypt_in_place_detached(&nonce, &aad, ciphertext, Tag::from_slice(tag))
             .map_err(|_| CryptoError::OpenFailed)
     }
 }
@@ -120,6 +155,28 @@ mod tests {
             independently_cached_key.open(&header, &sealed).unwrap(),
             b"payload"
         );
+    }
+
+    #[test]
+    fn detached_in_place_round_trip_matches_seal_output() {
+        let key = XBondKey::from_passphrase("test-key");
+        let header = XBondHeader::new(PacketKind::Data, 99, 123, 500, 1);
+        let sealed = key.seal(&header, b"payload").unwrap();
+        let mut plaintext = b"payload".to_vec();
+
+        let tag = key
+            .seal_in_place_detached(&header, plaintext.as_mut_slice())
+            .unwrap();
+        plaintext.extend_from_slice(&tag);
+
+        assert_eq!(plaintext, sealed);
+
+        let split_at = plaintext.len() - TAG_LEN;
+        let (ciphertext, tag) = plaintext.split_at_mut(split_at);
+        key.open_in_place_detached(&header, ciphertext, tag)
+            .unwrap();
+
+        assert_eq!(ciphertext, b"payload");
     }
 
     #[test]
