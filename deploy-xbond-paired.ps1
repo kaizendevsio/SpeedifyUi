@@ -20,7 +20,10 @@ function Invoke-Remote {
         [Parameter(Mandatory = $true)][string]$Command
     )
 
-    & ssh -i $KeyPath -o IdentitiesOnly=yes -o BatchMode=yes "$UserName@$HostName" bash -lc $Command
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Command))
+    $remoteCommand = "printf '%s' '$encodedCommand' | base64 -d | bash"
+
+    & ssh -i $KeyPath -o IdentitiesOnly=yes -o BatchMode=yes "$UserName@$HostName" $remoteCommand
     if ($LASTEXITCODE -ne 0) {
         throw "Remote command failed on $HostName with exit code $LASTEXITCODE"
     }
@@ -29,11 +32,14 @@ function Invoke-Remote {
 $serverCommand = @"
 set -euo pipefail
 cd '$ServerRepo'
+source /root/.cargo/env 2>/dev/null || true
 git fetch --all --prune
 git checkout '$Branch'
 git pull --ff-only
 cargo build --release --manifest-path xbond/Cargo.toml -p xbond-server
 install -m 0755 xbond/target/release/xbond-server /usr/local/bin/xbond-server
+install -m 0644 xbond/deploy/systemd/xbond-server.service /etc/systemd/system/xbond-server.service
+systemctl daemon-reload
 systemctl restart xbond-server.service
 systemctl restart xbond-server-nat.service
 systemctl is-active xbond-server.service
@@ -47,6 +53,7 @@ git rev-parse --short HEAD
 $routerCommand = @"
 set -euo pipefail
 cd '$RouterRepo'
+source /home/xeon-network/.cargo/env 2>/dev/null || true
 git fetch --all --prune
 git checkout '$Branch'
 git pull --ff-only
