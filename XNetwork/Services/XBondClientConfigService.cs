@@ -413,6 +413,20 @@ public sealed class XBondClientConfigService(
         builder.AppendLine($"duplicate_loss_threshold = {FormatDouble(Math.Clamp(config.DuplicateLossThreshold, 0.0, 1.0))}");
         builder.AppendLine($"backup_loss_disable_threshold = {FormatDouble(Math.Clamp(config.BackupLossDisableThreshold, 0.0, 1.0))}");
         builder.AppendLine($"reorder_hold_ms = {Math.Clamp(config.ReorderHoldMs, 0, 250)}");
+        builder.AppendLine($"recovery_enabled = {FormatBool(config.RecoveryEnabled)}");
+        builder.AppendLine($"recovery_enter_degraded_ticks = {Math.Max(1, config.RecoveryEnterDegradedTicks)}");
+        builder.AppendLine($"recovery_exit_clean_ticks = {Math.Max(1, config.RecoveryExitCleanTicks)}");
+        builder.AppendLine($"recovery_degraded_loss_threshold = {FormatDouble(Math.Clamp(config.RecoveryDegradedLossThreshold, 0.0, 1.0))}");
+        builder.AppendLine($"recovery_degraded_late_threshold = {FormatDouble(Math.Clamp(config.RecoveryDegradedLateThreshold, 0.0, 1.0))}");
+        builder.AppendLine($"recovery_degraded_jitter_ms = {FormatDouble(Math.Max(0.0, config.RecoveryDegradedJitterMs))}");
+        builder.AppendLine($"recovery_degraded_stale_ack_ms = {config.RecoveryDegradedStaleAckMs}");
+        builder.AppendLine($"recovery_degraded_queue_pressure = {FormatDouble(Math.Clamp(config.RecoveryDegradedQueuePressure, 0.0, 1.0))}");
+        builder.AppendLine($"recovery_clean_loss_threshold = {FormatDouble(Math.Clamp(config.RecoveryCleanLossThreshold, 0.0, 1.0))}");
+        builder.AppendLine($"recovery_clean_late_threshold = {FormatDouble(Math.Clamp(config.RecoveryCleanLateThreshold, 0.0, 1.0))}");
+        builder.AppendLine($"recovery_clean_jitter_ms = {FormatDouble(Math.Max(0.0, config.RecoveryCleanJitterMs))}");
+        builder.AppendLine($"recovery_clean_stale_ack_ms = {config.RecoveryCleanStaleAckMs}");
+        builder.AppendLine($"recovery_clean_queue_pressure = {FormatDouble(Math.Clamp(config.RecoveryCleanQueuePressure, 0.0, 1.0))}");
+        builder.AppendLine($"recovery_path_loss_exclude_threshold = {FormatDouble(Math.Clamp(config.RecoveryPathLossExcludeThreshold, 0.0, 1.0))}");
         builder.AppendLine($"runtime_status_path = {Quote(config.RuntimeStatusPath)}");
 
         foreach (var path in config.Paths.OrderBy(path => path.Id))
@@ -469,6 +483,48 @@ public sealed class XBondClientConfigService(
                 break;
             case "reorder_hold_ms":
                 config.ReorderHoldMs = ParseInt(value, config.ReorderHoldMs);
+                break;
+            case "recovery_enabled":
+                config.RecoveryEnabled = ParseBool(value, config.RecoveryEnabled);
+                break;
+            case "recovery_enter_degraded_ticks":
+                config.RecoveryEnterDegradedTicks = ParseInt(value, config.RecoveryEnterDegradedTicks);
+                break;
+            case "recovery_exit_clean_ticks":
+                config.RecoveryExitCleanTicks = ParseInt(value, config.RecoveryExitCleanTicks);
+                break;
+            case "recovery_degraded_loss_threshold":
+                config.RecoveryDegradedLossThreshold = ParseDouble(value, config.RecoveryDegradedLossThreshold);
+                break;
+            case "recovery_degraded_late_threshold":
+                config.RecoveryDegradedLateThreshold = ParseDouble(value, config.RecoveryDegradedLateThreshold);
+                break;
+            case "recovery_degraded_jitter_ms":
+                config.RecoveryDegradedJitterMs = ParseDouble(value, config.RecoveryDegradedJitterMs);
+                break;
+            case "recovery_degraded_stale_ack_ms":
+                config.RecoveryDegradedStaleAckMs = ParseUlong(value, config.RecoveryDegradedStaleAckMs);
+                break;
+            case "recovery_degraded_queue_pressure":
+                config.RecoveryDegradedQueuePressure = ParseDouble(value, config.RecoveryDegradedQueuePressure);
+                break;
+            case "recovery_clean_loss_threshold":
+                config.RecoveryCleanLossThreshold = ParseDouble(value, config.RecoveryCleanLossThreshold);
+                break;
+            case "recovery_clean_late_threshold":
+                config.RecoveryCleanLateThreshold = ParseDouble(value, config.RecoveryCleanLateThreshold);
+                break;
+            case "recovery_clean_jitter_ms":
+                config.RecoveryCleanJitterMs = ParseDouble(value, config.RecoveryCleanJitterMs);
+                break;
+            case "recovery_clean_stale_ack_ms":
+                config.RecoveryCleanStaleAckMs = ParseUlong(value, config.RecoveryCleanStaleAckMs);
+                break;
+            case "recovery_clean_queue_pressure":
+                config.RecoveryCleanQueuePressure = ParseDouble(value, config.RecoveryCleanQueuePressure);
+                break;
+            case "recovery_path_loss_exclude_threshold":
+                config.RecoveryPathLossExcludeThreshold = ParseDouble(value, config.RecoveryPathLossExcludeThreshold);
                 break;
             case "runtime_status_path":
                 config.RuntimeStatusPath = Unquote(value);
@@ -541,6 +597,44 @@ public sealed class XBondClientConfigService(
         {
             config.ReorderHoldMs = 25;
         }
+
+        if (config.RecoveryEnterDegradedTicks <= 0)
+        {
+            config.RecoveryEnterDegradedTicks = 3;
+        }
+
+        if (config.RecoveryExitCleanTicks <= 0)
+        {
+            config.RecoveryExitCleanTicks = 20;
+        }
+
+        config.RecoveryDegradedLossThreshold = ClampUnitInterval(
+            config.RecoveryDegradedLossThreshold,
+            0.08);
+        config.RecoveryDegradedLateThreshold = ClampUnitInterval(
+            config.RecoveryDegradedLateThreshold,
+            0.03);
+        config.RecoveryDegradedJitterMs = ClampNonNegative(
+            config.RecoveryDegradedJitterMs,
+            80);
+        config.RecoveryDegradedQueuePressure = ClampUnitInterval(
+            config.RecoveryDegradedQueuePressure,
+            0.70);
+        config.RecoveryCleanLossThreshold = ClampUnitInterval(
+            config.RecoveryCleanLossThreshold,
+            0.02);
+        config.RecoveryCleanLateThreshold = ClampUnitInterval(
+            config.RecoveryCleanLateThreshold,
+            0.01);
+        config.RecoveryCleanJitterMs = ClampNonNegative(
+            config.RecoveryCleanJitterMs,
+            40);
+        config.RecoveryCleanQueuePressure = ClampUnitInterval(
+            config.RecoveryCleanQueuePressure,
+            0.50);
+        config.RecoveryPathLossExcludeThreshold = ClampUnitInterval(
+            config.RecoveryPathLossExcludeThreshold,
+            0.95);
 
         if (string.IsNullOrWhiteSpace(config.RuntimeStatusPath))
         {
@@ -651,6 +745,12 @@ public sealed class XBondClientConfigService(
 
     private static ulong ParseUlong(string value, ulong fallback) =>
         ulong.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
+
+    private static double ClampUnitInterval(double value, double fallback) =>
+        double.IsFinite(value) ? Math.Clamp(value, 0.0, 1.0) : fallback;
+
+    private static double ClampNonNegative(double value, double fallback) =>
+        double.IsFinite(value) ? Math.Max(0.0, value) : fallback;
 
     private static string NormalizePolicy(string value)
     {

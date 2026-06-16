@@ -85,6 +85,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             LatePacketsDropped = runtime.LatePacketsDropped,
             Reorder = runtime.Reorder ?? new XBondReorderStatus(),
             Process = runtime.Process ?? new XBondProcessStatus(),
+            Recovery = runtime.Recovery ?? new XBondRecoveryStatus(),
             Message = string.IsNullOrWhiteSpace(runtime.Message)
                 ? "XBond runtime status loaded."
                 : runtime.Message,
@@ -367,6 +368,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
 
         [JsonPropertyName("process")]
         public XBondProcessStatus? Process { get; set; }
+
+        [JsonPropertyName("recovery")]
+        public XBondRecoveryStatus? Recovery { get; set; }
 
         [JsonPropertyName("message")]
         public string? Message { get; set; }

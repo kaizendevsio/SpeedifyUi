@@ -76,6 +76,9 @@ public class XBondStatus
     [JsonPropertyName("process")]
     public XBondProcessStatus Process { get; set; } = new();
 
+    [JsonPropertyName("recovery")]
+    public XBondRecoveryStatus Recovery { get; set; } = new();
+
     [JsonPropertyName("message")]
     public string Message { get; set; } = "XBond status is unavailable";
 
@@ -279,4 +282,22 @@ public class XBondProcessStatus
 
     [JsonPropertyName("decoded_frames")]
     public ulong DecodedFrames { get; set; }
+}
+
+public class XBondRecoveryStatus
+{
+    [JsonPropertyName("active")]
+    public bool Active { get; set; }
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = "Recovery redundancy is inactive.";
+
+    [JsonPropertyName("eligible_path_ids")]
+    public List<int> EligiblePathIds { get; set; } = new();
+
+    [JsonPropertyName("degraded_ticks")]
+    public int DegradedTicks { get; set; }
+
+    [JsonPropertyName("clean_ticks")]
+    public int CleanTicks { get; set; }
 }

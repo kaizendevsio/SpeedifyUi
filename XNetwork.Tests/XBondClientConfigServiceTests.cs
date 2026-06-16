@@ -20,6 +20,20 @@ public class XBondClientConfigServiceTests
             duplicate_loss_threshold = 0.02
             backup_loss_disable_threshold = 0.35
             reorder_hold_ms = 25
+            recovery_enabled = true
+            recovery_enter_degraded_ticks = 4
+            recovery_exit_clean_ticks = 30
+            recovery_degraded_loss_threshold = 0.12
+            recovery_degraded_late_threshold = 0.04
+            recovery_degraded_jitter_ms = 90
+            recovery_degraded_stale_ack_ms = 1700
+            recovery_degraded_queue_pressure = 0.8
+            recovery_clean_loss_threshold = 0.015
+            recovery_clean_late_threshold = 0.005
+            recovery_clean_jitter_ms = 35
+            recovery_clean_stale_ack_ms = 900
+            recovery_clean_queue_pressure = 0.4
+            recovery_path_loss_exclude_threshold = 0.9
             runtime_status_path = "/run/xbond/client-status.json"
 
             [[paths]]
@@ -46,6 +60,20 @@ public class XBondClientConfigServiceTests
         Assert.Equal(0.02, config.DuplicateLossThreshold);
         Assert.Equal(0.35, config.BackupLossDisableThreshold);
         Assert.Equal(25, config.ReorderHoldMs);
+        Assert.True(config.RecoveryEnabled);
+        Assert.Equal(4, config.RecoveryEnterDegradedTicks);
+        Assert.Equal(30, config.RecoveryExitCleanTicks);
+        Assert.Equal(0.12, config.RecoveryDegradedLossThreshold);
+        Assert.Equal(0.04, config.RecoveryDegradedLateThreshold);
+        Assert.Equal(90, config.RecoveryDegradedJitterMs);
+        Assert.Equal((ulong)1700, config.RecoveryDegradedStaleAckMs);
+        Assert.Equal(0.8, config.RecoveryDegradedQueuePressure);
+        Assert.Equal(0.015, config.RecoveryCleanLossThreshold);
+        Assert.Equal(0.005, config.RecoveryCleanLateThreshold);
+        Assert.Equal(35, config.RecoveryCleanJitterMs);
+        Assert.Equal((ulong)900, config.RecoveryCleanStaleAckMs);
+        Assert.Equal(0.4, config.RecoveryCleanQueuePressure);
+        Assert.Equal(0.9, config.RecoveryPathLossExcludeThreshold);
         Assert.Equal("/run/xbond/client-status.json", config.RuntimeStatusPath);
 
         Assert.Collection(
@@ -82,6 +110,20 @@ public class XBondClientConfigServiceTests
             duplicate_loss_threshold = 0.05
             backup_loss_disable_threshold = 0.25
             reorder_hold_ms = 15
+            recovery_enabled = true
+            recovery_enter_degraded_ticks = 5
+            recovery_exit_clean_ticks = 25
+            recovery_degraded_loss_threshold = 0.1
+            recovery_degraded_late_threshold = 0.05
+            recovery_degraded_jitter_ms = 100
+            recovery_degraded_stale_ack_ms = 2000
+            recovery_degraded_queue_pressure = 0.75
+            recovery_clean_loss_threshold = 0.01
+            recovery_clean_late_threshold = 0.004
+            recovery_clean_jitter_ms = 30
+            recovery_clean_stale_ack_ms = 800
+            recovery_clean_queue_pressure = 0.35
+            recovery_path_loss_exclude_threshold = 0.85
             runtime_status_path = "/run/xbond/client-status.json"
 
             [[paths]]
@@ -106,6 +148,20 @@ public class XBondClientConfigServiceTests
         Assert.Contains("duplicate_loss_threshold = 0.05", rendered);
         Assert.Contains("backup_loss_disable_threshold = 0.25", rendered);
         Assert.Contains("reorder_hold_ms = 15", rendered);
+        Assert.Contains("recovery_enabled = true", rendered);
+        Assert.Contains("recovery_enter_degraded_ticks = 5", rendered);
+        Assert.Contains("recovery_exit_clean_ticks = 25", rendered);
+        Assert.Contains("recovery_degraded_loss_threshold = 0.1", rendered);
+        Assert.Contains("recovery_degraded_late_threshold = 0.05", rendered);
+        Assert.Contains("recovery_degraded_jitter_ms = 100", rendered);
+        Assert.Contains("recovery_degraded_stale_ack_ms = 2000", rendered);
+        Assert.Contains("recovery_degraded_queue_pressure = 0.75", rendered);
+        Assert.Contains("recovery_clean_loss_threshold = 0.01", rendered);
+        Assert.Contains("recovery_clean_late_threshold = 0.004", rendered);
+        Assert.Contains("recovery_clean_jitter_ms = 30", rendered);
+        Assert.Contains("recovery_clean_stale_ack_ms = 800", rendered);
+        Assert.Contains("recovery_clean_queue_pressure = 0.35", rendered);
+        Assert.Contains("recovery_path_loss_exclude_threshold = 0.85", rendered);
         Assert.Contains("runtime_status_path = \"/run/xbond/client-status.json\"", rendered);
         Assert.Contains("name = \"XNetwork Wi-Fi Asia\"", rendered);
         Assert.Contains("interface_name = \"wlan0\"", rendered);

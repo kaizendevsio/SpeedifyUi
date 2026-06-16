@@ -48,6 +48,85 @@ impl Default for RedundancyPolicyConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryConfig {
+    pub enabled: bool,
+    pub enter_degraded_ticks: u32,
+    pub exit_clean_ticks: u32,
+    pub degraded_loss_threshold: f64,
+    pub degraded_late_threshold: f64,
+    pub degraded_jitter_ms: f64,
+    pub degraded_stale_ack_ms: u64,
+    pub degraded_queue_pressure: f64,
+    pub clean_loss_threshold: f64,
+    pub clean_late_threshold: f64,
+    pub clean_jitter_ms: f64,
+    pub clean_stale_ack_ms: u64,
+    pub clean_queue_pressure: f64,
+    pub path_loss_exclude_threshold: f64,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            enter_degraded_ticks: 3,
+            exit_clean_ticks: 20,
+            degraded_loss_threshold: 0.08,
+            degraded_late_threshold: 0.03,
+            degraded_jitter_ms: 80.0,
+            degraded_stale_ack_ms: 1_500,
+            degraded_queue_pressure: 0.70,
+            clean_loss_threshold: 0.02,
+            clean_late_threshold: 0.01,
+            clean_jitter_ms: 40.0,
+            clean_stale_ack_ms: 1_000,
+            clean_queue_pressure: 0.50,
+            path_loss_exclude_threshold: 0.95,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecoveryStatus {
+    pub active: bool,
+    pub reason: String,
+    pub eligible_path_ids: Vec<u16>,
+    pub degraded_ticks: u32,
+    pub clean_ticks: u32,
+}
+
+impl Default for RecoveryStatus {
+    fn default() -> Self {
+        Self {
+            active: false,
+            reason: "Recovery redundancy is inactive.".to_string(),
+            eligible_path_ids: Vec::new(),
+            degraded_ticks: 0,
+            clean_ticks: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryState {
+    pub active: bool,
+    pub degraded_ticks: u32,
+    pub clean_ticks: u32,
+    pub reason: String,
+}
+
+impl Default for RecoveryState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            degraded_ticks: 0,
+            clean_ticks: 0,
+            reason: "Recovery redundancy is inactive.".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScheduleMode {
@@ -128,6 +207,161 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
             fec_path_ids: Vec::new(),
         },
     }
+}
+
+pub fn update_recovery_state(
+    state: &mut RecoveryState,
+    policy: RedundancyPolicy,
+    paths: &[PathHealthSnapshot],
+    config: RecoveryConfig,
+) -> RecoveryStatus {
+    let eligible_paths = paths
+        .iter()
+        .filter(|path| is_recovery_path_eligible(path, config))
+        .collect::<Vec<_>>();
+    let eligible_path_ids = eligible_paths
+        .iter()
+        .map(|path| path.path_id)
+        .collect::<Vec<_>>();
+
+    if !config.enabled {
+        *state = RecoveryState {
+            reason: "Recovery redundancy is disabled by config.".to_string(),
+            ..RecoveryState::default()
+        };
+        return recovery_status(state, eligible_path_ids);
+    }
+
+    if !matches!(
+        policy,
+        RedundancyPolicy::Reliable | RedundancyPolicy::Balanced
+    ) {
+        *state = RecoveryState {
+            reason: "Recovery redundancy is inactive for the selected policy.".to_string(),
+            ..RecoveryState::default()
+        };
+        return recovery_status(state, eligible_path_ids);
+    }
+
+    if eligible_paths.len() < 2 {
+        *state = RecoveryState {
+            reason: "Recovery redundancy needs at least two usable paths.".to_string(),
+            ..RecoveryState::default()
+        };
+        return recovery_status(state, eligible_path_ids);
+    }
+
+    let all_degraded = eligible_paths
+        .iter()
+        .all(|path| is_recovery_path_degraded(path, config));
+    let any_clean = eligible_paths
+        .iter()
+        .any(|path| is_recovery_path_clean(path, config));
+
+    if state.active {
+        if any_clean {
+            state.clean_ticks = state.clean_ticks.saturating_add(1);
+            state.reason = format!(
+                "Recovery active; waiting for clean path hysteresis ({}/{}).",
+                state.clean_ticks, config.exit_clean_ticks
+            );
+            if state.clean_ticks >= config.exit_clean_ticks {
+                state.active = false;
+                state.degraded_ticks = 0;
+                state.clean_ticks = 0;
+                state.reason =
+                    "Recovery redundancy exited after a clean path stayed healthy.".to_string();
+            }
+        } else {
+            state.clean_ticks = 0;
+            state.reason = "Recovery active because all usable paths remain degraded.".to_string();
+        }
+    } else if all_degraded {
+        state.degraded_ticks = state.degraded_ticks.saturating_add(1);
+        state.clean_ticks = 0;
+        state.reason = format!(
+            "All usable paths are degraded ({}/{}).",
+            state.degraded_ticks, config.enter_degraded_ticks
+        );
+        if state.degraded_ticks >= config.enter_degraded_ticks {
+            state.active = true;
+            state.clean_ticks = 0;
+            state.reason =
+                "Recovery active; duplicating all traffic across usable paths.".to_string();
+        }
+    } else {
+        state.degraded_ticks = 0;
+        state.clean_ticks = 0;
+        state.reason = "Recovery inactive; at least one usable path is healthy.".to_string();
+    }
+
+    recovery_status(state, eligible_path_ids)
+}
+
+pub fn expand_schedule_for_recovery(
+    schedule: &SchedulePlan,
+    roles: &[ScoredPath],
+    config: RecoveryConfig,
+) -> SchedulePlan {
+    let Some(anchor_path_id) = schedule.anchor_path_id else {
+        return schedule.clone();
+    };
+
+    let duplicate_path_ids = roles
+        .iter()
+        .filter(|path| path.path.path_id != anchor_path_id)
+        .filter(|path| is_recovery_path_eligible(&path.path, config))
+        .map(|path| path.path.path_id)
+        .collect::<Vec<_>>();
+
+    SchedulePlan {
+        mode: schedule.mode,
+        anchor_path_id: schedule.anchor_path_id,
+        data_path_ids: schedule.data_path_ids.clone(),
+        duplicate_path_ids,
+        fec_path_ids: Vec::new(),
+    }
+}
+
+fn recovery_status(state: &RecoveryState, eligible_path_ids: Vec<u16>) -> RecoveryStatus {
+    RecoveryStatus {
+        active: state.active,
+        reason: state.reason.clone(),
+        eligible_path_ids,
+        degraded_ticks: state.degraded_ticks,
+        clean_ticks: state.clean_ticks,
+    }
+}
+
+fn is_recovery_path_eligible(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
+    path.hard_demotion_reason().is_none()
+        && path.loss_rate < config.path_loss_exclude_threshold.clamp(0.0, 1.0)
+}
+
+fn is_recovery_path_degraded(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
+    path.loss_rate >= config.degraded_loss_threshold
+        || path.late_rate >= config.degraded_late_threshold
+        || path
+            .jitter_ms
+            .is_some_and(|jitter| jitter >= config.degraded_jitter_ms)
+        || path
+            .stale_ack_ms
+            .is_some_and(|age| age >= config.degraded_stale_ack_ms)
+        || path.send_failure_streak >= 1
+        || path.queue_pressure >= config.degraded_queue_pressure
+}
+
+fn is_recovery_path_clean(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
+    path.loss_rate < config.clean_loss_threshold
+        && path.late_rate < config.clean_late_threshold
+        && path
+            .jitter_ms
+            .is_none_or(|jitter| jitter < config.clean_jitter_ms)
+        && path
+            .stale_ack_ms
+            .is_none_or(|age| age < config.clean_stale_ack_ms)
+        && path.send_failure_streak == 0
+        && path.queue_pressure < config.clean_queue_pressure
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +559,12 @@ mod tests {
     fn path_with_loss(path_id: u16, rtt_ms: f64, loss_rate: f64) -> PathHealthSnapshot {
         let mut path = path(path_id, rtt_ms, 0.0);
         path.loss_rate = loss_rate;
+        path
+    }
+
+    fn path_with_jitter(path_id: u16, rtt_ms: f64, jitter_ms: f64) -> PathHealthSnapshot {
+        let mut path = path(path_id, rtt_ms, 0.0);
+        path.jitter_ms = Some(jitter_ms);
         path
     }
 
@@ -561,5 +801,134 @@ mod tests {
                 policy_config,
             )
         );
+    }
+
+    #[test]
+    fn recovery_enters_after_all_usable_paths_are_degraded() {
+        let config = RecoveryConfig::default();
+        let health = vec![
+            path_with_loss(1, 40.0, 0.10),
+            path_with_jitter(2, 90.0, 90.0),
+        ];
+        let mut state = RecoveryState::default();
+
+        for _ in 0..config.enter_degraded_ticks.saturating_sub(1) {
+            let status =
+                update_recovery_state(&mut state, RedundancyPolicy::Balanced, &health, config);
+            assert!(!status.active);
+        }
+
+        let status = update_recovery_state(&mut state, RedundancyPolicy::Balanced, &health, config);
+        assert!(status.active);
+        assert_eq!(status.eligible_path_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn recovery_stays_inactive_when_one_usable_path_is_clean() {
+        let config = RecoveryConfig::default();
+        let health = vec![path(1, 25.0, 0.0), path_with_loss(2, 90.0, 0.20)];
+        let mut state = RecoveryState::default();
+
+        for _ in 0..config.enter_degraded_ticks + 2 {
+            let status =
+                update_recovery_state(&mut state, RedundancyPolicy::Reliable, &health, config);
+            assert!(!status.active);
+        }
+    }
+
+    #[test]
+    fn fast_policy_does_not_enter_recovery() {
+        let config = RecoveryConfig::default();
+        let health = vec![path_with_loss(1, 40.0, 0.20), path_with_loss(2, 90.0, 0.20)];
+        let mut state = RecoveryState::default();
+
+        for _ in 0..config.enter_degraded_ticks + 2 {
+            let status = update_recovery_state(&mut state, RedundancyPolicy::Fast, &health, config);
+            assert!(!status.active);
+        }
+    }
+
+    #[test]
+    fn recovery_expands_schedule_and_duplicates_bulk() {
+        let config = RecoveryConfig::default();
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_loss(2, 90.0, 0.12),
+                path_with_loss(3, 100.0, 0.14),
+            ],
+            1,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+        let health = roles
+            .iter()
+            .map(|role| role.path.clone())
+            .collect::<Vec<_>>();
+        let plans = precompute_transmission_plans(
+            &expanded,
+            RedundancyPolicy::Reliable,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert_eq!(expanded.data_path_ids.len(), 1);
+        assert_eq!(expanded.duplicate_path_ids.len(), 2);
+        assert_eq!(
+            plans
+                .bulk
+                .iter()
+                .map(|transmission| transmission.packet_kind)
+                .collect::<Vec<_>>(),
+            vec![
+                PacketKind::Data,
+                PacketKind::Duplicate,
+                PacketKind::Duplicate
+            ]
+        );
+    }
+
+    #[test]
+    fn recovery_excludes_nearly_dead_or_hard_failed_paths() {
+        let config = RecoveryConfig::default();
+        let mut repeated_failure = path_with_loss(3, 120.0, 0.10);
+        repeated_failure.send_failure_streak = 2;
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_loss(2, 90.0, 0.96),
+                repeated_failure,
+                path_with_loss(4, 100.0, 0.14),
+            ],
+            1,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+
+        assert!(!expanded.duplicate_path_ids.contains(&2));
+        assert!(!expanded.duplicate_path_ids.contains(&3));
+        assert_eq!(expanded.duplicate_path_ids, vec![4]);
+    }
+
+    #[test]
+    fn recovery_exits_after_clean_path_hysteresis() {
+        let config = RecoveryConfig::default();
+        let degraded = vec![path_with_loss(1, 40.0, 0.10), path_with_loss(2, 90.0, 0.20)];
+        let clean = vec![path(1, 25.0, 0.0), path_with_loss(2, 90.0, 0.20)];
+        let mut state = RecoveryState::default();
+
+        for _ in 0..config.enter_degraded_ticks {
+            update_recovery_state(&mut state, RedundancyPolicy::Balanced, &degraded, config);
+        }
+        assert!(state.active);
+
+        for _ in 0..config.exit_clean_ticks.saturating_sub(1) {
+            let status =
+                update_recovery_state(&mut state, RedundancyPolicy::Balanced, &clean, config);
+            assert!(status.active);
+        }
+
+        let status = update_recovery_state(&mut state, RedundancyPolicy::Balanced, &clean, config);
+        assert!(!status.active);
     }
 }

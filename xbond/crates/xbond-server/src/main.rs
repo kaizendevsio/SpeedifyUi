@@ -1067,6 +1067,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn recovery_return_targets_duplicate_bulk_to_all_scheduled_paths() {
+        let peer_2: SocketAddr = "192.0.2.2:2000".parse().unwrap();
+        let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
+        let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
+        let peers = HashMap::from([(2, peer_2), (3, peer_3), (5, peer_5)]);
+        let control = build_return_control(
+            SchedulePlan {
+                mode: ScheduleMode::AnchorDuplicate1,
+                anchor_path_id: Some(5),
+                data_path_ids: vec![5],
+                duplicate_path_ids: vec![2, 3],
+                fec_path_ids: Vec::new(),
+            },
+            RedundancyPolicy::Reliable,
+            RedundancyPolicyConfig::default(),
+            vec![
+                healthy_path(5, 20.0, 0.10),
+                healthy_path(2, 80.0, 0.12),
+                healthy_path(3, 90.0, 0.14),
+            ],
+        );
+
+        assert_eq!(
+            select_return_targets(Some(&control), &peers, 1_200),
+            vec![
+                (5, peer_5, PacketKind::Data),
+                (2, peer_2, PacketKind::Duplicate),
+                (3, peer_3, PacketKind::Duplicate),
+            ]
+        );
+    }
+
     fn healthy_path(path_id: u16, rtt_ms: f64, loss_rate: f64) -> PathHealthSnapshot {
         PathHealthSnapshot {
             path_id,

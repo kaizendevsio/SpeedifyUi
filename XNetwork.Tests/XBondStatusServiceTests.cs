@@ -93,6 +93,13 @@ public class XBondStatusServiceTests
                 "production_ready": false,
                 "message": "FEC is enabled"
               },
+              "recovery": {
+                "active": true,
+                "reason": "Recovery active; duplicating all traffic across usable paths.",
+                "eligible_path_ids": [1, 2, 3],
+                "degraded_ticks": 4,
+                "clean_ticks": 0
+              },
               "late_packets_dropped": 1,
               "reorder": {
                 "return_path": {
@@ -131,6 +138,11 @@ public class XBondStatusServiceTests
         Assert.Equal((ulong)3, status.FecPacketsSkipped);
         Assert.True(status.Fec.Configured);
         Assert.False(status.Fec.ProductionReady);
+        Assert.True(status.Recovery.Active);
+        Assert.Equal([1, 2, 3], status.Recovery.EligiblePathIds);
+        Assert.Equal(4, status.Recovery.DegradedTicks);
+        Assert.Equal(0, status.Recovery.CleanTicks);
+        Assert.Contains("duplicating all traffic", status.Recovery.Reason);
         Assert.Equal((ulong)1, status.LatePacketsDropped);
         Assert.Equal((ulong)1, status.Reorder.ReturnPath.PendingDepth);
         Assert.Equal((ulong)4, status.Reorder.ReturnPath.LateDuplicates);

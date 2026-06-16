@@ -28,7 +28,8 @@ pub use protocol::{
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use scheduler::{
     build_schedule, build_transmission_plan, build_transmission_plan_for_packet,
-    precompute_transmission_plans, PacketTransmissionPlans, RedundancyPolicy,
+    expand_schedule_for_recovery, precompute_transmission_plans, update_recovery_state,
+    PacketTransmissionPlans, RecoveryConfig, RecoveryState, RecoveryStatus, RedundancyPolicy,
     RedundancyPolicyConfig, ScheduleControlMessage, ScheduleMode, SchedulePlan,
     ScheduledTransmission,
 };

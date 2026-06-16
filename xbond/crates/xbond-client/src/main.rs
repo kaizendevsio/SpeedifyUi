@@ -18,14 +18,16 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use xbond_core::{
-    build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload_into, is_ipv4_packet,
-    precompute_transmission_plans, select_path_roles, select_path_roles_with_state, ClientConfig,
-    FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus,
-    ProbeAggregate, ProbePathStats, ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig,
-    ReorderedPacket, RoleSelectionConfig, RoleSelectionState, RouteVerification,
-    ScheduleControlMessage, ScheduleMode, SchedulePlan, XBondDiagnosticOverrideStatus,
-    XBondFecStatus, XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondProcessStatus,
-    XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload_into,
+    expand_schedule_for_recovery, is_ipv4_packet, precompute_transmission_plans, select_path_roles,
+    select_path_roles_with_state, update_recovery_state, ClientConfig, FrameReceiver, PacketKind,
+    PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats,
+    ReceiveOutcome, RecoveryConfig, RecoveryState, RecoveryStatus, RedundancyPolicy,
+    RedundancyPolicyConfig, ReorderedPacket, RoleSelectionConfig, RoleSelectionState,
+    RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
+    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
+    XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus,
+    XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -812,6 +814,31 @@ fn effective_mode_and_policy(
         .unwrap_or((config.mode, config.redundancy_policy))
 }
 
+fn build_effective_schedule(
+    mode: ScheduleMode,
+    roles: &[xbond_core::ScoredPath],
+    recovery_status: &RecoveryStatus,
+    recovery_config: RecoveryConfig,
+) -> SchedulePlan {
+    let schedule = build_schedule(mode, roles);
+    if recovery_status.active {
+        expand_schedule_for_recovery(&schedule, roles, recovery_config)
+    } else {
+        schedule
+    }
+}
+
+fn effective_transmission_policy(
+    effective_policy: RedundancyPolicy,
+    recovery_status: &RecoveryStatus,
+) -> RedundancyPolicy {
+    if recovery_status.active {
+        RedundancyPolicy::Reliable
+    } else {
+        effective_policy
+    }
+}
+
 fn schedule_control_signature(
     schedule: &SchedulePlan,
     redundancy_policy: RedundancyPolicy,
@@ -1001,6 +1028,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut active_override: Option<ActiveScheduleOverride> = None;
     let mut role_state = RoleSelectionState::default();
     let role_config = RoleSelectionConfig::default();
+    let recovery_config = config.recovery_config();
+    let mut recovery_state = RecoveryState::default();
     let mut health = tunnel_health(&config, &path_runtime, &sockets);
     let mut roles = select_path_roles_with_state(
         &health,
@@ -1010,9 +1039,17 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     );
     let (mut effective_mode, mut effective_policy) =
         effective_mode_and_policy(&config, &mut active_override);
-    let mut schedule = build_schedule(effective_mode, &roles);
+    let mut recovery_status = update_recovery_state(
+        &mut recovery_state,
+        effective_policy,
+        &health,
+        recovery_config,
+    );
+    let mut schedule =
+        build_effective_schedule(effective_mode, &roles, &recovery_status, recovery_config);
+    let mut transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
     let mut transmission_plans =
-        precompute_transmission_plans(&schedule, effective_policy, &health, policy_config);
+        precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
     let mut last_control_signature: Option<ScheduleControlSignature>;
     let mut last_control_sent_at: Instant;
 
@@ -1063,6 +1100,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &schedule,
         effective_mode,
         effective_policy,
+        &recovery_status,
         active_override.as_ref(),
         role_state.schedule_change_count,
         &return_reorder,
@@ -1072,7 +1110,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     send_tunnel_schedule_control(
         &config,
         &schedule,
-        effective_policy,
+        transmission_policy,
         &mut path_runtime,
         &sockets,
         &key,
@@ -1082,7 +1120,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         options.trace_packets,
     )
     .await?;
-    last_control_signature = Some(schedule_control_signature(&schedule, effective_policy));
+    last_control_signature = Some(schedule_control_signature(&schedule, transmission_policy));
     last_control_sent_at = Instant::now();
 
     loop {
@@ -1121,18 +1159,26 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 );
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);
-                schedule = build_schedule(effective_mode, &roles);
+                recovery_status =
+                    update_recovery_state(&mut recovery_state, effective_policy, &health, recovery_config);
+                schedule = build_effective_schedule(
+                    effective_mode,
+                    &roles,
+                    &recovery_status,
+                    recovery_config,
+                );
+                transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
-                    precompute_transmission_plans(&schedule, effective_policy, &health, policy_config);
+                    precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
                 let control_signature =
-                    schedule_control_signature(&schedule, effective_policy);
+                    schedule_control_signature(&schedule, transmission_policy);
                 if last_control_signature.as_ref() != Some(&control_signature)
                     || last_control_sent_at.elapsed() >= Duration::from_secs(5)
                 {
                     send_tunnel_schedule_control(
                         &config,
                         &schedule,
-                        effective_policy,
+                        transmission_policy,
                         &mut path_runtime,
                         &sockets,
                         &key,
@@ -1153,6 +1199,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &schedule,
                     effective_mode,
                     effective_policy,
+                    &recovery_status,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
@@ -1176,16 +1223,24 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     handle_control_request(envelope.request, &mut active_override);
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);
-                schedule = build_schedule(effective_mode, &roles);
+                recovery_status =
+                    update_recovery_state(&mut recovery_state, effective_policy, &health, recovery_config);
+                schedule = build_effective_schedule(
+                    effective_mode,
+                    &roles,
+                    &recovery_status,
+                    recovery_config,
+                );
+                transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
-                    precompute_transmission_plans(&schedule, effective_policy, &health, policy_config);
+                    precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
                 let control_signature =
-                    schedule_control_signature(&schedule, effective_policy);
+                    schedule_control_signature(&schedule, transmission_policy);
                 if response.ok {
                     match send_tunnel_schedule_control(
                         &config,
                         &schedule,
-                        effective_policy,
+                        transmission_policy,
                         &mut path_runtime,
                         &sockets,
                         &key,
@@ -1214,6 +1269,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &schedule,
                     effective_mode,
                     effective_policy,
+                    &recovery_status,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
@@ -2113,6 +2169,7 @@ fn write_tunnel_runtime_status(
     schedule: &SchedulePlan,
     effective_mode: ScheduleMode,
     effective_policy: RedundancyPolicy,
+    recovery_status: &RecoveryStatus,
     active_override: Option<&ActiveScheduleOverride>,
     schedule_change_count: u64,
     return_reorder: &PacketReorderBuffer,
@@ -2173,6 +2230,7 @@ fn write_tunnel_runtime_status(
                 duplicate_send_skips: counters.duplicate_send_skips,
                 fec_send_skips: counters.fec_send_skips,
             },
+            recovery: recovery_status.clone(),
             diagnostic_override: active_override.map(ActiveScheduleOverride::status),
             schedule_change_count,
             message: Some("XBond tunnel is running.".to_string()),
@@ -2672,6 +2730,7 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         late_packets_dropped: runtime.late_packets_dropped,
         reorder: runtime.reorder,
         process: runtime.process,
+        recovery: runtime.recovery,
         message: runtime.message.unwrap_or_else(|| {
             if config.runtime_status_path.is_some() {
                 "XBond prototype status is config-derived until the runtime status file exists."

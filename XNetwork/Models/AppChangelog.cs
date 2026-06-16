@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.36";
+    public const string CurrentVersion = "xbond-2026.06.37";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Added XBond full-redundant recovery mode.",
+            Changes =
+            [
+                "Balanced and Reliable policies now enter recovery when every usable live path is degraded.",
+                "Recovery mode duplicates all traffic, including bulk TCP, across every usable path until a clean path stays healthy for the exit window.",
+                "Runtime status now reports whether recovery is active, why it entered or exited, and which paths are eligible."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.36",
             Date = "2026-06-16",
             Summary = "Aligned XBond route checks with the dashboard latency target.",
             Changes =

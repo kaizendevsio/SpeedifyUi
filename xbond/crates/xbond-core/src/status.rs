@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::health::{PathRole, ScoredPath};
 use crate::reorder::ReorderStats;
-use crate::scheduler::{RedundancyPolicy, ScheduleMode, SchedulePlan};
+use crate::scheduler::{RecoveryStatus, RedundancyPolicy, ScheduleMode, SchedulePlan};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct XBondStatus {
@@ -30,6 +30,7 @@ pub struct XBondStatus {
     pub late_packets_dropped: u64,
     pub reorder: XBondReorderStatus,
     pub process: XBondProcessStatus,
+    pub recovery: RecoveryStatus,
     pub message: String,
 }
 
@@ -287,6 +288,8 @@ pub struct XBondRuntimeStatus {
     pub reorder: XBondReorderStatus,
     #[serde(default)]
     pub process: XBondProcessStatus,
+    #[serde(default)]
+    pub recovery: RecoveryStatus,
     #[serde(default)]
     pub diagnostic_override: Option<XBondDiagnosticOverrideStatus>,
     #[serde(default)]

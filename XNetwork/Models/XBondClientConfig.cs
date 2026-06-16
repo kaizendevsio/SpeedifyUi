@@ -24,6 +24,34 @@ public sealed class XBondClientConfig
 
     public int ReorderHoldMs { get; set; } = 25;
 
+    public bool RecoveryEnabled { get; set; } = true;
+
+    public int RecoveryEnterDegradedTicks { get; set; } = 3;
+
+    public int RecoveryExitCleanTicks { get; set; } = 20;
+
+    public double RecoveryDegradedLossThreshold { get; set; } = 0.08;
+
+    public double RecoveryDegradedLateThreshold { get; set; } = 0.03;
+
+    public double RecoveryDegradedJitterMs { get; set; } = 80;
+
+    public ulong RecoveryDegradedStaleAckMs { get; set; } = 1_500;
+
+    public double RecoveryDegradedQueuePressure { get; set; } = 0.70;
+
+    public double RecoveryCleanLossThreshold { get; set; } = 0.02;
+
+    public double RecoveryCleanLateThreshold { get; set; } = 0.01;
+
+    public double RecoveryCleanJitterMs { get; set; } = 40;
+
+    public ulong RecoveryCleanStaleAckMs { get; set; } = 1_000;
+
+    public double RecoveryCleanQueuePressure { get; set; } = 0.50;
+
+    public double RecoveryPathLossExcludeThreshold { get; set; } = 0.95;
+
     public string RuntimeStatusPath { get; set; } = "/run/xbond/client-status.json";
 
     public List<XBondClientPathConfig> Paths { get; set; } = new();
