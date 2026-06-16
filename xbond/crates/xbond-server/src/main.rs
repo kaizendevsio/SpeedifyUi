@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
@@ -13,8 +15,8 @@ use xbond_core::{
     build_transmission_plan, encode_sealed_payload_into, is_ipv4_packet,
     precompute_transmission_plans, FrameReceiver, PacketKind, PacketReorderBuffer,
     PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderedPacket, ScheduleControlMessage, SchedulePlan, XBondFrame,
-    XBondHeader, XBondKey, XBondTun, XorFecBlock,
+    RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ScheduleControlMessage, SchedulePlan,
+    XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -33,6 +35,18 @@ struct Args {
 
     #[arg(long, default_value_t = 120)]
     realtime_deadline_ms: u64,
+
+    #[arg(long, default_value_t = 50)]
+    ingress_reorder_normal_hold_ms: u64,
+
+    #[arg(long, default_value_t = 500)]
+    ingress_reorder_recovery_hold_ms: u64,
+
+    #[arg(long, default_value_t = 8192)]
+    ingress_reorder_capacity: usize,
+
+    #[arg(long, default_value = "/run/xbond/server-status.json")]
+    status_path: PathBuf,
 
     #[arg(long)]
     json_events: bool,
@@ -89,7 +103,35 @@ struct ReturnControl {
     schedule: SchedulePlan,
     policy: RedundancyPolicy,
     policy_config: RedundancyPolicyConfig,
+    recovery_active: bool,
     transmission_plans: PacketTransmissionPlans,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerRuntimeStatus {
+    running: bool,
+    bind: String,
+    tun: Option<String>,
+    updated_at_micros: u64,
+    return_schedule: Option<ServerReturnScheduleStatus>,
+    ingress_reorder: ServerIngressReorderStatus,
+    counters: TunnelCounters,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerReturnScheduleStatus {
+    policy: RedundancyPolicy,
+    recovery_active: bool,
+    schedule: SchedulePlan,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerIngressReorderStatus {
+    current_hold_ms: u64,
+    normal_hold_ms: u64,
+    recovery_hold_ms: u64,
+    capacity: usize,
+    stats: ReorderStats,
 }
 
 #[tokio::main]
@@ -103,6 +145,9 @@ async fn main() -> Result<()> {
         Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
         None => None,
     };
+    let normal_ingress_hold_micros = args.ingress_reorder_normal_hold_ms.max(1) * 1_000;
+    let recovery_ingress_hold_micros = args.ingress_reorder_recovery_hold_ms.max(1) * 1_000;
+    let mut current_ingress_hold_micros = normal_ingress_hold_micros;
     let mut data_packets_received = 0u64;
     let mut data_packets_forwarded = 0u64;
     let mut fec_packets_received = 0u64;
@@ -110,7 +155,8 @@ async fn main() -> Result<()> {
     let mut invalid_fec_packets_dropped = 0u64;
     let mut non_ipv4_packets_dropped = 0u64;
     let mut fec_recovery = FecRecovery::new(8192);
-    let mut reorder = PacketReorderBuffer::new(8192, args.realtime_deadline_ms.min(50) * 1_000);
+    let mut reorder =
+        PacketReorderBuffer::new(args.ingress_reorder_capacity, current_ingress_hold_micros);
     let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
     let mut return_senders: HashMap<u16, ReturnSenderHandle> = HashMap::new();
     let mut return_control: Option<ReturnControl> = None;
@@ -120,6 +166,8 @@ async fn main() -> Result<()> {
     let mut reorder_tick = time::interval(Duration::from_millis(
         args.realtime_deadline_ms.clamp(5, 50),
     ));
+    let mut status_tick = time::interval(Duration::from_secs(1));
+    let mut json_status_event_counter = 0u32;
 
     let (udp_frame_tx, mut udp_frame_rx) =
         mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
@@ -184,11 +232,29 @@ async fn main() -> Result<()> {
                 "event": "listening",
                 "bind": args.bind,
                 "tun": tun.as_ref().map(|tun| tun.name()),
+                "ingress_reorder_normal_hold_ms": args.ingress_reorder_normal_hold_ms,
+                "ingress_reorder_recovery_hold_ms": args.ingress_reorder_recovery_hold_ms,
+                "ingress_reorder_capacity": args.ingress_reorder_capacity,
             })
         );
     } else {
         println!("xbond-server listening on {}", args.bind);
     }
+    write_server_status(
+        &args,
+        tun.as_ref(),
+        return_control.as_ref(),
+        &reorder,
+        TunnelCounters {
+            data_packets_received,
+            data_packets_forwarded,
+            fec_packets_received,
+            fec_packets_recovered,
+            invalid_fec_packets_dropped,
+            non_ipv4_packets_dropped,
+        },
+        current_ingress_hold_micros,
+    )?;
     loop {
         tokio::select! {
             Some(inbound) = udp_frame_rx.recv() => {
@@ -198,6 +264,8 @@ async fn main() -> Result<()> {
                     peers.clear();
                     return_senders.clear();
                     return_control = None;
+                    current_ingress_hold_micros = normal_ingress_hold_micros;
+                    reorder.set_hold_micros(normal_ingress_hold_micros);
                 }
                 last_session_id = frame.header.session_id;
                 if is_tunnel_payload(frame.header.kind)
@@ -215,7 +283,30 @@ async fn main() -> Result<()> {
                         previous.schedule != control.schedule
                             || previous.policy != control.policy
                             || previous.policy_config != control.policy_config
+                            || previous.recovery_active != control.recovery_active
                     });
+                    let desired_hold = if control.recovery_active {
+                        recovery_ingress_hold_micros
+                    } else {
+                        normal_ingress_hold_micros
+                    };
+                    if current_ingress_hold_micros != desired_hold {
+                        current_ingress_hold_micros = desired_hold;
+                        reorder.set_hold_micros(desired_hold);
+                        if args.json_events {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "ingress-reorder-hold-updated",
+                                    "session_id": frame.header.session_id,
+                                    "recovery_active": control.recovery_active,
+                                    "current_hold_ms": current_ingress_hold_micros / 1_000,
+                                    "normal_hold_ms": args.ingress_reorder_normal_hold_ms,
+                                    "recovery_hold_ms": args.ingress_reorder_recovery_hold_ms,
+                                })
+                            );
+                        }
+                    }
                     return_control = Some(control);
                     if args.json_events && schedule_changed {
                         println!(
@@ -224,6 +315,8 @@ async fn main() -> Result<()> {
                                 "event": "return-schedule-updated",
                                 "session_id": frame.header.session_id,
                                 "policy": return_control.as_ref().map(|control| control.policy),
+                                "recovery_active": return_control.as_ref().is_some_and(|control| control.recovery_active),
+                                "ingress_reorder_hold_ms": current_ingress_hold_micros / 1_000,
                                 "paths": return_control.as_ref().map(|control| build_transmission_plan(&control.schedule))
                                     .unwrap_or_default()
                                     .iter()
@@ -417,6 +510,43 @@ async fn main() -> Result<()> {
                 if let Some(tun) = &mut tun {
                     let delivered = write_reordered_packets(tun, reorder.drain_ready(now_micros()))?;
                     data_packets_forwarded = data_packets_forwarded.saturating_add(delivered);
+                }
+            }
+
+            _ = status_tick.tick() => {
+                let counters = TunnelCounters {
+                    data_packets_received,
+                    data_packets_forwarded,
+                    fec_packets_received,
+                    fec_packets_recovered,
+                    invalid_fec_packets_dropped,
+                    non_ipv4_packets_dropped,
+                };
+                write_server_status(
+                    &args,
+                    tun.as_ref(),
+                    return_control.as_ref(),
+                    &reorder,
+                    counters,
+                    current_ingress_hold_micros,
+                )?;
+                if args.json_events {
+                    json_status_event_counter = json_status_event_counter.saturating_add(1);
+                    if json_status_event_counter >= 5 {
+                        json_status_event_counter = 0;
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "server-status",
+                                "recovery_active": return_control.as_ref().is_some_and(|control| control.recovery_active),
+                                "ingress_reorder": {
+                                    "current_hold_ms": current_ingress_hold_micros / 1_000,
+                                    "stats": reorder.stats(),
+                                },
+                                "counters": counters,
+                            })
+                        );
+                    }
                 }
             }
 
@@ -715,7 +845,7 @@ fn fec_base_sequence(sequence: u64) -> u64 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 struct TunnelCounters {
     data_packets_received: u64,
     data_packets_forwarded: u64,
@@ -723,6 +853,43 @@ struct TunnelCounters {
     fec_packets_recovered: u64,
     invalid_fec_packets_dropped: u64,
     non_ipv4_packets_dropped: u64,
+}
+
+fn write_server_status(
+    args: &Args,
+    tun: Option<&XBondTun>,
+    return_control: Option<&ReturnControl>,
+    reorder: &PacketReorderBuffer,
+    counters: TunnelCounters,
+    current_ingress_hold_micros: u64,
+) -> Result<()> {
+    if let Some(parent) = args.status_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let status = ServerRuntimeStatus {
+        running: true,
+        bind: args.bind.clone(),
+        tun: tun.map(|tun| tun.name().to_string()),
+        updated_at_micros: now_micros(),
+        return_schedule: return_control.map(|control| ServerReturnScheduleStatus {
+            policy: control.policy,
+            recovery_active: control.recovery_active,
+            schedule: control.schedule.clone(),
+        }),
+        ingress_reorder: ServerIngressReorderStatus {
+            current_hold_ms: current_ingress_hold_micros / 1_000,
+            normal_hold_ms: args.ingress_reorder_normal_hold_ms,
+            recovery_hold_ms: args.ingress_reorder_recovery_hold_ms,
+            capacity: args.ingress_reorder_capacity,
+            stats: reorder.stats(),
+        },
+        counters,
+    };
+    let json = serde_json::to_vec(&status)?;
+    std::fs::write(&args.status_path, json)
+        .with_context(|| format!("failed to write {}", args.status_path.display()))
 }
 
 fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
@@ -768,6 +935,7 @@ fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
             control.redundancy_policy,
             control.policy_config,
             control.paths,
+            control.recovery_active,
         ));
     }
 
@@ -777,6 +945,7 @@ fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
         RedundancyPolicy::Reliable,
         RedundancyPolicyConfig::default(),
         Vec::new(),
+        false,
     ))
 }
 
@@ -785,6 +954,7 @@ fn build_return_control(
     policy: RedundancyPolicy,
     policy_config: RedundancyPolicyConfig,
     paths: Vec<PathHealthSnapshot>,
+    recovery_active: bool,
 ) -> ReturnControl {
     let transmission_plans =
         precompute_transmission_plans(&schedule, policy, &paths, policy_config);
@@ -792,6 +962,7 @@ fn build_return_control(
         schedule,
         policy,
         policy_config,
+        recovery_active,
         transmission_plans,
     }
 }
@@ -999,6 +1170,34 @@ mod tests {
 
         assert_eq!(control.schedule, schedule);
         assert_eq!(control.policy, RedundancyPolicy::Reliable);
+        assert!(!control.recovery_active);
+    }
+
+    #[test]
+    fn schedule_control_frame_carries_recovery_state() {
+        let schedule = SchedulePlan {
+            mode: ScheduleMode::AnchorDuplicate1,
+            anchor_path_id: Some(5),
+            data_path_ids: vec![5],
+            duplicate_path_ids: vec![3],
+            fec_path_ids: Vec::new(),
+        };
+        let message = ScheduleControlMessage {
+            schedule: schedule.clone(),
+            redundancy_policy: RedundancyPolicy::Reliable,
+            policy_config: RedundancyPolicyConfig::default(),
+            paths: Vec::new(),
+            recovery_active: true,
+        };
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Control, 7, 1, 2, 5),
+            serde_json::to_vec(&message).unwrap(),
+        );
+
+        let control = parse_return_control(&frame).unwrap();
+
+        assert_eq!(control.schedule, schedule);
+        assert!(control.recovery_active);
     }
 
     #[test]
@@ -1017,6 +1216,7 @@ mod tests {
             RedundancyPolicy::Reliable,
             RedundancyPolicyConfig::default(),
             Vec::new(),
+            false,
         );
 
         assert_eq!(
@@ -1059,6 +1259,7 @@ mod tests {
             RedundancyPolicy::Balanced,
             RedundancyPolicyConfig::default(),
             vec![healthy_path(5, 20.0, 0.0), healthy_path(3, 60.0, 0.0)],
+            false,
         );
 
         assert_eq!(
@@ -1088,6 +1289,7 @@ mod tests {
                 healthy_path(2, 80.0, 0.12),
                 healthy_path(3, 90.0, 0.14),
             ],
+            true,
         );
 
         assert_eq!(

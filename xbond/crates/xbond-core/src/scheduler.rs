@@ -323,6 +323,81 @@ pub fn expand_schedule_for_recovery(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecoveryScheduleStabilityState {
+    pub stable_anchor_path_id: Option<u16>,
+    pub stable_duplicate_path_ids: Vec<u16>,
+    pub ticks_remaining: u32,
+}
+
+pub fn stabilize_recovery_schedule(
+    state: &mut RecoveryScheduleStabilityState,
+    schedule: &SchedulePlan,
+    roles: &[ScoredPath],
+    recovery_status: &RecoveryStatus,
+    config: RecoveryConfig,
+    hold_ticks: u32,
+) -> SchedulePlan {
+    if !recovery_status.active {
+        *state = RecoveryScheduleStabilityState::default();
+        return schedule.clone();
+    }
+
+    let Some(anchor_path_id) = schedule.anchor_path_id else {
+        *state = RecoveryScheduleStabilityState::default();
+        return schedule.clone();
+    };
+
+    let eligible = roles
+        .iter()
+        .filter(|role| role.path.path_id != anchor_path_id)
+        .filter(|role| is_recovery_path_eligible(&role.path, config))
+        .map(|role| role.path.path_id)
+        .collect::<Vec<_>>();
+
+    let stable_ids_still_eligible = !state.stable_duplicate_path_ids.is_empty()
+        && state
+            .stable_duplicate_path_ids
+            .iter()
+            .all(|path_id| eligible.contains(path_id));
+    let anchor_changed = state.stable_anchor_path_id != Some(anchor_path_id);
+    let should_refresh = anchor_changed
+        || state.ticks_remaining == 0
+        || !stable_ids_still_eligible
+        || state
+            .stable_duplicate_path_ids
+            .iter()
+            .any(|path_id| hard_demoted_path(roles, *path_id));
+
+    if should_refresh {
+        state.stable_anchor_path_id = Some(anchor_path_id);
+        state.stable_duplicate_path_ids = schedule
+            .duplicate_path_ids
+            .iter()
+            .copied()
+            .filter(|path_id| eligible.contains(path_id))
+            .collect();
+        state.ticks_remaining = hold_ticks;
+    } else {
+        state.ticks_remaining = state.ticks_remaining.saturating_sub(1);
+    }
+
+    SchedulePlan {
+        mode: schedule.mode,
+        anchor_path_id: schedule.anchor_path_id,
+        data_path_ids: schedule.data_path_ids.clone(),
+        duplicate_path_ids: state.stable_duplicate_path_ids.clone(),
+        fec_path_ids: schedule.fec_path_ids.clone(),
+    }
+}
+
+fn hard_demoted_path(roles: &[ScoredPath], path_id: u16) -> bool {
+    roles
+        .iter()
+        .find(|role| role.path.path_id == path_id)
+        .is_none_or(|role| role.path.hard_demotion_reason().is_some())
+}
+
 fn recovery_status(state: &RecoveryState, eligible_path_ids: Vec<u16>) -> RecoveryStatus {
     RecoveryStatus {
         active: state.active,
@@ -399,6 +474,8 @@ pub struct ScheduleControlMessage {
     pub policy_config: RedundancyPolicyConfig,
     #[serde(default)]
     pub paths: Vec<PathHealthSnapshot>,
+    #[serde(default)]
+    pub recovery_active: bool,
 }
 
 pub fn build_transmission_plan(schedule: &SchedulePlan) -> Vec<ScheduledTransmission> {
@@ -908,6 +985,139 @@ mod tests {
         assert!(!expanded.duplicate_path_ids.contains(&2));
         assert!(!expanded.duplicate_path_ids.contains(&3));
         assert_eq!(expanded.duplicate_path_ids, vec![4]);
+    }
+
+    #[test]
+    fn schedule_control_message_defaults_legacy_recovery_flag_to_false() {
+        let json = r#"{
+            "schedule": {
+                "mode": "anchor-duplicate-1",
+                "anchor_path_id": 1,
+                "data_path_ids": [1],
+                "duplicate_path_ids": [2],
+                "fec_path_ids": []
+            },
+            "redundancy_policy": "balanced",
+            "paths": []
+        }"#;
+
+        let message = serde_json::from_str::<ScheduleControlMessage>(json).unwrap();
+
+        assert!(!message.recovery_active);
+    }
+
+    #[test]
+    fn schedule_control_message_accepts_recovery_active_flag() {
+        let json = r#"{
+            "schedule": {
+                "mode": "anchor-duplicate-1",
+                "anchor_path_id": 1,
+                "data_path_ids": [1],
+                "duplicate_path_ids": [2],
+                "fec_path_ids": []
+            },
+            "recovery_active": true
+        }"#;
+
+        let message = serde_json::from_str::<ScheduleControlMessage>(json).unwrap();
+
+        assert!(message.recovery_active);
+    }
+
+    #[test]
+    fn recovery_schedule_hysteresis_keeps_duplicate_order_across_minor_score_changes() {
+        let config = RecoveryConfig::default();
+        let recovery_status = RecoveryStatus {
+            active: true,
+            eligible_path_ids: vec![1, 2, 3],
+            ..RecoveryStatus::default()
+        };
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_loss(2, 90.0, 0.12),
+                path_with_loss(3, 100.0, 0.14),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+        let mut state = RecoveryScheduleStabilityState::default();
+
+        let stable =
+            stabilize_recovery_schedule(&mut state, &expanded, &roles, &recovery_status, config, 5);
+        assert_eq!(stable.duplicate_path_ids, vec![2, 3]);
+
+        let roles_with_minor_reorder = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_loss(2, 95.0, 0.12),
+                path_with_loss(3, 80.0, 0.14),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles_with_minor_reorder);
+        let expanded = expand_schedule_for_recovery(&base, &roles_with_minor_reorder, config);
+
+        let stable = stabilize_recovery_schedule(
+            &mut state,
+            &expanded,
+            &roles_with_minor_reorder,
+            &recovery_status,
+            config,
+            5,
+        );
+
+        assert_eq!(expanded.duplicate_path_ids, vec![3, 2]);
+        assert_eq!(stable.duplicate_path_ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn recovery_schedule_hysteresis_refreshes_immediately_on_hard_demotion() {
+        let config = RecoveryConfig::default();
+        let recovery_status = RecoveryStatus {
+            active: true,
+            eligible_path_ids: vec![1, 2, 3],
+            ..RecoveryStatus::default()
+        };
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_loss(2, 90.0, 0.12),
+                path_with_loss(3, 100.0, 0.14),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+        let mut state = RecoveryScheduleStabilityState::default();
+        let stable =
+            stabilize_recovery_schedule(&mut state, &expanded, &roles, &recovery_status, config, 5);
+        assert_eq!(stable.duplicate_path_ids, vec![2, 3]);
+
+        let mut hard_failed = path_with_loss(2, 90.0, 0.12);
+        hard_failed.send_failure_streak = 2;
+        let roles_with_failure = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                hard_failed,
+                path_with_loss(3, 100.0, 0.14),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles_with_failure);
+        let expanded = expand_schedule_for_recovery(&base, &roles_with_failure, config);
+
+        let stable = stabilize_recovery_schedule(
+            &mut state,
+            &expanded,
+            &roles_with_failure,
+            &recovery_status,
+            config,
+            5,
+        );
+
+        assert_eq!(stable.duplicate_path_ids, vec![3]);
     }
 
     #[test]

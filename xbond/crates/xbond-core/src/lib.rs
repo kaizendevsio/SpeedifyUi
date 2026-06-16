@@ -28,10 +28,10 @@ pub use protocol::{
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use scheduler::{
     build_schedule, build_transmission_plan, build_transmission_plan_for_packet,
-    expand_schedule_for_recovery, precompute_transmission_plans, update_recovery_state,
-    PacketTransmissionPlans, RecoveryConfig, RecoveryState, RecoveryStatus, RedundancyPolicy,
-    RedundancyPolicyConfig, ScheduleControlMessage, ScheduleMode, SchedulePlan,
-    ScheduledTransmission,
+    expand_schedule_for_recovery, precompute_transmission_plans, stabilize_recovery_schedule,
+    update_recovery_state, PacketTransmissionPlans, RecoveryConfig, RecoveryScheduleStabilityState,
+    RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig,
+    ScheduleControlMessage, ScheduleMode, SchedulePlan, ScheduledTransmission,
 };
 pub use status::{
     PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondPathStatus,

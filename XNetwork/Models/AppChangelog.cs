@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.37";
+    public const string CurrentVersion = "xbond-2026.06.38";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-16",
+            Summary = "Improved XBond recovery reorder behavior.",
+            Changes =
+            [
+                "XBond clients now tell the server when recovery mode is active so the server can use a longer ingress reorder hold during degraded all-path recovery.",
+                "The server now writes operator-only ingress reorder counters to a status artifact for intermittent-path collapse captures.",
+                "Recovery schedule updates now keep duplicate path membership stable across minor score churn unless a path is hard-demoted."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.37",
             Date = "2026-06-16",
             Summary = "Added XBond full-redundant recovery mode.",
             Changes =

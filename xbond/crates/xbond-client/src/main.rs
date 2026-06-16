@@ -20,14 +20,14 @@ use tokio::time;
 use xbond_core::{
     build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload_into,
     expand_schedule_for_recovery, is_ipv4_packet, precompute_transmission_plans, select_path_roles,
-    select_path_roles_with_state, update_recovery_state, ClientConfig, FrameReceiver, PacketKind,
-    PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats,
-    ReceiveOutcome, RecoveryConfig, RecoveryState, RecoveryStatus, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderedPacket, RoleSelectionConfig, RoleSelectionState,
-    RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
-    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus,
-    XBondTun, XBondTunnelStatus, XorFecBlock,
+    select_path_roles_with_state, stabilize_recovery_schedule, update_recovery_state, ClientConfig,
+    FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus,
+    ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig, RecoveryScheduleStabilityState,
+    RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
+    RoleSelectionConfig, RoleSelectionState, RouteVerification, ScheduleControlMessage,
+    ScheduleMode, SchedulePlan, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame,
+    XBondHeader, XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
+    XBondRuntimeStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -514,6 +514,7 @@ impl ActiveScheduleOverride {
 struct ScheduleControlSignature {
     schedule: SchedulePlan,
     redundancy_policy: RedundancyPolicy,
+    recovery_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -842,10 +843,12 @@ fn effective_transmission_policy(
 fn schedule_control_signature(
     schedule: &SchedulePlan,
     redundancy_policy: RedundancyPolicy,
+    recovery_active: bool,
 ) -> ScheduleControlSignature {
     ScheduleControlSignature {
         schedule: schedule.clone(),
         redundancy_policy,
+        recovery_active,
     }
 }
 
@@ -1030,6 +1033,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let role_config = RoleSelectionConfig::default();
     let recovery_config = config.recovery_config();
     let mut recovery_state = RecoveryState::default();
+    let mut recovery_schedule_state = RecoveryScheduleStabilityState::default();
     let mut health = tunnel_health(&config, &path_runtime, &sockets);
     let mut roles = select_path_roles_with_state(
         &health,
@@ -1047,6 +1051,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     );
     let mut schedule =
         build_effective_schedule(effective_mode, &roles, &recovery_status, recovery_config);
+    schedule = stabilize_recovery_schedule(
+        &mut recovery_schedule_state,
+        &schedule,
+        &roles,
+        &recovery_status,
+        recovery_config,
+        5,
+    );
     let mut transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
     let mut transmission_plans =
         precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
@@ -1116,11 +1128,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &key,
         session_id,
         &mut control_sequence,
+        recovery_status.active,
         options.json_events,
         options.trace_packets,
     )
     .await?;
-    last_control_signature = Some(schedule_control_signature(&schedule, transmission_policy));
+    last_control_signature = Some(schedule_control_signature(
+        &schedule,
+        transmission_policy,
+        recovery_status.active,
+    ));
     last_control_sent_at = Instant::now();
 
     loop {
@@ -1167,11 +1184,19 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &recovery_status,
                     recovery_config,
                 );
+                schedule = stabilize_recovery_schedule(
+                    &mut recovery_schedule_state,
+                    &schedule,
+                    &roles,
+                    &recovery_status,
+                    recovery_config,
+                    5,
+                );
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
                 let control_signature =
-                    schedule_control_signature(&schedule, transmission_policy);
+                    schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
                 if last_control_signature.as_ref() != Some(&control_signature)
                     || last_control_sent_at.elapsed() >= Duration::from_secs(5)
                 {
@@ -1184,6 +1209,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &key,
                         session_id,
                         &mut control_sequence,
+                        recovery_status.active,
                         options.json_events,
                         options.trace_packets,
                     ).await?;
@@ -1231,11 +1257,19 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &recovery_status,
                     recovery_config,
                 );
+                schedule = stabilize_recovery_schedule(
+                    &mut recovery_schedule_state,
+                    &schedule,
+                    &roles,
+                    &recovery_status,
+                    recovery_config,
+                    5,
+                );
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
                 let control_signature =
-                    schedule_control_signature(&schedule, transmission_policy);
+                    schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
                 if response.ok {
                     match send_tunnel_schedule_control(
                         &config,
@@ -1246,6 +1280,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &key,
                         session_id,
                         &mut control_sequence,
+                        recovery_status.active,
                         options.json_events,
                         options.trace_packets,
                     ).await {
@@ -1893,6 +1928,7 @@ async fn send_tunnel_schedule_control(
     key: &XBondKey,
     session_id: u64,
     control_sequence: &mut u64,
+    recovery_active: bool,
     json_events: bool,
     trace_packets: bool,
 ) -> Result<()> {
@@ -1911,6 +1947,7 @@ async fn send_tunnel_schedule_control(
             backup_loss_disable_threshold: config.backup_loss_disable_threshold,
         },
         paths: tunnel_health(config, path_runtime, sockets),
+        recovery_active,
     })?;
 
     for (path_id, socket) in sockets {

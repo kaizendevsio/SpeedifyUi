@@ -135,6 +135,14 @@ impl PacketReorderBuffer {
         self.pending.len()
     }
 
+    pub fn hold_micros(&self) -> u64 {
+        self.hold_micros
+    }
+
+    pub fn set_hold_micros(&mut self, hold_micros: u64) {
+        self.hold_micros = hold_micros;
+    }
+
     pub fn reset(&mut self) {
         self.next_sequence = None;
         self.pending.clear();
@@ -283,5 +291,32 @@ mod tests {
             }]
         );
         assert_eq!(buffer.pending_len(), 0);
+    }
+
+    #[test]
+    fn updated_hold_time_applies_to_newly_held_packets() {
+        let mut normal = PacketReorderBuffer::new(16, 50_000);
+        assert_eq!(
+            normal.push(1, 1, b"one".to_vec(), 1_000, 1_000_000).len(),
+            1
+        );
+        assert!(normal
+            .push(3, 2, b"three".to_vec(), 2_000, 1_000_000)
+            .is_empty());
+        assert_eq!(normal.hold_micros(), 50_000);
+        assert_eq!(normal.drain_ready(60_000).len(), 1);
+
+        let mut recovery = PacketReorderBuffer::new(16, 50_000);
+        recovery.set_hold_micros(500_000);
+        assert_eq!(recovery.hold_micros(), 500_000);
+        assert_eq!(
+            recovery.push(1, 1, b"one".to_vec(), 1_000, 1_000_000).len(),
+            1
+        );
+        assert!(recovery
+            .push(3, 2, b"three".to_vec(), 2_000, 1_000_000)
+            .is_empty());
+        assert!(recovery.drain_ready(60_000).is_empty());
+        assert_eq!(recovery.drain_ready(503_000).len(), 1);
     }
 }
