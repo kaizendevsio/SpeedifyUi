@@ -18,14 +18,15 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use xbond_core::{
-    build_schedule, build_transmission_plan_for_packet, encode_sealed_payload, is_ipv4_packet,
-    select_path_roles, select_path_roles_with_state, ClientConfig, FrameReceiver, PacketKind,
-    PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats,
-    ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket, RoleSelectionConfig,
-    RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
-    ScheduledTransmission, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader,
-    XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus,
-    XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload, is_ipv4_packet,
+    precompute_transmission_plans, select_path_roles, select_path_roles_with_state, ClientConfig,
+    FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus,
+    ProbeAggregate, ProbePathStats, ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig,
+    ReorderedPacket, RoleSelectionConfig, RoleSelectionState, RouteVerification,
+    ScheduleControlMessage, ScheduleMode, SchedulePlan, ScheduledTransmission,
+    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
+    XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus,
+    XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -436,6 +437,10 @@ struct TunnelCounters {
     decoded_frames: u64,
     encode_micros_total: u64,
     decode_micros_total: u64,
+    tun_queue_drops: u64,
+    inbound_queue_drops: u64,
+    duplicate_send_skips: u64,
+    fec_send_skips: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -568,8 +573,11 @@ async fn run_ping(options: PingOptions) -> Result<PingResult> {
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
-    let (socket, _isolation) =
-        create_isolated_udp_socket(&options.bind, options.bind_device.as_deref())?;
+    let (socket, _isolation) = create_isolated_udp_socket(
+        &options.bind,
+        options.bind_device.as_deref(),
+        default_udp_socket_buffer_bytes(),
+    )?;
     socket
         .connect(&options.server)
         .await
@@ -927,7 +935,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let tun_reader = tun
         .try_clone()
         .with_context(|| format!("failed to clone XBond TUN {} for packet reader", tun.name()))?;
-    let (tun_packet_tx, mut tun_packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let tun_queue_capacity = config.tun_queue_capacity.max(1);
+    let inbound_queue_capacity = config.inbound_queue_capacity.max(1);
+    let (tun_packet_tx, mut tun_packet_rx) = mpsc::channel::<Vec<u8>>(tun_queue_capacity);
     let tun_name = tun.name().to_string();
     let tun_read_mtu = usize::from(options.tun_mtu).max(2048);
     tokio::task::spawn_blocking(move || {
@@ -936,7 +946,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         loop {
             match tun_reader.read_packet(&mut buf) {
                 Ok(len) => {
-                    if tun_packet_tx.send(buf[..len].to_vec()).is_err() {
+                    if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
                         break;
                     }
                 }
@@ -949,7 +959,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         }
     });
 
-    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<InboundTunnelFrame>();
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundTunnelFrame>(inbound_queue_capacity);
     ensure_tunnel_sockets(
         &config,
         &specs_by_id,
@@ -978,6 +988,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let (mut effective_mode, mut effective_policy) =
         effective_mode_and_policy(&config, &mut active_override);
     let mut schedule = build_schedule(effective_mode, &roles);
+    let mut transmission_plans =
+        precompute_transmission_plans(&schedule, effective_policy, &health, policy_config);
     let mut last_control_signature: Option<ScheduleControlSignature>;
     let mut last_control_sent_at: Instant;
 
@@ -1031,6 +1043,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         active_override.as_ref(),
         role_state.schedule_change_count,
         &return_reorder,
+        tun_packet_rx.len(),
+        inbound_rx.len(),
     )?;
     send_tunnel_schedule_control(
         &config,
@@ -1083,6 +1097,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);
                 schedule = build_schedule(effective_mode, &roles);
+                transmission_plans =
+                    precompute_transmission_plans(&schedule, effective_policy, &health, policy_config);
                 let control_signature =
                     schedule_control_signature(&schedule, effective_policy);
                 if last_control_signature.as_ref() != Some(&control_signature)
@@ -1115,6 +1131,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
+                    tun_packet_rx.len(),
+                    inbound_rx.len(),
                 )?;
             }
 
@@ -1134,6 +1152,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);
                 schedule = build_schedule(effective_mode, &roles);
+                transmission_plans =
+                    precompute_transmission_plans(&schedule, effective_policy, &health, policy_config);
                 let control_signature =
                     schedule_control_signature(&schedule, effective_policy);
                 if response.ok {
@@ -1172,6 +1192,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
+                    tun_packet_rx.len(),
+                    inbound_rx.len(),
                 )?;
                 let _ = envelope.response_tx.send(response);
             }
@@ -1197,12 +1219,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     continue;
                 }
 
-                let packet_transmissions = build_transmission_plan_for_packet(
-                    &schedule,
-                    effective_policy,
+                let packet_transmissions = transmission_plans.for_packet_len(
                     packet.len(),
-                    &health,
-                    policy_config,
+                    policy_config.interactive_packet_threshold_bytes,
                 );
 
                 if packet_transmissions.is_empty() {
@@ -1243,7 +1262,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     } else {
                         match socket.try_send(&encoded) {
                             Ok(bytes) => Ok(bytes),
-                            Err(error) if error.kind() == ErrorKind::WouldBlock => continue,
+                            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                                counters.duplicate_send_skips =
+                                    counters.duplicate_send_skips.saturating_add(1);
+                                continue;
+                            }
                             Err(error) => Err(error),
                         }
                     };
@@ -1287,6 +1310,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         for transmission in fec_transmissions {
                             let Some(socket) = sockets.get(&transmission.path_id) else {
                                 counters.fec_packets_skipped += 1;
+                                counters.fec_send_skips =
+                                    counters.fec_send_skips.saturating_add(1);
                                 continue;
                             };
                             let header = XBondHeader::new(
@@ -1309,9 +1334,13 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 }
                                 Err(error) if error.kind() == ErrorKind::WouldBlock => {
                                     counters.fec_packets_skipped += 1;
+                                    counters.fec_send_skips =
+                                        counters.fec_send_skips.saturating_add(1);
                                 }
                                 Err(error) => {
                                     counters.fec_packets_skipped += 1;
+                                    counters.fec_send_skips =
+                                        counters.fec_send_skips.saturating_add(1);
                                     record_tunnel_send_failure(&mut path_runtime, transmission.path_id);
                                     if options.json_events {
                                         println!(
@@ -1475,7 +1504,7 @@ async fn ensure_tunnel_sockets(
     specs_by_id: &HashMap<u16, ProbePathSpec>,
     sockets: &mut HashMap<u16, Arc<UdpSocket>>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    inbound_tx: &mpsc::UnboundedSender<InboundTunnelFrame>,
+    inbound_tx: &mpsc::Sender<InboundTunnelFrame>,
     key: &XBondKey,
     json_events: bool,
 ) -> Result<()> {
@@ -1491,8 +1520,11 @@ async fn ensure_tunnel_sockets(
             continue;
         }
 
-        let socket = match create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref())
-        {
+        let socket = match create_isolated_udp_socket(
+            &spec.bind_addr,
+            spec.bind_device.as_deref(),
+            config.udp_socket_buffer_bytes,
+        ) {
             Ok((socket, _isolation)) => socket,
             Err(error) => {
                 record_tunnel_send_failure(path_runtime, *path_id);
@@ -1537,7 +1569,7 @@ async fn ensure_tunnel_sockets(
 fn spawn_tunnel_receiver(
     path_id: u16,
     socket: Arc<UdpSocket>,
-    inbound_tx: mpsc::UnboundedSender<InboundTunnelFrame>,
+    inbound_tx: mpsc::Sender<InboundTunnelFrame>,
     key: XBondKey,
 ) {
     tokio::spawn(async move {
@@ -1556,6 +1588,7 @@ fn spawn_tunnel_receiver(
             };
             if inbound_tx
                 .send(InboundTunnelFrame { path_id, frame })
+                .await
                 .is_err()
             {
                 break;
@@ -1975,6 +2008,8 @@ fn write_tunnel_runtime_status(
     active_override: Option<&ActiveScheduleOverride>,
     schedule_change_count: u64,
     return_reorder: &PacketReorderBuffer,
+    tun_queue_depth: usize,
+    inbound_queue_depth: usize,
 ) -> Result<()> {
     let paths = roles
         .iter()
@@ -2020,6 +2055,15 @@ fn write_tunnel_runtime_status(
                 decode_micros_total: counters.decode_micros_total,
                 encoded_frames: counters.encoded_frames,
                 decoded_frames: counters.decoded_frames,
+                tun_queue_capacity: config.tun_queue_capacity.max(1),
+                inbound_queue_capacity: config.inbound_queue_capacity.max(1),
+                tun_queue_depth,
+                inbound_queue_depth,
+                udp_socket_buffer_bytes: config.udp_socket_buffer_bytes,
+                tun_queue_drops: counters.tun_queue_drops,
+                inbound_queue_drops: counters.inbound_queue_drops,
+                duplicate_send_skips: counters.duplicate_send_skips,
+                fec_send_skips: counters.fec_send_skips,
             },
             diagnostic_override: active_override.map(ActiveScheduleOverride::status),
             schedule_change_count,
@@ -2038,7 +2082,11 @@ async fn prepare_probe_path(
     server: &str,
     target_ip: Option<IpAddr>,
 ) -> Result<PreparedProbePath> {
-    let socket = match create_isolated_udp_socket(&spec.bind_addr, spec.bind_device.as_deref()) {
+    let socket = match create_isolated_udp_socket(
+        &spec.bind_addr,
+        spec.bind_device.as_deref(),
+        default_udp_socket_buffer_bytes(),
+    ) {
         Ok((socket, _isolation)) => socket,
         Err(error) => {
             let route_verification = RouteVerification::failed("bind-device", error.to_string());
@@ -2261,6 +2309,7 @@ fn resolve_server_ip(server: &str) -> Option<IpAddr> {
 fn create_isolated_udp_socket(
     bind_addr: &str,
     bind_device: Option<&str>,
+    socket_buffer_bytes: usize,
 ) -> Result<(UdpSocket, PathIsolationStatus)> {
     let bind_addr = bind_addr
         .parse::<SocketAddr>()
@@ -2271,12 +2320,22 @@ fn create_isolated_udp_socket(
         Some(Protocol::UDP),
     )?;
     let isolation = apply_bind_device(&socket, bind_device)?;
+    apply_udp_socket_buffers(&socket, socket_buffer_bytes);
     socket
         .bind(&bind_addr.into())
         .with_context(|| format!("failed to bind UDP socket to {bind_addr}"))?;
     socket.set_nonblocking(true)?;
     let std_socket: std::net::UdpSocket = socket.into();
     Ok((UdpSocket::from_std(std_socket)?, isolation))
+}
+
+fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
+    if socket_buffer_bytes == 0 {
+        return;
+    }
+
+    let _ = socket.set_recv_buffer_size(socket_buffer_bytes);
+    let _ = socket.set_send_buffer_size(socket_buffer_bytes);
 }
 
 fn apply_bind_device(socket: &Socket, bind_device: Option<&str>) -> Result<PathIsolationStatus> {
@@ -2583,7 +2642,7 @@ fn write_runtime_status(config: &ClientConfig, status: XBondRuntimeStatus) -> Re
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let text = serde_json::to_string_pretty(&status)?;
+    let text = serde_json::to_string(&status)?;
     std::fs::write(&runtime_path, text)
         .with_context(|| format!("failed to write {}", runtime_path.display()))
 }

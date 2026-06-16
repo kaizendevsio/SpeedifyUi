@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/xbond/server.env
-ExecStart=/usr/local/bin/xbond-server --bind 0.0.0.0:8444 --tun-name xbonds0 --tun-mtu 1400 --realtime-deadline-ms 500 --json-events
+ExecStart=/usr/local/bin/xbond-server --bind 0.0.0.0:8444 --tun-name xbonds0 --tun-mtu 1400 --realtime-deadline-ms 500 --tun-queue-capacity 2048 --inbound-queue-capacity 4096 --udp-socket-buffer-bytes 4194304 --json-events
 ExecStartPost=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do /usr/sbin/ip link show xbonds0 >/dev/null 2>&1 && /usr/sbin/ip addr replace 10.250.0.1/30 dev xbonds0 && /usr/sbin/ip link set xbonds0 mtu 1400 up && exit 0; sleep 0.2; done; exit 1'
 Restart=on-failure
 RestartSec=3

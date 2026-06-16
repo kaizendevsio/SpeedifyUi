@@ -4,19 +4,28 @@ use thiserror::Error;
 
 use crate::protocol::{PacketKind, XBondHeader};
 
-#[derive(Debug, Clone)]
-pub struct XBondKey([u8; 32]);
+#[derive(Clone)]
+pub struct XBondKey {
+    cipher: XChaCha20Poly1305,
+}
+
+impl std::fmt::Debug for XBondKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("XBondKey").finish_non_exhaustive()
+    }
+}
 
 impl XBondKey {
     pub fn from_passphrase(passphrase: &str) -> Self {
         let hash = blake3::hash(passphrase.as_bytes());
-        Self(*hash.as_bytes())
+        Self {
+            cipher: XChaCha20Poly1305::new(Key::from_slice(hash.as_bytes())),
+        }
     }
 
     pub fn seal(&self, header: &XBondHeader, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.0));
         let nonce = nonce_for(header);
-        cipher
+        self.cipher
             .encrypt(
                 &nonce,
                 Payload {
@@ -28,9 +37,8 @@ impl XBondKey {
     }
 
     pub fn open(&self, header: &XBondHeader, ciphertext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let cipher = XChaCha20Poly1305::new(Key::from_slice(&self.0));
         let nonce = nonce_for(header);
-        cipher
+        self.cipher
             .decrypt(
                 &nonce,
                 Payload {
@@ -95,6 +103,23 @@ mod tests {
 
         let opened = key.open(&header, &sealed).unwrap();
         assert_eq!(opened, b"payload");
+    }
+
+    #[test]
+    fn cached_cipher_keeps_wire_compatible_output() {
+        let cached_key = XBondKey::from_passphrase("test-key");
+        let independently_cached_key = XBondKey::from_passphrase("test-key");
+        let header = XBondHeader::new(PacketKind::Duplicate, 99, 123, 500, 2);
+
+        let sealed = cached_key.seal(&header, b"payload").unwrap();
+        let sealed_from_independent_key =
+            independently_cached_key.seal(&header, b"payload").unwrap();
+
+        assert_eq!(sealed, sealed_from_independent_key);
+        assert_eq!(
+            independently_cached_key.open(&header, &sealed).unwrap(),
+            b"payload"
+        );
     }
 
     #[test]

@@ -136,6 +136,26 @@ pub struct ScheduledTransmission {
     pub packet_kind: crate::protocol::PacketKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PacketTransmissionPlans {
+    pub small: Vec<ScheduledTransmission>,
+    pub bulk: Vec<ScheduledTransmission>,
+}
+
+impl PacketTransmissionPlans {
+    pub fn for_packet_len(
+        &self,
+        packet_len: usize,
+        interactive_packet_threshold_bytes: usize,
+    ) -> &[ScheduledTransmission] {
+        if packet_len <= interactive_packet_threshold_bytes {
+            &self.small
+        } else {
+            &self.bulk
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleControlMessage {
     pub schedule: SchedulePlan,
@@ -240,6 +260,32 @@ pub fn build_transmission_plan_for_packet(
     }
 
     build_transmission_plan(&plan)
+}
+
+pub fn precompute_transmission_plans(
+    schedule: &SchedulePlan,
+    policy: RedundancyPolicy,
+    paths: &[PathHealthSnapshot],
+    policy_config: RedundancyPolicyConfig,
+) -> PacketTransmissionPlans {
+    PacketTransmissionPlans {
+        small: build_transmission_plan_for_packet(
+            schedule,
+            policy,
+            policy_config.interactive_packet_threshold_bytes,
+            paths,
+            policy_config,
+        ),
+        bulk: build_transmission_plan_for_packet(
+            schedule,
+            policy,
+            policy_config
+                .interactive_packet_threshold_bytes
+                .saturating_add(1),
+            paths,
+            policy_config,
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -475,6 +521,45 @@ mod tests {
                 .map(|transmission| transmission.packet_kind)
                 .collect::<Vec<_>>(),
             vec![PacketKind::Data]
+        );
+    }
+
+    #[test]
+    fn precomputed_plans_match_packet_specific_builder() {
+        let roles = select_path_roles(&[path(1, 20.0, 0.0), path(2, 60.0, 0.0)], 1);
+        let health = roles
+            .iter()
+            .map(|role| role.path.clone())
+            .collect::<Vec<_>>();
+        let plan = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let policy_config = RedundancyPolicyConfig::default();
+
+        let precomputed = precompute_transmission_plans(
+            &plan,
+            RedundancyPolicy::Balanced,
+            &health,
+            policy_config,
+        );
+
+        assert_eq!(
+            precomputed.for_packet_len(180, policy_config.interactive_packet_threshold_bytes),
+            build_transmission_plan_for_packet(
+                &plan,
+                RedundancyPolicy::Balanced,
+                180,
+                &health,
+                policy_config,
+            )
+        );
+        assert_eq!(
+            precomputed.for_packet_len(1_200, policy_config.interactive_packet_threshold_bytes),
+            build_transmission_plan_for_packet(
+                &plan,
+                RedundancyPolicy::Balanced,
+                1_200,
+                &health,
+                policy_config,
+            )
         );
     }
 }

@@ -4,6 +4,9 @@ server_addr = "45.77.241.247:8444"
 mode = "anchor-duplicate-1"
 max_active_backups = 1
 realtime_deadline_ms = 500
+tun_queue_capacity = 2048
+inbound_queue_capacity = 4096
+udp_socket_buffer_bytes = 4194304
 runtime_status_path = "/run/xbond/client-status.json"
 
 [[paths]]

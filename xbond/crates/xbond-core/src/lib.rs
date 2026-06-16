@@ -9,6 +9,9 @@ pub mod scheduler;
 pub mod status;
 pub mod tun;
 
+pub use config::{
+    default_inbound_queue_capacity, default_tun_queue_capacity, default_udp_socket_buffer_bytes,
+};
 pub use config::{ClientConfig, PathConfig};
 pub use crypto::XBondKey;
 pub use fec::{FecError, XorFecBlock};
@@ -23,7 +26,8 @@ pub use protocol::{
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use scheduler::{
-    build_schedule, build_transmission_plan, build_transmission_plan_for_packet, RedundancyPolicy,
+    build_schedule, build_transmission_plan, build_transmission_plan_for_packet,
+    precompute_transmission_plans, PacketTransmissionPlans, RedundancyPolicy,
     RedundancyPolicyConfig, ScheduleControlMessage, ScheduleMode, SchedulePlan,
     ScheduledTransmission,
 };

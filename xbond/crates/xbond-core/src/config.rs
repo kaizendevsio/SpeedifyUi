@@ -20,6 +20,12 @@ pub struct ClientConfig {
     pub backup_loss_disable_threshold: f64,
     #[serde(default = "default_reorder_hold_ms")]
     pub reorder_hold_ms: u64,
+    #[serde(default = "default_tun_queue_capacity")]
+    pub tun_queue_capacity: usize,
+    #[serde(default = "default_inbound_queue_capacity")]
+    pub inbound_queue_capacity: usize,
+    #[serde(default = "default_udp_socket_buffer_bytes")]
+    pub udp_socket_buffer_bytes: usize,
     pub runtime_status_path: Option<String>,
     pub paths: Vec<PathConfig>,
 }
@@ -38,6 +44,9 @@ impl Default for ClientConfig {
             duplicate_loss_threshold: default_duplicate_loss_threshold(),
             backup_loss_disable_threshold: default_backup_loss_disable_threshold(),
             reorder_hold_ms: default_reorder_hold_ms(),
+            tun_queue_capacity: default_tun_queue_capacity(),
+            inbound_queue_capacity: default_inbound_queue_capacity(),
+            udp_socket_buffer_bytes: default_udp_socket_buffer_bytes(),
             runtime_status_path: Some("/run/xbond/client-status.json".to_string()),
             paths: Vec::new(),
         }
@@ -67,4 +76,16 @@ fn default_backup_loss_disable_threshold() -> f64 {
 
 fn default_reorder_hold_ms() -> u64 {
     25
+}
+
+pub fn default_tun_queue_capacity() -> usize {
+    2048
+}
+
+pub fn default_inbound_queue_capacity() -> usize {
+    4096
+}
+
+pub fn default_udp_socket_buffer_bytes() -> usize {
+    4 * 1024 * 1024
 }

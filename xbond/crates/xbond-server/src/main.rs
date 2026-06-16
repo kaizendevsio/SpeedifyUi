@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -9,11 +10,15 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_transmission_plan, build_transmission_plan_for_packet, encode_sealed_payload,
-    is_ipv4_packet, FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot,
+    build_transmission_plan, encode_sealed_payload, is_ipv4_packet, precompute_transmission_plans,
+    FrameReceiver, PacketKind, PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot,
     ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
     ScheduleControlMessage, SchedulePlan, XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
 };
+
+const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
+const DEFAULT_INBOUND_QUEUE_CAPACITY: usize = 4096;
+const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -39,6 +44,15 @@ struct Args {
 
     #[arg(long, default_value_t = 1400)]
     tun_mtu: u16,
+
+    #[arg(long, default_value_t = DEFAULT_TUN_QUEUE_CAPACITY)]
+    tun_queue_capacity: usize,
+
+    #[arg(long, default_value_t = DEFAULT_INBOUND_QUEUE_CAPACITY)]
+    inbound_queue_capacity: usize,
+
+    #[arg(long, default_value_t = DEFAULT_UDP_SOCKET_BUFFER_BYTES)]
+    udp_socket_buffer_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -52,7 +66,7 @@ struct ReturnControl {
     schedule: SchedulePlan,
     policy: RedundancyPolicy,
     policy_config: RedundancyPolicyConfig,
-    paths: Vec<PathHealthSnapshot>,
+    transmission_plans: PacketTransmissionPlans,
 }
 
 #[tokio::main]
@@ -60,7 +74,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let key_text = std::env::var(&args.key_env)?;
     let key = XBondKey::from_passphrase(&key_text);
-    let socket = Arc::new(UdpSocket::bind(&args.bind).await?);
+    let socket = Arc::new(bind_udp_socket(&args.bind, args.udp_socket_buffer_bytes).await?);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let mut tun = match args.tun_name.as_deref() {
         Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
@@ -83,7 +97,8 @@ async fn main() -> Result<()> {
         args.realtime_deadline_ms.clamp(5, 50),
     ));
 
-    let (udp_frame_tx, mut udp_frame_rx) = mpsc::unbounded_channel::<InboundServerFrame>();
+    let (udp_frame_tx, mut udp_frame_rx) =
+        mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
     let recv_socket = socket.clone();
     let recv_key = key.clone();
     tokio::spawn(async move {
@@ -102,6 +117,7 @@ async fn main() -> Result<()> {
             };
             if udp_frame_tx
                 .send(InboundServerFrame { frame, peer })
+                .await
                 .is_err()
             {
                 break;
@@ -109,7 +125,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let (tun_packet_tx, mut tun_packet_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tun_packet_tx, mut tun_packet_rx) =
+        mpsc::channel::<Vec<u8>>(args.tun_queue_capacity.max(1));
     if let Some(tun_ref) = &tun {
         let mut tun_reader = tun_ref.try_clone()?;
         let tun_name = tun_ref.name().to_string();
@@ -119,7 +136,7 @@ async fn main() -> Result<()> {
             loop {
                 match tun_reader.read_packet(&mut buf) {
                     Ok(len) => {
-                        if tun_packet_tx.send(buf[..len].to_vec()).is_err() {
+                        if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
                             break;
                         }
                     }
@@ -418,6 +435,34 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn bind_udp_socket(bind_addr: &str, socket_buffer_bytes: usize) -> Result<UdpSocket> {
+    let bind_addr = bind_addr
+        .parse::<SocketAddr>()
+        .with_context(|| format!("failed to parse bind address {bind_addr}"))?;
+    let socket = Socket::new(
+        Domain::for_address(bind_addr),
+        Type::DGRAM,
+        Some(Protocol::UDP),
+    )?;
+    socket.set_reuse_address(true)?;
+    apply_udp_socket_buffers(&socket, socket_buffer_bytes);
+    socket
+        .bind(&bind_addr.into())
+        .with_context(|| format!("failed to bind UDP socket to {bind_addr}"))?;
+    socket.set_nonblocking(true)?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    Ok(UdpSocket::from_std(std_socket)?)
+}
+
+fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
+    if socket_buffer_bytes == 0 {
+        return;
+    }
+
+    let _ = socket.set_recv_buffer_size(socket_buffer_bytes);
+    let _ = socket.set_send_buffer_size(socket_buffer_bytes);
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecoveredPacket {
     sequence: u64,
@@ -599,21 +644,37 @@ fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
     }
 
     if let Ok(control) = serde_json::from_slice::<ScheduleControlMessage>(&frame.payload) {
-        return Some(ReturnControl {
-            schedule: control.schedule,
-            policy: control.redundancy_policy,
-            policy_config: control.policy_config,
-            paths: control.paths,
-        });
+        return Some(build_return_control(
+            control.schedule,
+            control.redundancy_policy,
+            control.policy_config,
+            control.paths,
+        ));
     }
 
     let schedule = serde_json::from_slice::<SchedulePlan>(&frame.payload).ok()?;
-    Some(ReturnControl {
+    Some(build_return_control(
         schedule,
-        policy: RedundancyPolicy::Reliable,
-        policy_config: RedundancyPolicyConfig::default(),
-        paths: Vec::new(),
-    })
+        RedundancyPolicy::Reliable,
+        RedundancyPolicyConfig::default(),
+        Vec::new(),
+    ))
+}
+
+fn build_return_control(
+    schedule: SchedulePlan,
+    policy: RedundancyPolicy,
+    policy_config: RedundancyPolicyConfig,
+    paths: Vec<PathHealthSnapshot>,
+) -> ReturnControl {
+    let transmission_plans =
+        precompute_transmission_plans(&schedule, policy, &paths, policy_config);
+    ReturnControl {
+        schedule,
+        policy,
+        policy_config,
+        transmission_plans,
+    }
 }
 
 fn select_return_targets(
@@ -623,57 +684,25 @@ fn select_return_targets(
 ) -> Vec<(u16, SocketAddr, PacketKind)> {
     let scheduled = control
         .map(|control| {
-            let mut paths = control.paths.clone();
-            if paths.is_empty() {
-                paths = peers
-                    .keys()
-                    .map(|path_id| PathHealthSnapshot {
-                        path_id: *path_id,
-                        name: format!("path-{path_id}"),
-                        interface_name: None,
-                        rtt_ms: None,
-                        jitter_ms: None,
-                        loss_rate: 0.0,
-                        late_rate: 0.0,
-                        queue_depth: 0,
-                        outbound_throughput_bps: 0,
-                        inbound_throughput_bps: 0,
-                        duplicate_inbound_throughput_bps: 0,
-                        raw_inbound_throughput_bps: 0,
-                        throughput_bps: 0,
-                        interface_up: true,
-                        in_cooldown: false,
-                        send_failure_streak: 0,
-                        stale_ack_ms: None,
-                        queue_pressure: 0.0,
-                        duplicate_usefulness: 1.0,
-                        throughput_collapse_score: 0.0,
-                        demotion_reason: None,
-                        role_reason: None,
-                    })
-                    .collect();
-            }
-
-            build_transmission_plan_for_packet(
-                &control.schedule,
-                control.policy,
-                packet_len,
-                &paths,
-                control.policy_config,
-            )
-            .into_iter()
-            .filter(|transmission| {
-                matches!(
-                    transmission.packet_kind,
-                    PacketKind::Data | PacketKind::Duplicate
+            control
+                .transmission_plans
+                .for_packet_len(
+                    packet_len,
+                    control.policy_config.interactive_packet_threshold_bytes,
                 )
-            })
-            .filter_map(|transmission| {
-                peers
-                    .get(&transmission.path_id)
-                    .map(|peer| (transmission.path_id, *peer, transmission.packet_kind))
-            })
-            .collect::<Vec<_>>()
+                .iter()
+                .filter(|transmission| {
+                    matches!(
+                        transmission.packet_kind,
+                        PacketKind::Data | PacketKind::Duplicate
+                    )
+                })
+                .filter_map(|transmission| {
+                    peers
+                        .get(&transmission.path_id)
+                        .map(|peer| (transmission.path_id, *peer, transmission.packet_kind))
+                })
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
 
@@ -851,18 +880,18 @@ mod tests {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
         let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
-        let control = ReturnControl {
-            schedule: SchedulePlan {
+        let control = build_return_control(
+            SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
                 anchor_path_id: Some(5),
                 data_path_ids: vec![5],
                 duplicate_path_ids: vec![3],
                 fec_path_ids: Vec::new(),
             },
-            policy: RedundancyPolicy::Reliable,
-            policy_config: RedundancyPolicyConfig::default(),
-            paths: Vec::new(),
-        };
+            RedundancyPolicy::Reliable,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+        );
 
         assert_eq!(
             select_return_targets(Some(&control), &peers, 1_200),
@@ -893,18 +922,18 @@ mod tests {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
         let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
-        let control = ReturnControl {
-            schedule: SchedulePlan {
+        let control = build_return_control(
+            SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
                 anchor_path_id: Some(5),
                 data_path_ids: vec![5],
                 duplicate_path_ids: vec![3],
                 fec_path_ids: Vec::new(),
             },
-            policy: RedundancyPolicy::Balanced,
-            policy_config: RedundancyPolicyConfig::default(),
-            paths: vec![healthy_path(5, 20.0, 0.0), healthy_path(3, 60.0, 0.0)],
-        };
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            vec![healthy_path(5, 20.0, 0.0), healthy_path(3, 60.0, 0.0)],
+        );
 
         assert_eq!(
             select_return_targets(Some(&control), &peers, 1_200),

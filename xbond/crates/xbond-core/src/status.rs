@@ -200,12 +200,36 @@ pub struct XBondReorderStatus {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondProcessStatus {
+    #[serde(default)]
     pub process_cpu_percent: Option<f64>,
+    #[serde(default)]
     pub rss_bytes: Option<u64>,
+    #[serde(default)]
     pub encode_micros_total: u64,
+    #[serde(default)]
     pub decode_micros_total: u64,
+    #[serde(default)]
     pub encoded_frames: u64,
+    #[serde(default)]
     pub decoded_frames: u64,
+    #[serde(default)]
+    pub tun_queue_capacity: usize,
+    #[serde(default)]
+    pub inbound_queue_capacity: usize,
+    #[serde(default)]
+    pub tun_queue_depth: usize,
+    #[serde(default)]
+    pub inbound_queue_depth: usize,
+    #[serde(default)]
+    pub udp_socket_buffer_bytes: usize,
+    #[serde(default)]
+    pub tun_queue_drops: u64,
+    #[serde(default)]
+    pub inbound_queue_drops: u64,
+    #[serde(default)]
+    pub duplicate_send_skips: u64,
+    #[serde(default)]
+    pub fec_send_skips: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
