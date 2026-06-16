@@ -848,7 +848,13 @@ fn select_return_targets(
 fn write_reordered_packets(tun: &mut XBondTun, packets: Vec<ReorderedPacket>) -> Result<u64> {
     let mut delivered = 0u64;
     for packet in packets {
-        tun.write_packet(&packet.payload)?;
+        if let Err(error) = tun.write_packet(&packet.payload) {
+            eprintln!(
+                "xbond server failed to write packet to XBond TUN {}: {error}",
+                tun.name()
+            );
+            continue;
+        }
         delivered += 1;
     }
 

@@ -1534,9 +1534,13 @@ fn write_reordered_return_packets(
     counters: &mut TunnelCounters,
 ) -> Result<()> {
     for packet in packets {
-        tun.write_packet(&packet.payload).with_context(|| {
-            format!("failed to write return packet to XBond TUN {}", tun.name())
-        })?;
+        if let Err(error) = tun.write_packet(&packet.payload) {
+            eprintln!(
+                "xbond client failed to write return packet to XBond TUN {}: {error}",
+                tun.name()
+            );
+            continue;
+        }
         counters.data_packets_received += 1;
         counters.data_bytes_received = counters
             .data_bytes_received
