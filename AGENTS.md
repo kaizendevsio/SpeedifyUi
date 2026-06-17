@@ -223,6 +223,7 @@
 - JS interop can throw `JSDisconnectedException` during live chart updates or disposal; stop timers/streams or ignore it during disconnect cleanup.
 - Mobile is first-class; avoid regressions in bottom tab bar, modal z-index, safe-area padding, and sticky headers.
 - 2026-06-07: SpeedifyUi/XNetwork Starlink telemetry and health-based adapter sorting were deployed to `xeon-network` as app commit `82bc533` on branch `bugfix/settings-dropdown-refresh`; post-deploy checks showed `xnetwork.service` active, HTTP 200 locally and over Tailscale, and rendered dashboard Version `v22` displaying a Starlink row with direct dish telemetry.
+- 2026-06-17: On `feature/xband-only-runtime`, dashboard version `xbond-2026.06.43` / commit `c5dcf17` restored the old dashboard visual rhythm for XBond-only data: `ConnectionSummary`, `AnimatedNumber`, skeleton loading states, auto-animated adapter list, compact path cards, signal bars, and status-dot popovers. The same deployment hardened `NetworkMonitorService` so transient Linux sysfs carrier read failures return `unknown` instead of logging repeated exceptions.
 
 ## Traffic Breakdown
 - Dashboard `Traffic Breakdown` is opened by tapping/clicking the main throughput card; the old always-visible inline attribution card was removed.
