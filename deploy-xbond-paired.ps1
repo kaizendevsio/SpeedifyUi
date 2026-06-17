@@ -62,6 +62,8 @@ cargo build --release --manifest-path xbond/Cargo.toml -p xbond-client
 sudo -n install -m 0755 xbond/target/release/xbond-client /usr/local/bin/xbond-client
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
+sudo -n install -m 0644 xbond/deploy/systemd/xbond-client.service /etc/systemd/system/xbond-client.service
+sudo -n systemctl daemon-reload
 sudo -n systemctl restart xbond-client.service
 systemctl is-active xnetwork.service
 systemctl is-active xbond-client.service
