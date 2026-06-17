@@ -218,12 +218,13 @@
 - Server-side SignalR circuit timings are also tuned in `Program.cs` with `ClientTimeoutInterval=15s`, `HandshakeTimeout=15s`, and `KeepAliveInterval=5s`.
 - `Home.razor` runs a 3s adapter refresh, 10s server refresh, one Speedify stats stream, and a traffic breakdown timer only while the modal is open.
 - `ConnectionHealthService` pings `8.8.8.8` every 500ms; avoid adding unbounded extra health probe consumers.
-- `Statistics.razor` is the `/details` page; chart setup intentionally takes two render cycles using `_readyForChartInitializationStep` before initializing canvases and starting streaming.
+- `Statistics.razor` is the `/details` page; on `feature/xband-only-runtime`, it uses the restored dashboard-era Chart.js/`ChartCard` visual shell while reading from `XBondSnapshotCache` only.
 - `ConnectionSummary.razor` is the dashboard throughput card; it opens the Traffic Breakdown modal when XRouter/Cudy config is available.
 - JS interop can throw `JSDisconnectedException` during live chart updates or disposal; stop timers/streams or ignore it during disconnect cleanup.
 - Mobile is first-class; avoid regressions in bottom tab bar, modal z-index, safe-area padding, and sticky headers.
 - 2026-06-07: SpeedifyUi/XNetwork Starlink telemetry and health-based adapter sorting were deployed to `xeon-network` as app commit `82bc533` on branch `bugfix/settings-dropdown-refresh`; post-deploy checks showed `xnetwork.service` active, HTTP 200 locally and over Tailscale, and rendered dashboard Version `v22` displaying a Starlink row with direct dish telemetry.
 - 2026-06-17: On `feature/xband-only-runtime`, dashboard version `xbond-2026.06.43` / commit `c5dcf17` restored the old dashboard visual rhythm for XBond-only data: `ConnectionSummary`, `AnimatedNumber`, skeleton loading states, auto-animated adapter list, compact path cards, signal bars, and status-dot popovers. The same deployment hardened `NetworkMonitorService` so transient Linux sysfs carrier read failures return `unknown` instead of logging repeated exceptions.
+- 2026-06-17: On `feature/xband-only-runtime`, Analytics was restored to the old card/chart/legend visual rhythm while staying XBond-only, and the Wifi page was changed so first render is no longer blocked by slow Cudy management login; Cudy client refreshes now use a bounded visible timeout.
 
 ## Traffic Breakdown
 - Dashboard `Traffic Breakdown` is opened by tapping/clicking the main throughput card; the old always-visible inline attribution card was removed.
@@ -234,9 +235,10 @@
 - Estimated VPN / Overhead is `Speedify Tunnel - Wifi Clients - Local Processes`, clamped at zero. Treat it as an estimate, not an exact byte-accounting ledger.
 
 ## Wifi And Cudy Client Management
-- The UI nav label is `Wifi`, but the route is still `/xrouter` and the component is `XRouter.razor`.
+- The UI nav label is `Wifi`; the component is `XRouter.razor` and it responds on both `/xrouter` and `/wifi`.
 - `XRouter.razor` lists Cudy clients, shows hostname/IP/MAC/connection type/signal/online duration, live upload/download throughput, per-device history, block/unblock, and per-device rate limits.
 - Cudy client list refreshes every 1s from the Cudy client table.
+- `XRouter.razor` should not await the first Cudy client-table refresh from `OnInitializedAsync`; render the page first, then refresh in the background with a short UI-level timeout so unreachable Cudy management does not leave `/wifi` blank/loading.
 - Known Cudy client endpoints are `/cgi-bin/luci/admin/network/devices/devlist?detail=1`, `/cgi-bin/luci/admin/network/devices/internet`, and `/cgi-bin/luci/admin/network/devices/devinfo`.
 - Cudy data caps were not implemented because the inspected firmware endpoint did not expose them.
 - `CudyXRouterClientParser` parses the Cudy HTML table; keep parser tests updated when endpoint markup changes.

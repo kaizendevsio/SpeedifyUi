@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.43";
+    public const string CurrentVersion = "xbond-2026.06.44";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Restored Analytics styling and unblocked Wifi loading.",
+            Changes =
+            [
+                "The Analytics page now uses the restored dashboard-era card, chart, legend, and refresh rhythm while still reading XBond snapshots only.",
+                "The Wifi page now renders immediately instead of waiting for a slow Cudy management login before first paint.",
+                "Cudy client refreshes now fail visibly after a bounded timeout and clear the warning once a refresh succeeds."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.43",
             Date = "2026-06-17",
             Summary = "Hardened network monitor sysfs reads.",
             Changes =

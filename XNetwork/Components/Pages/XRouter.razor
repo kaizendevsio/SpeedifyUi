@@ -157,6 +157,7 @@
 
 @code {
     private const int MaxHistoryPoints = 60;
+    private static readonly TimeSpan ClientRefreshTimeout = TimeSpan.FromSeconds(8);
     private readonly Dictionary<string, List<ThroughputPoint>> _history = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LimitDraft> _limitDrafts = new(StringComparer.OrdinalIgnoreCase);
     private List<XRouterClient> _clients = new();
@@ -173,11 +174,12 @@
 
     private XRouterClient? SelectedClient => _clients.FirstOrDefault(client => string.Equals(client.MacAddress, _selectedMac, StringComparison.OrdinalIgnoreCase));
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync()
     {
         _cts = new CancellationTokenSource();
-        await RefreshClientsAsync(false);
         _refreshTimer = new Timer(_ => _ = InvokeAsync(() => RefreshClientsAsync(true)), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        _ = InvokeAsync(() => RefreshClientsAsync(false));
+        return Task.CompletedTask;
     }
 
     private async Task RefreshClientsAsync(bool background)
@@ -201,7 +203,10 @@
 
         try
         {
-            var clients = await XRouterService.GetClientsAsync(_cts.Token);
+            using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            refreshCts.CancelAfter(ClientRefreshTimeout);
+
+            var clients = await XRouterService.GetClientsAsync(refreshCts.Token);
             _clients = clients.ToList();
             foreach (var client in _clients)
             {
@@ -214,9 +219,15 @@
                 _selectedMac = _clients.FirstOrDefault()?.MacAddress;
                 _showClientDetailsSheet = false;
             }
+
+            _message = null;
+        }
+        catch (OperationCanceledException) when (_cts?.IsCancellationRequested ?? true)
+        {
         }
         catch (OperationCanceledException)
         {
+            ShowMessage("Could not refresh Wifi clients: Cudy management did not respond within 8 seconds.", isError: true);
         }
         catch (Exception ex)
         {

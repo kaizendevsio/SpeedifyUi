@@ -1,88 +1,292 @@
 @page "/details"
+@using Microsoft.JSInterop
+@using XNetwork.Components.Custom
 @using XNetwork.Models
 @using XNetwork.Services
 @using XNetwork.Utils
 @implements IAsyncDisposable
 @inject XBondSnapshotCache XBondSnapshotCache
+@inject IJSRuntime JSRuntime
 
-<PageTitle>XBond Analytics</PageTitle>
+<PageTitle>Analytics - XNetwork</PageTitle>
 
-<div class="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
-    <section>
-        <h1 class="text-2xl font-bold text-white">XBond Analytics</h1>
-        <p class="mt-1 text-sm text-slate-400">Live tunnel and path telemetry from XBond runtime status.</p>
-    </section>
+<div class="p-4 md:p-6">
+    <div class="mb-6 hidden md:block">
+        <h2 class="mb-1 text-3xl font-bold text-white">Analytics</h2>
+        <p class="text-slate-400">Monitor connection health, path quality, and real-time XBond performance.</p>
+    </div>
 
-    <section class="grid gap-3 md:grid-cols-4">
-        @MetricCard("State", _snapshot?.State ?? "Loading")
-        @MetricCard("Active paths", (_snapshot?.ActivePaths.Count ?? 0).ToString())
-        @MetricCard("Download", SpeedFormatter.FormatSpeed(_snapshot?.DownloadMbps ?? 0))
-        @MetricCard("Upload", SpeedFormatter.FormatSpeed(_snapshot?.UploadMbps ?? 0))
-    </section>
-
-    <section class="grid gap-4 lg:grid-cols-2">
-        @ChartPanel("Download", _downloadHistory, "speed", "text-cyan-300")
-        @ChartPanel("Upload", _uploadHistory, "speed", "text-pink-300")
-        @ChartPanel("Average RTT", _latencyHistory, "ms", "text-emerald-300")
-        @ChartPanel("Path Loss", _lossHistory, "%", "text-amber-300")
-    </section>
-
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-4">
-        <div class="mb-4 flex items-center justify-between gap-3">
-            <h2 class="text-lg font-semibold text-white">Paths</h2>
-            <span class="text-xs text-slate-500">Updated @FormatUpdated()</span>
+    @if (_snapshot is null)
+    {
+        <div class="mb-6 rounded-lg border border-blue-500/50 bg-blue-500/10 px-4 py-3 text-blue-400">
+            <strong class="font-bold">Initializing...</strong>
+            <span class="block sm:inline"> XBond analytics are starting up, please wait.</span>
         </div>
-        <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-slate-800 text-sm">
-                <thead class="text-left text-xs uppercase tracking-wide text-slate-500">
-                    <tr>
-                        <th class="py-2 pr-4">Path</th>
-                        <th class="py-2 pr-4">Role</th>
-                        <th class="py-2 pr-4">State</th>
-                        <th class="py-2 pr-4">RTT</th>
-                        <th class="py-2 pr-4">Loss</th>
-                        <th class="py-2 pr-4">Late</th>
-                        <th class="py-2 pr-4">Download</th>
-                        <th class="py-2 pr-4">Upload</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-800/70 text-slate-300">
-                    @foreach (var path in _snapshot?.DashboardPaths ?? [])
+        <div class="space-y-6" aria-label="Loading analytics data">
+            <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-6 shadow-lg">
+                <div class="mb-4 flex items-center justify-between">
+                    <SkeletonBlock CssClass="h-7 w-48" />
+                    <SkeletonBlock CssClass="h-7 w-24 rounded-full" />
+                </div>
+                <div class="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
+                    @for (var i = 0; i < 4; i++)
                     {
-                        <tr>
-                            <td class="py-3 pr-4">
-                                <div class="font-semibold text-white">@path.Name</div>
-                                <div class="text-xs text-slate-500">@path.InterfaceName</div>
-                            </td>
-                            <td class="py-3 pr-4">@path.Role</td>
-                            <td class="py-3 pr-4">@path.StateText</td>
-                            <td class="py-3 pr-4">@FormatLatency(path.RttMs)</td>
-                            <td class="py-3 pr-4">@FormatPercent(path.LossPercent)</td>
-                            <td class="py-3 pr-4">@FormatPercent(path.LatePercent)</td>
-                            <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.DownloadMbps)</td>
-                            <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.UploadMbps)</td>
-                        </tr>
+                        <div class="space-y-3 rounded-lg bg-slate-900/50 p-4">
+                            <SkeletonBlock CssClass="h-4 w-24" />
+                            <SkeletonBlock CssClass="h-8 w-20" />
+                            <SkeletonBlock CssClass="h-3 w-28" />
+                        </div>
                     }
-                </tbody>
-            </table>
+                </div>
+                <div class="border-t border-slate-700 pt-4">
+                    <SkeletonBlock CssClass="h-4 w-4/5" />
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                @for (var i = 0; i < 4; i++)
+                {
+                    <div class="overflow-hidden rounded-xl border border-slate-700 bg-slate-800/50 shadow-lg">
+                        <div class="space-y-2 p-4">
+                            <SkeletonBlock CssClass="h-5 w-40" />
+                            <div class="flex gap-4">
+                                <SkeletonBlock CssClass="h-3 w-24" />
+                                <SkeletonBlock CssClass="h-3 w-24" />
+                            </div>
+                        </div>
+                        <div class="h-64 w-full p-4">
+                            <SkeletonBlock CssClass="h-full w-full" />
+                        </div>
+                    </div>
+                }
+            </div>
         </div>
-    </section>
+    }
+    else
+    {
+        <section class="mb-6 rounded-xl border border-slate-700 bg-slate-800/50 p-6 shadow-lg">
+            <div class="mb-4 flex items-center justify-between">
+                <h3 class="text-xl font-semibold text-white">Connection Health</h3>
+                <span class="@GetStatusBadgeClass()">@GetStatusText()</span>
+            </div>
+
+            <div class="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
+                <div class="rounded-lg bg-slate-900/50 p-4">
+                    <div class="mb-2 flex items-center gap-2">
+                        <i class="fas fa-layer-group text-slate-400"></i>
+                        <span class="text-xs text-slate-400">Active Paths</span>
+                    </div>
+                    <div class="flex items-baseline gap-1">
+                        <AnimatedNumber Value="@_snapshot.ActivePaths.Count" Decimals="0" CssClass="text-2xl font-bold text-cyan-300" AriaLabel="@($"{_snapshot.ActivePaths.Count} active paths")" />
+                        <span class="text-sm text-slate-400">/@_snapshot.DashboardPaths.Count</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">Redundant members</p>
+                </div>
+
+                <div class="rounded-lg bg-slate-900/50 p-4">
+                    <div class="mb-2 flex items-center gap-2">
+                        <i class="far fa-clock text-slate-400"></i>
+                        <span class="text-xs text-slate-400">Avg RTT</span>
+                    </div>
+                    <div class="flex items-baseline gap-1">
+                        <AnimatedNumber Value="@Math.Round(_snapshot.AverageRttMs)" Decimals="0" CssClass="@($"text-2xl font-bold {GetLatencyTextColor(_snapshot.AverageRttMs)}")" AriaLabel="@($"{Math.Round(_snapshot.AverageRttMs)} milliseconds average RTT")" />
+                        <span class="text-sm text-slate-400">ms</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">Active paths</p>
+                </div>
+
+                <div class="rounded-lg bg-slate-900/50 p-4">
+                    <div class="mb-2 flex items-center gap-2">
+                        <i class="fas fa-triangle-exclamation text-slate-400"></i>
+                        <span class="text-xs text-slate-400">Max Loss</span>
+                    </div>
+                    <div class="flex items-baseline gap-1">
+                        <AnimatedNumber Value="@Math.Round(_snapshot.MaxLossPercent, 1)" Decimals="@GetPercentDecimals(_snapshot.MaxLossPercent)" CssClass="@($"text-2xl font-bold {GetLossTextColor(_snapshot.MaxLossPercent)}")" AriaLabel="@($"{Math.Round(_snapshot.MaxLossPercent, 1)} percent max loss")" />
+                        <span class="text-sm text-slate-400">%</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">Worst active path</p>
+                </div>
+
+                <div class="rounded-lg bg-slate-900/50 p-4">
+                    <div class="mb-2 flex items-center gap-2">
+                        <i class="fas fa-gauge-high text-slate-400"></i>
+                        <span class="text-xs text-slate-400">Throughput</span>
+                    </div>
+                    <div class="flex items-baseline gap-1">
+                        <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(_snapshot.AggregateThroughputMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(_snapshot.AggregateThroughputMbps)" CssClass="text-2xl font-bold text-emerald-300" AriaLabel="@SpeedFormatter.FormatSpeed(_snapshot.AggregateThroughputMbps)" />
+                        <span class="text-sm text-slate-400">@SpeedFormatter.GetSpeedUnit(_snapshot.AggregateThroughputMbps)</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">Down + up</p>
+                </div>
+            </div>
+
+            <div class="mt-4 border-t border-slate-700 pt-4">
+                <div class="flex items-center gap-3">
+                    <div class="flex-shrink-0">
+                        <div class="@($"h-3 w-3 rounded-full {GetStatusIndicatorClass()} animate-pulse")"></div>
+                    </div>
+                    <div class="min-w-0 flex-grow">
+                        <p class="text-sm text-slate-300">@GetStatusDescription()</p>
+                    </div>
+                    <span class="hidden text-xs text-slate-500 sm:inline">Updated @FormatUpdated()</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="mb-6">
+            <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <h3 class="mb-1 text-xl font-semibold text-white">Traffic Statistics</h3>
+                    <p class="text-sm text-slate-400">Real-time XBond path performance over the last @_chartPeriod seconds.</p>
+                </div>
+                <div class="flex gap-1 rounded-lg border border-slate-700 bg-slate-800/50 p-1">
+                    @foreach (var period in _periodOptions)
+                    {
+                        <button @onclick="() => ChangePeriodAsync(period.Seconds)"
+                                class="@GetPeriodButtonClass(period.Seconds)">
+                            @period.Label
+                        </button>
+                    }
+                </div>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_chartInitializationError))
+            {
+                <div class="mb-4 rounded-lg border border-orange-500/40 bg-orange-500/10 px-4 py-3 text-sm text-orange-200">
+                    Charts could not be initialized. @_chartInitializationError
+                </div>
+            }
+
+            @if (!_snapshot.DashboardPaths.Any())
+            {
+                <p class="my-6 text-slate-400">XBond path information is not available, charts cannot be displayed.</p>
+            }
+            else
+            {
+                <div class="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+                    <ChartCard Title="Download Speed (Mbps)"
+                               ChartId="downloadChart"
+                               ShowLegend="true"
+                               LegendItems="@GetPathLegend()" />
+
+                    <ChartCard Title="Upload Speed (Mbps)"
+                               ChartId="uploadChart"
+                               ShowLegend="true"
+                               LegendItems="@GetPathLegend()" />
+
+                    <ChartCard Title="Latency (ms)"
+                               ChartId="rttChart"
+                               ShowLegend="true"
+                               LegendItems="@GetPathLegend(includeActualConnection: true)" />
+
+                    <ChartCard Title="Packet Loss (%)"
+                               ChartId="lossChart"
+                               ShowLegend="true"
+                               LegendItems="@GetPathLegend(includeActualConnection: true)" />
+                </div>
+            }
+        </section>
+
+        <section class="rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg">
+            <div class="mb-4 flex items-center justify-between gap-3">
+                <h2 class="text-lg font-semibold text-white">Paths</h2>
+                <span class="text-xs text-slate-500">Updated @FormatUpdated()</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full divide-y divide-slate-800 text-sm">
+                    <thead class="text-left text-xs uppercase tracking-wide text-slate-500">
+                        <tr>
+                            <th class="py-2 pr-4">Path</th>
+                            <th class="py-2 pr-4">Role</th>
+                            <th class="py-2 pr-4">State</th>
+                            <th class="py-2 pr-4">RTT</th>
+                            <th class="py-2 pr-4">Loss</th>
+                            <th class="py-2 pr-4">Late</th>
+                            <th class="py-2 pr-4">Down</th>
+                            <th class="py-2 pr-4">Up</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-800/70 text-slate-300">
+                        @foreach (var path in _snapshot.DashboardPaths)
+                        {
+                            <tr>
+                                <td class="py-3 pr-4">
+                                    <div class="font-semibold text-white">@path.Name</div>
+                                    <div class="text-xs text-slate-500">@path.InterfaceName</div>
+                                </td>
+                                <td class="py-3 pr-4">@RoleLabel(path)</td>
+                                <td class="py-3 pr-4">@path.StateText</td>
+                                <td class="py-3 pr-4">@FormatLatency(path.RttMs)</td>
+                                <td class="py-3 pr-4">@FormatPercent(path.LossPercent)</td>
+                                <td class="py-3 pr-4">@FormatPercent(path.LatePercent)</td>
+                                <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.DownloadMbps)</td>
+                                <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.UploadMbps)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
 </div>
 
 @code {
-    private const int MaxHistory = 60;
+    private const string ActualConnectionSeriesId = "__actual_connection";
+    private const string ActualConnectionSeriesLabel = "Actual Connection";
+    private const string ActualConnectionSeriesColor = "#34d399";
+    private static readonly IReadOnlyList<(int Seconds, string Label)> _periodOptions =
+    [
+        (15, "15s"),
+        (30, "30s"),
+        (60, "1m"),
+        (300, "5m")
+    ];
+
     private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
     private readonly CancellationTokenSource _refreshCts = new();
-    private readonly List<double> _downloadHistory = [];
-    private readonly List<double> _uploadHistory = [];
-    private readonly List<double> _latencyHistory = [];
-    private readonly List<double> _lossHistory = [];
     private XBondStatsSnapshot? _snapshot;
+    private IJSObjectReference? _chartModule;
+    private bool _chartModuleLoaded;
+    private bool _chartsInitialized;
+    private bool _attemptedChartInitialization;
+    private bool _disposed;
+    private string? _chartInitializationError;
+    private int _chartPeriod = 15;
+    private int _refreshInProgress;
+    private int _chartPushInProgress;
+    private string[] _chartPathIds = [];
 
     protected override async Task OnInitializedAsync()
     {
-        await RefreshAsync();
+        await RefreshAsync(pushChartData: false);
         _ = RunRefreshLoopAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || !firstRender)
+        {
+            return;
+        }
+
+        try
+        {
+            _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
+            _chartModuleLoaded = true;
+            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
+            await InitializeChartsAsync();
+            if (_snapshot is not null && _chartsInitialized)
+            {
+                await PushChartDataAsync(_snapshot);
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _chartInitializationError = ex.Message;
+        }
     }
 
     private async Task RunRefreshLoopAsync()
@@ -91,7 +295,7 @@
         {
             while (await _timer.WaitForNextTickAsync(_refreshCts.Token))
             {
-                await InvokeAsync(RefreshAsync);
+                await InvokeAsync(() => RefreshAsync(pushChartData: true));
             }
         }
         catch (OperationCanceledException)
@@ -99,91 +303,334 @@
         }
     }
 
-    private async Task RefreshAsync()
+    private async Task RefreshAsync(bool pushChartData)
     {
-        _snapshot = await XBondSnapshotCache.GetSnapshotAsync(_refreshCts.Token);
-        AddHistory(_downloadHistory, _snapshot.DownloadMbps);
-        AddHistory(_uploadHistory, _snapshot.UploadMbps);
-        AddHistory(_latencyHistory, _snapshot.AverageRttMs);
-        AddHistory(_lossHistory, _snapshot.MaxLossPercent);
-        StateHasChanged();
-    }
-
-    private static void AddHistory(List<double> values, double value)
-    {
-        values.Add(double.IsFinite(value) ? value : 0);
-        if (values.Count > MaxHistory)
+        if (_disposed || Interlocked.Exchange(ref _refreshInProgress, 1) == 1)
         {
-            values.RemoveAt(0);
+            return;
+        }
+
+        try
+        {
+            var snapshot = await XBondSnapshotCache.GetSnapshotAsync(_refreshCts.Token);
+            _snapshot = snapshot;
+
+            if (_chartModuleLoaded && !_chartsInitialized)
+            {
+                await InitializeChartsAsync();
+            }
+            else if (_chartsInitialized && HaveChartPathsChanged(snapshot))
+            {
+                await InitializeChartsAsync(force: true);
+            }
+
+            if (pushChartData && _chartsInitialized)
+            {
+                await PushChartDataAsync(snapshot);
+            }
+
+            StateHasChanged();
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshInProgress, 0);
         }
     }
 
-    private static RenderFragment MetricCard(string label, string value) => @<article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-4">
-        <p class="text-sm text-slate-400">@label</p>
-        <p class="mt-2 text-2xl font-bold text-white">@value</p>
-    </article>;
-
-    private static RenderFragment ChartPanel(string title, IReadOnlyList<double> values, string unit, string colorClass) => @<article class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-4">
-        <div class="mb-3 flex items-center justify-between">
-            <h2 class="font-semibold text-white">@title</h2>
-            <span class="@($"text-sm font-semibold {colorClass}")">@FormatChartValue(values.LastOrDefault(), unit)</span>
-        </div>
-        <div class="h-40">
-            <svg class="h-full w-full" viewBox="0 0 300 120" preserveAspectRatio="none" role="img" aria-label="@title">
-                <line x1="0" y1="100" x2="300" y2="100" stroke="rgba(148,163,184,.16)" stroke-width="1" />
-                <line x1="0" y1="60" x2="300" y2="60" stroke="rgba(148,163,184,.10)" stroke-width="1" />
-                <polyline points="@BuildPolyline(values)" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-        </div>
-    </article>;
-
-    private static string BuildPolyline(IReadOnlyList<double> values)
+    private async Task InitializeChartsAsync(bool force = false)
     {
-        if (values.Count == 0)
+        if (_chartModule is null || _snapshot is null || !_snapshot.DashboardPaths.Any())
         {
-            return "";
+            return;
         }
 
-        var finiteValues = values.Where(double.IsFinite).ToArray();
-        if (finiteValues.Length == 0)
+        var pathIds = GetChartPathIds(_snapshot);
+        if (!force && _chartsInitialized && pathIds.SequenceEqual(_chartPathIds, StringComparer.Ordinal))
         {
-            return "";
+            return;
         }
 
-        var min = finiteValues.Min();
-        var max = finiteValues.Max();
-        var range = max - min;
-        return string.Join(' ', values.Select((value, index) =>
+        _attemptedChartInitialization = true;
+        _chartInitializationError = null;
+        _chartPathIds = pathIds;
+
+        var pathNames = _snapshot.DashboardPaths.Select(GetPathDisplayName).ToArray();
+        var qualityIds = pathIds.Append(ActualConnectionSeriesId).ToArray();
+        var qualityNames = pathNames.Append(ActualConnectionSeriesLabel).ToArray();
+        var timestamp = DateTime.Now.ToString("HH:mm:ss");
+
+        try
         {
-            var x = values.Count == 1 ? 300 : index * 300d / (values.Count - 1);
-            var normalized = range <= 0.000001
-                ? max > 0 ? 0.5 : 0
-                : Math.Clamp((value - min) / range, 0, 1);
-            var y = 110 - normalized * 100;
-            return $"{Math.Round(x, 1)},{Math.Round(y, 1)}";
-        }));
+            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
+            var downloadOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "downloadChart", "Download (Mbps)", pathIds, pathNames, timestamp);
+            var uploadOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", pathIds, pathNames, timestamp);
+            var rttOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", qualityIds, qualityNames, timestamp);
+            var lossOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", qualityIds, qualityNames, timestamp);
+
+            _chartsInitialized = downloadOk && uploadOk && rttOk && lossOk;
+            if (!_chartsInitialized)
+            {
+                _chartInitializationError = "One or more chart canvases could not be initialized.";
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            _chartsInitialized = false;
+        }
+        catch (Exception ex)
+        {
+            _chartsInitialized = false;
+            _chartInitializationError = ex.Message;
+        }
     }
 
-    private static string FormatChartValue(double value, string unit) => unit == "speed"
-        ? SpeedFormatter.FormatSpeed(value)
-        : $"{Math.Round(value, 1)} {unit}";
+    private async Task PushChartDataAsync(XBondStatsSnapshot snapshot)
+    {
+        if (_chartModule is null || !_chartsInitialized || Interlocked.Exchange(ref _chartPushInProgress, 1) == 1)
+        {
+            return;
+        }
 
-    private string FormatUpdated() => _snapshot is null
-        ? "--"
-        : _snapshot.UpdatedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+        try
+        {
+            var timestamp = DateTime.Now.ToString("HH:mm:ss");
+            var downloadData = new Dictionary<string, double>(StringComparer.Ordinal);
+            var uploadData = new Dictionary<string, double>(StringComparer.Ordinal);
+            var rttData = new Dictionary<string, double>(StringComparer.Ordinal);
+            var lossData = new Dictionary<string, double>(StringComparer.Ordinal);
 
-    private static string FormatLatency(double? value) => value.HasValue && value.Value > 0
-        ? $"{Math.Round(value.Value)} ms"
-        : "--";
+            foreach (var path in snapshot.DashboardPaths)
+            {
+                var id = GetPathChartId(path);
+                downloadData[id] = Math.Round(path.DownloadMbps, 2);
+                uploadData[id] = Math.Round(path.UploadMbps, 2);
+                rttData[id] = Math.Round(path.RttMs ?? 0, 1);
+                lossData[id] = Math.Round(path.LossPercent, 2);
+            }
 
-    private static string FormatPercent(double? value) => value.HasValue
-        ? $"{Math.Round(value.Value, 1)}%"
-        : "--";
+            rttData[ActualConnectionSeriesId] = Math.Round(snapshot.AverageRttMs, 1);
+            lossData[ActualConnectionSeriesId] = Math.Round(snapshot.MaxLossPercent, 2);
+
+            await _chartModule.InvokeVoidAsync("addDataToChart", "downloadChart", timestamp, downloadData);
+            await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", timestamp, uploadData);
+            await _chartModule.InvokeVoidAsync("addDataToChart", "rttChart", timestamp, rttData);
+            await _chartModule.InvokeVoidAsync("addDataToChart", "lossChart", timestamp, lossData);
+        }
+        catch (JSDisconnectedException)
+        {
+            _chartsInitialized = false;
+        }
+        catch (ObjectDisposedException)
+        {
+            _chartsInitialized = false;
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _chartPushInProgress, 0);
+        }
+    }
+
+    private bool HaveChartPathsChanged(XBondStatsSnapshot snapshot)
+    {
+        var pathIds = GetChartPathIds(snapshot);
+        return !pathIds.SequenceEqual(_chartPathIds, StringComparer.Ordinal);
+    }
+
+    private static string[] GetChartPathIds(XBondStatsSnapshot snapshot)
+    {
+        return snapshot.DashboardPaths.Select(GetPathChartId).ToArray();
+    }
+
+    private static string GetPathChartId(XBondPathStatsSnapshot path)
+    {
+        return path.PathId.ToString();
+    }
+
+    private static string GetPathDisplayName(XBondPathStatsSnapshot path)
+    {
+        return string.IsNullOrWhiteSpace(path.Name) ? path.InterfaceName : path.Name;
+    }
+
+    private List<ChartCard.LegendItem> GetPathLegend(bool includeActualConnection = false)
+    {
+        var legend = new List<ChartCard.LegendItem>();
+        var colors = new[] { "#22d3ee", "#f472b6", "#f59e0b", "#38bdf8", "#a855f7", "#fb923c" };
+        var paths = _snapshot?.DashboardPaths ?? Array.Empty<XBondPathStatsSnapshot>();
+        var colorIndex = 0;
+
+        foreach (var path in paths)
+        {
+            legend.Add(new ChartCard.LegendItem
+            {
+                Label = GetPathDisplayName(path),
+                Color = colors[colorIndex++ % colors.Length]
+            });
+        }
+
+        if (includeActualConnection)
+        {
+            legend.Add(new ChartCard.LegendItem
+            {
+                Label = ActualConnectionSeriesLabel,
+                Color = ActualConnectionSeriesColor
+            });
+        }
+
+        return legend;
+    }
+
+    private async Task ChangePeriodAsync(int seconds)
+    {
+        _chartPeriod = seconds;
+        if (_chartModule is not null)
+        {
+            await _chartModule.InvokeVoidAsync("setMaxDataPoints", _chartPeriod);
+        }
+    }
+
+    private string GetStatusText()
+    {
+        if (_snapshot is not { IsRunning: true })
+        {
+            return "Stopped";
+        }
+
+        if (_snapshot.MaxLossPercent >= 25 || _snapshot.AverageRttMs >= 300)
+        {
+            return "Critical";
+        }
+
+        if (_snapshot.MaxLossPercent >= 10 || _snapshot.AverageRttMs >= 180)
+        {
+            return "Poor";
+        }
+
+        if (_snapshot.MaxLossPercent >= 2 || _snapshot.AverageRttMs >= 120)
+        {
+            return "Fair";
+        }
+
+        return "Good";
+    }
+
+    private string GetStatusBadgeClass()
+    {
+        return GetStatusText() switch
+        {
+            "Good" => "rounded-full border border-cyan-500/30 bg-cyan-500/20 px-3 py-1 text-sm font-medium text-cyan-300",
+            "Fair" => "rounded-full border border-yellow-500/30 bg-yellow-500/20 px-3 py-1 text-sm font-medium text-yellow-300",
+            "Poor" => "rounded-full border border-orange-500/30 bg-orange-500/20 px-3 py-1 text-sm font-medium text-orange-300",
+            "Critical" => "rounded-full border border-red-500/30 bg-red-500/20 px-3 py-1 text-sm font-medium text-red-300",
+            _ => "rounded-full border border-slate-500/30 bg-slate-500/20 px-3 py-1 text-sm font-medium text-slate-300"
+        };
+    }
+
+    private string GetStatusIndicatorClass()
+    {
+        return GetStatusText() switch
+        {
+            "Good" => "bg-cyan-500",
+            "Fair" => "bg-yellow-500",
+            "Poor" => "bg-orange-500",
+            "Critical" => "bg-red-500",
+            _ => "bg-slate-500"
+        };
+    }
+
+    private string GetStatusDescription()
+    {
+        return GetStatusText() switch
+        {
+            "Good" => "XBond path quality is good and suitable for real-time traffic.",
+            "Fair" => "XBond is usable, but latency or loss is starting to fluctuate.",
+            "Poor" => "XBond quality is degraded and may affect streaming or remote desktop.",
+            "Critical" => "XBond is unstable; active paths are showing high loss or latency.",
+            _ => "XBond runtime is not currently reporting an active tunnel."
+        };
+    }
+
+    private static string GetLatencyTextColor(double latency)
+    {
+        if (latency <= 0) return "text-slate-300";
+        if (latency < 80) return "text-cyan-300";
+        if (latency < 150) return "text-yellow-300";
+        return "text-red-300";
+    }
+
+    private static string GetLossTextColor(double loss)
+    {
+        if (loss < 2) return "text-cyan-300";
+        if (loss < 10) return "text-yellow-300";
+        return "text-red-300";
+    }
+
+    private static int GetPercentDecimals(double value)
+    {
+        return Math.Abs(value - Math.Round(value)) < 0.05 ? 0 : 1;
+    }
+
+    private string GetPeriodButtonClass(int seconds)
+    {
+        return _chartPeriod == seconds
+            ? "rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors"
+            : "rounded px-3 py-1.5 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-white";
+    }
+
+    private string FormatUpdated()
+    {
+        return _snapshot is null ? "--" : _snapshot.UpdatedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+    }
+
+    private static string FormatLatency(double? value)
+    {
+        return value.HasValue && value.Value > 0 ? $"{Math.Round(value.Value)} ms" : "--";
+    }
+
+    private static string FormatPercent(double? value)
+    {
+        return value.HasValue ? $"{Math.Round(value.Value, 1)}%" : "--";
+    }
+
+    private static string RoleLabel(XBondPathStatsSnapshot path)
+    {
+        if (!path.IsConfigured)
+        {
+            return "not in XBond";
+        }
+
+        if (path.IsActive && !path.IsAnchor && string.Equals(path.Role, "probe", StringComparison.OrdinalIgnoreCase))
+        {
+            return "backup";
+        }
+
+        return path.Role;
+    }
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
         await _refreshCts.CancelAsync();
         _timer.Dispose();
+
+        if (_chartModule != null)
+        {
+            try
+            {
+                if (_chartsInitialized || _attemptedChartInitialization)
+                {
+                    await _chartModule.InvokeVoidAsync("disposeAllCharts");
+                }
+
+                await _chartModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+
         _refreshCts.Dispose();
     }
 }
