@@ -162,16 +162,33 @@ public class NetworkMonitorService : BackgroundService
             return "missing";
         }
 
-        var operState = File.Exists(operStatePath)
-            ? File.ReadAllText(operStatePath).Trim()
-            : "unknown";
-        var carrier = File.Exists(carrierPath)
-            ? File.ReadAllText(carrierPath).Trim()
-            : "unknown";
+        var operState = ReadSysfsValueOrUnknown(operStatePath);
+        var carrier = ReadSysfsValueOrUnknown(carrierPath);
 
         return carrier == "0" && !string.Equals(operState, "up", StringComparison.OrdinalIgnoreCase)
             ? "no-carrier"
             : operState;
+    }
+
+    private static string ReadSysfsValueOrUnknown(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return "unknown";
+        }
+
+        try
+        {
+            return File.ReadAllText(path).Trim();
+        }
+        catch (IOException)
+        {
+            return "unknown";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return "unknown";
+        }
     }
 
     private static bool IsInterfaceDown(string state)

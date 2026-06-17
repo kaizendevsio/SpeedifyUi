@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.42";
+    public const string CurrentVersion = "xbond-2026.06.43";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Hardened network monitor sysfs reads.",
+            Changes =
+            [
+                "The background network monitor now treats transient Linux sysfs carrier-read failures as unknown state instead of logging an exception every second.",
+                "This keeps dashboard monitoring quieter when USB network adapters appear, disappear, or expose carrier files that cannot be read at that instant."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.42",
             Date = "2026-06-17",
             Summary = "Restored the dashboard visual rhythm for XBond.",
             Changes =
