@@ -7,7 +7,7 @@ namespace XNetwork.Services;
 public class XBondLabService(
     ILogger<XBondLabService> logger,
     XBondSettings settings,
-    XBondStatsService xbondStatsService)
+    XBondSnapshotCache xbondSnapshotCache)
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
     private const string ServiceEnvironmentFilePath = "/etc/xbond/client.env";
@@ -261,7 +261,7 @@ public class XBondLabService(
 
     private async Task<XBondPathStatsSnapshot?> SelectHeartbeatPathAsync(CancellationToken cancellationToken)
     {
-        var snapshot = await xbondStatsService.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        var snapshot = await xbondSnapshotCache.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         return snapshot.ActivePaths
             .Where(path => path.PathId > 0 && path.InterfaceUp)
             .OrderBy(path => path.IsAnchor ? 0 : 1)
@@ -281,7 +281,7 @@ public class XBondLabService(
             return configuredPathIds;
         }
 
-        var snapshot = await xbondStatsService.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        var snapshot = await xbondSnapshotCache.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
         return snapshot.ActivePaths
             .Where(path => path.PathId > 0 && path.InterfaceUp)
             .OrderBy(path => path.IsAnchor ? 0 : 1)

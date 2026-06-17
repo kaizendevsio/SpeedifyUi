@@ -2,9 +2,14 @@ using XNetwork.Models;
 
 namespace XNetwork.Services;
 
+public interface IXBondStatsProvider
+{
+    Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
+}
+
 public sealed class XBondStatsService(
     XBondStatusService statusService,
-    InterfaceMetadataService interfaceMetadataService)
+    InterfaceMetadataService interfaceMetadataService) : IXBondStatsProvider
 {
     public async Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {

@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.38";
+    public const string CurrentVersion = "xbond-2026.06.39";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Reduced XBond polling and dataplane overhead.",
+            Changes =
+            [
+                "Dashboard, analytics, health, and diagnostics now share a short-lived XBond snapshot cache instead of independently reading runtime status.",
+                "Interface provider enrichment now caches slower modem gateway probes separately and probes gateways in parallel with shorter timeouts.",
+                "XBond reorder release timing now uses local monotonic receive deadlines instead of peer timestamps, and sender workers reuse per-path encode buffers.",
+                "Recovery duplicate scheduling now prunes harmful backup paths while still keeping one usable backup duplicate when available."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.38",
             Date = "2026-06-16",
             Summary = "Improved XBond recovery reorder behavior.",
             Changes =

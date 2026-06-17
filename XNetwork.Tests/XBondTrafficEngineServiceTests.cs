@@ -75,4 +75,56 @@ public class XBondTrafficEngineServiceTests
         Assert.True(running.CanStop);
         Assert.True(running.CanDisableAtBoot);
     }
+
+    [Fact]
+    public async Task GetStatusAsync_ReusesServiceManagerResultWithinTtl()
+    {
+        var calls = 0;
+        var time = new ManualTimeProvider(DateTimeOffset.Parse("2026-06-17T00:00:00Z"));
+        var settings = new XBondSettings
+        {
+            AllowServiceControl = true,
+            ClientServiceName = "xbond-client.service"
+        };
+        var store = new XBondSettingsStore(
+            NullLogger<XBondSettingsStore>.Instance,
+            Path.Combine(Path.GetTempPath(), $"xbond-settings-{Guid.NewGuid():N}.json"));
+        var service = new XBondTrafficEngineService(
+            NullLogger<XBondTrafficEngineService>.Instance,
+            settings,
+            store,
+            time,
+            (arguments, _) =>
+            {
+                calls++;
+                return Task.FromResult(new XBondTrafficEngineService.ServiceCommandResult(
+                    0,
+                    arguments[0] == "is-active" ? "active" : "enabled"));
+            },
+            () => true,
+            TimeSpan.FromSeconds(3));
+
+        var first = await service.GetStatusAsync();
+        var second = await service.GetStatusAsync();
+
+        Assert.Same(first, second);
+        Assert.Equal(2, calls);
+
+        time.Advance(TimeSpan.FromSeconds(4));
+        await service.GetStatusAsync();
+
+        Assert.Equal(4, calls);
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan duration)
+        {
+            _now += duration;
+        }
+    }
 }

@@ -53,6 +53,8 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<XBondStatusService>();
 builder.Services.AddSingleton<InterfaceMetadataService>();
 builder.Services.AddSingleton<XBondStatsService>();
+builder.Services.AddSingleton<IXBondStatsProvider>(sp => sp.GetRequiredService<XBondStatsService>());
+builder.Services.AddSingleton<XBondSnapshotCache>();
 builder.Services.AddSingleton<XBondLabService>();
 builder.Services.AddSingleton<XBondTrafficEngineService>();
 builder.Services.AddSingleton<XBondClientConfigService>();

@@ -6,13 +6,38 @@ using System.Text.Json.Serialization;
 
 namespace XNetwork.Services;
 
-public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> logger)
+public sealed class InterfaceMetadataService
 {
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SlowProviderCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan GatewayProbeTimeout = TimeSpan.FromMilliseconds(750);
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+    private readonly ILogger<InterfaceMetadataService> _logger;
+    private readonly HttpClient _httpClient;
+    private readonly Func<string, CancellationToken, Task<string?>> _modemProviderFetcher;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
+    private readonly object _providerCacheLock = new();
+    private readonly Dictionary<string, CachedProviderName> _providerNameCache = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<InterfaceMetadata> _interfaces = [];
-    private DateTime _expiresAtUtc = DateTime.MinValue;
+    private DateTimeOffset _expiresAtUtc = DateTimeOffset.MinValue;
+
+    public InterfaceMetadataService(ILogger<InterfaceMetadataService> logger)
+        : this(logger, null, null, null)
+    {
+    }
+
+    public InterfaceMetadataService(
+        ILogger<InterfaceMetadataService> logger,
+        Func<string, CancellationToken, Task<string?>>? modemProviderFetcher,
+        TimeProvider? timeProvider,
+        HttpClient? httpClient)
+    {
+        _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _httpClient = httpClient ?? new HttpClient { Timeout = GatewayProbeTimeout };
+        _modemProviderFetcher = modemProviderFetcher ?? ReadModemProviderAsync;
+    }
 
     public async Task<IReadOnlyDictionary<string, string>> GetDisplayNamesAsync(CancellationToken cancellationToken = default)
     {
@@ -29,7 +54,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
             return _interfaces;
         }
 
-        var now = DateTime.UtcNow;
+        var now = _timeProvider.GetUtcNow();
         if (now < _expiresAtUtc)
         {
             return _interfaces;
@@ -38,7 +63,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
         await _refreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            now = DateTime.UtcNow;
+            now = _timeProvider.GetUtcNow();
             if (now < _expiresAtUtc)
             {
                 return _interfaces;
@@ -75,7 +100,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
 
             if (result.ExitCode != 0)
             {
-                logger.LogDebug("nmcli device status failed: {Error}", result.StandardError.Trim());
+                _logger.LogDebug("nmcli device status failed: {Error}", result.StandardError.Trim());
                 return [];
             }
 
@@ -100,7 +125,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Unable to refresh interface display names from NetworkManager");
+            _logger.LogDebug(ex, "Unable to refresh interface display names from NetworkManager");
             return [];
         }
     }
@@ -117,45 +142,83 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
 
-        var routes = ParseDefaultRoutes(routesResult.StandardOutput);
+        return await ReadGatewayProviderNamesAsync(
+            ParseDefaultRoutes(routesResult.StandardOutput),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyDictionary<string, string>> ReadGatewayProviderNamesAsync(
+        IReadOnlyList<GatewayRoute> routes,
+        CancellationToken cancellationToken = default)
+    {
         var names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var route in routes)
+        var tasks = routes
+            .Where(route => !ShouldSkipGatewayProbe(route.Device, route.Gateway))
+            .Select(route => ReadGatewayProviderNameAsync(route, cancellationToken))
+            .ToArray();
+
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+        foreach (var result in results)
         {
-            if (ShouldSkipGatewayProbe(route.Device, route.Gateway))
+            if (result is null || string.IsNullOrWhiteSpace(result.Provider))
             {
                 continue;
             }
 
-            string? provider;
-            try
-            {
-                provider = await ReadModemProviderAsync(route.Gateway, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                continue;
-            }
-            catch (Exception ex)
-            {
-                logger.LogDebug(ex, "Unable to read modem provider from gateway {Gateway}", route.Gateway);
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(provider))
-            {
-                names[route.Device] = provider;
-            }
+            names[result.Device] = result.Provider;
         }
 
         return names;
     }
 
-    private static async Task<string?> ReadModemProviderAsync(string gateway, CancellationToken cancellationToken)
+    private async Task<GatewayProviderResult?> ReadGatewayProviderNameAsync(
+        GatewayRoute route,
+        CancellationToken cancellationToken)
+    {
+        var cacheKey = route.Gateway;
+        var now = _timeProvider.GetUtcNow();
+        lock (_providerCacheLock)
+        {
+            if (_providerNameCache.TryGetValue(cacheKey, out var cached) && cached.ExpiresAtUtc > now)
+            {
+                return string.IsNullOrWhiteSpace(cached.Provider)
+                    ? null
+                    : new GatewayProviderResult(route.Device, cached.Provider);
+            }
+        }
+
+        string? provider;
+        try
+        {
+            provider = await _modemProviderFetcher(route.Gateway, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            provider = null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Unable to read modem provider from gateway {Gateway}", route.Gateway);
+            provider = null;
+        }
+
+        lock (_providerCacheLock)
+        {
+            _providerNameCache[cacheKey] = new CachedProviderName(
+                string.IsNullOrWhiteSpace(provider) ? null : provider,
+                now + SlowProviderCacheDuration);
+        }
+
+        return string.IsNullOrWhiteSpace(provider)
+            ? null
+            : new GatewayProviderResult(route.Device, provider);
+    }
+
+    private async Task<string?> ReadModemProviderAsync(string gateway, CancellationToken cancellationToken)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(2));
+        timeoutCts.CancelAfter(GatewayProbeTimeout);
 
-        using var client = new HttpClient();
         using var request = new HttpRequestMessage(
             HttpMethod.Get,
             $"http://{gateway}/goform/goform_get_cmd_process?isTest=false&cmd=network_type,network_provider,operator,signalbar,wan_ipaddr,modem_main_state");
@@ -163,7 +226,7 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
         request.Headers.TryAddWithoutValidation("Origin", $"http://{gateway}");
         request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
 
-        using var response = await client.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+        using var response = await _httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
         if (response.StatusCode != HttpStatusCode.OK)
         {
             return null;
@@ -358,6 +421,10 @@ public sealed class InterfaceMetadataService(ILogger<InterfaceMetadataService> l
     }
 
     private sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
+
+    private sealed record CachedProviderName(string? Provider, DateTimeOffset ExpiresAtUtc);
+
+    private sealed record GatewayProviderResult(string Device, string Provider);
 
     public sealed record GatewayRoute(string Device, string Gateway);
 

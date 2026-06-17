@@ -6,13 +6,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_transmission_plan, encode_sealed_payload_into, is_ipv4_packet,
+    build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into, is_ipv4_packet,
     precompute_transmission_plans, FrameReceiver, PacketKind, PacketReorderBuffer,
     PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
     RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ScheduleControlMessage, SchedulePlan,
@@ -80,7 +80,8 @@ struct InboundServerFrame {
 struct ReturnSendWork {
     packet_kind: PacketKind,
     peer: SocketAddr,
-    frame: Vec<u8>,
+    header: XBondHeader,
+    payload: Arc<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -176,6 +177,7 @@ async fn main() -> Result<()> {
     let recv_key = key.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
+        let mut payload = Vec::with_capacity(4096);
         loop {
             let (len, peer) = match recv_socket.recv_from(&mut buf).await {
                 Ok(result) => result,
@@ -185,9 +187,10 @@ async fn main() -> Result<()> {
                     continue;
                 }
             };
-            let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &recv_key) else {
+            let Ok(header) = decode_sealed_payload_into(&buf[..len], &recv_key, &mut payload) else {
                 continue;
             };
+            let frame = XBondFrame::new(header, std::mem::replace(&mut payload, Vec::with_capacity(4096)));
             if udp_frame_tx
                 .send(InboundServerFrame { frame, peer })
                 .await
@@ -398,8 +401,8 @@ async fn main() -> Result<()> {
                                     header.sequence,
                                     header.path_id,
                                     payload,
-                                    now_micros(),
-                                    header.send_micros.saturating_add(args.realtime_deadline_ms * 1_000),
+                                    monotonic_micros(),
+                                    0,
                                 );
                                 let delivered = write_reordered_packets(tun, ready)?;
                                 data_packets_forwarded =
@@ -422,8 +425,8 @@ async fn main() -> Result<()> {
                                     recovered.sequence,
                                     0,
                                     recovered.payload,
-                                    now_micros(),
-                                    now_micros(),
+                                    monotonic_micros(),
+                                    0,
                                 );
                                 let delivered = write_reordered_packets(tun, ready)?;
                                 data_packets_forwarded =
@@ -451,8 +454,8 @@ async fn main() -> Result<()> {
                                             recovered.sequence,
                                             0,
                                             recovered.payload,
-                                            now_micros(),
-                                            now_micros(),
+                                            monotonic_micros(),
+                                            0,
                                         );
                                         let delivered = write_reordered_packets(tun, ready)?;
                                         data_packets_forwarded =
@@ -508,7 +511,7 @@ async fn main() -> Result<()> {
 
             _ = reorder_tick.tick() => {
                 if let Some(tun) = &mut tun {
-                    let delivered = write_reordered_packets(tun, reorder.drain_ready(now_micros()))?;
+                    let delivered = write_reordered_packets(tun, reorder.drain_ready(monotonic_micros()))?;
                     data_packets_forwarded = data_packets_forwarded.saturating_add(delivered);
                 }
             }
@@ -555,12 +558,13 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
+                let packet_payload = Arc::new(packet);
                 reverse_sequence += 1;
                 let send_micros = now_micros();
                 let return_targets = select_return_targets(
                     return_control.as_ref(),
                     &peers,
-                    packet.len(),
+                    packet_payload.len(),
                 );
                 let mut sent_paths = 0usize;
                 for (path_id, peer, kind) in return_targets {
@@ -570,6 +574,7 @@ async fn main() -> Result<()> {
                             spawn_return_sender(
                                 path_id,
                                 socket.clone(),
+                                key.clone(),
                                 args.tun_queue_capacity.max(1),
                                 send_report_tx.clone(),
                             )
@@ -582,11 +587,11 @@ async fn main() -> Result<()> {
                         path_id,
                     );
                     header.flags = 1;
-                    let encoded = encode_return_payload(&header, &packet, &key)?;
                     let work = ReturnSendWork {
                         packet_kind: kind,
                         peer,
-                        frame: encoded,
+                        header,
+                        payload: packet_payload.clone(),
                     };
                     let enqueue_result = if kind == PacketKind::Data {
                         sender.tx.send(work).await.map_err(|_| {
@@ -630,7 +635,7 @@ async fn main() -> Result<()> {
                         serde_json::json!({
                             "event": "return-packet-sent",
                             "sequence": reverse_sequence,
-                            "bytes": packet.len(),
+                            "bytes": packet_payload.len(),
                             "paths": sent_paths,
                         })
                     );
@@ -666,26 +671,45 @@ async fn bind_udp_socket(bind_addr: &str, socket_buffer_bytes: usize) -> Result<
 fn spawn_return_sender(
     path_id: u16,
     socket: Arc<UdpSocket>,
+    key: XBondKey,
     capacity: usize,
     report_tx: mpsc::UnboundedSender<ReturnSendReport>,
 ) -> ReturnSenderHandle {
     let (tx, mut rx) = mpsc::channel::<ReturnSendWork>(capacity.max(1));
     tokio::spawn(async move {
+        let mut encoded = Vec::with_capacity(4096);
         while let Some(work) = rx.recv().await {
-            let encoded_bytes = work.frame.len() as u64;
-            let report = match socket.send_to(&work.frame, work.peer).await {
-                Ok(_) => ReturnSendReport {
-                    path_id,
-                    packet_kind: work.packet_kind,
-                    encoded_bytes,
-                    success: true,
-                    peer: work.peer,
-                    error: None,
-                },
+            let report = match encode_sealed_payload_into(
+                &work.header,
+                work.payload.as_slice(),
+                &key,
+                &mut encoded,
+            ) {
+                Ok(()) => {
+                    let encoded_bytes = encoded.len() as u64;
+                    match socket.send_to(&encoded, work.peer).await {
+                        Ok(_) => ReturnSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            encoded_bytes,
+                            success: true,
+                            peer: work.peer,
+                            error: None,
+                        },
+                        Err(error) => ReturnSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            encoded_bytes,
+                            success: false,
+                            peer: work.peer,
+                            error: Some(error.to_string()),
+                        },
+                    }
+                }
                 Err(error) => ReturnSendReport {
                     path_id,
                     packet_kind: work.packet_kind,
-                    encoded_bytes,
+                    encoded_bytes: 0,
                     success: false,
                     peer: work.peer,
                     error: Some(error.to_string()),
@@ -695,12 +719,6 @@ fn spawn_return_sender(
         }
     });
     ReturnSenderHandle { tx }
-}
-
-fn encode_return_payload(header: &XBondHeader, payload: &[u8], key: &XBondKey) -> Result<Vec<u8>> {
-    let mut encoded = Vec::with_capacity(payload.len().saturating_add(64));
-    encode_sealed_payload_into(header, payload, key, &mut encoded)?;
-    Ok(encoded)
 }
 
 fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
@@ -1097,6 +1115,15 @@ fn now_micros() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or_default()
+}
+
+fn monotonic_micros() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 fn initial_reverse_sequence() -> u64 {

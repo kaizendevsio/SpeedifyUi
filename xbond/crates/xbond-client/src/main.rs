@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -18,7 +18,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use xbond_core::{
-    build_schedule, default_udp_socket_buffer_bytes, encode_sealed_payload_into,
+    build_schedule, decode_sealed_payload_into, default_udp_socket_buffer_bytes,
+    encode_sealed_payload_into,
     expand_schedule_for_recovery, is_ipv4_packet, precompute_transmission_plans, select_path_roles,
     select_path_roles_with_state, stabilize_recovery_schedule, update_recovery_state, ClientConfig,
     FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus,
@@ -395,7 +396,8 @@ struct InboundTunnelFrame {
 #[derive(Debug)]
 struct PathSendWork {
     packet_kind: PacketKind,
-    frame: Vec<u8>,
+    header: XBondHeader,
+    payload: Arc<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -403,6 +405,8 @@ struct PathSendReport {
     path_id: u16,
     packet_kind: PacketKind,
     encoded_bytes: u64,
+    encode_micros: u64,
+    encoded: bool,
     success: bool,
     error: Option<String>,
 }
@@ -1088,7 +1092,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     }
 
     let mut counters = TunnelCounters::default();
-    let mut pending_fec_source: Option<(u64, Vec<u8>)> = None;
+    let mut pending_fec_source: Option<(u64, Arc<Vec<u8>>)> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
     let mut return_reorder = PacketReorderBuffer::new(8192, config.reorder_hold_ms * 1_000);
     let mut sequence = 0u64;
@@ -1235,7 +1239,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             _ = reorder_tick.tick() => {
-                let ready = return_reorder.drain_ready(now_micros());
+                let ready = return_reorder.drain_ready(monotonic_micros());
                 write_reordered_return_packets(
                     &mut tun,
                     ready,
@@ -1315,6 +1319,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             Some(report) = send_report_rx.recv() => {
+                if report.encoded {
+                    counters.encoded_frames = counters.encoded_frames.saturating_add(1);
+                    counters.encode_micros_total = counters
+                        .encode_micros_total
+                        .saturating_add(report.encode_micros);
+                }
                 if report.success {
                     record_tunnel_send_report_success(
                         &mut path_runtime,
@@ -1360,8 +1370,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     continue;
                 }
 
+                let packet_payload = Arc::new(packet);
                 let packet_transmissions = transmission_plans.for_packet_len(
-                    packet.len(),
+                    packet_payload.len(),
                     policy_config.interactive_packet_threshold_bytes,
                 );
 
@@ -1371,7 +1382,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "{}",
                             serde_json::json!({
                                 "event": "packet-dropped-no-live-path",
-                                "bytes": packet.len(),
+                                "bytes": packet_payload.len(),
                             })
                         );
                     }
@@ -1381,7 +1392,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 sequence += 1;
                 counters.data_bytes_sent = counters
                     .data_bytes_sent
-                    .saturating_add(packet.len() as u64);
+                    .saturating_add(packet_payload.len() as u64);
                 let send_micros = now_micros();
                 for transmission in packet_transmissions
                     .iter()
@@ -1397,10 +1408,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         send_micros,
                         transmission.path_id,
                     );
-                    let encoded = encode_tunnel_payload(&header, &packet, &key, &mut counters)?;
                     let work = PathSendWork {
                         packet_kind: transmission.packet_kind,
-                        frame: encoded,
+                        header,
+                        payload: packet_payload.clone(),
                     };
                     let enqueue_result = if transmission.packet_kind == PacketKind::Data {
                         sender.tx.send(work).await.map_err(|_| {
@@ -1451,8 +1462,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     .any(|transmission| transmission.packet_kind == PacketKind::Fec)
                 {
                     if let Some((base_sequence, first_payload)) = pending_fec_source.take() {
-                        let fec_payload =
-                            XorFecBlock::encode(base_sequence, &first_payload, &packet)?;
+                        let fec_payload = Arc::new(XorFecBlock::encode(
+                            base_sequence,
+                            first_payload.as_slice(),
+                            packet_payload.as_slice(),
+                        )?);
                         for transmission in fec_transmissions {
                             let Some(sender) = senders.get(&transmission.path_id) else {
                                 counters.fec_packets_skipped += 1;
@@ -1467,11 +1481,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 send_micros,
                                 transmission.path_id,
                             );
-                            let encoded =
-                                encode_tunnel_payload(&header, &fec_payload, &key, &mut counters)?;
                             match sender.tx.try_send(PathSendWork {
                                 packet_kind: PacketKind::Fec,
-                                frame: encoded,
+                                header,
+                                payload: fec_payload.clone(),
                             }) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {
@@ -1499,7 +1512,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             }
                         }
                     } else {
-                        pending_fec_source = Some((sequence, packet.clone()));
+                        pending_fec_source = Some((sequence, packet_payload.clone()));
                     }
                 }
 
@@ -1509,7 +1522,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         serde_json::json!({
                             "event": "packet-sent",
                             "sequence": sequence,
-                            "bytes": packet.len(),
+                            "bytes": packet_payload.len(),
                             "data_packets_sent": counters.data_packets_sent,
                             "duplicate_packets_sent": counters.duplicate_packets_sent,
                             "fec_packets_sent": counters.fec_packets_sent,
@@ -1554,17 +1567,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             let sequence = inbound.frame.header.sequence;
                             let path_id = inbound.path_id;
                             let payload_len = inbound.frame.payload.len();
-                            let frame_deadline = inbound
-                                .frame
-                                .header
-                                .send_micros
-                                .saturating_add(config.realtime_deadline_ms * 1_000);
                             let ready = return_reorder.push(
                                 sequence,
                                 path_id,
                                 inbound.frame.payload,
-                                now_micros(),
-                                frame_deadline,
+                                monotonic_micros(),
+                                0,
                             );
                             write_reordered_return_packets(
                                 &mut tun,
@@ -1670,6 +1678,7 @@ async fn ensure_tunnel_sockets(
                 let sender = spawn_tunnel_sender(
                     *path_id,
                     socket.clone(),
+                    key.clone(),
                     config.tun_queue_capacity.max(1),
                     send_report_tx.clone(),
                 );
@@ -1721,6 +1730,7 @@ async fn ensure_tunnel_sockets(
         let sender = spawn_tunnel_sender(
             *path_id,
             socket.clone(),
+            key.clone(),
             config.tun_queue_capacity.max(1),
             send_report_tx.clone(),
         );
@@ -1734,25 +1744,53 @@ async fn ensure_tunnel_sockets(
 fn spawn_tunnel_sender(
     path_id: u16,
     socket: Arc<UdpSocket>,
+    key: XBondKey,
     capacity: usize,
     report_tx: mpsc::UnboundedSender<PathSendReport>,
 ) -> PathSenderHandle {
     let (tx, mut rx) = mpsc::channel::<PathSendWork>(capacity.max(1));
     tokio::spawn(async move {
+        let mut encoded = Vec::with_capacity(4096);
         while let Some(work) = rx.recv().await {
-            let encoded_bytes = work.frame.len() as u64;
-            let report = match socket.send(&work.frame).await {
-                Ok(_) => PathSendReport {
-                    path_id,
-                    packet_kind: work.packet_kind,
-                    encoded_bytes,
-                    success: true,
-                    error: None,
-                },
+            let started = Instant::now();
+            let encode_result = encode_sealed_payload_into(
+                &work.header,
+                work.payload.as_slice(),
+                &key,
+                &mut encoded,
+            );
+            let encode_micros =
+                started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            let report = match encode_result {
+                Ok(()) => {
+                    let encoded_bytes = encoded.len() as u64;
+                    match socket.send(&encoded).await {
+                        Ok(_) => PathSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            encoded_bytes,
+                            encode_micros,
+                            encoded: true,
+                            success: true,
+                            error: None,
+                        },
+                        Err(error) => PathSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            encoded_bytes,
+                            encode_micros,
+                            encoded: true,
+                            success: false,
+                            error: Some(error.to_string()),
+                        },
+                    }
+                }
                 Err(error) => PathSendReport {
                     path_id,
                     packet_kind: work.packet_kind,
-                    encoded_bytes,
+                    encoded_bytes: 0,
+                    encode_micros,
+                    encoded: false,
                     success: false,
                     error: Some(error.to_string()),
                 },
@@ -1771,6 +1809,7 @@ fn spawn_tunnel_receiver(
 ) {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
+        let mut payload = Vec::with_capacity(4096);
         loop {
             let len = match socket.recv(&mut buf).await {
                 Ok(len) => len,
@@ -1780,9 +1819,10 @@ fn spawn_tunnel_receiver(
                     continue;
                 }
             };
-            let Ok(frame) = XBondFrame::decode_sealed(&buf[..len], &key) else {
+            let Ok(header) = decode_sealed_payload_into(&buf[..len], &key, &mut payload) else {
                 continue;
             };
+            let frame = XBondFrame::new(header, std::mem::replace(&mut payload, Vec::with_capacity(4096)));
             if inbound_tx
                 .send(InboundTunnelFrame { path_id, frame })
                 .await
@@ -1898,22 +1938,6 @@ fn record_tunnel_send_report_success(
 fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>, path_id: u16) {
     let runtime = path_runtime.entry(path_id).or_default();
     runtime.send_failures = runtime.send_failures.saturating_add(1);
-}
-
-fn encode_tunnel_payload(
-    header: &XBondHeader,
-    payload: &[u8],
-    key: &XBondKey,
-    counters: &mut TunnelCounters,
-) -> Result<Vec<u8>> {
-    let started = Instant::now();
-    let mut encoded = Vec::with_capacity(payload.len().saturating_add(64));
-    encode_sealed_payload_into(header, payload, key, &mut encoded)?;
-    counters.encoded_frames = counters.encoded_frames.saturating_add(1);
-    counters.encode_micros_total = counters
-        .encode_micros_total
-        .saturating_add(started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64);
-    Ok(encoded)
 }
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
@@ -3011,6 +3035,15 @@ fn now_micros() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or_default()
+}
+
+fn monotonic_micros() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_micros()
+        .min(u128::from(u64::MAX)) as u64
 }
 
 #[cfg(test)]

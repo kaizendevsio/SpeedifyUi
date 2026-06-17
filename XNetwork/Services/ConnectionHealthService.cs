@@ -7,7 +7,7 @@ namespace XNetwork.Services;
 
 public class ConnectionHealthService(
     ILogger<ConnectionHealthService> logger,
-    XBondStatsService xbondStatsService) : BackgroundService, IConnectionHealthService
+    XBondSnapshotCache xbondSnapshotCache) : BackgroundService, IConnectionHealthService
 {
     private const string PingTarget = "8.8.8.8";
     private const int PingIntervalMs = 500;
@@ -79,7 +79,7 @@ public class ConnectionHealthService(
         {
             try
             {
-                var snapshot = await xbondStatsService.GetSnapshotAsync(stoppingToken).ConfigureAwait(false);
+                var snapshot = await xbondSnapshotCache.GetSnapshotAsync(stoppingToken).ConfigureAwait(false);
                 foreach (var path in snapshot.Paths)
                 {
                     var key = path.InterfaceName;

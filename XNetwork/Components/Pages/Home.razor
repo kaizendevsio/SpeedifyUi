@@ -3,7 +3,7 @@
 @using XNetwork.Services
 @using XNetwork.Utils
 @implements IAsyncDisposable
-@inject XBondStatsService XBondStatsService
+@inject XBondSnapshotCache XBondSnapshotCache
 @inject IStarlinkTelemetryService StarlinkTelemetryService
 
 <PageTitle>XNetwork</PageTitle>
@@ -138,7 +138,7 @@
 
     private async Task RefreshAsync()
     {
-        _snapshot = await XBondStatsService.GetSnapshotAsync(_refreshCts.Token);
+        _snapshot = await XBondSnapshotCache.GetSnapshotAsync(_refreshCts.Token);
         _starlink = StarlinkTelemetryService.GetSnapshot();
         StateHasChanged();
     }

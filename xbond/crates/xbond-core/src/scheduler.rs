@@ -307,12 +307,7 @@ pub fn expand_schedule_for_recovery(
         return schedule.clone();
     };
 
-    let duplicate_path_ids = roles
-        .iter()
-        .filter(|path| path.path.path_id != anchor_path_id)
-        .filter(|path| is_recovery_path_eligible(&path.path, config))
-        .map(|path| path.path.path_id)
-        .collect::<Vec<_>>();
+    let duplicate_path_ids = recovery_duplicate_path_ids(anchor_path_id, roles, config);
 
     SchedulePlan {
         mode: schedule.mode,
@@ -348,12 +343,7 @@ pub fn stabilize_recovery_schedule(
         return schedule.clone();
     };
 
-    let eligible = roles
-        .iter()
-        .filter(|role| role.path.path_id != anchor_path_id)
-        .filter(|role| is_recovery_path_eligible(&role.path, config))
-        .map(|role| role.path.path_id)
-        .collect::<Vec<_>>();
+    let eligible = recovery_duplicate_path_ids(anchor_path_id, roles, config);
 
     let stable_ids_still_eligible = !state.stable_duplicate_path_ids.is_empty()
         && state
@@ -411,6 +401,47 @@ fn recovery_status(state: &RecoveryState, eligible_path_ids: Vec<u16>) -> Recove
 fn is_recovery_path_eligible(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
     path.hard_demotion_reason().is_none()
         && path.loss_rate < config.path_loss_exclude_threshold.clamp(0.0, 1.0)
+}
+
+fn recovery_duplicate_path_ids(
+    anchor_path_id: u16,
+    roles: &[ScoredPath],
+    config: RecoveryConfig,
+) -> Vec<u16> {
+    let candidates = roles
+        .iter()
+        .filter(|path| path.path.path_id != anchor_path_id)
+        .filter(|path| is_recovery_path_eligible(&path.path, config))
+        .collect::<Vec<_>>();
+
+    let preferred = candidates
+        .iter()
+        .filter(|path| !is_harmful_recovery_duplicate(&path.path, config))
+        .map(|path| path.path.path_id)
+        .collect::<Vec<_>>();
+
+    if preferred.is_empty() {
+        candidates
+            .first()
+            .map(|path| vec![path.path.path_id])
+            .unwrap_or_default()
+    } else {
+        preferred
+    }
+}
+
+fn is_harmful_recovery_duplicate(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
+    path.hard_demotion_reason().is_some()
+        || path.loss_rate >= config.path_loss_exclude_threshold.clamp(0.0, 1.0)
+        || path
+            .stale_ack_ms
+            .is_some_and(|age| age >= config.degraded_stale_ack_ms.saturating_mul(2).max(3_000))
+        || path.send_failure_streak >= 2
+        || path.queue_pressure >= 0.95
+        || path.throughput_collapse_score >= 0.95
+        || (path.duplicate_usefulness <= 0.05
+            && (path.late_rate >= config.degraded_late_threshold
+                || path.loss_rate >= config.degraded_loss_threshold))
 }
 
 fn is_recovery_path_degraded(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
@@ -642,6 +673,22 @@ mod tests {
     fn path_with_jitter(path_id: u16, rtt_ms: f64, jitter_ms: f64) -> PathHealthSnapshot {
         let mut path = path(path_id, rtt_ms, 0.0);
         path.jitter_ms = Some(jitter_ms);
+        path
+    }
+
+    fn path_with_queue_pressure(
+        path_id: u16,
+        rtt_ms: f64,
+        queue_pressure: f64,
+    ) -> PathHealthSnapshot {
+        let mut path = path_with_loss(path_id, rtt_ms, 0.10);
+        path.queue_pressure = queue_pressure;
+        path
+    }
+
+    fn path_with_stale_ack(path_id: u16, rtt_ms: f64, stale_ack_ms: u64) -> PathHealthSnapshot {
+        let mut path = path_with_loss(path_id, rtt_ms, 0.10);
+        path.stale_ack_ms = Some(stale_ack_ms);
         path
     }
 
@@ -985,6 +1032,41 @@ mod tests {
         assert!(!expanded.duplicate_path_ids.contains(&2));
         assert!(!expanded.duplicate_path_ids.contains(&3));
         assert_eq!(expanded.duplicate_path_ids, vec![4]);
+    }
+
+    #[test]
+    fn recovery_prunes_harmful_duplicate_when_healthier_backup_exists() {
+        let config = RecoveryConfig::default();
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_queue_pressure(2, 90.0, 0.99),
+                path_with_loss(3, 100.0, 0.14),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+
+        assert_eq!(expanded.duplicate_path_ids, vec![3]);
+    }
+
+    #[test]
+    fn recovery_keeps_one_usable_backup_when_all_duplicates_are_harmful() {
+        let config = RecoveryConfig::default();
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_queue_pressure(2, 90.0, 0.99),
+                path_with_stale_ack(3, 100.0, 4_000),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+
+        assert_eq!(expanded.duplicate_path_ids.len(), 1);
+        assert_ne!(expanded.duplicate_path_ids[0], expanded.anchor_path_id.unwrap());
     }
 
     #[test]

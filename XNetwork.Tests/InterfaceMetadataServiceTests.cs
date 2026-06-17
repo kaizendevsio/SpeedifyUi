@@ -1,5 +1,6 @@
 using XNetwork.Models;
 using XNetwork.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace XNetwork.Tests;
 
@@ -190,5 +191,49 @@ public class InterfaceMetadataServiceTests
 
         Assert.Null(blocked);
         Assert.Null(noService);
+    }
+
+    [Fact]
+    public async Task ReadGatewayProviderNamesAsync_CachesSlowProviderProbeResults()
+    {
+        var calls = 0;
+        var time = new ManualTimeProvider(DateTimeOffset.Parse("2026-06-17T00:00:00Z"));
+        var service = new InterfaceMetadataService(
+            NullLogger<InterfaceMetadataService>.Instance,
+            (gateway, _) =>
+            {
+                calls++;
+                return Task.FromResult<string?>($"Provider {gateway}");
+            },
+            time,
+            new HttpClient());
+        var routes = new[]
+        {
+            new InterfaceMetadataService.GatewayRoute("enx0", "192.168.3.1")
+        };
+
+        var first = await service.ReadGatewayProviderNamesAsync(routes);
+        var second = await service.ReadGatewayProviderNamesAsync(routes);
+
+        Assert.Equal("Provider 192.168.3.1", first["enx0"]);
+        Assert.Equal(first["enx0"], second["enx0"]);
+        Assert.Equal(1, calls);
+
+        time.Advance(TimeSpan.FromSeconds(31));
+        await service.ReadGatewayProviderNamesAsync(routes);
+
+        Assert.Equal(2, calls);
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        private DateTimeOffset _now = now;
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan duration)
+        {
+            _now += duration;
+        }
     }
 }

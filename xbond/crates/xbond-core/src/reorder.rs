@@ -52,7 +52,7 @@ impl PacketReorderBuffer {
         path_id: u16,
         payload: Vec<u8>,
         now_micros: u64,
-        frame_deadline_micros: u64,
+        _frame_deadline_micros: u64,
     ) -> Vec<ReorderedPacket> {
         if self
             .next_sequence
@@ -62,12 +62,7 @@ impl PacketReorderBuffer {
             return Vec::new();
         }
 
-        let hold_deadline = now_micros.saturating_add(self.hold_micros);
-        let release_after_micros = if frame_deadline_micros == 0 {
-            hold_deadline
-        } else {
-            frame_deadline_micros.min(hold_deadline)
-        };
+        let release_after_micros = now_micros.saturating_add(self.hold_micros);
 
         if let std::collections::btree_map::Entry::Vacant(entry) = self.pending.entry(sequence) {
             entry.insert(PendingPacket {
@@ -207,6 +202,20 @@ mod tests {
                 payload: b"twelve".to_vec()
             }]
         );
+    }
+
+    #[test]
+    fn peer_timestamp_deadline_does_not_shorten_local_hold_time() {
+        let mut buffer = PacketReorderBuffer::new(16, 25_000);
+
+        assert_eq!(buffer.push(10, 1, b"ten".to_vec(), 1_000, 1_000).len(), 1);
+        assert!(buffer
+            .push(12, 2, b"twelve".to_vec(), 2_000, 2_001)
+            .is_empty());
+
+        assert!(buffer.drain_ready(3_000).is_empty());
+        assert!(buffer.drain_ready(20_000).is_empty());
+        assert_eq!(buffer.drain_ready(28_000).len(), 1);
     }
 
     #[test]

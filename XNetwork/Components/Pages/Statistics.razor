@@ -3,7 +3,7 @@
 @using XNetwork.Services
 @using XNetwork.Utils
 @implements IAsyncDisposable
-@inject XBondStatsService XBondStatsService
+@inject XBondSnapshotCache XBondSnapshotCache
 
 <PageTitle>XBond Analytics</PageTitle>
 
@@ -101,7 +101,7 @@
 
     private async Task RefreshAsync()
     {
-        _snapshot = await XBondStatsService.GetSnapshotAsync(_refreshCts.Token);
+        _snapshot = await XBondSnapshotCache.GetSnapshotAsync(_refreshCts.Token);
         AddHistory(_downloadHistory, _snapshot.DownloadMbps);
         AddHistory(_uploadHistory, _snapshot.UploadMbps);
         AddHistory(_latencyHistory, _snapshot.AverageRttMs);
