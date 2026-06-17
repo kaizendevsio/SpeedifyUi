@@ -110,6 +110,7 @@ fn associated_data(header: &XBondHeader) -> [u8; 28] {
         PacketKind::Fec => 3,
         PacketKind::Heartbeat => 4,
         PacketKind::Control => 5,
+        PacketKind::Repair => 6,
     };
     data[27] = header.flags;
     data

@@ -12,16 +12,21 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::time;
 use xbond_core::{
-    build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into, is_ipv4_packet,
-    precompute_transmission_plans, FrameReceiver, PacketKind, PacketReorderBuffer,
+    build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into,
+    is_ipv4_packet, precompute_transmission_plans, FrameReceiver, PacketKind, PacketReorderBuffer,
     PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ScheduleControlMessage, SchedulePlan,
-    XBondFrame, XBondHeader, XBondKey, XBondTun, XorFecBlock,
+    RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache, ScheduleControlMessage,
+    SchedulePlan, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
+    XBondTun, XorFecBlock,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_INBOUND_QUEUE_CAPACITY: usize = 4096;
 const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const REPAIR_CACHE_CAPACITY: usize = 4096;
+const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
+const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
+const MAX_REPAIR_REQUESTS: usize = 64;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -116,6 +121,7 @@ struct ServerRuntimeStatus {
     updated_at_micros: u64,
     return_schedule: Option<ServerReturnScheduleStatus>,
     ingress_reorder: ServerIngressReorderStatus,
+    repair: XBondRepairStatus,
     counters: TunnelCounters,
 }
 
@@ -161,7 +167,10 @@ async fn main() -> Result<()> {
     let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
     let mut return_senders: HashMap<u16, ReturnSenderHandle> = HashMap::new();
     let mut return_control: Option<ReturnControl> = None;
+    let mut resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
+    let mut repair = XBondRepairStatus::default();
     let mut reverse_sequence = initial_reverse_sequence();
+    let mut control_sequence = 2_000_000_000_000u64;
     let mut last_session_id = 0u64;
     let mut reorder_session_id = 0u64;
     let mut reorder_tick = time::interval(Duration::from_millis(
@@ -187,10 +196,14 @@ async fn main() -> Result<()> {
                     continue;
                 }
             };
-            let Ok(header) = decode_sealed_payload_into(&buf[..len], &recv_key, &mut payload) else {
+            let Ok(header) = decode_sealed_payload_into(&buf[..len], &recv_key, &mut payload)
+            else {
                 continue;
             };
-            let frame = XBondFrame::new(header, std::mem::replace(&mut payload, Vec::with_capacity(4096)));
+            let frame = XBondFrame::new(
+                header,
+                std::mem::replace(&mut payload, Vec::with_capacity(4096)),
+            );
             if udp_frame_tx
                 .send(InboundServerFrame { frame, peer })
                 .await
@@ -256,6 +269,7 @@ async fn main() -> Result<()> {
             invalid_fec_packets_dropped,
             non_ipv4_packets_dropped,
         },
+        &repair,
         current_ingress_hold_micros,
     )?;
     loop {
@@ -267,6 +281,7 @@ async fn main() -> Result<()> {
                     peers.clear();
                     return_senders.clear();
                     return_control = None;
+                    resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
                     current_ingress_hold_micros = normal_ingress_hold_micros;
                     reorder.set_hold_micros(normal_ingress_hold_micros);
                 }
@@ -373,6 +388,29 @@ async fn main() -> Result<()> {
                     );
                 }
 
+                if outcome == ReceiveOutcome::Accepted {
+                    if let Some(sequences) = parse_repair_request(&frame) {
+                        repair.requests_received = repair
+                            .requests_received
+                            .saturating_add(sequences.len() as u64);
+                        send_repair_frames_from_server_cache(
+                            &args,
+                            &socket,
+                            &key,
+                            &mut return_senders,
+                            return_control.as_ref(),
+                            &peers,
+                            &mut resend_cache,
+                            last_session_id,
+                            &sequences,
+                            &send_report_tx,
+                            &mut repair,
+                        )
+                        .await?;
+                        continue;
+                    }
+                }
+
                 let mut forwarded_packets = 0u64;
                 let mut dropped_reason = None;
                 let trace_tunnel_payload =
@@ -399,15 +437,33 @@ async fn main() -> Result<()> {
                             if let Some(tun) = &mut tun {
                                 let ready = reorder.push(
                                     header.sequence,
-                                    header.path_id,
+                                    if header.kind == PacketKind::Repair {
+                                        u16::MAX
+                                    } else {
+                                        header.path_id
+                                    },
                                     payload,
                                     monotonic_micros(),
                                     0,
                                 );
-                                let delivered = write_reordered_packets(tun, ready)?;
+                                let delivered = write_reordered_packets(tun, ready, &mut repair)?;
                                 data_packets_forwarded =
                                     data_packets_forwarded.saturating_add(delivered);
                                 forwarded_packets = forwarded_packets.saturating_add(delivered);
+                                send_repair_requests_for_ingress_gaps(
+                                    &socket,
+                                    &key,
+                                    &peers,
+                                    last_session_id,
+                                    &mut control_sequence,
+                                    &mut reorder,
+                                    &mut repair,
+                                    return_control
+                                        .as_ref()
+                                        .is_some_and(|control| control.recovery_active),
+                                    args.json_events,
+                                )
+                                .await?;
                             }
                         } else {
                             non_ipv4_packets_dropped += 1;
@@ -428,7 +484,7 @@ async fn main() -> Result<()> {
                                     monotonic_micros(),
                                     0,
                                 );
-                                let delivered = write_reordered_packets(tun, ready)?;
+                                let delivered = write_reordered_packets(tun, ready, &mut repair)?;
                                 data_packets_forwarded =
                                     data_packets_forwarded.saturating_add(delivered);
                                 forwarded_packets = forwarded_packets.saturating_add(delivered);
@@ -457,7 +513,7 @@ async fn main() -> Result<()> {
                                             monotonic_micros(),
                                             0,
                                         );
-                                        let delivered = write_reordered_packets(tun, ready)?;
+                                        let delivered = write_reordered_packets(tun, ready, &mut repair)?;
                                         data_packets_forwarded =
                                             data_packets_forwarded.saturating_add(delivered);
                                         forwarded_packets = forwarded_packets.saturating_add(delivered);
@@ -473,6 +529,12 @@ async fn main() -> Result<()> {
                             dropped_reason = Some("invalid FEC payload");
                         }
                     }
+                }
+
+                if frame.header.kind == PacketKind::Repair
+                    && matches!(outcome, ReceiveOutcome::Duplicate | ReceiveOutcome::Expired)
+                {
+                    repair.late_frames = repair.late_frames.saturating_add(1);
                 }
 
                 if let Some((header, payload_len)) = trace_tunnel_payload {
@@ -495,6 +557,9 @@ async fn main() -> Result<()> {
 
             Some(report) = send_report_rx.recv() => {
                 let _ = report.encoded_bytes;
+                if report.success && report.packet_kind == PacketKind::Repair {
+                    repair.frames_sent = repair.frames_sent.saturating_add(1);
+                }
                 if !report.success && args.json_events {
                     println!(
                         "{}",
@@ -511,12 +576,31 @@ async fn main() -> Result<()> {
 
             _ = reorder_tick.tick() => {
                 if let Some(tun) = &mut tun {
-                    let delivered = write_reordered_packets(tun, reorder.drain_ready(monotonic_micros()))?;
+                    let delivered = write_reordered_packets(
+                        tun,
+                        reorder.drain_ready(monotonic_micros()),
+                        &mut repair,
+                    )?;
                     data_packets_forwarded = data_packets_forwarded.saturating_add(delivered);
+                    send_repair_requests_for_ingress_gaps(
+                        &socket,
+                        &key,
+                        &peers,
+                        last_session_id,
+                        &mut control_sequence,
+                        &mut reorder,
+                        &mut repair,
+                        return_control
+                            .as_ref()
+                            .is_some_and(|control| control.recovery_active),
+                        args.json_events,
+                    )
+                    .await?;
                 }
             }
 
             _ = status_tick.tick() => {
+                repair.cache_entries = resend_cache.len();
                 let counters = TunnelCounters {
                     data_packets_received,
                     data_packets_forwarded,
@@ -531,6 +615,7 @@ async fn main() -> Result<()> {
                     return_control.as_ref(),
                     &reorder,
                     counters,
+                    &repair,
                     current_ingress_hold_micros,
                 )?;
                 if args.json_events {
@@ -560,6 +645,13 @@ async fn main() -> Result<()> {
 
                 let packet_payload = Arc::new(packet);
                 reverse_sequence += 1;
+                resend_cache.insert(
+                    last_session_id,
+                    reverse_sequence,
+                    packet_payload.clone(),
+                    monotonic_micros(),
+                );
+                repair.cache_entries = resend_cache.len();
                 let send_micros = now_micros();
                 let return_targets = select_return_targets(
                     return_control.as_ref(),
@@ -879,6 +971,7 @@ fn write_server_status(
     return_control: Option<&ReturnControl>,
     reorder: &PacketReorderBuffer,
     counters: TunnelCounters,
+    repair: &XBondRepairStatus,
     current_ingress_hold_micros: u64,
 ) -> Result<()> {
     if let Some(parent) = args.status_path.parent() {
@@ -903,6 +996,7 @@ fn write_server_status(
             capacity: args.ingress_reorder_capacity,
             stats: reorder.stats(),
         },
+        repair: repair.clone(),
         counters,
     };
     let json = serde_json::to_vec(&status)?;
@@ -932,13 +1026,16 @@ fn event_name(outcome: ReceiveOutcome) -> &'static str {
 }
 
 fn is_data_like(kind: PacketKind) -> bool {
-    matches!(kind, PacketKind::Data | PacketKind::Duplicate)
+    matches!(
+        kind,
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Repair
+    )
 }
 
 fn is_tunnel_payload(kind: PacketKind) -> bool {
     matches!(
         kind,
-        PacketKind::Data | PacketKind::Duplicate | PacketKind::Fec
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Repair | PacketKind::Fec
     )
 }
 
@@ -965,6 +1062,159 @@ fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
         Vec::new(),
         false,
     ))
+}
+
+fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
+    if frame.header.kind != PacketKind::Control {
+        return None;
+    }
+
+    let XBondControlMessage::RepairRequest { mut sequences } =
+        serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()?;
+    sequences.sort_unstable();
+    sequences.dedup();
+    sequences.truncate(MAX_REPAIR_REQUESTS);
+    (!sequences.is_empty()).then_some(sequences)
+}
+
+async fn send_repair_requests_for_ingress_gaps(
+    socket: &UdpSocket,
+    key: &XBondKey,
+    peers: &HashMap<u16, SocketAddr>,
+    session_id: u64,
+    control_sequence: &mut u64,
+    reorder: &mut PacketReorderBuffer,
+    repair: &mut XBondRepairStatus,
+    recovery_active: bool,
+    json_events: bool,
+) -> Result<()> {
+    if !recovery_active || peers.is_empty() || session_id == 0 {
+        return Ok(());
+    }
+
+    let sequences = reorder.repair_requests(
+        monotonic_micros(),
+        REPAIR_REQUEST_INTERVAL_MICROS,
+        MAX_REPAIR_REQUESTS,
+    );
+    if sequences.is_empty() {
+        return Ok(());
+    }
+
+    *control_sequence = control_sequence.saturating_add(1);
+    let control_id = *control_sequence;
+    let payload = serde_json::to_vec(&XBondControlMessage::RepairRequest {
+        sequences: sequences.clone(),
+    })?;
+    repair.requests_sent = repair.requests_sent.saturating_add(sequences.len() as u64);
+
+    for (path_id, peer) in peers {
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Control,
+                session_id,
+                control_id,
+                now_micros(),
+                *path_id,
+            ),
+            payload.clone(),
+        );
+        let encoded = frame.encode_sealed(key)?;
+        if let Err(error) = socket.send_to(&encoded, *peer).await {
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "ingress-repair-request-send-failed",
+                        "path_id": path_id,
+                        "peer": peer.to_string(),
+                        "sequence": control_id,
+                        "repair_sequences": sequences,
+                        "error": error.to_string(),
+                    })
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn send_repair_frames_from_server_cache(
+    args: &Args,
+    socket: &Arc<UdpSocket>,
+    key: &XBondKey,
+    return_senders: &mut HashMap<u16, ReturnSenderHandle>,
+    return_control: Option<&ReturnControl>,
+    peers: &HashMap<u16, SocketAddr>,
+    resend_cache: &mut ResendCache,
+    session_id: u64,
+    sequences: &[u64],
+    send_report_tx: &mpsc::UnboundedSender<ReturnSendReport>,
+    repair: &mut XBondRepairStatus,
+) -> Result<()> {
+    for sequence in sequences.iter().copied().take(MAX_REPAIR_REQUESTS) {
+        let now = monotonic_micros();
+        let Some(payload) = resend_cache.get(session_id, sequence, now) else {
+            repair.cache_misses = repair.cache_misses.saturating_add(1);
+            continue;
+        };
+
+        let targets = select_return_targets(return_control, peers, payload.len());
+        if targets.is_empty() {
+            repair.cache_misses = repair.cache_misses.saturating_add(1);
+            continue;
+        }
+
+        let send_micros = now_micros();
+        for (index, (path_id, peer, _kind)) in targets.into_iter().enumerate() {
+            let tx = return_senders
+                .entry(path_id)
+                .or_insert_with(|| {
+                    spawn_return_sender(
+                        path_id,
+                        socket.clone(),
+                        key.clone(),
+                        args.tun_queue_capacity.max(1),
+                        send_report_tx.clone(),
+                    )
+                })
+                .tx
+                .clone();
+            let mut header = XBondHeader::new(
+                PacketKind::Repair,
+                session_id,
+                sequence,
+                send_micros,
+                path_id,
+            );
+            header.flags = 1;
+            let work = ReturnSendWork {
+                packet_kind: PacketKind::Repair,
+                peer,
+                header,
+                payload: payload.clone(),
+            };
+            if index == 0 {
+                if tx.send(work).await.is_err() {
+                    repair.queue_drops = repair.queue_drops.saturating_add(1);
+                }
+            } else {
+                match tx.try_send(work) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        repair.queue_drops = repair.queue_drops.saturating_add(1);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        repair.queue_drops = repair.queue_drops.saturating_add(1);
+                    }
+                }
+            }
+        }
+    }
+
+    repair.cache_entries = resend_cache.len();
+    Ok(())
 }
 
 fn build_return_control(
@@ -1034,7 +1284,11 @@ fn select_return_targets(
         .collect()
 }
 
-fn write_reordered_packets(tun: &mut XBondTun, packets: Vec<ReorderedPacket>) -> Result<u64> {
+fn write_reordered_packets(
+    tun: &mut XBondTun,
+    packets: Vec<ReorderedPacket>,
+    repair: &mut XBondRepairStatus,
+) -> Result<u64> {
     let mut delivered = 0u64;
     for packet in packets {
         if let Err(error) = tun.write_packet(&packet.payload) {
@@ -1045,6 +1299,9 @@ fn write_reordered_packets(tun: &mut XBondTun, packets: Vec<ReorderedPacket>) ->
             continue;
         }
         delivered += 1;
+        if packet.path_id == u16::MAX {
+            repair.frames_delivered = repair.frames_delivered.saturating_add(1);
+        }
     }
 
     Ok(delivered)
@@ -1165,8 +1422,22 @@ mod tests {
     fn data_and_duplicate_are_tunnel_payload_kinds() {
         assert!(is_data_like(PacketKind::Data));
         assert!(is_data_like(PacketKind::Duplicate));
+        assert!(is_data_like(PacketKind::Repair));
         assert!(!is_data_like(PacketKind::Heartbeat));
         assert!(!is_data_like(PacketKind::Fec));
+    }
+
+    #[test]
+    fn repair_request_control_frame_parses_sequences() {
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Control, 1, 2, 3, 4),
+            serde_json::to_vec(&XBondControlMessage::RepairRequest {
+                sequences: vec![10, 11, 10],
+            })
+            .unwrap(),
+        );
+
+        assert_eq!(parse_repair_request(&frame), Some(vec![10, 11]));
     }
 
     #[test]

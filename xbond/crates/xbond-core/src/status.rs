@@ -29,6 +29,8 @@ pub struct XBondStatus {
     pub fec: XBondFecStatus,
     pub late_packets_dropped: u64,
     pub reorder: XBondReorderStatus,
+    #[serde(default)]
+    pub repair: XBondRepairStatus,
     pub process: XBondProcessStatus,
     pub recovery: RecoveryStatus,
     pub message: String,
@@ -200,6 +202,26 @@ pub struct XBondReorderStatus {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct XBondRepairStatus {
+    #[serde(default)]
+    pub requests_sent: u64,
+    #[serde(default)]
+    pub requests_received: u64,
+    #[serde(default)]
+    pub frames_sent: u64,
+    #[serde(default)]
+    pub frames_delivered: u64,
+    #[serde(default)]
+    pub cache_misses: u64,
+    #[serde(default)]
+    pub late_frames: u64,
+    #[serde(default)]
+    pub queue_drops: u64,
+    #[serde(default)]
+    pub cache_entries: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondProcessStatus {
     #[serde(default)]
     pub process_cpu_percent: Option<f64>,
@@ -286,6 +308,8 @@ pub struct XBondRuntimeStatus {
     pub late_packets_dropped: u64,
     #[serde(default)]
     pub reorder: XBondReorderStatus,
+    #[serde(default)]
+    pub repair: XBondRepairStatus,
     #[serde(default)]
     pub process: XBondProcessStatus,
     #[serde(default)]

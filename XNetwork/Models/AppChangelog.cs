@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.39";
+    public const string CurrentVersion = "xbond-2026.06.40";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Added XBond recovery packet repair.",
+            Changes =
+            [
+                "Recovery mode now requests targeted packet repair for reorder gaps before the normal timeout releases them.",
+                "Client and server keep short resend caches and answer repair requests with encrypted repair frames on current live paths.",
+                "Operator status now includes repair request, repair delivery, cache miss, queue drop, and late repair counters."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.39",
             Date = "2026-06-17",
             Summary = "Reduced XBond polling and dataplane overhead.",
             Changes =

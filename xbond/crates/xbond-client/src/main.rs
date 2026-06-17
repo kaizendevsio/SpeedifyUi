@@ -19,16 +19,17 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use xbond_core::{
     build_schedule, decode_sealed_payload_into, default_udp_socket_buffer_bytes,
-    encode_sealed_payload_into,
-    expand_schedule_for_recovery, is_ipv4_packet, precompute_transmission_plans, select_path_roles,
-    select_path_roles_with_state, stabilize_recovery_schedule, update_recovery_state, ClientConfig,
-    FrameReceiver, PacketKind, PacketReorderBuffer, PathHealthSnapshot, PathIsolationStatus,
+    encode_sealed_payload_into, expand_schedule_for_recovery, is_ipv4_packet,
+    precompute_transmission_plans, select_path_roles, select_path_roles_with_state,
+    stabilize_recovery_schedule, update_recovery_state, ClientConfig, FrameReceiver, PacketKind,
+    PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, PathIsolationStatus,
     ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig, RecoveryScheduleStabilityState,
     RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
-    RoleSelectionConfig, RoleSelectionState, RouteVerification, ScheduleControlMessage,
-    ScheduleMode, SchedulePlan, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame,
-    XBondHeader, XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
-    XBondRuntimeStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    ResendCache, RoleSelectionConfig, RoleSelectionState, RouteVerification,
+    ScheduleControlMessage, ScheduleMode, SchedulePlan, XBondControlMessage,
+    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
+    XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRepairStatus, XBondRuntimeStatus,
+    XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -1095,6 +1096,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut pending_fec_source: Option<(u64, Arc<Vec<u8>>)> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
     let mut return_reorder = PacketReorderBuffer::new(8192, config.reorder_hold_ms * 1_000);
+    let mut resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
+    let mut repair = XBondRepairStatus::default();
     let mut sequence = 0u64;
     let mut control_sequence = 1_000_000_000_000u64;
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
@@ -1107,6 +1110,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &mut counters,
         &mut last_throughput_sample,
     );
+    repair.cache_entries = resend_cache.len();
     write_tunnel_runtime_status(
         &config,
         &tun,
@@ -1120,6 +1124,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         active_override.as_ref(),
         role_state.schedule_change_count,
         &return_reorder,
+        &repair,
         tun_packet_rx.len(),
         inbound_rx.len(),
     )?;
@@ -1199,6 +1204,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
+                repair.cache_entries = resend_cache.len();
                 let control_signature =
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
                 if last_control_signature.as_ref() != Some(&control_signature)
@@ -1233,6 +1239,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
+                    &repair,
                     tun_packet_rx.len(),
                     inbound_rx.len(),
                 )?;
@@ -1245,7 +1252,19 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     ready,
                     &mut path_runtime,
                     &mut counters,
+                    &mut repair,
                 )?;
+                send_repair_requests_for_return_gaps(
+                    &mut path_runtime,
+                    &sockets,
+                    &key,
+                    session_id,
+                    &mut control_sequence,
+                    &mut return_reorder,
+                    &mut repair,
+                    recovery_status.active,
+                    options.json_events,
+                ).await?;
             }
 
             Some(envelope) = control_rx.recv() => {
@@ -1272,6 +1291,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
+                repair.cache_entries = resend_cache.len();
                 let control_signature =
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
                 if response.ok {
@@ -1312,6 +1332,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
+                    &repair,
                     tun_packet_rx.len(),
                     inbound_rx.len(),
                 )?;
@@ -1332,6 +1353,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         report.packet_kind,
                         report.encoded_bytes,
                         &mut counters,
+                        &mut repair,
                     );
                 } else {
                     record_tunnel_send_failure(&mut path_runtime, report.path_id);
@@ -1390,6 +1412,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
 
                 sequence += 1;
+                resend_cache.insert(
+                    session_id,
+                    sequence,
+                    packet_payload.clone(),
+                    monotonic_micros(),
+                );
                 counters.data_bytes_sent = counters
                     .data_bytes_sent
                     .saturating_add(packet_payload.len() as u64);
@@ -1536,6 +1564,23 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
             Some(inbound) = inbound_rx.recv() => {
                 counters.decoded_frames = counters.decoded_frames.saturating_add(1);
+                if let Some(sequences) = parse_repair_request(&inbound.frame) {
+                    repair.requests_received = repair
+                        .requests_received
+                        .saturating_add(sequences.len() as u64);
+                    send_repair_frames_from_client_cache(
+                        &config,
+                        &mut path_runtime,
+                        &senders,
+                        &transmission_plans,
+                        &mut resend_cache,
+                        session_id,
+                        &sequences,
+                        &mut repair,
+                    )
+                    .await?;
+                    continue;
+                }
                 if is_expected_ack(&inbound.frame, session_id, inbound.frame.header.sequence) {
                     record_tunnel_heartbeat_ack(
                         &mut path_runtime,
@@ -1565,7 +1610,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         }
                         if is_ipv4_packet(&inbound.frame.payload) {
                             let sequence = inbound.frame.header.sequence;
-                            let path_id = inbound.path_id;
+                            let path_id = if inbound.frame.header.kind == PacketKind::Repair {
+                                u16::MAX
+                            } else {
+                                inbound.path_id
+                            };
                             let payload_len = inbound.frame.payload.len();
                             let ready = return_reorder.push(
                                 sequence,
@@ -1579,7 +1628,19 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 ready,
                                 &mut path_runtime,
                                 &mut counters,
+                                &mut repair,
                             )?;
+                            send_repair_requests_for_return_gaps(
+                                &mut path_runtime,
+                                &sockets,
+                                &key,
+                                session_id,
+                                &mut control_sequence,
+                                &mut return_reorder,
+                                &mut repair,
+                                recovery_status.active,
+                                options.json_events,
+                            ).await?;
                             if options.json_events && options.trace_packets {
                                 println!(
                                     "{}",
@@ -1603,6 +1664,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 runtime.duplicate_late_packets.saturating_add(1);
                         }
                         counters.duplicate_packets_dropped += 1;
+                        if inbound.frame.header.kind == PacketKind::Repair {
+                            repair.late_frames = repair.late_frames.saturating_add(1);
+                        }
                     }
                     ReceiveOutcome::Expired => {
                         if is_data_like(inbound.frame.header.kind) {
@@ -1614,6 +1678,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 runtime.duplicate_late_packets.saturating_add(1);
                         }
                         counters.late_packets_dropped += 1;
+                        if inbound.frame.header.kind == PacketKind::Repair {
+                            repair.late_frames = repair.late_frames.saturating_add(1);
+                        }
                     }
                     _ => {}
                 }
@@ -1631,6 +1698,7 @@ fn write_reordered_return_packets(
     packets: Vec<ReorderedPacket>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     counters: &mut TunnelCounters,
+    repair: &mut XBondRepairStatus,
 ) -> Result<()> {
     for packet in packets {
         if let Err(error) = tun.write_packet(&packet.payload) {
@@ -1644,10 +1712,14 @@ fn write_reordered_return_packets(
         counters.data_bytes_received = counters
             .data_bytes_received
             .saturating_add(packet.payload.len() as u64);
-        let runtime = path_runtime.entry(packet.path_id).or_default();
-        runtime.bytes_received = runtime
-            .bytes_received
-            .saturating_add(packet.payload.len() as u64);
+        if packet.path_id == u16::MAX {
+            repair.frames_delivered = repair.frames_delivered.saturating_add(1);
+        } else {
+            let runtime = path_runtime.entry(packet.path_id).or_default();
+            runtime.bytes_received = runtime
+                .bytes_received
+                .saturating_add(packet.payload.len() as u64);
+        }
     }
 
     Ok(())
@@ -1759,8 +1831,7 @@ fn spawn_tunnel_sender(
                 &key,
                 &mut encoded,
             );
-            let encode_micros =
-                started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+            let encode_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
             let report = match encode_result {
                 Ok(()) => {
                     let encoded_bytes = encoded.len() as u64;
@@ -1822,7 +1893,10 @@ fn spawn_tunnel_receiver(
             let Ok(header) = decode_sealed_payload_into(&buf[..len], &key, &mut payload) else {
                 continue;
             };
-            let frame = XBondFrame::new(header, std::mem::replace(&mut payload, Vec::with_capacity(4096)));
+            let frame = XBondFrame::new(
+                header,
+                std::mem::replace(&mut payload, Vec::with_capacity(4096)),
+            );
             if inbound_tx
                 .send(InboundTunnelFrame { path_id, frame })
                 .await
@@ -1922,6 +1996,7 @@ fn record_tunnel_send_report_success(
     packet_kind: PacketKind,
     bytes: u64,
     counters: &mut TunnelCounters,
+    repair: &mut XBondRepairStatus,
 ) {
     let runtime = path_runtime.entry(path_id).or_default();
     runtime.send_failures = 0;
@@ -1931,6 +2006,7 @@ fn record_tunnel_send_report_success(
         PacketKind::Data => counters.data_packets_sent += 1,
         PacketKind::Duplicate => counters.duplicate_packets_sent += 1,
         PacketKind::Fec => counters.fec_packets_sent += 1,
+        PacketKind::Repair => repair.frames_sent = repair.frames_sent.saturating_add(1),
         _ => {}
     }
 }
@@ -1942,6 +2018,10 @@ fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
 const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
+const REPAIR_CACHE_CAPACITY: usize = 4096;
+const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
+const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
+const MAX_REPAIR_REQUESTS: usize = 64;
 
 async fn send_tunnel_schedule_control(
     config: &ClientConfig,
@@ -2014,6 +2094,170 @@ async fn send_tunnel_schedule_control(
     }
 
     Ok(())
+}
+
+fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
+    if frame.header.kind != PacketKind::Control {
+        return None;
+    }
+
+    let XBondControlMessage::RepairRequest { mut sequences } =
+        serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()?;
+    sequences.sort_unstable();
+    sequences.dedup();
+    sequences.truncate(MAX_REPAIR_REQUESTS);
+    (!sequences.is_empty()).then_some(sequences)
+}
+
+async fn send_repair_requests_for_return_gaps(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    key: &XBondKey,
+    session_id: u64,
+    control_sequence: &mut u64,
+    return_reorder: &mut PacketReorderBuffer,
+    repair: &mut XBondRepairStatus,
+    recovery_active: bool,
+    json_events: bool,
+) -> Result<()> {
+    if !recovery_active || sockets.is_empty() {
+        return Ok(());
+    }
+
+    let sequences = return_reorder.repair_requests(
+        monotonic_micros(),
+        REPAIR_REQUEST_INTERVAL_MICROS,
+        MAX_REPAIR_REQUESTS,
+    );
+    if sequences.is_empty() {
+        return Ok(());
+    }
+
+    *control_sequence = control_sequence.saturating_add(1);
+    let sequence = *control_sequence;
+    let payload = serde_json::to_vec(&XBondControlMessage::RepairRequest {
+        sequences: sequences.clone(),
+    })?;
+    repair.requests_sent = repair.requests_sent.saturating_add(sequences.len() as u64);
+
+    for (path_id, socket) in sockets {
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Control,
+                session_id,
+                sequence,
+                now_micros(),
+                *path_id,
+            ),
+            payload.clone(),
+        );
+        let encoded = frame.encode_sealed(key)?;
+        if let Err(error) = socket.send(&encoded).await {
+            record_tunnel_send_failure(path_runtime, *path_id);
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "repair-request-send-failed",
+                        "path_id": path_id,
+                        "sequence": sequence,
+                        "repair_sequences": sequences,
+                        "error": error.to_string(),
+                    })
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn send_repair_frames_from_client_cache(
+    config: &ClientConfig,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    senders: &HashMap<u16, PathSenderHandle>,
+    transmission_plans: &PacketTransmissionPlans,
+    resend_cache: &mut ResendCache,
+    session_id: u64,
+    sequences: &[u64],
+    repair: &mut XBondRepairStatus,
+) -> Result<()> {
+    for sequence in sequences.iter().copied().take(MAX_REPAIR_REQUESTS) {
+        let now = monotonic_micros();
+        let Some(payload) = resend_cache.get(session_id, sequence, now) else {
+            repair.cache_misses = repair.cache_misses.saturating_add(1);
+            continue;
+        };
+
+        let targets = repair_targets_from_client_plan(config, transmission_plans, payload.len());
+        if targets.is_empty() {
+            repair.cache_misses = repair.cache_misses.saturating_add(1);
+            continue;
+        }
+
+        let send_micros = now_micros();
+        for (index, path_id) in targets.into_iter().enumerate() {
+            let Some(sender) = senders.get(&path_id) else {
+                repair.cache_misses = repair.cache_misses.saturating_add(1);
+                continue;
+            };
+            let header = XBondHeader::new(
+                PacketKind::Repair,
+                session_id,
+                sequence,
+                send_micros,
+                path_id,
+            );
+            let work = PathSendWork {
+                packet_kind: PacketKind::Repair,
+                header,
+                payload: payload.clone(),
+            };
+            let enqueue_result = if index == 0 {
+                sender.tx.send(work).await.map_err(|_| {
+                    std::io::Error::new(ErrorKind::BrokenPipe, "XBond repair path sender stopped")
+                })
+            } else {
+                match sender.tx.try_send(work) {
+                    Ok(()) => Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        repair.queue_drops = repair.queue_drops.saturating_add(1);
+                        continue;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+                        ErrorKind::BrokenPipe,
+                        "XBond repair path sender stopped",
+                    )),
+                }
+            };
+            if let Err(_error) = enqueue_result {
+                record_tunnel_send_failure(path_runtime, path_id);
+            }
+        }
+    }
+
+    repair.cache_entries = resend_cache.len();
+    Ok(())
+}
+
+fn repair_targets_from_client_plan(
+    config: &ClientConfig,
+    transmission_plans: &PacketTransmissionPlans,
+    packet_len: usize,
+) -> Vec<u16> {
+    let mut targets = transmission_plans
+        .for_packet_len(packet_len, config.interactive_packet_threshold_bytes)
+        .iter()
+        .filter(|transmission| {
+            matches!(
+                transmission.packet_kind,
+                PacketKind::Data | PacketKind::Duplicate
+            )
+        })
+        .map(|transmission| transmission.path_id)
+        .collect::<Vec<_>>();
+    targets.dedup();
+    targets
 }
 
 async fn send_tunnel_heartbeats(
@@ -2234,6 +2478,7 @@ fn write_tunnel_runtime_status(
     active_override: Option<&ActiveScheduleOverride>,
     schedule_change_count: u64,
     return_reorder: &PacketReorderBuffer,
+    repair: &XBondRepairStatus,
     tun_queue_depth: usize,
     inbound_queue_depth: usize,
 ) -> Result<()> {
@@ -2274,6 +2519,7 @@ fn write_tunnel_runtime_status(
             reorder: XBondReorderStatus {
                 return_path: return_reorder.stats(),
             },
+            repair: repair.clone(),
             process: XBondProcessStatus {
                 process_cpu_percent: None,
                 rss_bytes: current_process_rss_bytes(),
@@ -2301,7 +2547,10 @@ fn write_tunnel_runtime_status(
 }
 
 fn is_data_like(kind: PacketKind) -> bool {
-    matches!(kind, PacketKind::Data | PacketKind::Duplicate)
+    matches!(
+        kind,
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Repair
+    )
 }
 
 async fn prepare_probe_path(
@@ -2790,6 +3039,7 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         fec: fec_status_for_mode(config.mode, runtime.fec),
         late_packets_dropped: runtime.late_packets_dropped,
         reorder: runtime.reorder,
+        repair: runtime.repair,
         process: runtime.process,
         recovery: runtime.recovery,
         message: runtime.message.unwrap_or_else(|| {

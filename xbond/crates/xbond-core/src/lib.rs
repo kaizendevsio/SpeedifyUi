@@ -5,6 +5,7 @@ pub mod health;
 pub mod probe;
 pub mod protocol;
 pub mod reorder;
+pub mod repair;
 pub mod scheduler;
 pub mod status;
 pub mod tun;
@@ -23,9 +24,10 @@ pub use probe::{ProbeAggregate, ProbePathStats, RouteVerification};
 pub use protocol::{
     decode_sealed_payload, decode_sealed_payload_into, encode_payload, encode_sealed_payload,
     encode_sealed_payload_into, DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind,
-    ReceiveOutcome, ReceiveStats, XBondFrame, XBondHeader,
+    ReceiveOutcome, ReceiveStats, XBondControlMessage, XBondFrame, XBondHeader,
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
+pub use repair::ResendCache;
 pub use scheduler::{
     build_schedule, build_transmission_plan, build_transmission_plan_for_packet,
     expand_schedule_for_recovery, precompute_transmission_plans, stabilize_recovery_schedule,
@@ -35,6 +37,7 @@ pub use scheduler::{
 };
 pub use status::{
     PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondPathStatus,
-    XBondProcessStatus, XBondReorderStatus, XBondRuntimeStatus, XBondStatus, XBondTunnelStatus,
+    XBondProcessStatus, XBondReorderStatus, XBondRepairStatus, XBondRuntimeStatus, XBondStatus,
+    XBondTunnelStatus,
 };
 pub use tun::{is_ipv4_packet, XBondTun};

@@ -17,6 +17,7 @@ pub enum PacketKind {
     Fec,
     Heartbeat,
     Control,
+    Repair,
 }
 
 impl PacketKind {
@@ -27,6 +28,7 @@ impl PacketKind {
             Self::Fec => 3,
             Self::Heartbeat => 4,
             Self::Control => 5,
+            Self::Repair => 6,
         }
     }
 }
@@ -41,9 +43,16 @@ impl TryFrom<u8> for PacketKind {
             3 => Ok(Self::Fec),
             4 => Ok(Self::Heartbeat),
             5 => Ok(Self::Control),
+            6 => Ok(Self::Repair),
             _ => Err(ProtocolError::UnknownPacketKind(value)),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "control", rename_all = "kebab-case")]
+pub enum XBondControlMessage {
+    RepairRequest { sequences: Vec<u64> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +373,7 @@ impl FrameReceiver {
             PacketKind::Fec => 1,
             PacketKind::Heartbeat => 2,
             PacketKind::Control => 3,
+            PacketKind::Repair => 4,
         };
         if self.duplicate_window.observe_key_class(
             frame.header.session_id,
@@ -589,6 +599,34 @@ mod tests {
 
         assert_eq!(receiver.observe(&data, 1_050), ReceiveOutcome::Accepted);
         assert_eq!(receiver.observe(&fec, 1_060), ReceiveOutcome::Accepted);
+    }
+
+    #[test]
+    fn repair_packet_uses_independent_duplicate_class() {
+        let mut receiver = FrameReceiver::new(100, 16);
+        let data = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 1, 10, 1_000, 1),
+            b"data".to_vec(),
+        );
+        let repair = XBondFrame::new(
+            XBondHeader::new(PacketKind::Repair, 1, 10, 1_010, 2),
+            b"repair".to_vec(),
+        );
+
+        assert_eq!(receiver.observe(&data, 1_050), ReceiveOutcome::Accepted);
+        assert_eq!(receiver.observe(&repair, 1_060), ReceiveOutcome::Accepted);
+    }
+
+    #[test]
+    fn repair_control_message_round_trips() {
+        let message = XBondControlMessage::RepairRequest {
+            sequences: vec![10, 11],
+        };
+
+        let json = serde_json::to_vec(&message).unwrap();
+        let decoded = serde_json::from_slice::<XBondControlMessage>(&json).unwrap();
+
+        assert_eq!(decoded, message);
     }
 
     #[test]

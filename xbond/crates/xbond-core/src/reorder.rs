@@ -30,6 +30,7 @@ pub struct ReorderStats {
 pub struct PacketReorderBuffer {
     next_sequence: Option<u64>,
     pending: BTreeMap<u64, PendingPacket>,
+    repair_requests: BTreeMap<u64, u64>,
     capacity: usize,
     hold_micros: u64,
     stats: ReorderStats,
@@ -40,6 +41,7 @@ impl PacketReorderBuffer {
         Self {
             next_sequence: None,
             pending: BTreeMap::new(),
+            repair_requests: BTreeMap::new(),
             capacity: capacity.max(1),
             hold_micros,
             stats: ReorderStats::default(),
@@ -99,6 +101,7 @@ impl PacketReorderBuffer {
                     payload: packet.payload,
                 });
                 self.next_sequence = Some(next_sequence.saturating_add(1));
+                self.prune_repair_requests();
                 continue;
             }
 
@@ -117,6 +120,7 @@ impl PacketReorderBuffer {
                     self.stats.capacity_releases = self.stats.capacity_releases.saturating_add(1);
                 }
                 self.next_sequence = Some(oldest_sequence);
+                self.prune_repair_requests();
                 continue;
             }
 
@@ -124,6 +128,53 @@ impl PacketReorderBuffer {
         }
 
         ready
+    }
+
+    pub fn repair_requests(
+        &mut self,
+        now_micros: u64,
+        interval_micros: u64,
+        max_requests: usize,
+    ) -> Vec<u64> {
+        if max_requests == 0 {
+            return Vec::new();
+        }
+
+        if self.next_sequence.is_none() {
+            self.next_sequence = self.pending.keys().next().copied();
+        }
+
+        let Some(next_sequence) = self.next_sequence else {
+            return Vec::new();
+        };
+
+        let Some((&oldest_sequence, oldest_packet)) = self.pending.iter().next() else {
+            return Vec::new();
+        };
+
+        if oldest_sequence <= next_sequence || oldest_packet.release_after_micros <= now_micros {
+            return Vec::new();
+        }
+
+        let mut requests = Vec::new();
+        for sequence in next_sequence..oldest_sequence {
+            if requests.len() >= max_requests {
+                break;
+            }
+
+            let should_request = self
+                .repair_requests
+                .get(&sequence)
+                .is_none_or(|last_request| {
+                    now_micros.saturating_sub(*last_request) >= interval_micros
+                });
+            if should_request {
+                self.repair_requests.insert(sequence, now_micros);
+                requests.push(sequence);
+            }
+        }
+
+        requests
     }
 
     pub fn pending_len(&self) -> usize {
@@ -141,6 +192,7 @@ impl PacketReorderBuffer {
     pub fn reset(&mut self) {
         self.next_sequence = None;
         self.pending.clear();
+        self.repair_requests.clear();
         self.stats.pending_depth = 0;
     }
 
@@ -148,6 +200,15 @@ impl PacketReorderBuffer {
         ReorderStats {
             pending_depth: self.pending.len() as u64,
             ..self.stats
+        }
+    }
+
+    fn prune_repair_requests(&mut self) {
+        if let Some(next_sequence) = self.next_sequence {
+            self.repair_requests
+                .retain(|sequence, _| *sequence >= next_sequence);
+        } else {
+            self.repair_requests.clear();
         }
     }
 }
@@ -327,5 +388,57 @@ mod tests {
             .is_empty());
         assert!(recovery.drain_ready(60_000).is_empty());
         assert_eq!(recovery.drain_ready(503_000).len(), 1);
+    }
+
+    #[test]
+    fn repair_requests_report_missing_gap_before_timeout() {
+        let mut buffer = PacketReorderBuffer::new(16, 25_000);
+
+        assert_eq!(buffer.push(10, 1, b"ten".to_vec(), 1_000, 0).len(), 1);
+        assert!(buffer.push(12, 2, b"twelve".to_vec(), 2_000, 0).is_empty());
+
+        assert_eq!(buffer.repair_requests(3_000, 5_000, 64), vec![11]);
+        assert!(buffer.repair_requests(4_000, 5_000, 64).is_empty());
+        assert_eq!(buffer.repair_requests(8_000, 5_000, 64), vec![11]);
+    }
+
+    #[test]
+    fn repair_requests_stop_after_gap_releases() {
+        let mut buffer = PacketReorderBuffer::new(16, 25_000);
+
+        assert_eq!(buffer.push(10, 1, b"ten".to_vec(), 1_000, 0).len(), 1);
+        assert!(buffer.push(12, 2, b"twelve".to_vec(), 2_000, 0).is_empty());
+        assert_eq!(buffer.repair_requests(3_000, 5_000, 64), vec![11]);
+
+        assert_eq!(buffer.drain_ready(28_000).len(), 1);
+        assert!(buffer.repair_requests(29_000, 5_000, 64).is_empty());
+    }
+
+    #[test]
+    fn repair_packet_fills_gap_before_timeout() {
+        let mut buffer = PacketReorderBuffer::new(16, 25_000);
+
+        assert_eq!(buffer.push(10, 1, b"ten".to_vec(), 1_000, 0).len(), 1);
+        assert!(buffer.push(12, 2, b"twelve".to_vec(), 2_000, 0).is_empty());
+        assert_eq!(buffer.repair_requests(3_000, 5_000, 64), vec![11]);
+
+        let ready = buffer.push(11, 3, b"eleven".to_vec(), 10_000, 0);
+
+        assert_eq!(
+            ready,
+            vec![
+                ReorderedPacket {
+                    sequence: 11,
+                    path_id: 3,
+                    payload: b"eleven".to_vec()
+                },
+                ReorderedPacket {
+                    sequence: 12,
+                    path_id: 2,
+                    payload: b"twelve".to_vec()
+                }
+            ]
+        );
+        assert!(buffer.repair_requests(11_000, 5_000, 64).is_empty());
     }
 }
