@@ -1,8 +1,10 @@
 ﻿@inherits LayoutComponentBase
+@implements IAsyncDisposable
 @using XNetwork.Components.Custom
 @using XNetwork.Models
 @using XNetwork.Services
 @inject BuildInfoService BuildInfoService
+@inject IJSRuntime JSRuntime
 
 <div class="flex min-h-screen bg-slate-900">
     <!-- SIDEBAR (Desktop) -->
@@ -122,8 +124,25 @@
 
 @code {
     private bool _showChangelog;
+    private bool _isMobileTabbarExpanded;
+    private DotNetObjectReference<MainLayout>? _mobileTabbarReference;
+    private IJSObjectReference? _mobileTabbarModule;
+    private IJSObjectReference? _mobileTabbarBehavior;
 
     private BuildInfo BuildInfo => BuildInfoService.GetBuildInfo();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        _mobileTabbarReference = DotNetObjectReference.Create(this);
+        var mobileTabbarCacheKey = Uri.EscapeDataString(BuildInfo.ShortCommit);
+        _mobileTabbarModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", $"/js/mobileNavBehavior.js?v={mobileTabbarCacheKey}");
+        _mobileTabbarBehavior = await _mobileTabbarModule.InvokeAsync<IJSObjectReference>("start", _mobileTabbarReference);
+    }
 
     private void OpenChangelog()
     {
@@ -142,36 +161,80 @@
             ? BuildInfo.BuiltAtUtc.Value.ToLocalTime().ToString("MMM d HH:mm")
             : "local build";
     }
+
+    [JSInvokable]
+    public Task SetMobileTabbarExpanded(bool expanded)
+    {
+        if (_isMobileTabbarExpanded == expanded)
+        {
+            return Task.CompletedTask;
+        }
+
+        _isMobileTabbarExpanded = expanded;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            if (_mobileTabbarBehavior is not null)
+            {
+                await _mobileTabbarBehavior.InvokeVoidAsync("dispose");
+            }
+
+            if (_mobileTabbarModule is not null)
+            {
+                await _mobileTabbarModule.DisposeAsync();
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // Navigation or reconnect disposal can race with JS interop shutdown.
+        }
+
+        _mobileTabbarReference?.Dispose();
+    }
 }
 
 <!-- BOTTOM NAVIGATION (Mobile) -->
-<nav class="mobile-tabbar md:hidden" aria-label="Primary navigation">
+<nav class="mobile-tabbar @(_isMobileTabbarExpanded ? "mobile-tabbar-expanded" : "mobile-tabbar-compact") md:hidden" aria-label="Primary navigation">
     <NavLink href="/" Match="NavLinkMatch.All" 
-             class="mobile-tabbar-item" 
+             class="mobile-tabbar-item"
+             title="Dashboard"
+             aria-label="Dashboard"
              ActiveClass="mobile-tabbar-item-active">
         <span class="mobile-tabbar-icon"><i class="fas fa-tachometer-alt"></i></span>
         <span class="mobile-tabbar-label">Dashboard</span>
     </NavLink>
     <NavLink href="/details"
               class="mobile-tabbar-item"
+              title="Analytics"
+              aria-label="Analytics"
               ActiveClass="mobile-tabbar-item-active">
         <span class="mobile-tabbar-icon"><i class="fas fa-chart-line"></i></span>
         <span class="mobile-tabbar-label">Analytics</span>
     </NavLink>
     <NavLink href="/xbond"
               class="mobile-tabbar-item"
+              title="XBond"
+              aria-label="XBond"
               ActiveClass="mobile-tabbar-item-active">
         <span class="mobile-tabbar-icon"><i class="fas fa-diagram-project"></i></span>
         <span class="mobile-tabbar-label">XBond</span>
     </NavLink>
     <NavLink href="/xrouter"
               class="mobile-tabbar-item"
+              title="Wifi"
+              aria-label="Wifi"
               ActiveClass="mobile-tabbar-item-active">
         <span class="mobile-tabbar-icon"><i class="fas fa-wifi"></i></span>
         <span class="mobile-tabbar-label">Wifi</span>
     </NavLink>
     <NavLink href="/settings"
               class="mobile-tabbar-item"
+             title="Settings"
+             aria-label="Settings"
              ActiveClass="mobile-tabbar-item-active">
         <span class="mobile-tabbar-icon"><i class="fas fa-cog"></i></span>
         <span class="mobile-tabbar-label">Settings</span>

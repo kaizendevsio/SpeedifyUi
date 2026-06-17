@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.45";
+    public const string CurrentVersion = "xbond-2026.06.46";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Compacted the mobile bottom navigation.",
+            Changes =
+            [
+                "The mobile tab bar now starts compact with icon-only tabs, fixes the five-tab centering bug, and floats higher above the bottom safe area.",
+                "Scrolling up or interacting with the page temporarily expands labels and normal icon sizing; scrolling down or idling compacts the bar again."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.45",
             Date = "2026-06-17",
             Summary = "Bypassed XBond for local Cudy management routes.",
             Changes =
