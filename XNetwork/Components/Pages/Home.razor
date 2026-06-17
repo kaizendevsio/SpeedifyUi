@@ -1,113 +1,197 @@
 @page "/"
+@using Microsoft.JSInterop
+@using XNetwork.Components.Custom
 @using XNetwork.Models
 @using XNetwork.Services
 @using XNetwork.Utils
 @implements IAsyncDisposable
 @inject XBondSnapshotCache XBondSnapshotCache
 @inject IStarlinkTelemetryService StarlinkTelemetryService
+@inject IJSRuntime JSRuntime
 
-<PageTitle>XNetwork</PageTitle>
+<PageTitle>Dashboard - XNetwork</PageTitle>
 
-<div class="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5 shadow-xl shadow-slate-950/20">
-        <div class="flex items-start justify-between gap-4">
-            <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
-                    <h2 class="text-xl font-bold text-white">XBond Tunnel</h2>
-                    <span class="@StatePillClass">@StateLabel</span>
-                </div>
-                <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-400">
-                    <span><i class="fas fa-server mr-1 text-cyan-300"></i>@(_snapshot?.ServerAddress ?? "No server")</span>
-                    <span><i class="fas fa-network-wired mr-1 text-emerald-300"></i>@(_snapshot?.TunnelDevice ?? "xbond0")</span>
-                    <span><i class="fas fa-layer-group mr-1 text-teal-300"></i>@FormatMode(_snapshot?.Mode)</span>
-                </div>
-            </div>
-            <button type="button"
-                    class="rounded-lg border border-slate-700/80 bg-slate-950/60 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-cyan-500/50 hover:text-white"
-                    @onclick="RefreshAsync">
-                <i class="fas fa-rotate mr-2"></i>Refresh
-            </button>
-        </div>
-        @if (!string.IsNullOrWhiteSpace(_snapshot?.Error))
-        {
-            <p class="mt-4 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-100">@_snapshot.Error</p>
-        }
-    </section>
+<div class="p-4 md:p-6">
+    <div class="hidden md:block">
+        <h2 class="mb-1 text-3xl font-bold text-white">Dashboard</h2>
+        <p class="mb-6 text-slate-400">Manage and monitor network adapters in real-time.</p>
+    </div>
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
-        <div class="flex items-center justify-between gap-3">
-            <div>
-                <h2 class="text-2xl font-bold text-white">@ConnectionTitle</h2>
-                <p class="mt-1 text-sm text-slate-400">@ConnectionSubtitle</p>
-            </div>
-            <div class="flex h-12 w-12 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-300">
-                <i class="fas fa-signal text-2xl"></i>
-            </div>
-        </div>
-
-        <div class="mt-5 grid grid-cols-3 gap-3">
-            @Metric("Latency", FormatLatency(_snapshot?.AverageRttMs))
-            @Metric("Download", SpeedFormatter.FormatSpeed(_snapshot?.DownloadMbps ?? 0))
-            @Metric("Upload", SpeedFormatter.FormatSpeed(_snapshot?.UploadMbps ?? 0))
-        </div>
-    </section>
-
-    @if (_starlink.IsAvailable)
+    @if (_snapshot is null)
     {
-        <section class="rounded-lg border border-cyan-500/20 bg-slate-900/75 p-4">
-            <div class="flex items-center justify-between gap-3">
-                <div>
-                    <h3 class="font-semibold text-white">Starlink Telemetry</h3>
-                    <p class="mt-1 text-sm text-slate-400">
-                        Dish @FormatLatency(_starlink.PopPingLatencyMs), obstruction @FormatPercent(_starlink.ObstructionPercent), alignment @FormatDegrees(_starlink.AlignmentErrorDegrees)
-                    </p>
+        <div class="space-y-6" aria-label="Loading dashboard">
+            <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg">
+                <div class="flex items-center gap-3">
+                    <SkeletonBlock CssClass="w-10 h-10 rounded-full flex-shrink-0" />
+                    <div class="flex-grow space-y-2">
+                        <SkeletonBlock CssClass="h-5 w-2/5" />
+                        <SkeletonBlock CssClass="h-4 w-3/5" />
+                    </div>
                 </div>
-                <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200">Live</span>
             </div>
-        </section>
-    }
 
-    <section>
-        <div class="mb-3 flex items-center gap-3">
-            <h2 class="text-2xl font-bold text-white">Adapters</h2>
-            <span class="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-sm font-semibold text-emerald-300">
-                @((_snapshot?.DashboardPaths.Count(path => path.InterfaceUp)).GetValueOrDefault()) live
-            </span>
+            <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-5 shadow-lg">
+                <SkeletonBlock CssClass="h-5 w-1/3 mb-5" />
+                <div class="grid grid-cols-3 gap-4">
+                    @for (var i = 0; i < 3; i++)
+                    {
+                        <div class="space-y-3 rounded-lg bg-slate-900/50 p-4">
+                            <SkeletonBlock CssClass="h-4 w-3/5" />
+                            <SkeletonBlock CssClass="h-8 w-2/3" />
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="space-y-3">
+                <div class="flex items-center gap-3 px-1">
+                    <SkeletonBlock CssClass="h-6 w-28" />
+                    <SkeletonBlock CssClass="h-7 w-20 rounded-full" />
+                </div>
+                @for (var i = 0; i < 3; i++)
+                {
+                    <div class="rounded-xl border border-slate-700 bg-slate-800/50 px-3 py-3 shadow-lg">
+                        <div class="flex items-center justify-between gap-3">
+                            <div class="flex min-w-0 flex-grow items-center gap-3">
+                                <SkeletonBlock CssClass="w-10 h-6" />
+                                <div class="flex-grow space-y-2">
+                                    <SkeletonBlock CssClass="h-5 w-2/5" />
+                                    <SkeletonBlock CssClass="h-4 w-3/5" />
+                                </div>
+                            </div>
+                            <SkeletonBlock CssClass="h-7 w-7 rounded-full" />
+                        </div>
+                        <div class="mt-3 flex items-center gap-4">
+                            <SkeletonBlock CssClass="h-4 w-20" />
+                            <SkeletonBlock CssClass="h-4 w-20" />
+                            <SkeletonBlock CssClass="h-4 w-16" />
+                        </div>
+                    </div>
+                }
+            </div>
         </div>
-
-        @if (_snapshot is null)
+    }
+    else
+    {
+        @if (_snapshot.HasError && !string.IsNullOrWhiteSpace(_snapshot.Error))
         {
-            <div class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5 text-slate-400">Loading XBond paths...</div>
+            <div class="mb-6 rounded-xl border border-red-500/35 bg-red-500/10 p-4 text-red-100" role="alert">
+                <div class="flex items-start gap-3">
+                    <i class="fas fa-terminal mt-0.5 text-red-300"></i>
+                    <div class="min-w-0">
+                        <p class="font-semibold text-white">XBond status</p>
+                        <p class="mt-1 text-sm text-red-100">@_snapshot.Error</p>
+                    </div>
+                </div>
+            </div>
         }
-        else
+
+        <a href="/xbond" class="mb-6 block rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg transition-colors hover:border-cyan-500/60 hover:bg-slate-800/70 focus:outline-none focus:ring-2 focus:ring-cyan-500/60">
+            <div class="flex items-center gap-3">
+                <div class="@GetServerIconClass()">
+                    <i class="fas fa-server text-lg"></i>
+                </div>
+                <div class="min-w-0 flex-grow">
+                    <div class="mb-1 flex items-center gap-2">
+                        <h3 class="truncate text-base font-semibold text-white">XBond Tunnel</h3>
+                        <span class="@GetServerBadgeClass()">@StateLabel</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-400">
+                        <span class="inline-flex min-w-0 items-center gap-1.5">
+                            <i class="fas fa-server text-xs text-cyan-300"></i>
+                            <span class="truncate">@(_snapshot.ServerAddress.Length > 0 ? _snapshot.ServerAddress : "No server")</span>
+                        </span>
+                        <span class="inline-flex items-center gap-1.5 text-slate-300" title="XBond tunnel device">
+                            <i class="fas fa-network-wired text-xs text-cyan-300"></i>
+                            <span>@_snapshot.TunnelDevice</span>
+                        </span>
+                        <span class="inline-flex items-center gap-1.5 text-slate-300" title="XBond redundancy policy">
+                            <i class="fas fa-layer-group text-xs text-emerald-300"></i>
+                            <span>@FormatMode(_snapshot.RedundancyPolicy)</span>
+                        </span>
+                    </div>
+                </div>
+                <div class="flex flex-shrink-0 items-center gap-3">
+                    <span class="hidden text-xs text-slate-500 sm:inline">XBond details</span>
+                    <i class="fas fa-chevron-right text-xs text-slate-500"></i>
+                </div>
+            </div>
+        </a>
+
+        <ConnectionSummary
+            ConnectionStatus="@ConnectionTitle"
+            Latency="@GetLatencyValue()"
+            Download="@Math.Round(_snapshot.DownloadMbps, 1)"
+            Upload="@Math.Round(_snapshot.UploadMbps, 1)"
+            IsStable="@IsConnectionStable()"
+            ShowTrafficDetailsHint="false" />
+
+        @if (_starlink.IsAvailable)
         {
-            @if (_snapshot.ActivePaths.Count > 0)
+            <section class="mb-6 rounded-xl border border-cyan-500/20 bg-slate-800/40 p-4 shadow-lg">
+                <div class="flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                            <i class="fas fa-satellite-dish text-cyan-300"></i>
+                            <h3 class="truncate text-base font-semibold text-white">Starlink Telemetry</h3>
+                        </div>
+                        <p class="mt-1 truncate text-sm text-slate-400">
+                            Dish @FormatLatency(_starlink.PopPingLatencyMs), obstruction @FormatPercent(_starlink.ObstructionPercent), alignment @FormatDegrees(_starlink.AlignmentErrorDegrees)
+                        </p>
+                    </div>
+                    <span class="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200">Live</span>
+                </div>
+            </section>
+        }
+
+        <section class="space-y-3">
+            <div class="flex items-center gap-3 px-1">
+                <h3 class="text-lg font-semibold text-white">Adapters</h3>
+                <span class="rounded-full bg-green-500/10 px-3 py-1 text-sm font-medium text-green-400">
+                    @GetLivePathCount() live
+                </span>
+            </div>
+
+            @if (!_snapshot.DashboardPaths.Any())
             {
-                <div class="mb-4 rounded-lg border border-cyan-500/25 bg-cyan-500/[0.06] p-3">
-                    <div class="mb-3 flex items-center gap-2 px-1">
-                        <i class="fas fa-shield-halved text-cyan-300"></i>
-                        <h3 class="font-semibold text-white">Actively Redundant</h3>
-                    </div>
-                    <div class="grid gap-3">
-                        @foreach (var path in _snapshot.ActivePaths)
-                        {
-                            @PathCard(path)
-                        }
-                    </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-5 text-slate-400 shadow-lg">
+                    No XBond adapters found.
                 </div>
             }
-
-            @if (_snapshot.StandbyPaths.Count > 0)
+            else
             {
-                <div class="grid gap-3">
-                    @foreach (var path in _snapshot.StandbyPaths)
+                <div class="space-y-4" @ref="_adapterListElement">
+                    @if (_snapshot.ActivePaths.Count > 0)
                     {
-                        @PathCard(path)
+                        <section class="rounded-xl border border-cyan-500/25 bg-cyan-500/[0.06] p-3">
+                            <div class="mb-3 flex items-center gap-2 px-1">
+                                <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-cyan-500/10 text-cyan-300">
+                                    <i class="fas fa-shield-halved text-xs"></i>
+                                </span>
+                                <h4 class="text-base font-semibold text-white">Actively Redundant</h4>
+                            </div>
+                            <div class="space-y-3">
+                                @foreach (var path in _snapshot.ActivePaths)
+                                {
+                                    @PathCard(path)
+                                }
+                            </div>
+                        </section>
+                    }
+
+                    @if (_snapshot.StandbyPaths.Count > 0)
+                    {
+                        <div class="space-y-3">
+                            @foreach (var path in _snapshot.StandbyPaths)
+                            {
+                                @PathCard(path)
+                            }
+                        </div>
                     }
                 </div>
             }
-        }
-    </section>
+        </section>
+    }
 </div>
 
 @code {
@@ -115,11 +199,36 @@
     private readonly CancellationTokenSource _refreshCts = new();
     private XBondStatsSnapshot? _snapshot;
     private StarlinkTelemetrySnapshot _starlink = StarlinkTelemetrySnapshot.Unavailable();
+    private IJSObjectReference? _animatedUiModule;
+    private ElementReference _adapterListElement;
+    private bool _adapterListAnimationEnabled;
+    private bool _disposed;
 
     protected override async Task OnInitializedAsync()
     {
         await RefreshAsync();
         _ = RunRefreshLoopAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || _adapterListAnimationEnabled || _snapshot?.DashboardPaths.Any() != true)
+        {
+            return;
+        }
+
+        try
+        {
+            _animatedUiModule ??= await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/animatedUi.js");
+            await _animatedUiModule.InvokeVoidAsync("enableAutoAnimate", _adapterListElement);
+            _adapterListAnimationEnabled = true;
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
+        }
     }
 
     private async Task RunRefreshLoopAsync()
@@ -138,6 +247,11 @@
 
     private async Task RefreshAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         _snapshot = await XBondSnapshotCache.GetSnapshotAsync(_refreshCts.Token);
         _starlink = StarlinkTelemetryService.GetSnapshot();
         StateHasChanged();
@@ -151,95 +265,296 @@
         _ => "Stopped"
     };
 
-    private string StatePillClass => _snapshot switch
-    {
-        null => "rounded-full border border-slate-600 bg-slate-700/40 px-2.5 py-1 text-xs font-semibold text-slate-200",
-        { HasError: true } => "rounded-full border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-200",
-        { IsRunning: true } => "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-200",
-        _ => "rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-200"
-    };
-
     private string ConnectionTitle => _snapshot switch
     {
-        null => "Checking XBond",
-        { HasError: true } => "Status Unavailable",
-        { IsRunning: true, MaxLossPercent: <= 1, AverageRttMs: <= 100 } => "Good Connection",
-        { IsRunning: true } => "Degraded Connection",
-        _ => "Tunnel Stopped"
+        null => "Initializing Connection",
+        { HasError: true } => "Poor Connection",
+        { IsRunning: false } => "Disconnected",
+        { ActivePaths.Count: 0 } => "Partial Connection",
+        { MaxLossPercent: >= 25 } => "Critical Connection",
+        { AverageRttMs: >= 300 } => "Critical Connection",
+        { MaxLossPercent: >= 10 } => "Poor Connection",
+        { AverageRttMs: >= 180 } => "Poor Connection",
+        { MaxLossPercent: >= 2 } => "Fair Connection",
+        { AverageRttMs: >= 120 } => "Fair Connection",
+        _ => "Good Connection"
     };
 
-    private string ConnectionSubtitle => _snapshot switch
-    {
-        null => "Reading XBond runtime status.",
-        { HasError: true } => "XBond status could not be read.",
-        { IsRunning: true } => $"{_snapshot.ActivePaths.Count} active path(s), {_snapshot.StandbyPaths.Count} standby path(s).",
-        _ => _snapshot.Message
-    };
-
-    private static RenderFragment Metric(string label, string value) => @<div>
-        <p class="text-sm text-slate-400">@label</p>
-        <p class="mt-1 text-2xl font-bold text-white">@value</p>
-    </div>;
-
-    private static RenderFragment PathCard(XBondPathStatsSnapshot path) => @<article class="rounded-lg border border-slate-700/70 bg-slate-900/85 p-4">
-        <div class="flex items-start justify-between gap-3">
-            <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
-                    <h3 class="truncate text-lg font-semibold text-white">@path.Name</h3>
-                    <span class="@RoleClass(path)">@RoleLabel(path)</span>
+    private RenderFragment<XBondPathStatsSnapshot> PathCard => path => @<article @key="path.PathId" class="@GetPathCardClass(path)">
+        <div class="flex items-center justify-between gap-3 text-sm">
+            <div class="flex min-w-0 flex-grow items-center gap-3">
+                @if (path.InterfaceUp)
+                {
+                    <div class="flex h-6 w-10 flex-shrink-0 items-end gap-0.5" aria-hidden="true">
+                        @for (var i = 0; i < 4; i++)
+                        {
+                            <div class="@GetSignalBarClass(path, i)"></div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <i class="fas fa-signal-slash w-8 flex-shrink-0 text-center text-lg text-red-400"></i>
+                }
+                <div class="flex min-w-0 flex-col">
+                    <span class="truncate text-base font-medium text-white">@path.Name</span>
+                    <span class="truncate text-sm text-slate-400">@path.InterfaceName</span>
                 </div>
-                <p class="mt-1 truncate text-sm text-slate-400">@path.InterfaceName</p>
             </div>
-            <span class="@DotClass(path)" title="@path.StateText"></span>
+            <div class="flex flex-shrink-0 items-center gap-2">
+                <a href="/xbond"
+                   class="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-600/50 bg-slate-700/50 text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-600/50 hover:text-white"
+                   title="Open XBond details">
+                    <span class="text-base">↗</span>
+                </a>
+                <button type="button"
+                        class="@GetStatusDotButtonClass(path)"
+                        title="@GetPathStatusTooltip(path)"
+                        aria-label="@GetPathStatusTooltip(path)">
+                    <span class="@GetStatusDotClass(path)" aria-hidden="true"></span>
+                    <span class="adapter-status-popover" role="tooltip">@GetPathStatusTooltip(path)</span>
+                </button>
+            </div>
         </div>
-        <div class="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-            <span class="text-cyan-300"><i class="fas fa-clock mr-1 text-slate-500"></i>@FormatLatency(path.RttMs)</span>
-            <span class="text-rose-300"><i class="fas fa-triangle-exclamation mr-1 text-slate-500"></i>@FormatPercent(path.LossPercent)</span>
-            <span class="text-cyan-300" title="@DownloadTitle(path)">
-                <i class="fas fa-arrow-down mr-1 text-slate-500"></i>Down @SpeedFormatter.FormatSpeed(path.DownloadMbps)
-            </span>
-            <span class="text-pink-300"><i class="fas fa-arrow-up mr-1 text-slate-500"></i>Up @SpeedFormatter.FormatSpeed(path.UploadMbps)</span>
-        </div>
-        <div class="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
-            <span>Score @Math.Round(path.Score)</span>
-            <span>Late @FormatPercent(path.LatePercent)</span>
-            <span>Queue @path.QueueDepth</span>
-            @if (path.DuplicateDownloadMbps > 0)
-            {
-                <span>Duplicate down @SpeedFormatter.FormatSpeed(path.DuplicateDownloadMbps)</span>
-            }
-            @if (path.InCooldown)
-            {
-                <span class="text-amber-300">Cooldown</span>
-            }
-        </div>
+
+        @if (path.InterfaceUp || path.IsActive)
+        {
+            var downloadMbps = path.DownloadMbps;
+            var uploadMbps = path.UploadMbps;
+
+            <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                <div class="flex items-center gap-1.5" title="@DownloadTitle(path)">
+                    <i class="fas fa-arrow-down text-sm text-cyan-400"></i>
+                    <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(downloadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(downloadMbps)" CssClass="font-semibold text-white" AriaLabel="@SpeedFormatter.FormatSpeed(downloadMbps)" />
+                    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(downloadMbps)</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <i class="fas fa-arrow-up text-sm text-pink-400"></i>
+                    <AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(uploadMbps)" Decimals="@SpeedFormatter.GetDisplayDecimals(uploadMbps)" CssClass="font-semibold text-white" AriaLabel="@SpeedFormatter.FormatSpeed(uploadMbps)" />
+                    <span class="text-xs text-slate-400">@SpeedFormatter.GetSpeedUnit(uploadMbps)</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <i class="far fa-clock text-sm text-slate-400"></i>
+                    <AnimatedNumber Value="@Math.Round(path.RttMs ?? 0)" Decimals="0" CssClass="font-semibold text-white" AriaLabel="@FormatLatency(path.RttMs)" />
+                    <span class="text-xs text-slate-400">ms</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <i class="fas fa-triangle-exclamation text-xs text-slate-500"></i>
+                    <AnimatedNumber Value="@Math.Round(path.LossPercent, 1)" Decimals="@GetPercentDecimals(path.LossPercent)" CssClass="@GetLossTextClass(path)" AriaLabel="@FormatPercent(path.LossPercent)" />
+                    <span class="text-xs text-slate-400">loss</span>
+                </div>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-400">
+                <span>@RoleLabel(path)</span>
+                <span>Score @Math.Round(path.Score)</span>
+                <span>Late @FormatPercent(path.LatePercent)</span>
+                <span>Queue @path.QueueDepth</span>
+                @if (!string.IsNullOrWhiteSpace(path.DecisionText) && !string.Equals(path.DecisionText, path.StateText, StringComparison.OrdinalIgnoreCase))
+                {
+                    <span class="text-slate-300">@path.DecisionText</span>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-400">
+                <span>@path.StateText</span>
+                <span>Score @Math.Round(path.Score)</span>
+            </div>
+        }
     </article>;
 
-    private static string DotClass(XBondPathStatsSnapshot path)
+    private int GetLatencyValue()
     {
+        if (_snapshot is null || _snapshot.AverageRttMs <= 0)
+        {
+            return 0;
+        }
+
+        return (int)Math.Round(_snapshot.AverageRttMs);
+    }
+
+    private bool IsConnectionStable()
+    {
+        return _snapshot is { IsRunning: true, MaxLossPercent: < 10, AverageRttMs: < 180 };
+    }
+
+    private int GetLivePathCount()
+    {
+        return _snapshot?.DashboardPaths.Count(path => path.InterfaceUp) ?? 0;
+    }
+
+    private string GetServerIconClass()
+    {
+        return _snapshot switch
+        {
+            { HasError: true } => "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10 text-red-300",
+            { IsRunning: true } => "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-green-500/30 bg-green-500/10 text-green-400",
+            _ => "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-slate-700 text-slate-500"
+        };
+    }
+
+    private string GetServerBadgeClass()
+    {
+        return _snapshot switch
+        {
+            { HasError: true } => "flex-shrink-0 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-200",
+            { IsRunning: true } => "flex-shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-200",
+            _ => "flex-shrink-0 rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-medium text-slate-300"
+        };
+    }
+
+    private static string GetPathCardClass(XBondPathStatsSnapshot path)
+    {
+        const string baseClass = "rounded-xl border px-3 py-3 shadow-lg relative";
+
         if (!path.InterfaceUp)
         {
-            return "mt-1 h-3 w-3 rounded-full bg-slate-500";
+            return $"{baseClass} border-slate-700 bg-slate-800/45 opacity-80";
         }
 
         if (path.InCooldown)
         {
-            return "mt-1 h-3 w-3 rounded-full bg-amber-400";
+            return $"{baseClass} border-amber-500/25 bg-amber-500/10";
         }
 
-        return path.IsActive
-            ? "mt-1 h-3 w-3 rounded-full bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.55)]"
-            : "mt-1 h-3 w-3 rounded-full bg-cyan-400";
+        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        {
+            return $"{baseClass} border-yellow-500/25 bg-yellow-500/5";
+        }
+
+        return $"{baseClass} border-slate-700 bg-slate-800/50";
     }
 
-    private static string RoleClass(XBondPathStatsSnapshot path) => path.Role.ToLowerInvariant() switch
+    private static string GetStatusDotButtonClass(XBondPathStatsSnapshot path)
     {
-        "anchor" => "rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200",
-        "backup" => "rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 text-xs font-semibold text-cyan-200",
-        "cooldown" => "rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-200",
-        "unavailable" => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300",
-        _ => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300"
-    };
+        var statusClass = GetPathStatusKind(path) switch
+        {
+            "connected" => "",
+            "connecting" => "adapter-status-dot-connecting",
+            "disconnecting" => "",
+            "disconnected" => "",
+            _ => ""
+        };
+
+        return $"adapter-status-dot-button {statusClass}".Trim();
+    }
+
+    private static string GetStatusDotClass(XBondPathStatsSnapshot path)
+    {
+        return GetPathStatusKind(path) switch
+        {
+            "connected" => "adapter-status-dot adapter-status-dot-connected",
+            "connecting" => "adapter-status-dot adapter-status-dot-connecting-inner",
+            "disconnecting" => "adapter-status-dot adapter-status-dot-disconnecting",
+            "disconnected" => "adapter-status-dot adapter-status-dot-disconnected",
+            _ => "adapter-status-dot adapter-status-dot-unknown"
+        };
+    }
+
+    private static string GetPathStatusKind(XBondPathStatsSnapshot path)
+    {
+        if (!path.InterfaceUp)
+        {
+            return "disconnected";
+        }
+
+        if (path.InCooldown)
+        {
+            return "disconnecting";
+        }
+
+        if (path.IsConfigured && path.RttMs is null && !path.IsActive)
+        {
+            return "connecting";
+        }
+
+        return path.IsConfigured ? "connected" : "unknown";
+    }
+
+    private static string GetPathStatusTooltip(XBondPathStatsSnapshot path)
+    {
+        if (!path.InterfaceUp)
+        {
+            return "No carrier";
+        }
+
+        if (path.InCooldown)
+        {
+            return string.IsNullOrWhiteSpace(path.DemotionReason) ? "Cooldown" : path.DemotionReason;
+        }
+
+        if (!path.IsConfigured)
+        {
+            return "Available, not in XBond";
+        }
+
+        return path.IsActive ? $"Active {RoleLabel(path)} path" : "Standby path";
+    }
+
+    private static string GetSignalBarClass(XBondPathStatsSnapshot path, int index)
+    {
+        var heightClass = index switch
+        {
+            0 => "h-2",
+            1 => "h-3",
+            2 => "h-4",
+            3 => "h-6",
+            _ => "h-2"
+        };
+
+        var isActive = index < GetSignalStrength(path);
+        var colorClass = isActive ? GetSignalColorClass(path) : "bg-slate-700";
+        var animationClass = GetPathStatusKind(path) == "connecting" && isActive ? "animate-pulse" : "";
+
+        return $"{heightClass} {colorClass} {animationClass} w-1.5 rounded-sm transition-all";
+    }
+
+    private static int GetSignalStrength(XBondPathStatsSnapshot path)
+    {
+        if (!path.InterfaceUp)
+        {
+            return 0;
+        }
+
+        if (path.InCooldown || path.LossPercent >= 25 || path.RttMs >= 300)
+        {
+            return 1;
+        }
+
+        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        {
+            return 2;
+        }
+
+        if (path.LossPercent >= 2 || path.RttMs >= 120)
+        {
+            return 3;
+        }
+
+        return 4;
+    }
+
+    private static string GetSignalColorClass(XBondPathStatsSnapshot path)
+    {
+        if (path.InCooldown || path.LossPercent >= 25 || path.RttMs >= 300)
+        {
+            return "bg-red-400";
+        }
+
+        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        {
+            return "bg-yellow-400";
+        }
+
+        if (path.LossPercent >= 2 || path.RttMs >= 120)
+        {
+            return "bg-cyan-400";
+        }
+
+        return path.IsActive ? "bg-emerald-400" : "bg-cyan-400";
+    }
 
     private static string RoleLabel(XBondPathStatsSnapshot path)
     {
@@ -256,31 +571,71 @@
         return path.Role;
     }
 
-    private static string FormatLatency(double? value) => value.HasValue && value.Value > 0
-        ? $"{Math.Round(value.Value)} ms"
-        : "--";
+    private static string GetLossTextClass(XBondPathStatsSnapshot path)
+    {
+        return path.LossPercent switch
+        {
+            >= 10 => "font-semibold text-red-300",
+            >= 2 => "font-semibold text-yellow-300",
+            _ => "font-semibold text-white"
+        };
+    }
 
-    private static string FormatPercent(double? value) => value.HasValue
-        ? $"{Math.Round(value.Value, 1)}%"
-        : "--";
+    private static int GetPercentDecimals(double value)
+    {
+        return Math.Abs(value - Math.Round(value)) < 0.05 ? 0 : 1;
+    }
 
-    private static string DownloadTitle(XBondPathStatsSnapshot path) =>
-        path.DuplicateDownloadMbps > 0
+    private static string FormatLatency(double? value)
+    {
+        return value.HasValue && value.Value > 0 ? $"{Math.Round(value.Value)} ms" : "--";
+    }
+
+    private static string FormatPercent(double? value)
+    {
+        return value.HasValue ? $"{Math.Round(value.Value, 1)}%" : "--";
+    }
+
+    private static string FormatDegrees(double? value)
+    {
+        return value.HasValue ? $"{Math.Round(value.Value, 1)} deg" : "--";
+    }
+
+    private static string FormatMode(string? mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            return "XBond";
+        }
+
+        return mode.Replace('-', ' ');
+    }
+
+    private static string DownloadTitle(XBondPathStatsSnapshot path)
+    {
+        return path.DuplicateDownloadMbps > 0
             ? $"Raw adapter receive: {SpeedFormatter.FormatSpeed(path.DownloadMbps)}. Useful tunnel receive: {SpeedFormatter.FormatSpeed(path.UsefulDownloadMbps)}. Duplicate receive: {SpeedFormatter.FormatSpeed(path.DuplicateDownloadMbps)}."
             : $"Useful tunnel receive: {SpeedFormatter.FormatSpeed(path.UsefulDownloadMbps)}.";
-
-    private static string FormatDegrees(double? value) => value.HasValue
-        ? $"{Math.Round(value.Value, 1)} deg"
-        : "--";
-
-    private static string FormatMode(string? mode) => string.IsNullOrWhiteSpace(mode)
-        ? "XBond"
-        : mode.Replace('-', ' ');
+    }
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
         await _refreshCts.CancelAsync();
         _timer.Dispose();
+
+        if (_animatedUiModule != null)
+        {
+            try
+            {
+                await _animatedUiModule.InvokeVoidAsync("disableAutoAnimate", _adapterListElement);
+                await _animatedUiModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+            }
+        }
+
         _refreshCts.Dispose();
     }
 }

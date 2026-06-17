@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.41";
+    public const string CurrentVersion = "xbond-2026.06.42";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Restored the dashboard visual rhythm for XBond.",
+            Changes =
+            [
+                "The XBond dashboard now reuses the previous dashboard summary card, animated numbers, skeleton loading states, and adapter-list animation patterns.",
+                "Adapter cards return to the compact dashboard typography with signal bars, status dots, hover/tap popovers, and separate animated down/up/latency/loss values.",
+                "The dashboard remains XBond-only; no legacy tunnel runtime polling or controls were reintroduced."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.41",
             Date = "2026-06-17",
             Summary = "Added adaptive XBond recovery reorder hold.",
             Changes =
