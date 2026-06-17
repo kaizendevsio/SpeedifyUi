@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -46,6 +46,18 @@ struct Args {
 
     #[arg(long, default_value_t = 500)]
     ingress_reorder_recovery_hold_ms: u64,
+
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    ingress_reorder_adaptive_recovery_hold: bool,
+
+    #[arg(long, default_value_t = 150)]
+    ingress_reorder_recovery_min_hold_ms: u64,
+
+    #[arg(long, default_value_t = 100)]
+    ingress_reorder_recovery_increase_step_ms: u64,
+
+    #[arg(long, default_value_t = 50)]
+    ingress_reorder_recovery_decrease_step_ms: u64,
 
     #[arg(long, default_value_t = 8192)]
     ingress_reorder_capacity: usize,
@@ -137,8 +149,221 @@ struct ServerIngressReorderStatus {
     current_hold_ms: u64,
     normal_hold_ms: u64,
     recovery_hold_ms: u64,
+    recovery_min_hold_ms: u64,
+    recovery_max_hold_ms: u64,
+    adaptive_recovery_hold_enabled: bool,
+    adaptive_calm_samples: u32,
+    adaptive_last_adjustment_reason: String,
     capacity: usize,
     stats: ReorderStats,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IngressReorderHoldSettings {
+    adaptive_enabled: bool,
+    normal_hold_micros: u64,
+    recovery_min_hold_micros: u64,
+    recovery_max_hold_micros: u64,
+    increase_step_micros: u64,
+    decrease_step_micros: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AdaptiveIngressReorderStatus {
+    adaptive_enabled: bool,
+    current_hold_ms: u64,
+    normal_hold_ms: u64,
+    recovery_min_hold_ms: u64,
+    recovery_max_hold_ms: u64,
+    calm_samples: u32,
+    last_adjustment_reason: String,
+}
+
+#[derive(Debug)]
+struct IngressReorderHoldController {
+    settings: IngressReorderHoldSettings,
+    current_hold_micros: u64,
+    recovery_active: bool,
+    calm_samples: u32,
+    previous_reorder_stats: ReorderStats,
+    previous_repair_requests_sent: u64,
+    last_adjustment_reason: String,
+}
+
+const ADAPTIVE_RECOVERY_CALM_SAMPLES_TO_DECREASE: u32 = 5;
+const ADAPTIVE_RECOVERY_LOW_PENDING_DEPTH: u64 = 4;
+
+impl IngressReorderHoldSettings {
+    fn from_args(args: &Args) -> Self {
+        let normal_hold_micros = args.ingress_reorder_normal_hold_ms.max(1) * 1_000;
+        let recovery_max_hold_micros = args.ingress_reorder_recovery_hold_ms.max(1) * 1_000;
+        let recovery_min_hold_micros = (args.ingress_reorder_recovery_min_hold_ms.max(1) * 1_000)
+            .min(recovery_max_hold_micros);
+        Self {
+            adaptive_enabled: args.ingress_reorder_adaptive_recovery_hold,
+            normal_hold_micros,
+            recovery_min_hold_micros,
+            recovery_max_hold_micros,
+            increase_step_micros: args.ingress_reorder_recovery_increase_step_ms.max(1) * 1_000,
+            decrease_step_micros: args.ingress_reorder_recovery_decrease_step_ms.max(1) * 1_000,
+        }
+    }
+}
+
+impl IngressReorderHoldController {
+    fn new(settings: IngressReorderHoldSettings) -> Self {
+        Self {
+            current_hold_micros: settings.normal_hold_micros,
+            settings,
+            recovery_active: false,
+            calm_samples: 0,
+            previous_reorder_stats: ReorderStats::default(),
+            previous_repair_requests_sent: 0,
+            last_adjustment_reason: "Normal ingress reorder hold.".to_string(),
+        }
+    }
+
+    fn current_hold_micros(&self) -> u64 {
+        self.current_hold_micros
+    }
+
+    fn set_recovery_active(
+        &mut self,
+        recovery_active: bool,
+        reorder_stats: ReorderStats,
+        repair: &XBondRepairStatus,
+    ) -> bool {
+        if self.recovery_active == recovery_active {
+            return false;
+        }
+
+        self.recovery_active = recovery_active;
+        self.calm_samples = 0;
+        self.previous_reorder_stats = reorder_stats;
+        self.previous_repair_requests_sent = repair.requests_sent;
+
+        let previous_hold = self.current_hold_micros;
+        if recovery_active {
+            self.current_hold_micros = if self.settings.adaptive_enabled {
+                self.settings.recovery_min_hold_micros
+            } else {
+                self.settings.recovery_max_hold_micros
+            };
+            self.last_adjustment_reason = if self.settings.adaptive_enabled {
+                "Recovery entered; using minimum adaptive hold.".to_string()
+            } else {
+                "Recovery entered; using fixed maximum hold.".to_string()
+            };
+        } else {
+            self.current_hold_micros = self.settings.normal_hold_micros;
+            self.last_adjustment_reason = "Recovery exited; reset to normal hold.".to_string();
+        }
+
+        previous_hold != self.current_hold_micros
+    }
+
+    fn reset_to_normal(&mut self, reorder_stats: ReorderStats, repair: &XBondRepairStatus) -> bool {
+        let previous_hold = self.current_hold_micros;
+        self.recovery_active = false;
+        self.calm_samples = 0;
+        self.previous_reorder_stats = reorder_stats;
+        self.previous_repair_requests_sent = repair.requests_sent;
+        self.current_hold_micros = self.settings.normal_hold_micros;
+        self.last_adjustment_reason = "Session changed; reset to normal hold.".to_string();
+        previous_hold != self.current_hold_micros
+    }
+
+    fn observe(
+        &mut self,
+        recovery_active: bool,
+        reorder_stats: ReorderStats,
+        repair: &XBondRepairStatus,
+    ) -> bool {
+        if self.recovery_active != recovery_active {
+            return self.set_recovery_active(recovery_active, reorder_stats, repair);
+        }
+
+        if !recovery_active {
+            self.previous_reorder_stats = reorder_stats;
+            self.previous_repair_requests_sent = repair.requests_sent;
+            return false;
+        }
+
+        if !self.settings.adaptive_enabled {
+            self.previous_reorder_stats = reorder_stats;
+            self.previous_repair_requests_sent = repair.requests_sent;
+            let previous_hold = self.current_hold_micros;
+            self.current_hold_micros = self.settings.recovery_max_hold_micros;
+            self.last_adjustment_reason = "Fixed recovery hold is active.".to_string();
+            return previous_hold != self.current_hold_micros;
+        }
+
+        let timeout_delta = reorder_stats
+            .timeout_releases
+            .saturating_sub(self.previous_reorder_stats.timeout_releases);
+        let gap_delta = reorder_stats
+            .released_gap_packets
+            .saturating_sub(self.previous_reorder_stats.released_gap_packets);
+        let late_delta = reorder_stats
+            .late_duplicates
+            .saturating_sub(self.previous_reorder_stats.late_duplicates);
+        let repair_request_delta = repair
+            .requests_sent
+            .saturating_sub(self.previous_repair_requests_sent);
+
+        self.previous_reorder_stats = reorder_stats;
+        self.previous_repair_requests_sent = repair.requests_sent;
+
+        let previous_hold = self.current_hold_micros;
+        let pressure =
+            timeout_delta > 0 || gap_delta > 0 || late_delta > 0 || repair_request_delta > 0;
+        if pressure {
+            self.calm_samples = 0;
+            self.current_hold_micros = self
+                .current_hold_micros
+                .saturating_add(self.settings.increase_step_micros)
+                .min(self.settings.recovery_max_hold_micros);
+            self.last_adjustment_reason = format!(
+                "Recovery pressure observed: timeout={timeout_delta}, gaps={gap_delta}, late={late_delta}, repair_requests={repair_request_delta}."
+            );
+            return previous_hold != self.current_hold_micros;
+        }
+
+        if reorder_stats.pending_depth <= ADAPTIVE_RECOVERY_LOW_PENDING_DEPTH {
+            self.calm_samples = self.calm_samples.saturating_add(1);
+            if self.calm_samples >= ADAPTIVE_RECOVERY_CALM_SAMPLES_TO_DECREASE
+                && self.current_hold_micros > self.settings.recovery_min_hold_micros
+            {
+                self.current_hold_micros = self
+                    .current_hold_micros
+                    .saturating_sub(self.settings.decrease_step_micros)
+                    .max(self.settings.recovery_min_hold_micros);
+                self.calm_samples = 0;
+                self.last_adjustment_reason =
+                    "Recovery calm window observed; decreasing hold.".to_string();
+                return previous_hold != self.current_hold_micros;
+            }
+            self.last_adjustment_reason = "Recovery calm sample observed.".to_string();
+        } else {
+            self.calm_samples = 0;
+            self.last_adjustment_reason =
+                "Recovery hold unchanged; pending reorder depth remains elevated.".to_string();
+        }
+
+        false
+    }
+
+    fn status(&self) -> AdaptiveIngressReorderStatus {
+        AdaptiveIngressReorderStatus {
+            adaptive_enabled: self.settings.adaptive_enabled,
+            current_hold_ms: self.current_hold_micros / 1_000,
+            normal_hold_ms: self.settings.normal_hold_micros / 1_000,
+            recovery_min_hold_ms: self.settings.recovery_min_hold_micros / 1_000,
+            recovery_max_hold_ms: self.settings.recovery_max_hold_micros / 1_000,
+            calm_samples: self.calm_samples,
+            last_adjustment_reason: self.last_adjustment_reason.clone(),
+        }
+    }
 }
 
 #[tokio::main]
@@ -152,9 +377,9 @@ async fn main() -> Result<()> {
         Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
         None => None,
     };
-    let normal_ingress_hold_micros = args.ingress_reorder_normal_hold_ms.max(1) * 1_000;
-    let recovery_ingress_hold_micros = args.ingress_reorder_recovery_hold_ms.max(1) * 1_000;
-    let mut current_ingress_hold_micros = normal_ingress_hold_micros;
+    let mut hold_controller =
+        IngressReorderHoldController::new(IngressReorderHoldSettings::from_args(&args));
+    let mut current_ingress_hold_micros = hold_controller.current_hold_micros();
     let mut data_packets_received = 0u64;
     let mut data_packets_forwarded = 0u64;
     let mut fec_packets_received = 0u64;
@@ -250,6 +475,10 @@ async fn main() -> Result<()> {
                 "tun": tun.as_ref().map(|tun| tun.name()),
                 "ingress_reorder_normal_hold_ms": args.ingress_reorder_normal_hold_ms,
                 "ingress_reorder_recovery_hold_ms": args.ingress_reorder_recovery_hold_ms,
+                "ingress_reorder_adaptive_recovery_hold": args.ingress_reorder_adaptive_recovery_hold,
+                "ingress_reorder_recovery_min_hold_ms": args.ingress_reorder_recovery_min_hold_ms,
+                "ingress_reorder_recovery_increase_step_ms": args.ingress_reorder_recovery_increase_step_ms,
+                "ingress_reorder_recovery_decrease_step_ms": args.ingress_reorder_recovery_decrease_step_ms,
                 "ingress_reorder_capacity": args.ingress_reorder_capacity,
             })
         );
@@ -270,7 +499,7 @@ async fn main() -> Result<()> {
             non_ipv4_packets_dropped,
         },
         &repair,
-        current_ingress_hold_micros,
+        &hold_controller,
     )?;
     loop {
         tokio::select! {
@@ -282,8 +511,10 @@ async fn main() -> Result<()> {
                     return_senders.clear();
                     return_control = None;
                     resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
-                    current_ingress_hold_micros = normal_ingress_hold_micros;
-                    reorder.set_hold_micros(normal_ingress_hold_micros);
+                    if hold_controller.reset_to_normal(reorder.stats(), &repair) {
+                        current_ingress_hold_micros = hold_controller.current_hold_micros();
+                        reorder.set_hold_micros(current_ingress_hold_micros);
+                    }
                 }
                 last_session_id = frame.header.session_id;
                 if is_tunnel_payload(frame.header.kind)
@@ -303,24 +534,18 @@ async fn main() -> Result<()> {
                             || previous.policy_config != control.policy_config
                             || previous.recovery_active != control.recovery_active
                     });
-                    let desired_hold = if control.recovery_active {
-                        recovery_ingress_hold_micros
-                    } else {
-                        normal_ingress_hold_micros
-                    };
-                    if current_ingress_hold_micros != desired_hold {
-                        current_ingress_hold_micros = desired_hold;
-                        reorder.set_hold_micros(desired_hold);
+                    if hold_controller.set_recovery_active(control.recovery_active, reorder.stats(), &repair) {
+                        current_ingress_hold_micros = hold_controller.current_hold_micros();
+                        reorder.set_hold_micros(current_ingress_hold_micros);
                         if args.json_events {
+                            let adaptive = hold_controller.status();
                             println!(
                                 "{}",
                                 serde_json::json!({
                                     "event": "ingress-reorder-hold-updated",
                                     "session_id": frame.header.session_id,
                                     "recovery_active": control.recovery_active,
-                                    "current_hold_ms": current_ingress_hold_micros / 1_000,
-                                    "normal_hold_ms": args.ingress_reorder_normal_hold_ms,
-                                    "recovery_hold_ms": args.ingress_reorder_recovery_hold_ms,
+                                    "adaptive": adaptive,
                                 })
                             );
                         }
@@ -601,6 +826,23 @@ async fn main() -> Result<()> {
 
             _ = status_tick.tick() => {
                 repair.cache_entries = resend_cache.len();
+                let recovery_active = return_control
+                    .as_ref()
+                    .is_some_and(|control| control.recovery_active);
+                if hold_controller.observe(recovery_active, reorder.stats(), &repair) {
+                    current_ingress_hold_micros = hold_controller.current_hold_micros();
+                    reorder.set_hold_micros(current_ingress_hold_micros);
+                    if args.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "ingress-reorder-hold-updated",
+                                "recovery_active": recovery_active,
+                                "adaptive": hold_controller.status(),
+                            })
+                        );
+                    }
+                }
                 let counters = TunnelCounters {
                     data_packets_received,
                     data_packets_forwarded,
@@ -616,7 +858,7 @@ async fn main() -> Result<()> {
                     &reorder,
                     counters,
                     &repair,
-                    current_ingress_hold_micros,
+                    &hold_controller,
                 )?;
                 if args.json_events {
                     json_status_event_counter = json_status_event_counter.saturating_add(1);
@@ -626,9 +868,9 @@ async fn main() -> Result<()> {
                             "{}",
                             serde_json::json!({
                                 "event": "server-status",
-                                "recovery_active": return_control.as_ref().is_some_and(|control| control.recovery_active),
+                                "recovery_active": recovery_active,
                                 "ingress_reorder": {
-                                    "current_hold_ms": current_ingress_hold_micros / 1_000,
+                                    "adaptive": hold_controller.status(),
                                     "stats": reorder.stats(),
                                 },
                                 "counters": counters,
@@ -972,7 +1214,7 @@ fn write_server_status(
     reorder: &PacketReorderBuffer,
     counters: TunnelCounters,
     repair: &XBondRepairStatus,
-    current_ingress_hold_micros: u64,
+    hold_controller: &IngressReorderHoldController,
 ) -> Result<()> {
     if let Some(parent) = args.status_path.parent() {
         std::fs::create_dir_all(parent)
@@ -990,9 +1232,14 @@ fn write_server_status(
             schedule: control.schedule.clone(),
         }),
         ingress_reorder: ServerIngressReorderStatus {
-            current_hold_ms: current_ingress_hold_micros / 1_000,
+            current_hold_ms: hold_controller.current_hold_micros() / 1_000,
             normal_hold_ms: args.ingress_reorder_normal_hold_ms,
             recovery_hold_ms: args.ingress_reorder_recovery_hold_ms,
+            recovery_min_hold_ms: hold_controller.status().recovery_min_hold_ms,
+            recovery_max_hold_ms: hold_controller.status().recovery_max_hold_ms,
+            adaptive_recovery_hold_enabled: hold_controller.status().adaptive_enabled,
+            adaptive_calm_samples: hold_controller.status().calm_samples,
+            adaptive_last_adjustment_reason: hold_controller.status().last_adjustment_reason,
             capacity: args.ingress_reorder_capacity,
             stats: reorder.stats(),
         },
@@ -1448,6 +1695,129 @@ mod tests {
 
         assert!(sequence >= before);
         assert!(sequence <= after);
+    }
+
+    #[test]
+    fn adaptive_recovery_entry_starts_at_min_hold() {
+        let mut controller = test_adaptive_hold_controller();
+        let repair = XBondRepairStatus::default();
+
+        assert!(controller.set_recovery_active(true, ReorderStats::default(), &repair));
+
+        let status = controller.status();
+        assert_eq!(status.current_hold_ms, 150);
+        assert_eq!(status.recovery_min_hold_ms, 150);
+        assert_eq!(status.recovery_max_hold_ms, 500);
+        assert!(status.adaptive_enabled);
+    }
+
+    #[test]
+    fn adaptive_recovery_pressure_increases_hold_and_caps_at_max() {
+        let mut controller = test_adaptive_hold_controller();
+        let mut repair = XBondRepairStatus::default();
+        controller.set_recovery_active(true, ReorderStats::default(), &repair);
+
+        for pressure_count in 1..=8 {
+            repair.requests_sent = pressure_count;
+            let stats = ReorderStats {
+                timeout_releases: pressure_count,
+                released_gap_packets: pressure_count,
+                late_duplicates: pressure_count,
+                ..ReorderStats::default()
+            };
+            controller.observe(true, stats, &repair);
+        }
+
+        assert_eq!(controller.status().current_hold_ms, 500);
+    }
+
+    #[test]
+    fn adaptive_recovery_calm_samples_decrease_hold_and_floor_at_min() {
+        let mut controller = test_adaptive_hold_controller();
+        let mut repair = XBondRepairStatus::default();
+        controller.set_recovery_active(true, ReorderStats::default(), &repair);
+
+        repair.requests_sent = 1;
+        controller.observe(
+            true,
+            ReorderStats {
+                timeout_releases: 1,
+                ..ReorderStats::default()
+            },
+            &repair,
+        );
+        assert_eq!(controller.status().current_hold_ms, 250);
+
+        for _ in 0..ADAPTIVE_RECOVERY_CALM_SAMPLES_TO_DECREASE {
+            controller.observe(true, ReorderStats::default(), &repair);
+        }
+        assert_eq!(controller.status().current_hold_ms, 200);
+
+        for _ in 0..(ADAPTIVE_RECOVERY_CALM_SAMPLES_TO_DECREASE * 4) {
+            controller.observe(true, ReorderStats::default(), &repair);
+        }
+        assert_eq!(controller.status().current_hold_ms, 150);
+    }
+
+    #[test]
+    fn adaptive_recovery_exit_resets_to_normal_hold() {
+        let mut controller = test_adaptive_hold_controller();
+        let mut repair = XBondRepairStatus::default();
+        controller.set_recovery_active(true, ReorderStats::default(), &repair);
+        repair.requests_sent = 1;
+        controller.observe(
+            true,
+            ReorderStats {
+                timeout_releases: 1,
+                ..ReorderStats::default()
+            },
+            &repair,
+        );
+
+        assert!(controller.set_recovery_active(false, ReorderStats::default(), &repair));
+
+        let status = controller.status();
+        assert_eq!(status.current_hold_ms, 50);
+        assert_eq!(status.calm_samples, 0);
+        assert!(status.last_adjustment_reason.contains("reset to normal"));
+    }
+
+    #[test]
+    fn ingress_reorder_status_serializes_adaptive_fields() {
+        let status = ServerIngressReorderStatus {
+            current_hold_ms: 150,
+            normal_hold_ms: 50,
+            recovery_hold_ms: 500,
+            recovery_min_hold_ms: 150,
+            recovery_max_hold_ms: 500,
+            adaptive_recovery_hold_enabled: true,
+            adaptive_calm_samples: 3,
+            adaptive_last_adjustment_reason: "Recovery calm sample observed.".to_string(),
+            capacity: 8192,
+            stats: ReorderStats::default(),
+        };
+
+        let value = serde_json::to_value(status).unwrap();
+
+        assert_eq!(value["adaptive_recovery_hold_enabled"], true);
+        assert_eq!(value["recovery_min_hold_ms"], 150);
+        assert_eq!(value["recovery_max_hold_ms"], 500);
+        assert_eq!(value["adaptive_calm_samples"], 3);
+        assert_eq!(
+            value["adaptive_last_adjustment_reason"],
+            "Recovery calm sample observed."
+        );
+    }
+
+    fn test_adaptive_hold_controller() -> IngressReorderHoldController {
+        IngressReorderHoldController::new(IngressReorderHoldSettings {
+            adaptive_enabled: true,
+            normal_hold_micros: 50_000,
+            recovery_min_hold_micros: 150_000,
+            recovery_max_hold_micros: 500_000,
+            increase_step_micros: 100_000,
+            decrease_step_micros: 50_000,
+        })
     }
 
     #[test]

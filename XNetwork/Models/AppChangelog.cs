@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.40";
+    public const string CurrentVersion = "xbond-2026.06.41";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Added adaptive XBond recovery reorder hold.",
+            Changes =
+            [
+                "The XBond server now starts recovery ingress reordering at a lower hold and grows toward the reliability maximum only when reorder or repair pressure continues.",
+                "Recovery exit resets the server ingress reorder hold back to normal immediately.",
+                "Operator status now reports the adaptive hold range, calm sample count, and last hold adjustment reason."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.40",
             Date = "2026-06-17",
             Summary = "Added XBond recovery packet repair.",
             Changes =
