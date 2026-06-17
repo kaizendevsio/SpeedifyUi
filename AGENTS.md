@@ -239,6 +239,7 @@
 - `XRouter.razor` lists Cudy clients, shows hostname/IP/MAC/connection type/signal/online duration, live upload/download throughput, per-device history, block/unblock, and per-device rate limits.
 - Cudy client list refreshes every 1s from the Cudy client table.
 - `XRouter.razor` should not await the first Cudy client-table refresh from `OnInitializedAsync`; render the page first, then refresh in the background with a short UI-level timeout so unreachable Cudy management does not leave `/wifi` blank/loading.
+- 2026-06-18: Cudy timeout investigation on `feature/xband-only-runtime` found the Cudy page/client code is materially unchanged versus `bugfix/settings-dropdown-refresh`; the runtime difference is routing. The configured management URL remains `https://192.168.145.231/`, but `ip route get 192.168.145.231` selected `xbond0` on the Pi. Forcing a temporary `/32` route via current Wi-Fi gateway `192.168.68.1` on `wlan0` still timed out after 30s, and current `wlan0` is connected to `XNetwork Wi-Fi Asia` with `192.168.68.65/24`. Treat the current failure as a local-management reachability/routing problem, not a Cudy parser regression.
 - Known Cudy client endpoints are `/cgi-bin/luci/admin/network/devices/devlist?detail=1`, `/cgi-bin/luci/admin/network/devices/internet`, and `/cgi-bin/luci/admin/network/devices/devinfo`.
 - Cudy data caps were not implemented because the inspected firmware endpoint did not expose them.
 - `CudyXRouterClientParser` parses the Cudy HTML table; keep parser tests updated when endpoint markup changes.
