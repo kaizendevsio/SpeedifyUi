@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.46";
+    public const string CurrentVersion = "xbond-2026.06.47";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Restored Cudy management settings.",
+            Changes =
+            [
+                "Settings now has a Cudy Management card for editing the Cudy admin URL, updating the local runtime password, scanning trusted home Wi-Fi, and testing Cudy login.",
+                "Saving Cudy settings now attempts to refresh the local XBond bypass route immediately so changed management URLs do not have to wait for an XBond restart.",
+                "The Wifi page now reports which configured Cudy management URL failed when the client table times out.",
+                "Cudy configuration checks now require an actual configured password instead of treating a default environment-variable name as enough."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.46",
             Date = "2026-06-18",
             Summary = "Compacted the mobile bottom navigation.",
             Changes =

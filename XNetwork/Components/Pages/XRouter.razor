@@ -19,6 +19,10 @@
     {
         <div class="bg-yellow-500/10 border border-yellow-500/50 text-yellow-200 px-4 py-3 rounded-xl mb-6">
             Configure the Cudy management URL and admin password in Settings before using Wifi controls.
+            @if (!string.IsNullOrWhiteSpace(XRouterService.ManagementBaseUrl))
+            {
+                <span class="block mt-1 text-xs text-yellow-100/80">Current URL: @XRouterService.ManagementBaseUrl</span>
+            }
         </div>
     }
     else
@@ -227,7 +231,8 @@
         }
         catch (OperationCanceledException)
         {
-            ShowMessage("Could not refresh Wifi clients: Cudy management did not respond within 8 seconds.", isError: true);
+            var url = XRouterService.ManagementBaseUrl ?? "the configured Cudy URL";
+            ShowMessage($"Could not refresh Wifi clients: Cudy management at {url} did not respond within 8 seconds.", isError: true);
         }
         catch (Exception ex)
         {

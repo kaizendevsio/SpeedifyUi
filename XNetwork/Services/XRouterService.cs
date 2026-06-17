@@ -9,10 +9,13 @@ public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings 
     private IReadOnlyList<XRouterClient>? _cachedClients;
     private long _cachedClientsAtTicks;
 
+    public string? ManagementBaseUrl => string.IsNullOrWhiteSpace(settings.ManagementBaseUrl)
+        ? null
+        : settings.ManagementBaseUrl.Trim();
+
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(settings.ManagementBaseUrl) &&
-        (!string.IsNullOrWhiteSpace(settings.AdminPassword) ||
-         !string.IsNullOrWhiteSpace(settings.AdminPasswordEnvironmentVariable));
+        HasAdminPassword();
 
     public async Task<IReadOnlyList<XRouterClient>> GetClientsAsync(CancellationToken cancellationToken = default)
     {
@@ -78,5 +81,20 @@ public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings 
     {
         _cachedClients = null;
         Volatile.Write(ref _cachedClientsAtTicks, 0);
+    }
+
+    private bool HasAdminPassword()
+    {
+        if (!string.IsNullOrEmpty(settings.AdminPassword))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.AdminPasswordEnvironmentVariable))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrEmpty(Environment.GetEnvironmentVariable(settings.AdminPasswordEnvironmentVariable.Trim()));
     }
 }
