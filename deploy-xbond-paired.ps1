@@ -60,6 +60,8 @@ git pull --ff-only
 ./deploy.sh
 cargo build --release --manifest-path xbond/Cargo.toml -p xbond-client
 sudo -n install -m 0755 xbond/target/release/xbond-client /usr/local/bin/xbond-client
+sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
+sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 sudo -n systemctl restart xbond-client.service
 systemctl is-active xnetwork.service
 systemctl is-active xbond-client.service
@@ -69,6 +71,10 @@ for path in / /xbond /details /settings /xrouter /wifi; do
   curl -fsS -o /dev/null "http://127.0.0.1:8080`$path"
 done
 ip route get 8.8.8.8 | grep 'dev xbond0'
+cudy_host="`$(sed -n 's/.*"ManagementBaseUrl"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /home/xeon-network/.config/XNetwork/cudy-ap-automation-settings.json 2>/dev/null | head -n 1 | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:.*##')"
+if [ -n "`$cudy_host" ]; then
+  ip route get "`$cudy_host" | grep -v 'dev xbond0'
+fi
 ping -I xbond0 -c 3 -W 2 10.250.0.1
 ping -c 3 -W 3 8.8.8.8
 git rev-parse --short HEAD

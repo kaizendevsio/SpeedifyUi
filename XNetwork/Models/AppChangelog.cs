@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.44";
+    public const string CurrentVersion = "xbond-2026.06.45";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-17",
+            Summary = "Bypassed XBond for local Cudy management routes.",
+            Changes =
+            [
+                "XBond route setup now reads the configured Cudy management URL and pins that local management host to a physical route before making xbond0 the default route.",
+                "Stale local management bypass routes are cleaned up across XBond client restarts.",
+                "The paired XBond deploy script now installs the route helper scripts and verifies that the configured Cudy host does not route through xbond0."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.44",
             Date = "2026-06-17",
             Summary = "Restored Analytics styling and unblocked Wifi loading.",
             Changes =
