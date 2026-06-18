@@ -121,8 +121,8 @@
         <ConnectionSummary
             ConnectionStatus="@ConnectionTitle"
             Latency="@GetLatencyValue()"
-            Download="@Math.Round(_snapshot.DownloadMbps, 1)"
-            Upload="@Math.Round(_snapshot.UploadMbps, 1)"
+            Download="@_snapshot.DownloadMbps"
+            Upload="@_snapshot.UploadMbps"
             AnchorDownload="@GetAnchorDownloadMbps()"
             BackupDownload="@GetBackupDownloadMbps()"
             IsStable="@IsConnectionStable()"

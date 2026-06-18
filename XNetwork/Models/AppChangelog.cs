@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.55";
+    public const string CurrentVersion = "xbond-2026.06.56";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Clarified dashboard tunnel throughput.",
+            Changes =
+            [
+                "The dashboard summary now keeps sub-Mbps precision so small tunnel traffic no longer rounds down to zero before formatting.",
+                "The top connection card labels now say Tunnel down and Tunnel up to distinguish useful tunnel payload from per-adapter wire traffic."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.55",
             Date = "2026-06-18",
             Summary = "Clarified dashboard chart path colors.",
             Changes =
