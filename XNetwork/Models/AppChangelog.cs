@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.54";
+    public const string CurrentVersion = "xbond-2026.06.55";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Clarified dashboard chart path colors.",
+            Changes =
+            [
+                "The dashboard summary chart now uses orange for the active anchor path overlay.",
+                "The backup path overlay is now a brighter pink so it is easier to distinguish from the main tunnel line."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.54",
             Date = "2026-06-18",
             Summary = "Smoothed adapter status color changes.",
             Changes =

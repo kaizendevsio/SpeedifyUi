@@ -401,12 +401,12 @@ export function initializeDashboardSparkline(chartId) {
                     {
                         label: 'Anchor download',
                         data: Array(DASHBOARD_DATA_POINTS).fill(null),
-                        borderColor: 'rgba(52, 211, 153, 0.42)', // emerald-400
-                        backgroundColor: 'rgba(52, 211, 153, 0)',
+                        borderColor: 'rgba(251, 146, 60, 0.62)', // orange-400
+                        backgroundColor: 'rgba(251, 146, 60, 0)',
                         tension: 0.4,
                         cubicInterpolationMode: 'monotone',
                         fill: false,
-                        borderWidth: 1.5,
+                        borderWidth: 1.75,
                         pointRadius: 0,
                         pointHoverRadius: 0,
                         spanGaps: true
@@ -414,12 +414,12 @@ export function initializeDashboardSparkline(chartId) {
                     {
                         label: 'Backup download',
                         data: Array(DASHBOARD_DATA_POINTS).fill(null),
-                        borderColor: 'rgba(244, 114, 182, 0.38)', // pink-400
+                        borderColor: 'rgba(244, 114, 182, 0.56)', // pink-400
                         backgroundColor: 'rgba(244, 114, 182, 0)',
                         tension: 0.4,
                         cubicInterpolationMode: 'monotone',
                         fill: false,
-                        borderWidth: 1.5,
+                        borderWidth: 1.75,
                         pointRadius: 0,
                         pointHoverRadius: 0,
                         spanGaps: true
