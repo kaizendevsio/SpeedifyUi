@@ -36,7 +36,15 @@ public class XBondStatusServiceTests
                 "state": "running",
                 "device_name": "xbond0",
                 "mtu": 1400,
-                "message": "XBond tunnel is open"
+                "message": "XBond tunnel is open",
+                "rtt_ms": 72.5,
+                "jitter_ms": 8.0,
+                "loss_rate": 0.03,
+                "success_rate": 0.97,
+                "pending_probes": 1,
+                "last_success_age_ms": 250,
+                "status": "fair",
+                "reason": "Tunnel heartbeat is fair."
               },
               "anchor_path_id": 1,
               "schedule": {
@@ -130,6 +138,14 @@ public class XBondStatusServiceTests
         Assert.Equal([2], status.Schedule.FecPathIds);
         Assert.Equal("running", status.Tunnel.State);
         Assert.Equal("xbond0", status.Tunnel.DeviceName);
+        Assert.Equal(72.5, status.Tunnel.RttMs);
+        Assert.Equal(8.0, status.Tunnel.JitterMs);
+        Assert.Equal(0.03, status.Tunnel.LossRate);
+        Assert.Equal(0.97, status.Tunnel.SuccessRate);
+        Assert.Equal(1, status.Tunnel.PendingProbes);
+        Assert.Equal((ulong)250, status.Tunnel.LastSuccessAgeMs);
+        Assert.Equal("fair", status.Tunnel.Status);
+        Assert.Equal("Tunnel heartbeat is fair.", status.Tunnel.Reason);
         Assert.Equal((ulong)8, status.DataPacketsSent);
         Assert.Equal((ulong)4, status.DuplicatePacketsSent);
         Assert.Equal((ulong)4, status.DuplicatePacketsDropped);
@@ -175,6 +191,156 @@ public class XBondStatusServiceTests
         Assert.Equal(10, dashboardPath.DownloadMbps);
         Assert.Equal(8, dashboardPath.UsefulDownloadMbps);
         Assert.Equal(2, dashboardPath.DuplicateDownloadMbps);
+        Assert.True(snapshot.HasTunnelHealth);
+        Assert.Equal("Fair Connection", snapshot.ConnectionTitle);
+        Assert.Equal(72.5, snapshot.EffectiveRttMs);
+        Assert.Equal(3, snapshot.EffectiveLossPercent, precision: 6);
+        Assert.True(snapshot.IsStable);
+    }
+
+    [Fact]
+    public void Snapshot_UsesTunnelHealthInsteadOfWorstActivePathForDashboardStatus()
+    {
+        var status = new XBondStatus
+        {
+            Running = true,
+            Tunnel = new XBondTunnelStatus
+            {
+                RttMs = 68,
+                LossRate = 0,
+                Reason = "Tunnel heartbeat is healthy."
+            },
+            Schedule = new XBondSchedulePlan
+            {
+                DataPathIds = [1],
+                DuplicatePathIds = [2]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "anchor",
+                    InterfaceName = "eth0",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    RttMs = 70,
+                    LossRate = 0
+                },
+                new XBondPathStatus
+                {
+                    PathId = 2,
+                    Name = "bad backup",
+                    InterfaceName = "wwan0",
+                    Role = "backup",
+                    InterfaceUp = true,
+                    RttMs = 400,
+                    LossRate = 0.40
+                }
+            ]
+        };
+
+        var snapshot = XBondStatsService.FromStatus(status);
+
+        Assert.True(snapshot.HasTunnelHealth);
+        Assert.Equal("Good Connection", snapshot.ConnectionTitle);
+        Assert.True(snapshot.IsStable);
+        Assert.Equal(68, snapshot.EffectiveRttMs);
+        Assert.Equal(0, snapshot.EffectiveLossPercent);
+        Assert.Equal(235, snapshot.AverageRttMs);
+        Assert.Equal(40, snapshot.MaxLossPercent);
+    }
+
+    [Fact]
+    public void Snapshot_FallsBackToPathDerivedStatusWhenTunnelHealthIsMissing()
+    {
+        var status = new XBondStatus
+        {
+            Running = true,
+            Tunnel = new XBondTunnelStatus(),
+            Schedule = new XBondSchedulePlan
+            {
+                DataPathIds = [1],
+                DuplicatePathIds = [2]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "anchor",
+                    InterfaceName = "eth0",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    RttMs = 80,
+                    LossRate = 0
+                },
+                new XBondPathStatus
+                {
+                    PathId = 2,
+                    Name = "backup",
+                    InterfaceName = "wwan0",
+                    Role = "backup",
+                    InterfaceUp = true,
+                    RttMs = 190,
+                    LossRate = 0.12
+                }
+            ]
+        };
+
+        var snapshot = XBondStatsService.FromStatus(status);
+
+        Assert.False(snapshot.HasTunnelHealth);
+        Assert.Equal("Poor Connection", snapshot.ConnectionTitle);
+        Assert.False(snapshot.IsStable);
+        Assert.Equal("path-derived fallback", snapshot.HealthReason);
+        Assert.Equal(135, snapshot.EffectiveRttMs);
+        Assert.Equal(12, snapshot.EffectiveLossPercent, precision: 6);
+    }
+
+    [Theory]
+    [InlineData(179, 0.09, "Fair Connection", true)]
+    [InlineData(180, 0.00, "Poor Connection", false)]
+    [InlineData(100, 0.10, "Poor Connection", false)]
+    [InlineData(300, 0.00, "Critical Connection", false)]
+    [InlineData(80, 0.25, "Critical Connection", false)]
+    public void Snapshot_UsesTunnelThresholdsForUnstableState(
+        double rttMs,
+        double lossRate,
+        string expectedTitle,
+        bool expectedStable)
+    {
+        var status = new XBondStatus
+        {
+            Running = true,
+            Tunnel = new XBondTunnelStatus
+            {
+                RttMs = rttMs,
+                LossRate = lossRate
+            },
+            Schedule = new XBondSchedulePlan
+            {
+                DataPathIds = [1]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "anchor",
+                    InterfaceName = "eth0",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    RttMs = 40,
+                    LossRate = 0
+                }
+            ]
+        };
+
+        var snapshot = XBondStatsService.FromStatus(status);
+
+        Assert.Equal(expectedTitle, snapshot.ConnectionTitle);
+        Assert.Equal(expectedStable, snapshot.IsStable);
     }
 
     [Fact]

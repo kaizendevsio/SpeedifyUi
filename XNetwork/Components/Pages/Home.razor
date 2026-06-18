@@ -272,16 +272,7 @@
     private string ConnectionTitle => _snapshot switch
     {
         null => "Initializing Connection",
-        { HasError: true } => "Poor Connection",
-        { IsRunning: false } => "Disconnected",
-        { ActivePaths.Count: 0 } => "Partial Connection",
-        { MaxLossPercent: >= 25 } => "Critical Connection",
-        { AverageRttMs: >= 300 } => "Critical Connection",
-        { MaxLossPercent: >= 10 } => "Poor Connection",
-        { AverageRttMs: >= 180 } => "Poor Connection",
-        { MaxLossPercent: >= 2 } => "Fair Connection",
-        { AverageRttMs: >= 120 } => "Fair Connection",
-        _ => "Good Connection"
+        _ => _snapshot.ConnectionTitle
     };
 
     private RenderFragment<XBondPathStatsSnapshot> PathCard => path => @<article @key="path.PathId" class="@GetPathCardClass(path)">
@@ -378,12 +369,12 @@
 
     private int GetLatencyValue()
     {
-        if (_snapshot is null || _snapshot.AverageRttMs <= 0)
+        if (_snapshot is null || _snapshot.EffectiveRttMs <= 0)
         {
             return 0;
         }
 
-        return (int)Math.Round(_snapshot.AverageRttMs);
+        return (int)Math.Round(_snapshot.EffectiveRttMs);
     }
 
     private double? GetAnchorDownloadMbps()
@@ -400,7 +391,7 @@
 
     private bool IsConnectionStable()
     {
-        return _snapshot is { IsRunning: true, MaxLossPercent: < 10, AverageRttMs: < 180 };
+        return _snapshot?.IsStable == true;
     }
 
     private int GetLivePathCount()

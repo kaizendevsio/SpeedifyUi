@@ -166,6 +166,22 @@ pub struct XBondTunnelStatus {
     pub device_name: Option<String>,
     pub mtu: Option<u16>,
     pub message: String,
+    #[serde(default)]
+    pub rtt_ms: Option<f64>,
+    #[serde(default)]
+    pub jitter_ms: Option<f64>,
+    #[serde(default)]
+    pub loss_rate: Option<f64>,
+    #[serde(default)]
+    pub success_rate: Option<f64>,
+    #[serde(default)]
+    pub pending_probes: usize,
+    #[serde(default)]
+    pub last_success_age_ms: Option<u64>,
+    #[serde(default = "default_tunnel_health_status")]
+    pub status: String,
+    #[serde(default = "default_tunnel_health_reason")]
+    pub reason: String,
 }
 
 impl Default for XBondTunnelStatus {
@@ -175,8 +191,24 @@ impl Default for XBondTunnelStatus {
             device_name: None,
             mtu: None,
             message: "XBond tunnel is disabled by default.".to_string(),
+            rtt_ms: None,
+            jitter_ms: None,
+            loss_rate: None,
+            success_rate: None,
+            pending_probes: 0,
+            last_success_age_ms: None,
+            status: default_tunnel_health_status(),
+            reason: default_tunnel_health_reason(),
         }
     }
+}
+
+fn default_tunnel_health_status() -> String {
+    "unknown".to_string()
+}
+
+fn default_tunnel_health_reason() -> String {
+    "Tunnel health is unavailable.".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,4 +352,57 @@ pub struct XBondRuntimeStatus {
     pub schedule_change_count: u64,
     #[serde(default)]
     pub message: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tunnel_status_deserializes_legacy_json_without_health_fields() {
+        let status = serde_json::from_str::<XBondTunnelStatus>(
+            r#"{
+                "state": "running",
+                "device_name": "xbond0",
+                "mtu": 1400,
+                "message": "legacy"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(status.state, "running");
+        assert_eq!(status.device_name.as_deref(), Some("xbond0"));
+        assert_eq!(status.rtt_ms, None);
+        assert_eq!(status.loss_rate, None);
+        assert_eq!(status.status, "unknown");
+        assert_eq!(status.reason, "Tunnel health is unavailable.");
+    }
+
+    #[test]
+    fn tunnel_status_serializes_health_fields() {
+        let status = XBondTunnelStatus {
+            state: "running".to_string(),
+            device_name: Some("xbond0".to_string()),
+            mtu: Some(1400),
+            message: "live".to_string(),
+            rtt_ms: Some(72.0),
+            jitter_ms: Some(4.0),
+            loss_rate: Some(0.05),
+            success_rate: Some(0.95),
+            pending_probes: 1,
+            last_success_age_ms: Some(250),
+            status: "fair".to_string(),
+            reason: "Tunnel heartbeat is fair.".to_string(),
+        };
+
+        let json = serde_json::to_value(status).unwrap();
+
+        assert_eq!(json["rtt_ms"], 72.0);
+        assert_eq!(json["jitter_ms"], 4.0);
+        assert_eq!(json["loss_rate"], 0.05);
+        assert_eq!(json["success_rate"], 0.95);
+        assert_eq!(json["pending_probes"], 1);
+        assert_eq!(json["last_success_age_ms"], 250);
+        assert_eq!(json["status"], "fair");
+    }
 }

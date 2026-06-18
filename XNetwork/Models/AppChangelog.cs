@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.57";
+    public const string CurrentVersion = "xbond-2026.06.58";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Moved dashboard health to tunnel telemetry.",
+            Changes =
+            [
+                "The dashboard top connection card now uses aggregate XBond tunnel heartbeat RTT and loss when available instead of worst active physical-path health.",
+                "Adapter cards still show per-path RTT and loss so degraded backups remain visible without automatically downgrading the top tunnel status.",
+                "Older runtime status without tunnel health still falls back to the previous path-derived behavior."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.57",
             Date = "2026-06-18",
             Summary = "Simplified dashboard throughput labels.",
             Changes =

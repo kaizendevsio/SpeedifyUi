@@ -1066,7 +1066,10 @@ mod tests {
         let expanded = expand_schedule_for_recovery(&base, &roles, config);
 
         assert_eq!(expanded.duplicate_path_ids.len(), 1);
-        assert_ne!(expanded.duplicate_path_ids[0], expanded.anchor_path_id.unwrap());
+        assert_ne!(
+            expanded.duplicate_path_ids[0],
+            expanded.anchor_path_id.unwrap()
+        );
     }
 
     #[test]

@@ -123,6 +123,30 @@ public class XBondTunnelStatus
 
     [JsonPropertyName("message")]
     public string Message { get; set; } = "XBond tunnel is not reporting runtime status.";
+
+    [JsonPropertyName("rtt_ms")]
+    public double? RttMs { get; set; }
+
+    [JsonPropertyName("jitter_ms")]
+    public double? JitterMs { get; set; }
+
+    [JsonPropertyName("loss_rate")]
+    public double? LossRate { get; set; }
+
+    [JsonPropertyName("success_rate")]
+    public double? SuccessRate { get; set; }
+
+    [JsonPropertyName("pending_probes")]
+    public int PendingProbes { get; set; }
+
+    [JsonPropertyName("last_success_age_ms")]
+    public ulong? LastSuccessAgeMs { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "unknown";
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = "Tunnel health is unavailable.";
 }
 
 public class XBondFecStatus

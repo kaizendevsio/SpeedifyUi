@@ -447,6 +447,52 @@ struct TunnelPathRuntime {
 }
 
 #[derive(Debug, Default)]
+struct TunnelAggregateHealthRuntime {
+    health_sequence: u64,
+    pending_heartbeats: HashMap<u64, Instant>,
+    health_window: VecDeque<bool>,
+    rtt_samples_ms: VecDeque<f64>,
+    rtt_ms: Option<f64>,
+    jitter_ms: Option<f64>,
+    loss_rate: Option<f64>,
+    success_rate: Option<f64>,
+    last_success_at: Option<Instant>,
+}
+
+impl TunnelAggregateHealthRuntime {
+    fn to_status(&self) -> XBondTunnelHealthStatus {
+        let (status, reason) = classify_tunnel_health(self.rtt_ms, self.loss_rate);
+        XBondTunnelHealthStatus {
+            rtt_ms: self.rtt_ms,
+            jitter_ms: self.jitter_ms,
+            loss_rate: self.loss_rate,
+            success_rate: self.success_rate,
+            pending_probes: self.pending_heartbeats.len(),
+            last_success_age_ms: self.last_success_at.map(|last_success_at| {
+                Instant::now()
+                    .duration_since(last_success_at)
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64
+            }),
+            status,
+            reason,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct XBondTunnelHealthStatus {
+    rtt_ms: Option<f64>,
+    jitter_ms: Option<f64>,
+    loss_rate: Option<f64>,
+    success_rate: Option<f64>,
+    pending_probes: usize,
+    last_success_age_ms: Option<u64>,
+    status: String,
+    reason: String,
+}
+
+#[derive(Debug, Default)]
 struct TunnelCounters {
     data_packets_sent: u64,
     duplicate_packets_sent: u64,
@@ -1097,6 +1143,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     }
 
     let mut counters = TunnelCounters::default();
+    let mut aggregate_health = TunnelAggregateHealthRuntime::default();
     let mut pending_fec_source: Option<(u64, Arc<Vec<u8>>)> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
     let mut return_reorder = PacketReorderBuffer::new(8192, config.reorder_hold_ms * 1_000);
@@ -1125,6 +1172,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         effective_mode,
         effective_policy,
         &recovery_status,
+        &aggregate_health,
         active_override.as_ref(),
         role_state.schedule_change_count,
         &return_reorder,
@@ -1209,6 +1257,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
+                send_tunnel_aggregate_heartbeat(
+                    &config,
+                    &mut aggregate_health,
+                    &mut path_runtime,
+                    &sockets,
+                    &transmission_plans,
+                    &key,
+                    session_id,
+                    options.json_events,
+                ).await?;
                 repair.cache_entries = resend_cache.len();
                 let control_signature =
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
@@ -1241,6 +1299,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_mode,
                     effective_policy,
                     &recovery_status,
+                    &aggregate_health,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
@@ -1334,6 +1393,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_mode,
                     effective_policy,
                     &recovery_status,
+                    &aggregate_health,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     &return_reorder,
@@ -1587,6 +1647,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     continue;
                 }
                 if is_expected_ack(&inbound.frame, session_id, inbound.frame.header.sequence) {
+                    let is_aggregate_ack = record_aggregate_tunnel_heartbeat_ack(
+                        &mut aggregate_health,
+                        &inbound.frame,
+                    );
                     record_tunnel_heartbeat_ack(
                         &mut path_runtime,
                         inbound.path_id,
@@ -1596,7 +1660,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         println!(
                             "{}",
                             serde_json::json!({
-                                "event": "health-heartbeat-ack",
+                                "event": if is_aggregate_ack { "tunnel-health-heartbeat-ack" } else { "health-heartbeat-ack" },
                                 "path_id": inbound.path_id,
                                 "sequence": inbound.frame.header.sequence,
                             })
@@ -2113,6 +2177,7 @@ fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
 const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
+const AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX: u64 = 0xFFFFu64 << 48;
 const REPAIR_CACHE_CAPACITY: usize = 4096;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
@@ -2423,6 +2488,101 @@ async fn send_tunnel_heartbeats(
     Ok(())
 }
 
+async fn send_tunnel_aggregate_heartbeat(
+    config: &ClientConfig,
+    aggregate_health: &mut TunnelAggregateHealthRuntime,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    transmission_plans: &PacketTransmissionPlans,
+    key: &XBondKey,
+    session_id: u64,
+    json_events: bool,
+) -> Result<()> {
+    let timeout = tunnel_heartbeat_timeout(config);
+    expire_aggregate_tunnel_heartbeats(aggregate_health, timeout);
+
+    if aggregate_health.pending_heartbeats.len() >= 3 {
+        return Ok(());
+    }
+
+    let targets = aggregate_heartbeat_targets(transmission_plans, sockets);
+    if targets.is_empty() {
+        return Ok(());
+    }
+
+    aggregate_health.health_sequence =
+        (aggregate_health.health_sequence.saturating_add(1)) & HEARTBEAT_SEQUENCE_MASK;
+    let sequence = AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX | aggregate_health.health_sequence;
+    let send_micros = now_micros();
+    let mut sent_any = false;
+
+    for path_id in targets {
+        let Some(socket) = sockets.get(&path_id) else {
+            continue;
+        };
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Heartbeat,
+                session_id,
+                sequence,
+                send_micros,
+                path_id,
+            ),
+            b"tunnel-health".to_vec(),
+        );
+        let encoded = frame.encode_sealed(key)?;
+        match socket.send(&encoded).await {
+            Ok(_) => {
+                sent_any = true;
+            }
+            Err(error) => {
+                record_tunnel_send_failure(path_runtime, path_id);
+                if json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "tunnel-health-heartbeat-send-failed",
+                            "path_id": path_id,
+                            "error": error.to_string(),
+                        })
+                    );
+                }
+            }
+        }
+    }
+
+    if sent_any {
+        aggregate_health
+            .pending_heartbeats
+            .insert(sequence, Instant::now());
+    } else {
+        record_aggregate_tunnel_health_sample(aggregate_health, false, None);
+    }
+
+    Ok(())
+}
+
+fn aggregate_heartbeat_targets(
+    transmission_plans: &PacketTransmissionPlans,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+) -> Vec<u16> {
+    let mut targets = Vec::new();
+    for transmission in &transmission_plans.small {
+        if !matches!(
+            transmission.packet_kind,
+            PacketKind::Data | PacketKind::Duplicate
+        ) {
+            continue;
+        }
+
+        if sockets.contains_key(&transmission.path_id) && !targets.contains(&transmission.path_id) {
+            targets.push(transmission.path_id);
+        }
+    }
+
+    targets
+}
+
 fn tunnel_heartbeat_timeout(config: &ClientConfig) -> Duration {
     Duration::from_millis(config.realtime_deadline_ms.saturating_mul(3).max(1_500))
 }
@@ -2444,6 +2604,56 @@ fn expire_tunnel_heartbeats(runtime: &mut TunnelPathRuntime, timeout: Duration) 
     }
 }
 
+fn expire_aggregate_tunnel_heartbeats(
+    aggregate_health: &mut TunnelAggregateHealthRuntime,
+    timeout: Duration,
+) {
+    let now = Instant::now();
+    let expired = aggregate_health
+        .pending_heartbeats
+        .iter()
+        .filter_map(|(sequence, sent_at)| {
+            (now.duration_since(*sent_at) >= timeout).then_some(*sequence)
+        })
+        .collect::<Vec<_>>();
+
+    for sequence in expired {
+        if aggregate_health
+            .pending_heartbeats
+            .remove(&sequence)
+            .is_some()
+        {
+            record_aggregate_tunnel_health_sample(aggregate_health, false, None);
+        }
+    }
+}
+
+fn record_aggregate_tunnel_heartbeat_ack(
+    aggregate_health: &mut TunnelAggregateHealthRuntime,
+    frame: &XBondFrame,
+) -> bool {
+    if !is_aggregate_heartbeat_sequence(frame.header.sequence) {
+        return false;
+    }
+
+    if aggregate_health
+        .pending_heartbeats
+        .remove(&frame.header.sequence)
+        .is_none()
+    {
+        return false;
+    }
+
+    let rtt_ms = now_micros().saturating_sub(frame.header.send_micros) as f64 / 1_000.0;
+    aggregate_health.last_success_at = Some(Instant::now());
+    record_aggregate_tunnel_health_sample(aggregate_health, true, Some(rtt_ms));
+    true
+}
+
+fn is_aggregate_heartbeat_sequence(sequence: u64) -> bool {
+    sequence & !HEARTBEAT_SEQUENCE_MASK == AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX
+}
+
 fn record_tunnel_heartbeat_ack(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     path_id: u16,
@@ -2462,6 +2672,103 @@ fn record_tunnel_heartbeat_ack(
     runtime.send_failures = 0;
     runtime.last_ack_at = Some(Instant::now());
     record_tunnel_health_sample(runtime, true, Some(rtt_ms));
+}
+
+fn record_aggregate_tunnel_health_sample(
+    aggregate_health: &mut TunnelAggregateHealthRuntime,
+    delivered: bool,
+    rtt_ms: Option<f64>,
+) {
+    if aggregate_health.health_window.len() == TUNNEL_HEALTH_WINDOW {
+        aggregate_health.health_window.pop_front();
+    }
+    aggregate_health.health_window.push_back(delivered);
+
+    if let Some(rtt_ms) = rtt_ms.filter(|value| value.is_finite()) {
+        if aggregate_health.rtt_samples_ms.len() == TUNNEL_HEALTH_WINDOW {
+            aggregate_health.rtt_samples_ms.pop_front();
+        }
+        aggregate_health.rtt_samples_ms.push_back(rtt_ms);
+    }
+
+    refresh_aggregate_tunnel_health(aggregate_health);
+}
+
+fn refresh_aggregate_tunnel_health(aggregate_health: &mut TunnelAggregateHealthRuntime) {
+    if aggregate_health.health_window.is_empty() {
+        aggregate_health.loss_rate = None;
+        aggregate_health.success_rate = None;
+    } else {
+        let delivered = aggregate_health
+            .health_window
+            .iter()
+            .filter(|delivered| **delivered)
+            .count();
+        aggregate_health.success_rate =
+            Some(delivered as f64 / aggregate_health.health_window.len() as f64);
+        aggregate_health.loss_rate = Some(1.0 - aggregate_health.success_rate.unwrap_or_default());
+    }
+
+    if aggregate_health.rtt_samples_ms.is_empty() {
+        aggregate_health.rtt_ms = None;
+        aggregate_health.jitter_ms = None;
+        return;
+    }
+
+    let average = aggregate_health.rtt_samples_ms.iter().sum::<f64>()
+        / aggregate_health.rtt_samples_ms.len() as f64;
+    aggregate_health.rtt_ms = Some(average);
+
+    aggregate_health.jitter_ms = if aggregate_health.rtt_samples_ms.len() < 2 {
+        Some(0.0)
+    } else {
+        let deltas = aggregate_health
+            .rtt_samples_ms
+            .iter()
+            .zip(aggregate_health.rtt_samples_ms.iter().skip(1))
+            .map(|(left, right)| (right - left).abs())
+            .collect::<Vec<_>>();
+        Some(deltas.iter().sum::<f64>() / deltas.len() as f64)
+    };
+}
+
+fn classify_tunnel_health(rtt_ms: Option<f64>, loss_rate: Option<f64>) -> (String, String) {
+    if rtt_ms.is_none() && loss_rate.is_none() {
+        return (
+            "unknown".to_string(),
+            "Tunnel health has not collected enough samples yet.".to_string(),
+        );
+    }
+
+    let rtt = rtt_ms.unwrap_or_default();
+    let loss = loss_rate.unwrap_or_default().clamp(0.0, 1.0);
+    let loss_percent = loss * 100.0;
+
+    if loss >= 0.25 || rtt >= 300.0 {
+        return (
+            "critical".to_string(),
+            format!("Tunnel heartbeat is critical: {loss_percent:.1}% loss, {rtt:.0} ms RTT."),
+        );
+    }
+
+    if loss >= 0.10 || rtt >= 180.0 {
+        return (
+            "poor".to_string(),
+            format!("Tunnel heartbeat is poor: {loss_percent:.1}% loss, {rtt:.0} ms RTT."),
+        );
+    }
+
+    if loss >= 0.02 || rtt >= 120.0 {
+        return (
+            "fair".to_string(),
+            format!("Tunnel heartbeat is fair: {loss_percent:.1}% loss, {rtt:.0} ms RTT."),
+        );
+    }
+
+    (
+        "good".to_string(),
+        format!("Tunnel heartbeat is healthy: {loss_percent:.1}% loss, {rtt:.0} ms RTT."),
+    )
 }
 
 fn record_tunnel_health_sample(
@@ -2570,6 +2877,7 @@ fn write_tunnel_runtime_status(
     effective_mode: ScheduleMode,
     effective_policy: RedundancyPolicy,
     recovery_status: &RecoveryStatus,
+    aggregate_health: &TunnelAggregateHealthRuntime,
     active_override: Option<&ActiveScheduleOverride>,
     schedule_change_count: u64,
     return_reorder: &PacketReorderBuffer,
@@ -2582,6 +2890,7 @@ fn write_tunnel_runtime_status(
         .cloned()
         .map(|scored_path| scored_path.path)
         .collect();
+    let tunnel_health = aggregate_health.to_status();
 
     write_runtime_status(
         config,
@@ -2595,6 +2904,14 @@ fn write_tunnel_runtime_status(
                 device_name: Some(tun.name().to_string()),
                 mtu: Some(tun_mtu),
                 message: "Bidirectional XBond tunnel is open.".to_string(),
+                rtt_ms: tunnel_health.rtt_ms,
+                jitter_ms: tunnel_health.jitter_ms,
+                loss_rate: tunnel_health.loss_rate,
+                success_rate: tunnel_health.success_rate,
+                pending_probes: tunnel_health.pending_probes,
+                last_success_age_ms: tunnel_health.last_success_age_ms,
+                status: tunnel_health.status,
+                reason: tunnel_health.reason,
             },
             anchor_path_id: schedule.anchor_path_id,
             schedule: Some(schedule.clone()),
@@ -3581,6 +3898,76 @@ mod tests {
         assert_eq!(runtime.rtt_ms, Some(55.0));
         assert_eq!(runtime.jitter_ms, Some(30.0));
         assert!((runtime.loss_rate - (1.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggregate_tunnel_health_first_ack_wins_and_ignores_duplicates() {
+        let mut runtime = TunnelAggregateHealthRuntime::default();
+        let sequence = AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX | 42;
+        runtime
+            .pending_heartbeats
+            .insert(sequence, Instant::now() - Duration::from_millis(20));
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Heartbeat,
+                7,
+                sequence,
+                now_micros().saturating_sub(20_000),
+                1,
+            ),
+            b"ack".to_vec(),
+        );
+
+        assert!(record_aggregate_tunnel_heartbeat_ack(&mut runtime, &frame));
+        assert!(!record_aggregate_tunnel_heartbeat_ack(&mut runtime, &frame));
+        assert_eq!(
+            runtime.health_window.iter().filter(|value| **value).count(),
+            1
+        );
+        assert_eq!(runtime.loss_rate, Some(0.0));
+        assert_eq!(runtime.success_rate, Some(1.0));
+        assert!(runtime.last_success_at.is_some());
+        assert!(runtime.rtt_ms.is_some_and(|value| value >= 0.0));
+    }
+
+    #[test]
+    fn aggregate_tunnel_health_timeout_records_loss() {
+        let mut runtime = TunnelAggregateHealthRuntime::default();
+        let sequence = AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX | 7;
+        runtime
+            .pending_heartbeats
+            .insert(sequence, Instant::now() - Duration::from_secs(10));
+
+        expire_aggregate_tunnel_heartbeats(&mut runtime, Duration::from_millis(1));
+
+        assert!(runtime.pending_heartbeats.is_empty());
+        assert_eq!(runtime.loss_rate, Some(1.0));
+        assert_eq!(runtime.success_rate, Some(0.0));
+    }
+
+    #[test]
+    fn aggregate_tunnel_health_tracks_rtt_jitter_and_status() {
+        let mut runtime = TunnelAggregateHealthRuntime::default();
+
+        record_aggregate_tunnel_health_sample(&mut runtime, true, Some(50.0));
+        record_aggregate_tunnel_health_sample(&mut runtime, true, Some(80.0));
+        record_aggregate_tunnel_health_sample(&mut runtime, false, None);
+
+        assert_eq!(runtime.rtt_ms, Some(65.0));
+        assert_eq!(runtime.jitter_ms, Some(30.0));
+        assert!((runtime.loss_rate.unwrap() - (1.0 / 3.0)).abs() < f64::EPSILON);
+        assert_eq!(runtime.to_status().status, "critical");
+    }
+
+    #[test]
+    fn tunnel_health_classifier_uses_expected_thresholds() {
+        assert_eq!(classify_tunnel_health(Some(80.0), Some(0.0)).0, "good");
+        assert_eq!(classify_tunnel_health(Some(120.0), Some(0.0)).0, "fair");
+        assert_eq!(classify_tunnel_health(Some(80.0), Some(0.02)).0, "fair");
+        assert_eq!(classify_tunnel_health(Some(180.0), Some(0.0)).0, "poor");
+        assert_eq!(classify_tunnel_health(Some(80.0), Some(0.10)).0, "poor");
+        assert_eq!(classify_tunnel_health(Some(300.0), Some(0.0)).0, "critical");
+        assert_eq!(classify_tunnel_health(None, Some(0.25)).0, "critical");
     }
 
     #[test]

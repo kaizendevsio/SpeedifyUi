@@ -55,6 +55,63 @@ public sealed class XBondStatsSnapshot
         .DefaultIfEmpty(0)
         .Max();
 
+    public bool HasTunnelHealth => RawStatus.Tunnel.RttMs.HasValue || RawStatus.Tunnel.LossRate.HasValue;
+
+    public double TunnelRttMs => RawStatus.Tunnel.RttMs.GetValueOrDefault();
+
+    public double TunnelLossPercent => RawStatus.Tunnel.LossRate.HasValue
+        ? Math.Clamp(RawStatus.Tunnel.LossRate.Value, 0, 1) * 100
+        : 0;
+
+    public double EffectiveRttMs => HasTunnelHealth ? TunnelRttMs : AverageRttMs;
+
+    public double EffectiveLossPercent => HasTunnelHealth ? TunnelLossPercent : MaxLossPercent;
+
+    public string HealthReason => HasTunnelHealth ? RawStatus.Tunnel.Reason : "path-derived fallback";
+
+    public string ConnectionTitle
+    {
+        get
+        {
+            if (HasError)
+            {
+                return "Poor Connection";
+            }
+
+            if (!IsRunning)
+            {
+                return "Disconnected";
+            }
+
+            if (ActivePaths.Count == 0)
+            {
+                return "Partial Connection";
+            }
+
+            var loss = EffectiveLossPercent;
+            var rtt = EffectiveRttMs;
+
+            if (loss >= 25 || rtt >= 300)
+            {
+                return "Critical Connection";
+            }
+
+            if (loss >= 10 || rtt >= 180)
+            {
+                return "Poor Connection";
+            }
+
+            if (loss >= 2 || rtt >= 120)
+            {
+                return "Fair Connection";
+            }
+
+            return "Good Connection";
+        }
+    }
+
+    public bool IsStable => IsRunning && EffectiveLossPercent < 10 && EffectiveRttMs < 180;
+
     public ulong DataPacketsSent => RawStatus.DataPacketsSent;
 
     public ulong DuplicatePacketsSent => RawStatus.DuplicatePacketsSent;
