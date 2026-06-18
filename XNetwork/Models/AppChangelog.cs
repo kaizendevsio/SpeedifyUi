@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.53";
+    public const string CurrentVersion = "xbond-2026.06.54";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Smoothed adapter status color changes.",
+            Changes =
+            [
+                "Dashboard adapter status dots now fade their color and glow when path state changes instead of switching instantly.",
+                "The status dot button also transitions its background so connected, warning, and disconnected changes feel less abrupt."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.53",
             Date = "2026-06-18",
             Summary = "Fixed dashboard sparkline after tab navigation.",
             Changes =

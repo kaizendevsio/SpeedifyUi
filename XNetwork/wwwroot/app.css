@@ -43,6 +43,7 @@ body {
     background: rgba(15, 23, 42, 0.24);
     color: inherit;
     cursor: help;
+    transition: background-color 240ms ease, transform 180ms ease;
 }
 
 .adapter-status-dot-button:focus-visible {
@@ -56,6 +57,12 @@ body {
     height: 0.62rem;
     border-radius: 999px;
     box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.75);
+    transition:
+        background-color 360ms ease,
+        box-shadow 360ms ease,
+        opacity 240ms ease,
+        transform 240ms ease;
+    will-change: background-color, box-shadow;
 }
 
 .adapter-status-dot-connected {
