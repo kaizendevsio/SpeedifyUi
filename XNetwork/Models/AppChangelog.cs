@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.62";
+    public const string CurrentVersion = "xbond-2026.06.63";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Switched public speed tests to Ookla and surfaced loss protection.",
+            Changes =
+            [
+                "Public speed tests now call the official Ookla Speedtest CLI and parse its JSON result format.",
+                "The dashboard connection card can show a Protecting from loss badge when active path loss is being absorbed by stable XBond tunnel health.",
+                "The XBond speed test panel now labels the public test as the official Ookla speedtest."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.62",
             Date = "2026-06-19",
             Summary = "Simplified dashboard motion and health tiers.",
             Changes =

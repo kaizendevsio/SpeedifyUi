@@ -249,6 +249,8 @@ public class XBondStatusServiceTests
         Assert.Equal(0, snapshot.EffectiveLossPercent);
         Assert.Equal(235, snapshot.AverageRttMs);
         Assert.Equal(40, snapshot.MaxLossPercent);
+        Assert.True(snapshot.IsProtectingFromLoss);
+        Assert.Contains("40", snapshot.ProtectionReason);
     }
 
     [Fact]
@@ -293,6 +295,7 @@ public class XBondStatusServiceTests
         Assert.False(snapshot.HasTunnelHealth);
         Assert.Equal("Initializing Connection", snapshot.ConnectionTitle);
         Assert.False(snapshot.IsStable);
+        Assert.False(snapshot.IsProtectingFromLoss);
         Assert.Equal("Tunnel health is unavailable.", snapshot.HealthReason);
         Assert.Equal(0, snapshot.EffectiveRttMs);
         Assert.Equal(0, snapshot.EffectiveLossPercent);

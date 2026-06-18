@@ -128,6 +128,8 @@
             IsRecoveryActive="@(_snapshot?.IsRecoveryActive == true)"
             RecoveryHoldMs="@(_snapshot?.RecoveryHoldMs ?? 0)"
             RecoveryReason="@(_snapshot?.RecoveryReason ?? string.Empty)"
+            IsProtectingFromLoss="@(_snapshot?.IsProtectingFromLoss == true)"
+            ProtectionReason="@(_snapshot?.ProtectionReason ?? string.Empty)"
             ShowTrafficDetailsHint="false" />
 
         @if (_starlink.IsAvailable)

@@ -69,6 +69,18 @@ public sealed class XBondStatsSnapshot
 
     public string HealthReason => RawStatus.Tunnel.Reason;
 
+    public bool IsProtectingFromLoss =>
+        IsRunning &&
+        HasTunnelHealth &&
+        ActivePaths.Count > 1 &&
+        MaxLossPercent >= 2 &&
+        EffectiveLossPercent < 2 &&
+        EffectiveRttMs < 180;
+
+    public string ProtectionReason => IsProtectingFromLoss
+        ? $"Active paths report up to {MaxLossPercent:0.#}% loss while the XBond tunnel is holding at {EffectiveLossPercent:0.#}% loss."
+        : string.Empty;
+
     public string ConnectionTitle
     {
         get

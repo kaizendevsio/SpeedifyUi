@@ -10,6 +10,14 @@ public sealed class XBondSpeedTestService(
     XBondSettings settings,
     XBondStatusService statusService)
 {
+    private static readonly string[] OfficialOoklaSpeedTestArguments =
+    [
+        "--accept-license",
+        "--accept-gdpr",
+        "--progress=no",
+        "--format=json"
+    ];
+
     private static readonly JsonSerializerOptions ArtifactJsonOptions = new()
     {
         WriteIndented = true
@@ -443,10 +451,16 @@ public sealed class XBondSpeedTestService(
 
     public static void ApplySpeedTestJson(XBondSpeedTestResult result, string output)
     {
-        var json = ExtractJsonObject(output);
+        var json = ExtractSpeedTestJsonObject(output);
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
 
+        if (TryApplyOfficialOoklaSpeedTestJson(result, root))
+        {
+            return;
+        }
+
+        // Legacy speedtest-cli fallback is kept only so old saved diagnostics remain readable.
         result.PublicDownloadMbps = TryGetDouble(root, "download") is { } downloadBps
             ? downloadBps / 1_000_000d
             : null;
@@ -469,6 +483,54 @@ public sealed class XBondSpeedTestService(
             result.ClientIsp = TryGetString(client, "isp") ?? "";
             result.ClientIp = TryGetString(client, "ip") ?? "";
         }
+
+        if (!result.PublicDownloadMbps.HasValue &&
+            !result.PublicUploadMbps.HasValue &&
+            TryGetString(root, "message") is { Length: > 0 } message)
+        {
+            throw new JsonException(message);
+        }
+    }
+
+    private static bool TryApplyOfficialOoklaSpeedTestJson(XBondSpeedTestResult result, JsonElement root)
+    {
+        if (!root.TryGetProperty("download", out var download) ||
+            !download.TryGetProperty("bandwidth", out _) ||
+            !root.TryGetProperty("upload", out var upload) ||
+            !upload.TryGetProperty("bandwidth", out _))
+        {
+            return false;
+        }
+
+        result.PublicDownloadMbps = TryGetDouble(download, "bandwidth") is { } downloadBytesPerSecond
+            ? downloadBytesPerSecond * 8 / 1_000_000d
+            : null;
+        result.PublicUploadMbps = TryGetDouble(upload, "bandwidth") is { } uploadBytesPerSecond
+            ? uploadBytesPerSecond * 8 / 1_000_000d
+            : null;
+
+        if (root.TryGetProperty("ping", out var ping))
+        {
+            result.PublicPingMs = TryGetDouble(ping, "latency");
+        }
+
+        if (root.TryGetProperty("server", out var server))
+        {
+            var name = TryGetString(server, "name");
+            var host = TryGetString(server, "host");
+            var location = TryGetString(server, "location");
+            var country = TryGetString(server, "country");
+            result.PublicServerName = string.Join(" ", new[] { name, host }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            result.PublicServerLocation = string.Join(", ", new[] { location, country }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        }
+
+        result.ClientIsp = TryGetString(root, "isp") ?? "";
+        if (root.TryGetProperty("interface", out var networkInterface))
+        {
+            result.ClientIp = TryGetString(networkInterface, "externalIp") ?? "";
+        }
+
+        return true;
     }
 
     public static double? ParseIperfBitsPerSecond(string output, string sumProperty)
@@ -598,19 +660,14 @@ public sealed class XBondSpeedTestService(
         {
             var speedTest = await RunCommandAsync(
                 settings.SpeedTestCommandPath,
-                [
-                    "--secure",
-                    "--json",
-                    "--timeout",
-                    Math.Clamp(settings.SpeedTestHttpTimeoutSeconds, 5, 60).ToString(CultureInfo.InvariantCulture)
-                ],
+                OfficialOoklaSpeedTestArguments,
                 timeoutSeconds: Math.Clamp(settings.SpeedTestCommandTimeoutSeconds, 30, 600),
                 cancellationToken).ConfigureAwait(false);
 
             if (speedTest.ExitCode != 0)
             {
                 run.Error = string.IsNullOrWhiteSpace(speedTest.Output)
-                    ? $"{settings.SpeedTestCommandPath} exited with code {speedTest.ExitCode}."
+                    ? $"Official Ookla Speedtest CLI exited with code {speedTest.ExitCode}."
                     : speedTest.Output;
                 return run;
             }
@@ -622,7 +679,7 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            run.Error = $"Public speedtest failed: {ex.Message}";
+            run.Error = $"Official Ookla public speedtest failed: {ex.Message}";
         }
 
         return run;
@@ -1127,19 +1184,14 @@ public sealed class XBondSpeedTestService(
         {
             var speedTest = await RunCommandAsync(
                 settings.SpeedTestCommandPath,
-                [
-                    "--secure",
-                    "--json",
-                    "--timeout",
-                    Math.Clamp(settings.SpeedTestHttpTimeoutSeconds, 5, 60).ToString()
-                ],
+                OfficialOoklaSpeedTestArguments,
                 timeoutSeconds: Math.Clamp(settings.SpeedTestCommandTimeoutSeconds, 30, 600),
                 cancellationToken).ConfigureAwait(false);
 
             if (speedTest.ExitCode != 0)
             {
                 result.PublicTestError = string.IsNullOrWhiteSpace(speedTest.Output)
-                    ? $"{settings.SpeedTestCommandPath} exited with code {speedTest.ExitCode}."
+                    ? $"Official Ookla Speedtest CLI exited with code {speedTest.ExitCode}."
                     : speedTest.Output;
                 return;
             }
@@ -1148,20 +1200,109 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            result.PublicTestError = $"Public speedtest failed: {ex.Message}";
+            result.PublicTestError = $"Official Ookla public speedtest failed: {ex.Message}";
         }
     }
 
     private static string ExtractJsonObject(string output)
     {
-        var start = output.IndexOf('{');
-        var end = output.LastIndexOf('}');
-        if (start < 0 || end <= start)
+        return ExtractJsonObjects(output).FirstOrDefault()
+            ?? throw new JsonException("Speed test did not return JSON output.");
+    }
+
+    private static string ExtractSpeedTestJsonObject(string output)
+    {
+        var objects = ExtractJsonObjects(output).ToArray();
+        if (objects.Length == 0)
         {
             throw new JsonException("Speed test did not return JSON output.");
         }
 
-        return output[start..(end + 1)];
+        foreach (var json in objects)
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (TryGetString(root, "type") is { } type &&
+                string.Equals(type, "result", StringComparison.OrdinalIgnoreCase))
+            {
+                return json;
+            }
+        }
+
+        return objects[^1];
+    }
+
+    private static IEnumerable<string> ExtractJsonObjects(string output)
+    {
+        var start = -1;
+        var depth = 0;
+        var inString = false;
+        var escaping = false;
+
+        for (var index = 0; index < output.Length; index++)
+        {
+            var character = output[index];
+
+            if (start < 0)
+            {
+                if (character != '{')
+                {
+                    continue;
+                }
+
+                start = index;
+                depth = 1;
+                continue;
+            }
+
+            if (inString)
+            {
+                if (escaping)
+                {
+                    escaping = false;
+                    continue;
+                }
+
+                if (character == '\\')
+                {
+                    escaping = true;
+                    continue;
+                }
+
+                if (character == '"')
+                {
+                    inString = false;
+                }
+
+                continue;
+            }
+
+            if (character == '"')
+            {
+                inString = true;
+                continue;
+            }
+
+            if (character == '{')
+            {
+                depth++;
+                continue;
+            }
+
+            if (character != '}')
+            {
+                continue;
+            }
+
+            depth--;
+            if (depth != 0)
+            {
+                continue;
+            }
+
+            yield return output[start..(index + 1)];
+            start = -1;
+        }
     }
 
     private static double? TryGetDouble(JsonElement element, string propertyName)

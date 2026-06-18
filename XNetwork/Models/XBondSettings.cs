@@ -68,7 +68,7 @@ public class XBondSettings
 
     public int ScopedRouteCommandTimeoutSeconds { get; set; } = 45;
 
-    public string SpeedTestCommandPath { get; set; } = "speedtest-cli";
+    public string SpeedTestCommandPath { get; set; } = "speedtest";
 
     public int SpeedTestCommandTimeoutSeconds { get; set; } = 180;
 
