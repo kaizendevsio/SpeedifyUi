@@ -7,6 +7,7 @@ const DASHBOARD_DATA_POINTS = 30;
 const LIVE_CHART_ANIMATION_DURATION = 240;
 const ACTUAL_CONNECTION_ID = '__actual_connection';
 const ACTUAL_CONNECTION_COLOR = '#34d399';
+const DASHBOARD_CHART_PREFIX = 'dashboard-chart-';
 
 // Dark theme colors
 const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
@@ -27,7 +28,7 @@ export function setMaxDataPoints(value) {
     maxDataPoints = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : 30;
 
     for (const chartId in charts) {
-        if (chartId === 'dashboardChart') {
+        if (isDashboardChartId(chartId)) {
             continue;
         }
 
@@ -66,6 +67,10 @@ function formatValueForAxis(value, yAxisLabel) {
     }
 
     return value.toString();
+}
+
+function isDashboardChartId(chartId) {
+    return chartId === 'dashboardChart' || String(chartId || '').startsWith(DASHBOARD_CHART_PREFIX);
 }
 
 // Function to initialize a new chart or update it with initial datasets
@@ -370,11 +375,8 @@ export function initializeDashboardSparkline(chartId) {
 
     // Generate initial dummy data for sparkline
     const labels = [];
-    const data = [];
-    const now = Date.now();
     for (let i = DASHBOARD_DATA_POINTS - 1; i >= 0; i--) {
         labels.push('');
-        data.push(Math.random() * 100 + 20); // Random data between 20-120
     }
 
     try {
@@ -382,17 +384,47 @@ export function initializeDashboardSparkline(chartId) {
             type: 'line',
             data: {
                 labels: labels,
-                datasets: [{
-                    data: data,
-                    borderColor: '#22d3ee', // cyan-400
-                    backgroundColor: 'rgba(34, 211, 238, 0.1)',
-                    tension: 0.4, // Smooth bezier curves
-                    cubicInterpolationMode: 'monotone', // Smooth interpolation
-                    fill: true,
-                    borderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 0
-                }]
+                datasets: [
+                    {
+                        label: 'Tunnel download',
+                        data: Array(DASHBOARD_DATA_POINTS).fill(null),
+                        borderColor: '#22d3ee', // cyan-400
+                        backgroundColor: 'rgba(34, 211, 238, 0.1)',
+                        tension: 0.4, // Smooth bezier curves
+                        cubicInterpolationMode: 'monotone', // Smooth interpolation
+                        fill: true,
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        pointHoverRadius: 0,
+                        spanGaps: true
+                    },
+                    {
+                        label: 'Anchor download',
+                        data: Array(DASHBOARD_DATA_POINTS).fill(null),
+                        borderColor: 'rgba(52, 211, 153, 0.42)', // emerald-400
+                        backgroundColor: 'rgba(52, 211, 153, 0)',
+                        tension: 0.4,
+                        cubicInterpolationMode: 'monotone',
+                        fill: false,
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        pointHoverRadius: 0,
+                        spanGaps: true
+                    },
+                    {
+                        label: 'Backup download',
+                        data: Array(DASHBOARD_DATA_POINTS).fill(null),
+                        borderColor: 'rgba(244, 114, 182, 0.38)', // pink-400
+                        backgroundColor: 'rgba(244, 114, 182, 0)',
+                        tension: 0.4,
+                        cubicInterpolationMode: 'monotone',
+                        fill: false,
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        pointHoverRadius: 0,
+                        spanGaps: true
+                    }
+                ]
             },
             options: {
                 responsive: true,
@@ -433,18 +465,17 @@ export function initializeDashboardSparkline(chartId) {
 }
 
 // Function to update dashboard sparkline with new data point
-export function updateDashboardSparkline(chartId, value) {
+export function updateDashboardSparkline(chartId, value, anchorValue = null, backupValue = null) {
     const chart = charts[chartId];
-    if (!chart) {
+    const canvas = document.getElementById(chartId);
+    if (!chart || !canvas || chart.canvas !== canvas) {
         console.warn(`Chart with ID ${chartId} not found for updating sparkline.`);
-        return;
+        return false;
     }
 
-    // Add new data point and remove oldest
-    chart.data.datasets[0].data.push(value);
-    if (chart.data.datasets[0].data.length > DASHBOARD_DATA_POINTS) {
-        chart.data.datasets[0].data.shift();
-    }
+    pushDashboardValue(chart.data.datasets[0], value);
+    pushDashboardValue(chart.data.datasets[1], anchorValue);
+    pushDashboardValue(chart.data.datasets[2], backupValue);
 
     chart.data.labels.push('');
     if (chart.data.labels.length > DASHBOARD_DATA_POINTS) {
@@ -453,14 +484,28 @@ export function updateDashboardSparkline(chartId, value) {
 
     try {
         chart.update('none');
+        return true;
     } catch (error) {
         console.error(`Error updating sparkline ${chartId}:`, error);
+        return false;
+    }
+}
+
+function pushDashboardValue(dataset, value) {
+    const numericValue = Number(value);
+    dataset.data.push(Number.isFinite(numericValue) ? numericValue : null);
+    if (dataset.data.length > DASHBOARD_DATA_POINTS) {
+        dataset.data.shift();
     }
 }
 
 // Function to dispose all charts
 export function disposeAllCharts() {
     for (const chartId in charts) {
+        if (isDashboardChartId(chartId)) {
+            continue;
+        }
+
         disposeChart(chartId);
     }
     console.log("All charts disposed.");

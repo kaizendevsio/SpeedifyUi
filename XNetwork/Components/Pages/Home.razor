@@ -123,6 +123,8 @@
             Latency="@GetLatencyValue()"
             Download="@Math.Round(_snapshot.DownloadMbps, 1)"
             Upload="@Math.Round(_snapshot.UploadMbps, 1)"
+            AnchorDownload="@GetAnchorDownloadMbps()"
+            BackupDownload="@GetBackupDownloadMbps()"
             IsStable="@IsConnectionStable()"
             ShowTrafficDetailsHint="false" />
 
@@ -382,6 +384,18 @@
         }
 
         return (int)Math.Round(_snapshot.AverageRttMs);
+    }
+
+    private double? GetAnchorDownloadMbps()
+    {
+        var anchor = _snapshot?.ActivePaths.FirstOrDefault(path => path.IsAnchor);
+        return anchor?.DownloadMbps;
+    }
+
+    private double? GetBackupDownloadMbps()
+    {
+        var backup = _snapshot?.ActivePaths.FirstOrDefault(path => !path.IsAnchor);
+        return backup?.DownloadMbps;
     }
 
     private bool IsConnectionStable()

@@ -63,42 +63,38 @@
         </div>
     </div>
     <div class="w-full h-12">
-        <canvas id="dashboardChart"></canvas>
+        <canvas id="@_chartId"></canvas>
     </div>
 </div>
 
 @code {
+    private readonly string _chartId = $"dashboard-chart-{Guid.NewGuid():N}";
+
     [Parameter] public string ConnectionStatus { get; set; } = "Excellent Connection";
     [Parameter] public int Latency { get; set; } = 12;
     [Parameter] public double Download { get; set; } = 85.3;
     [Parameter] public double Upload { get; set; } = 15.9;
+    [Parameter] public double? AnchorDownload { get; set; }
+    [Parameter] public double? BackupDownload { get; set; }
     [Parameter] public bool IsStable { get; set; } = true;
     [Parameter] public bool ShowTrafficDetailsHint { get; set; }
     [Parameter] public EventCallback OnTrafficDetailsRequested { get; set; }
     
     private IJSObjectReference? _chartModule;
-    private bool _chartInitialized = false;
+    private bool _chartInitialized;
     private Timer? _chartUpdateTimer;
     private double _previousDownload = 0;
+    private double? _previousAnchorDownload;
+    private double? _previousBackupDownload;
     private int _sparklineUpdateInProgress;
+    private bool _disposed;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender && !_chartInitialized)
         {
-            try
-            {
-                _chartModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
-                await _chartModule.InvokeVoidAsync("initializeDashboardSparkline", "dashboardChart");
-                _chartInitialized = true;
-                
-                // Start timer to update sparkline every second
-                _chartUpdateTimer = new Timer(async _ => await UpdateSparkline(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ConnectionSummary: Error initializing chart: {ex.Message}");
-            }
+            await InitializeChartAsync();
+            _chartUpdateTimer = new Timer(async _ => await UpdateSparkline(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         }
     }
 
@@ -106,18 +102,69 @@
     {
         await base.OnParametersSetAsync();
         
-        // Update sparkline if download speed changed
-        if (_chartInitialized && Download != _previousDownload)
+        if (_chartInitialized && HasSparklineValuesChanged())
         {
-            _previousDownload = Download;
             await UpdateSparkline();
         }
-        
-        // Force re-render when connection status or stats change
-        await InvokeAsync(StateHasChanged);
+    }
+
+    private bool HasSparklineValuesChanged()
+    {
+        return Math.Abs(Download - _previousDownload) > 0.01 ||
+               HasNullableValueChanged(AnchorDownload, _previousAnchorDownload) ||
+               HasNullableValueChanged(BackupDownload, _previousBackupDownload);
+    }
+
+    private static bool HasNullableValueChanged(double? current, double? previous)
+    {
+        if (current.HasValue != previous.HasValue)
+        {
+            return true;
+        }
+
+        return current.HasValue && Math.Abs(current.Value - previous!.Value) > 0.01;
     }
 
     private async Task UpdateSparkline()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await InvokeAsync(UpdateSparklineCoreAsync);
+        }
+        catch (InvalidOperationException)
+        {
+            // The renderer can be unavailable during route-transition disposal.
+        }
+    }
+
+    private async Task InitializeChartAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _chartModule ??= await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/statisticsCharts.js");
+            _chartInitialized = await _chartModule.InvokeAsync<bool>("initializeDashboardSparkline", _chartId);
+            if (_chartInitialized)
+            {
+                await UpdateSparklineCoreAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ConnectionSummary: Error initializing chart: {ex.Message}");
+        }
+    }
+
+    private async Task UpdateSparklineCoreAsync()
     {
         if (_chartModule == null || !_chartInitialized)
         {
@@ -131,7 +178,23 @@
 
         try
         {
-            await _chartModule.InvokeVoidAsync("updateDashboardSparkline", "dashboardChart", Download);
+            var updated = await _chartModule.InvokeAsync<bool>(
+                "updateDashboardSparkline",
+                _chartId,
+                Download,
+                AnchorDownload,
+                BackupDownload);
+
+            if (!updated)
+            {
+                _chartInitialized = false;
+                await InitializeChartAsync();
+                return;
+            }
+
+            _previousDownload = Download;
+            _previousAnchorDownload = AnchorDownload;
+            _previousBackupDownload = BackupDownload;
         }
         catch (Exception ex)
         {
@@ -271,6 +334,8 @@
 
     public async ValueTask DisposeAsync()
     {
+        _disposed = true;
+
         if (_chartUpdateTimer != null)
         {
             await _chartUpdateTimer.DisposeAsync();
@@ -282,7 +347,7 @@
             {
                 if (_chartInitialized)
                 {
-                    await _chartModule.InvokeVoidAsync("disposeChart", "dashboardChart");
+                    await _chartModule.InvokeVoidAsync("disposeChart", _chartId);
                 }
                 await _chartModule.DisposeAsync();
             }

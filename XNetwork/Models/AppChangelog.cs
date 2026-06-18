@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.52";
+    public const string CurrentVersion = "xbond-2026.06.53";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Fixed dashboard sparkline after tab navigation.",
+            Changes =
+            [
+                "Dashboard summary charts now use per-instance chart IDs so delayed route-transition disposal cannot destroy the newly opened dashboard chart.",
+                "The dashboard sparkline now includes faint anchor and backup download lines beside the main tunnel download line."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.52",
             Date = "2026-06-18",
             Summary = "Explained XBond policy modes in Settings.",
             Changes =
