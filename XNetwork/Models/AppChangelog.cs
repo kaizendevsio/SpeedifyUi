@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.60";
+    public const string CurrentVersion = "xbond-2026.06.61";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Refined dashboard and settings motion.",
+            Changes =
+            [
+                "The dashboard XBond panel now hides the raw server endpoint and tunnel device while keeping policy and recovery context visible.",
+                "Settings sections now open as focused launchers instead of showing every control inline, and the on-board Wi-Fi connector is restored.",
+                "Dashboard cards, settings launchers, and page transitions now use softer rubber-style motion with tab-order-aware transition direction."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.60",
             Date = "2026-06-18",
             Summary = "Surfaced XBond recovery hold telemetry.",
             Changes =

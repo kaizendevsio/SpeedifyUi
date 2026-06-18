@@ -1,4 +1,5 @@
 @page "/settings"
+@using XNetwork.Components.Custom
 @using XNetwork.Models
 @using XNetwork.Services
 @implements IAsyncDisposable
@@ -14,10 +15,18 @@
 
 <PageTitle>Settings</PageTitle>
 
-<div class="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 pb-28 pt-4 md:px-6 md:pb-10">
-    <section>
-        <h1 class="text-2xl font-bold text-white">Settings</h1>
-        <p class="mt-1 text-sm text-slate-400">XBond runtime controls and router settings.</p>
+<div class="settings-page pb-28 md:pb-10">
+    <section class="settings-hero rubber-card">
+        <div>
+            <p class="settings-eyebrow">Control Center</p>
+            <h1 class="settings-title">Settings</h1>
+            <p class="settings-subtitle">Tune XBond, adapter membership, Wi-Fi, Cudy management, and router safeguards.</p>
+        </div>
+        <div class="settings-hero-badges">
+            <span class="settings-pill settings-pill-green">@ServiceStateLabel</span>
+            <span class="settings-pill settings-pill-blue">@FormatPolicy(_policy)</span>
+            <span class="settings-pill settings-pill-muted">@ConfiguredAdapterCount in XBond</span>
+        </div>
     </section>
 
     @if (!string.IsNullOrWhiteSpace(_message))
@@ -30,7 +39,10 @@
         <div class="rounded-lg border border-rose-500/25 bg-rose-500/10 p-3 text-sm text-rose-100">@_error</div>
     }
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+    <div class="settings-layout">
+        <div class="settings-accordion-stack">
+    <Accordion Title="XBond Tunnel" IsExpanded="_tunnelExpanded" OnToggle="(expanded) => _tunnelExpanded = expanded" BadgeText="@ServiceStateLabel">
+        <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">XBond Tunnel</h2>
@@ -60,9 +72,11 @@
                 Disable boot
             </button>
         </div>
-    </section>
+        </div>
+    </Accordion>
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+    <Accordion Title="XBond Policy" IsExpanded="_policyExpanded" OnToggle="(expanded) => _policyExpanded = expanded" BadgeText="@FormatPolicy(_policy)">
+        <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">XBond Policy</h2>
@@ -106,9 +120,11 @@
             </button>
             <p class="text-xs text-slate-500">@PolicySaveHint(_policy)</p>
         </div>
-    </section>
+        </div>
+    </Accordion>
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+    <Accordion Title="XBond Adapters" IsExpanded="_adaptersExpanded" OnToggle="(expanded) => _adaptersExpanded = expanded" BadgeText="@ConfiguredAdapterBadge">
+        <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">XBond Adapters</h2>
@@ -155,9 +171,135 @@
                 No connected ethernet or Wi-Fi adapters were discovered.
             </div>
         }
-    </section>
+        </div>
+    </Accordion>
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+    @if (OperatingSystem.IsLinux())
+    {
+        <Accordion Title="On-board Wi-Fi" IsExpanded="_wifiExpanded" OnToggle="(expanded) => _wifiExpanded = expanded" BadgeText="@GetWifiBadge()">
+            <div class="space-y-4 pt-2">
+                <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                            <div class="flex items-center gap-2 font-semibold text-white">
+                                <i class="fas fa-wifi text-cyan-300"></i>
+                                <span>@FormatWifiStatusTitle()</span>
+                            </div>
+                            <p class="mt-1 text-sm text-slate-400">@FormatWifiStatusDetail()</p>
+                        </div>
+                        <button type="button"
+                                class="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white disabled:opacity-50"
+                                disabled="@_isWifiBusy"
+                                @onclick="RefreshWifiStatusAsync">
+                            <i class="fas fa-sync @(_isWifiRefreshing ? "fa-spin" : "")"></i>
+                            Refresh
+                        </button>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(_wifiMessage))
+                {
+                    <div class="rounded-lg border border-cyan-500/25 bg-cyan-500/10 p-3 text-sm text-cyan-100">@_wifiMessage</div>
+                }
+
+                <div class="grid gap-4 md:grid-cols-2">
+                    <label class="block">
+                        <span class="text-sm font-medium text-white">Wi-Fi Interface</span>
+                        <input type="text"
+                               class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                               @bind="_wifiInterface" />
+                    </label>
+
+                    <label class="block">
+                        <span class="text-sm font-medium text-white">Selected Network</span>
+                        <input type="text"
+                               class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                               placeholder="Choose from scan or type SSID"
+                               @bind="_wifiSsid" />
+                    </label>
+                </div>
+
+                <div class="overflow-hidden rounded-lg border border-slate-800 bg-slate-950/50">
+                    <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                        <div>
+                            <h4 class="text-sm font-semibold text-white">Nearby Wi-Fi</h4>
+                            <p class="text-xs text-slate-500">Choose the network for the Raspberry Pi Wi-Fi adapter.</p>
+                        </div>
+                        <button type="button"
+                                class="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+                                disabled="@_isWifiBusy"
+                                @onclick="ScanWifiNetworksAsync">
+                            <i class="fas fa-radar @(_isWifiScanning ? "fa-spin" : "")"></i>
+                            Scan
+                        </button>
+                    </div>
+
+                    @if (_isWifiScanning)
+                    {
+                        <div class="p-4 text-sm text-slate-400">Scanning nearby networks...</div>
+                    }
+                    else if (_wifiNetworks.Count == 0)
+                    {
+                        <div class="p-4 text-sm text-slate-400">No visible Wi-Fi networks loaded yet. Tap Scan to refresh nearby networks.</div>
+                    }
+                    else
+                    {
+                        <div class="max-h-80 divide-y divide-slate-800 overflow-y-auto">
+                            @foreach (var network in _wifiNetworks)
+                            {
+                                var selected = string.Equals(_wifiSsid, network.Ssid, StringComparison.Ordinal);
+                                <button type="button"
+                                        class="w-full px-4 py-3 text-left transition-colors @(selected ? "bg-cyan-500/10" : "hover:bg-slate-800/70")"
+                                        @onclick="() => SelectWifiNetwork(network)">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div class="flex min-w-0 items-center gap-3">
+                                            <i class="fas fa-wifi @GetWifiSignalClass(network.Signal)"></i>
+                                            <div class="min-w-0">
+                                                <div class="truncate font-semibold text-white">@network.Ssid</div>
+                                                <div class="text-xs text-slate-500">@FormatWifiNetworkDetail(network)</div>
+                                            </div>
+                                        </div>
+                                        <span class="shrink-0 text-xs font-semibold @(selected ? "text-cyan-300" : "text-slate-500")">
+                                            @(selected ? "Selected" : "Choose")
+                                        </span>
+                                    </div>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="grid items-end gap-4 md:grid-cols-[1fr_auto]">
+                    <label class="block">
+                        <span class="text-sm font-medium text-white">Password @FormatSelectedWifiPasswordHint()</span>
+                        <input type="password"
+                               class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                               placeholder="Wi-Fi password"
+                               autocomplete="new-password"
+                               @bind="_wifiPassword" />
+                    </label>
+                    <button type="button"
+                            class="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
+                            disabled="@(_isWifiBusy || string.IsNullOrWhiteSpace(_wifiSsid))"
+                            @onclick="ConnectOnboardWifiAsync">
+                        @if (_isWifiConnecting)
+                        {
+                            <i class="fas fa-spinner fa-spin"></i>
+                            <span>Connecting...</span>
+                        }
+                        else
+                        {
+                            <i class="fas fa-wifi"></i>
+                            <span>Connect</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </Accordion>
+    }
+
+    <Accordion Title="Cudy Management" IsExpanded="_cudyExpanded" OnToggle="(expanded) => _cudyExpanded = expanded" BadgeText="@CudyStatusLabel">
+        <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">Cudy Management</h2>
@@ -288,9 +430,11 @@
                 </div>
             </div>
         }
-    </section>
+        </div>
+    </Accordion>
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+    <Accordion Title="TCP MSS Clamp" IsExpanded="_mssExpanded" OnToggle="(expanded) => _mssExpanded = expanded" BadgeText="@MssClampStateLabel">
+        <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">TCP MSS Clamp</h2>
@@ -310,9 +454,11 @@
                 Disable clamp
             </button>
         </div>
-    </section>
+        </div>
+    </Accordion>
 
-    <section class="rounded-lg border border-slate-700/70 bg-slate-900/75 p-5">
+    <Accordion Title="Link Watchdog" IsExpanded="_monitorExpanded" OnToggle="(expanded) => _monitorExpanded = expanded" BadgeText="@NetworkMonitorBadge">
+        <div class="space-y-4 pt-2">
         <div class="flex items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">Link Watchdog</h2>
@@ -337,7 +483,10 @@
                 </div>
             }
         </div>
-    </section>
+        </div>
+    </Accordion>
+        </div>
+    </div>
 </div>
 
 @code {
@@ -350,12 +499,18 @@
     private NetworkMonitorStatus? _networkMonitorStatus;
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
+    private WifiConnectionStatus? _wifiStatus;
+    private List<WifiNetwork> _wifiNetworks = new();
     private List<WifiNetwork> _cudyWifiNetworks = new();
     private string? _message;
     private string? _error;
+    private string? _wifiMessage;
     private string? _cudyLocalMessage;
     private string _cudyLocalMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string _cudyAdminPasswordInput = "";
+    private string _wifiInterface = "wlan0";
+    private string _wifiSsid = "";
+    private string _wifiPassword = "";
     private string? _busyAdapter;
     private string _policy = "balanced";
     private int _interactivePacketThresholdBytes = 768;
@@ -365,12 +520,25 @@
     private bool _policyFieldsInitialized;
     private bool _busy;
     private bool _cudyBusy;
+    private bool _isWifiRefreshing;
+    private bool _isWifiScanning;
+    private bool _isWifiConnecting;
+    private bool _tunnelExpanded;
+    private bool _policyExpanded;
+    private bool _adaptersExpanded;
+    private bool _wifiExpanded;
+    private bool _cudyExpanded;
+    private bool _mssExpanded;
+    private bool _monitorExpanded;
+    private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
 
     protected override async Task OnInitializedAsync()
     {
         CudyApControlService.RefreshStatusFromSettings();
         _cudySettings = CopyCudySettings(CudyApControlService.Settings);
         _cudyStatus = CudyApControlService.GetStatus();
+        await LoadWifiStatusAsync();
+        await LoadWifiNetworksAsync(rescan: false);
         await RefreshAsync();
         _ = RunRefreshLoopAsync();
     }
@@ -399,6 +567,124 @@
         _cudyStatus = CudyApControlService.GetStatus();
         InitializePolicyFields();
         StateHasChanged();
+    }
+
+    private async Task LoadWifiStatusAsync()
+    {
+        try
+        {
+            _wifiStatus = await WifiService.GetStatusAsync(_wifiInterface, _refreshCts.Token);
+            if (_wifiStatus.IsSupported)
+            {
+                _wifiInterface = _wifiStatus.InterfaceName;
+                if (string.IsNullOrWhiteSpace(_wifiSsid) && !string.IsNullOrWhiteSpace(_wifiStatus.Ssid))
+                {
+                    _wifiSsid = _wifiStatus.Ssid;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _wifiStatus = new WifiConnectionStatus
+            {
+                IsSupported = false,
+                InterfaceName = _wifiInterface,
+                Message = $"Could not read Wi-Fi status: {ex.Message}"
+            };
+        }
+    }
+
+    private async Task LoadWifiNetworksAsync(bool rescan)
+    {
+        if (_wifiStatus is { IsSupported: false })
+        {
+            _wifiNetworks = new List<WifiNetwork>();
+            return;
+        }
+
+        try
+        {
+            _wifiNetworks = await WifiService.ScanNetworksAsync(_wifiInterface, rescan, _refreshCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _wifiNetworks = new List<WifiNetwork>();
+            _wifiMessage = $"Could not scan Wi-Fi networks: {ex.Message}";
+        }
+    }
+
+    private async Task ScanWifiNetworksAsync()
+    {
+        _isWifiScanning = true;
+        _wifiMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await LoadWifiStatusAsync();
+            await LoadWifiNetworksAsync(rescan: true);
+            _wifiMessage = _wifiNetworks.Count == 0
+                ? $"No Wi-Fi networks were found on {_wifiInterface}."
+                : $"Found {_wifiNetworks.Count} Wi-Fi network(s).";
+        }
+        finally
+        {
+            _isWifiScanning = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshWifiStatusAsync()
+    {
+        _isWifiRefreshing = true;
+        _wifiMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            await LoadWifiStatusAsync();
+            await LoadWifiNetworksAsync(rescan: false);
+        }
+        finally
+        {
+            _isWifiRefreshing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void SelectWifiNetwork(WifiNetwork network)
+    {
+        _wifiSsid = network.Ssid;
+        _wifiPassword = "";
+        _wifiMessage = network.RequiresPassword
+            ? $"Selected {network.Ssid}. Enter its password, then connect."
+            : $"Selected open network {network.Ssid}.";
+    }
+
+    private async Task ConnectOnboardWifiAsync()
+    {
+        _isWifiConnecting = true;
+        _wifiMessage = null;
+        _error = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            _wifiStatus = await WifiService.ConnectAsync(_wifiInterface, _wifiSsid, _wifiPassword, _refreshCts.Token);
+            _wifiPassword = "";
+            _wifiMessage = $"Connected {_wifiStatus.InterfaceName} to {_wifiStatus.Ssid ?? _wifiSsid}.";
+            await LoadWifiNetworksAsync(rescan: false);
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to connect Wi-Fi: {ex.Message}";
+        }
+        finally
+        {
+            _isWifiConnecting = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task StartTunnelAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.StartAsync(), "XBond start requested.");
@@ -648,6 +934,96 @@
         _cudyLocalMessage = null;
     }
 
+    private string? GetWifiBadge()
+    {
+        if (_wifiStatus is null)
+        {
+            return null;
+        }
+
+        if (!_wifiStatus.IsSupported)
+        {
+            return "Unavailable";
+        }
+
+        return string.Equals(_wifiStatus.State, "connected", StringComparison.OrdinalIgnoreCase)
+            ? "Connected"
+            : _wifiStatus.State;
+    }
+
+    private string FormatWifiStatusTitle()
+    {
+        if (_wifiStatus is null)
+        {
+            return "Wi-Fi status not loaded";
+        }
+
+        if (!_wifiStatus.IsSupported)
+        {
+            return "On-board Wi-Fi unavailable";
+        }
+
+        return string.IsNullOrWhiteSpace(_wifiStatus.Ssid)
+            ? $"{_wifiStatus.InterfaceName} is {_wifiStatus.State}"
+            : $"{_wifiStatus.InterfaceName} on {_wifiStatus.Ssid}";
+    }
+
+    private string FormatWifiStatusDetail()
+    {
+        if (_wifiStatus is null)
+        {
+            return "Refresh to read NetworkManager Wi-Fi state.";
+        }
+
+        if (!_wifiStatus.IsSupported)
+        {
+            return _wifiStatus.Message ?? "No Linux Wi-Fi interface was found.";
+        }
+
+        var parts = new List<string> { _wifiStatus.State };
+        if (!string.IsNullOrWhiteSpace(_wifiStatus.ConnectionName))
+        {
+            parts.Add(_wifiStatus.ConnectionName);
+        }
+
+        if (_wifiStatus.Signal is not null)
+        {
+            parts.Add($"{_wifiStatus.Signal}% signal");
+        }
+
+        if (!string.IsNullOrWhiteSpace(_wifiStatus.Security))
+        {
+            parts.Add(_wifiStatus.Security);
+        }
+
+        return string.Join(" - ", parts);
+    }
+
+    private static string FormatWifiNetworkDetail(WifiNetwork network)
+    {
+        var security = network.RequiresPassword ? network.Security : "Open";
+        return $"{network.Signal}% signal - {security}";
+    }
+
+    private string FormatSelectedWifiPasswordHint()
+    {
+        var selected = _wifiNetworks.FirstOrDefault(network => string.Equals(network.Ssid, _wifiSsid, StringComparison.Ordinal));
+        if (selected is null)
+        {
+            return "";
+        }
+
+        return selected.RequiresPassword ? "" : "(open network)";
+    }
+
+    private static string GetWifiSignalClass(int signal) => signal switch
+    {
+        >= 75 => "text-emerald-300",
+        >= 45 => "text-cyan-300",
+        >= 25 => "text-amber-300",
+        _ => "text-rose-300"
+    };
+
     private string CudyStatusLabel => _cudyStatus.IsConfigured ? "Configured" : "Needs setup";
 
     private string CudyStatusPillClass => _cudyStatus.IsConfigured
@@ -841,6 +1217,10 @@
 
     private int ConfiguredAdapterCount => _xbondAdapterStatus?.Adapters.Count(adapter => adapter.IsConfigured) ?? 0;
 
+    private string ConfiguredAdapterBadge => $"{ConfiguredAdapterCount} in XBond";
+
+    private string NetworkMonitorBadge => _networkMonitorStatus?.IsEnabled == true ? "Enabled" : "Disabled";
+
     private bool CanToggleXBondAdapter(XBondAdapterConfigRow adapter) =>
         _xbondAdapterStatus?.CanEdit == true &&
         !_busy &&
@@ -915,6 +1295,13 @@
         "reliable" => "Most protective. Duplicates real-time and bulk traffic over the anchor plus the best healthy backup.",
         "fast" => "Lowest overhead. Uses the anchor first and only adds extra protection when the anchor degrades.",
         _ => "Recommended default. Duplicates small real-time packets, but keeps bulk traffic anchor-first unless loss rises."
+    };
+
+    private static string PolicyOverviewDetail(string? policy) => NormalizePolicyName(policy) switch
+    {
+        "reliable" => "Packet survival first",
+        "fast" => "Lowest overhead",
+        _ => "Recommended default"
     };
 
     private static string PolicySaveHint(string? policy) => NormalizePolicyName(policy) switch
