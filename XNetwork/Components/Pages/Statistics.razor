@@ -86,25 +86,25 @@
                 <div class="rounded-lg bg-slate-900/50 p-4">
                     <div class="mb-2 flex items-center gap-2">
                         <i class="far fa-clock text-slate-400"></i>
-                        <span class="text-xs text-slate-400">Avg RTT</span>
+                        <span class="text-xs text-slate-400">Tunnel RTT</span>
                     </div>
                     <div class="flex items-baseline gap-1">
-                        <AnimatedNumber Value="@Math.Round(_snapshot.AverageRttMs)" Decimals="0" CssClass="@($"text-2xl font-bold {GetLatencyTextColor(_snapshot.AverageRttMs)}")" AriaLabel="@($"{Math.Round(_snapshot.AverageRttMs)} milliseconds average RTT")" />
+                        <AnimatedNumber Value="@Math.Round(_snapshot.EffectiveRttMs)" Decimals="0" CssClass="@($"text-2xl font-bold {GetLatencyTextColor(_snapshot.EffectiveRttMs)}")" AriaLabel="@($"{Math.Round(_snapshot.EffectiveRttMs)} milliseconds tunnel RTT")" />
                         <span class="text-sm text-slate-400">ms</span>
                     </div>
-                    <p class="mt-1 text-xs text-slate-500">Active paths</p>
+                    <p class="mt-1 text-xs text-slate-500">XBond tunnel</p>
                 </div>
 
                 <div class="rounded-lg bg-slate-900/50 p-4">
                     <div class="mb-2 flex items-center gap-2">
                         <i class="fas fa-triangle-exclamation text-slate-400"></i>
-                        <span class="text-xs text-slate-400">Max Loss</span>
+                        <span class="text-xs text-slate-400">Tunnel Loss</span>
                     </div>
                     <div class="flex items-baseline gap-1">
-                        <AnimatedNumber Value="@Math.Round(_snapshot.MaxLossPercent, 1)" Decimals="@GetPercentDecimals(_snapshot.MaxLossPercent)" CssClass="@($"text-2xl font-bold {GetLossTextColor(_snapshot.MaxLossPercent)}")" AriaLabel="@($"{Math.Round(_snapshot.MaxLossPercent, 1)} percent max loss")" />
+                        <AnimatedNumber Value="@Math.Round(_snapshot.EffectiveLossPercent, 1)" Decimals="@GetPercentDecimals(_snapshot.EffectiveLossPercent)" CssClass="@($"text-2xl font-bold {GetLossTextColor(_snapshot.EffectiveLossPercent)}")" AriaLabel="@($"{Math.Round(_snapshot.EffectiveLossPercent, 1)} percent tunnel loss")" />
                         <span class="text-sm text-slate-400">%</span>
                     </div>
-                    <p class="mt-1 text-xs text-slate-500">Worst active path</p>
+                    <p class="mt-1 text-xs text-slate-500">First ACK wins</p>
                 </div>
 
                 <div class="rounded-lg bg-slate-900/50 p-4">
@@ -232,7 +232,7 @@
 
 @code {
     private const string ActualConnectionSeriesId = "__actual_connection";
-    private const string ActualConnectionSeriesLabel = "Actual Connection";
+    private const string ActualConnectionSeriesLabel = "XBond Tunnel";
     private const string ActualConnectionSeriesColor = "#34d399";
     private static readonly IReadOnlyList<(int Seconds, string Label)> _periodOptions =
     [
@@ -408,8 +408,8 @@
                 lossData[id] = Math.Round(path.LossPercent, 2);
             }
 
-            rttData[ActualConnectionSeriesId] = Math.Round(snapshot.AverageRttMs, 1);
-            lossData[ActualConnectionSeriesId] = Math.Round(snapshot.MaxLossPercent, 2);
+            rttData[ActualConnectionSeriesId] = Math.Round(snapshot.EffectiveRttMs, 1);
+            lossData[ActualConnectionSeriesId] = Math.Round(snapshot.EffectiveLossPercent, 2);
 
             await _chartModule.InvokeVoidAsync("addDataToChart", "downloadChart", timestamp, downloadData);
             await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", timestamp, uploadData);
@@ -495,17 +495,22 @@
             return "Stopped";
         }
 
-        if (_snapshot.MaxLossPercent >= 25 || _snapshot.AverageRttMs >= 300)
+        if (!_snapshot.HasTunnelHealth)
+        {
+            return "Initializing";
+        }
+
+        if (_snapshot.EffectiveLossPercent >= 25 || _snapshot.EffectiveRttMs >= 300)
         {
             return "Critical";
         }
 
-        if (_snapshot.MaxLossPercent >= 10 || _snapshot.AverageRttMs >= 180)
+        if (_snapshot.EffectiveLossPercent >= 10 || _snapshot.EffectiveRttMs >= 180)
         {
             return "Poor";
         }
 
-        if (_snapshot.MaxLossPercent >= 2 || _snapshot.AverageRttMs >= 120)
+        if (_snapshot.EffectiveLossPercent >= 2 || _snapshot.EffectiveRttMs >= 120)
         {
             return "Fair";
         }
@@ -541,10 +546,11 @@
     {
         return GetStatusText() switch
         {
-            "Good" => "XBond path quality is good and suitable for real-time traffic.",
-            "Fair" => "XBond is usable, but latency or loss is starting to fluctuate.",
-            "Poor" => "XBond quality is degraded and may affect streaming or remote desktop.",
-            "Critical" => "XBond is unstable; active paths are showing high loss or latency.",
+            "Good" => "XBond tunnel health is good and suitable for real-time traffic.",
+            "Fair" => "XBond tunnel is usable, but latency or loss is starting to fluctuate.",
+            "Poor" => "XBond tunnel quality is degraded and may affect streaming or remote desktop.",
+            "Critical" => "XBond tunnel is unstable; aggregate tunnel RTT or loss is high.",
+            "Initializing" => "XBond tunnel health is still collecting heartbeat samples.",
             _ => "XBond runtime is not currently reporting an active tunnel."
         };
     }

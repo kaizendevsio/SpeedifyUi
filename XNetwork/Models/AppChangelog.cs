@@ -13,7 +13,7 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.58";
+    public const string CurrentVersion = "xbond-2026.06.59";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
@@ -21,12 +21,23 @@ public static class AppChangelog
         {
             Version = CurrentVersion,
             Date = "2026-06-18",
+            Summary = "Removed path-derived connection health substitution.",
+            Changes =
+            [
+                "Dashboard and Analytics connection-level health now require aggregate XBond tunnel heartbeat telemetry instead of substituting active physical-path RTT and loss.",
+                "Analytics now labels the connection-level RTT and loss as tunnel metrics, and its connection chart series is labeled XBond Tunnel.",
+                "Per-adapter cards and chart lines still show physical path RTT and loss for troubleshooting."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.58",
+            Date = "2026-06-18",
             Summary = "Moved dashboard health to tunnel telemetry.",
             Changes =
             [
                 "The dashboard top connection card now uses aggregate XBond tunnel heartbeat RTT and loss when available instead of worst active physical-path health.",
-                "Adapter cards still show per-path RTT and loss so degraded backups remain visible without automatically downgrading the top tunnel status.",
-                "Older runtime status without tunnel health still falls back to the previous path-derived behavior."
+                "Adapter cards still show per-path RTT and loss so degraded backups remain visible without automatically downgrading the top tunnel status."
             ]
         },
         new ChangelogEntry

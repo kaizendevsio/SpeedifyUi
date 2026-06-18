@@ -63,11 +63,11 @@ public sealed class XBondStatsSnapshot
         ? Math.Clamp(RawStatus.Tunnel.LossRate.Value, 0, 1) * 100
         : 0;
 
-    public double EffectiveRttMs => HasTunnelHealth ? TunnelRttMs : AverageRttMs;
+    public double EffectiveRttMs => TunnelRttMs;
 
-    public double EffectiveLossPercent => HasTunnelHealth ? TunnelLossPercent : MaxLossPercent;
+    public double EffectiveLossPercent => TunnelLossPercent;
 
-    public string HealthReason => HasTunnelHealth ? RawStatus.Tunnel.Reason : "path-derived fallback";
+    public string HealthReason => RawStatus.Tunnel.Reason;
 
     public string ConnectionTitle
     {
@@ -86,6 +86,11 @@ public sealed class XBondStatsSnapshot
             if (ActivePaths.Count == 0)
             {
                 return "Partial Connection";
+            }
+
+            if (!HasTunnelHealth)
+            {
+                return "Initializing Connection";
             }
 
             var loss = EffectiveLossPercent;
@@ -110,7 +115,7 @@ public sealed class XBondStatsSnapshot
         }
     }
 
-    public bool IsStable => IsRunning && EffectiveLossPercent < 10 && EffectiveRttMs < 180;
+    public bool IsStable => IsRunning && HasTunnelHealth && EffectiveLossPercent < 10 && EffectiveRttMs < 180;
 
     public ulong DataPacketsSent => RawStatus.DataPacketsSent;
 

@@ -252,7 +252,7 @@ public class XBondStatusServiceTests
     }
 
     [Fact]
-    public void Snapshot_FallsBackToPathDerivedStatusWhenTunnelHealthIsMissing()
+    public void Snapshot_RequiresTunnelHealthForConnectionStatus()
     {
         var status = new XBondStatus
         {
@@ -291,11 +291,13 @@ public class XBondStatusServiceTests
         var snapshot = XBondStatsService.FromStatus(status);
 
         Assert.False(snapshot.HasTunnelHealth);
-        Assert.Equal("Poor Connection", snapshot.ConnectionTitle);
+        Assert.Equal("Initializing Connection", snapshot.ConnectionTitle);
         Assert.False(snapshot.IsStable);
-        Assert.Equal("path-derived fallback", snapshot.HealthReason);
-        Assert.Equal(135, snapshot.EffectiveRttMs);
-        Assert.Equal(12, snapshot.EffectiveLossPercent, precision: 6);
+        Assert.Equal("Tunnel health is unavailable.", snapshot.HealthReason);
+        Assert.Equal(0, snapshot.EffectiveRttMs);
+        Assert.Equal(0, snapshot.EffectiveLossPercent);
+        Assert.Equal(135, snapshot.AverageRttMs);
+        Assert.Equal(12, snapshot.MaxLossPercent, precision: 6);
     }
 
     [Theory]
