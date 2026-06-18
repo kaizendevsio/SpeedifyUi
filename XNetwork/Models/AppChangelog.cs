@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.49";
+    public const string CurrentVersion = "xbond-2026.06.50";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Stopped showing stale RTT as live latency.",
+            Changes =
+            [
+                "Paths with stale ACKs or effectively 100% heartbeat loss now show unavailable latency instead of a frozen last-known RTT.",
+                "Dashboard status dots now warn or disconnect high-loss XBond paths instead of presenting them as healthy connected paths."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.49",
             Date = "2026-06-18",
             Summary = "Hid the Cudy WAN handoff from adapter lists.",
             Changes =

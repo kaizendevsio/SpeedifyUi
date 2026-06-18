@@ -195,6 +195,8 @@
 </div>
 
 @code {
+    private const ulong StaleAckWarningMs = 5_000;
+
     private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
     private readonly CancellationTokenSource _refreshCts = new();
     private XBondStatsSnapshot? _snapshot;
@@ -335,8 +337,15 @@
                 </div>
                 <div class="flex items-center gap-1.5">
                     <i class="far fa-clock text-sm text-slate-400"></i>
-                    <AnimatedNumber Value="@Math.Round(path.RttMs ?? 0)" Decimals="0" CssClass="font-semibold text-white" AriaLabel="@FormatLatency(path.RttMs)" />
-                    <span class="text-xs text-slate-400">ms</span>
+                    @if (path.RttMs.HasValue)
+                    {
+                        <AnimatedNumber Value="@Math.Round(path.RttMs.Value)" Decimals="0" CssClass="font-semibold text-white" AriaLabel="@FormatLatency(path.RttMs)" />
+                        <span class="text-xs text-slate-400">ms</span>
+                    }
+                    else
+                    {
+                        <span class="font-semibold text-slate-400" aria-label="Latency unavailable">--</span>
+                    }
                 </div>
                 <div class="flex items-center gap-1.5">
                     <i class="fas fa-triangle-exclamation text-xs text-slate-500"></i>
@@ -455,12 +464,12 @@
 
     private static string GetPathStatusKind(XBondPathStatsSnapshot path)
     {
-        if (!path.InterfaceUp)
+        if (!path.InterfaceUp || path.LossPercent >= 99.5)
         {
             return "disconnected";
         }
 
-        if (path.InCooldown)
+        if (path.InCooldown || path.LossPercent >= 10 || path.StaleAckMs is >= StaleAckWarningMs)
         {
             return "disconnecting";
         }
@@ -480,9 +489,26 @@
             return "No carrier";
         }
 
+        if (path.LossPercent >= 99.5)
+        {
+            return string.IsNullOrWhiteSpace(path.DemotionReason) ? "Path has 100% heartbeat loss" : path.DemotionReason;
+        }
+
         if (path.InCooldown)
         {
             return string.IsNullOrWhiteSpace(path.DemotionReason) ? "Cooldown" : path.DemotionReason;
+        }
+
+        if (path.LossPercent >= 10)
+        {
+            return string.IsNullOrWhiteSpace(path.DemotionReason)
+                ? $"High heartbeat loss ({FormatPercent(path.LossPercent)})"
+                : path.DemotionReason;
+        }
+
+        if (path.StaleAckMs is >= StaleAckWarningMs)
+        {
+            return "Heartbeat ACK is stale";
         }
 
         if (!path.IsConfigured)

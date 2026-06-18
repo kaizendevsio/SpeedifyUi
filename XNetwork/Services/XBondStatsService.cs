@@ -11,6 +11,8 @@ public sealed class XBondStatsService(
     XBondStatusService statusService,
     InterfaceMetadataService interfaceMetadataService) : IXBondStatsProvider
 {
+    private const ulong StaleRttAckAgeMs = 5_000;
+
     public async Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
         var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
@@ -52,36 +54,41 @@ public sealed class XBondStatsService(
             .ToHashSet();
 
         var configuredPaths = status.Paths
-            .Select(path => new XBondPathStatsSnapshot
+            .Select(path =>
             {
-                PathId = path.PathId,
-                InterfaceName = path.InterfaceName ?? path.BindDevice ?? $"path-{path.PathId}",
-                Name = ResolvePathName(path, interfaceDisplayNames),
-                Role = path.Role,
-                InterfaceUp = path.InterfaceUp,
-                InCooldown = path.InCooldown,
-                DemotionReason = path.DemotionReason,
-                RoleReason = path.RoleReason,
-                SendFailureStreak = path.SendFailureStreak,
-                StaleAckMs = path.StaleAckMs,
-                QueuePressure = path.QueuePressure,
-                DuplicateUsefulness = path.DuplicateUsefulness,
-                ThroughputCollapseScore = path.ThroughputCollapseScore,
-                Score = path.Score,
-                RttMs = path.RttMs,
-                JitterMs = path.JitterMs,
-                LossPercent = path.LossRate * 100,
-                LatePercent = path.LateRate * 100,
-                QueueDepth = path.QueueDepth,
-                ThroughputBps = path.ThroughputBps,
-                OutboundThroughputBps = path.OutboundThroughputBps,
-                InboundThroughputBps = path.InboundThroughputBps,
-                DuplicateInboundThroughputBps = path.DuplicateInboundThroughputBps,
-                RawInboundThroughputBps = path.RawInboundThroughputBps,
-                BindAddress = path.BindAddress ?? "",
-                BindDevice = path.BindDevice ?? "",
-                IsActive = activeIds.Contains(path.PathId),
-                IsConfigured = true
+                var lossPercent = path.LossRate * 100;
+                var isStaleRtt = IsStaleRtt(path, lossPercent);
+                return new XBondPathStatsSnapshot
+                {
+                    PathId = path.PathId,
+                    InterfaceName = path.InterfaceName ?? path.BindDevice ?? $"path-{path.PathId}",
+                    Name = ResolvePathName(path, interfaceDisplayNames),
+                    Role = path.Role,
+                    InterfaceUp = path.InterfaceUp,
+                    InCooldown = path.InCooldown,
+                    DemotionReason = path.DemotionReason,
+                    RoleReason = path.RoleReason,
+                    SendFailureStreak = path.SendFailureStreak,
+                    StaleAckMs = path.StaleAckMs,
+                    QueuePressure = path.QueuePressure,
+                    DuplicateUsefulness = path.DuplicateUsefulness,
+                    ThroughputCollapseScore = path.ThroughputCollapseScore,
+                    Score = path.Score,
+                    RttMs = isStaleRtt ? null : path.RttMs,
+                    JitterMs = isStaleRtt ? null : path.JitterMs,
+                    LossPercent = lossPercent,
+                    LatePercent = path.LateRate * 100,
+                    QueueDepth = path.QueueDepth,
+                    ThroughputBps = path.ThroughputBps,
+                    OutboundThroughputBps = path.OutboundThroughputBps,
+                    InboundThroughputBps = path.InboundThroughputBps,
+                    DuplicateInboundThroughputBps = path.DuplicateInboundThroughputBps,
+                    RawInboundThroughputBps = path.RawInboundThroughputBps,
+                    BindAddress = path.BindAddress ?? "",
+                    BindDevice = path.BindDevice ?? "",
+                    IsActive = activeIds.Contains(path.PathId),
+                    IsConfigured = true
+                };
             });
 
         var configuredInterfaceNames = configuredPaths
@@ -131,5 +138,20 @@ public sealed class XBondStatsService(
         }
 
         return string.IsNullOrWhiteSpace(path.Name) ? $"Path {path.PathId}" : path.Name;
+    }
+
+    private static bool IsStaleRtt(XBondPathStatus path, double lossPercent)
+    {
+        if (!path.RttMs.HasValue)
+        {
+            return false;
+        }
+
+        if (!path.InterfaceUp || lossPercent >= 99.5)
+        {
+            return true;
+        }
+
+        return path.StaleAckMs is >= StaleRttAckAgeMs;
     }
 }

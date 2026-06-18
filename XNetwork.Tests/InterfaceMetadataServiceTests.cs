@@ -164,6 +164,74 @@ public class InterfaceMetadataServiceTests
     }
 
     [Fact]
+    public void XBondStatsService_SuppressesStaleRttForDeadPaths()
+    {
+        var snapshot = XBondStatsService.FromStatus(new XBondStatus
+        {
+            Schedule = new XBondSchedulePlan
+            {
+                DataPathIds = [1]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "Bad modem",
+                    InterfaceName = "enx1",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    RttMs = 57,
+                    JitterMs = 4,
+                    LossRate = 1,
+                    StaleAckMs = 10_000
+                }
+            ]
+        });
+
+        var path = Assert.Single(snapshot.Paths);
+
+        Assert.Null(path.RttMs);
+        Assert.Null(path.JitterMs);
+        Assert.Equal(100, path.LossPercent);
+        Assert.Equal(0, snapshot.AverageRttMs);
+    }
+
+    [Fact]
+    public void XBondStatsService_SuppressesRttWhenAckAgeIsStale()
+    {
+        var snapshot = XBondStatsService.FromStatus(new XBondStatus
+        {
+            Schedule = new XBondSchedulePlan
+            {
+                DataPathIds = [1]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "Stale modem",
+                    InterfaceName = "enx1",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    RttMs = 80,
+                    JitterMs = 8,
+                    LossRate = 0.2,
+                    StaleAckMs = 10_000
+                }
+            ]
+        });
+
+        var path = Assert.Single(snapshot.Paths);
+
+        Assert.Null(path.RttMs);
+        Assert.Null(path.JitterMs);
+        Assert.Equal(20, path.LossPercent);
+        Assert.Equal(0, snapshot.AverageRttMs);
+    }
+
+    [Fact]
     public void ParseDefaultRoutes_ReadsGatewayRoutesFromLinuxJson()
     {
         var routes = InterfaceMetadataService.ParseDefaultRoutes(
