@@ -29,6 +29,7 @@ public class InterfaceMetadataServiceTests
         var interfaces = InterfaceMetadataService.ParseNmcliDeviceMetadata(
             """
             wlan0:wifi:connected:XNetwork Wi-Fi Asia
+            eth0:ethernet:connected:netplan-eth0
             tailscale0:tun:connected (externally):tailscale0
             xbond0:tun:connected (externally):xbond0
             enxc8a3627e60c1:ethernet:unavailable:
@@ -38,6 +39,7 @@ public class InterfaceMetadataServiceTests
         Assert.Equal("XNetwork Wi-Fi Asia", wifi.DisplayName);
         Assert.True(wifi.IsDashboardCandidate);
 
+        Assert.False(interfaces.Single(item => item.Device == "eth0").IsDashboardCandidate);
         Assert.False(interfaces.Single(item => item.Device == "tailscale0").IsDashboardCandidate);
         Assert.False(interfaces.Single(item => item.Device == "xbond0").IsDashboardCandidate);
         Assert.False(interfaces.Single(item => item.Device == "enxc8a3627e60c1").IsDashboardCandidate);
@@ -135,6 +137,30 @@ public class InterfaceMetadataServiceTests
         Assert.False(wifi.IsConfigured);
         Assert.Equal("XNetwork Wi-Fi Asia", wifi.Name);
         Assert.Equal("Connected, not in XBond", wifi.StateText);
+    }
+
+    [Fact]
+    public void XBondStatsService_DoesNotAddCudyWanHandoffAsDashboardAdapter()
+    {
+        var snapshot = XBondStatsService.FromStatus(
+            new XBondStatus(),
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    "eth0",
+                    "ethernet",
+                    "connected",
+                    "netplan-eth0",
+                    "netplan-eth0"),
+                new InterfaceMetadataService.InterfaceMetadata(
+                    "wlan0",
+                    "wifi",
+                    "connected",
+                    "XNetwork Wi-Fi Asia",
+                    "XNetwork Wi-Fi Asia")
+            ]);
+
+        Assert.DoesNotContain(snapshot.DashboardPaths, path => path.InterfaceName == "eth0");
+        Assert.Contains(snapshot.DashboardPaths, path => path.InterfaceName == "wlan0");
     }
 
     [Fact]

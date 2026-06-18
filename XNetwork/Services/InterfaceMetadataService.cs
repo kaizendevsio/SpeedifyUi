@@ -355,6 +355,12 @@ public sealed class InterfaceMetadataService
                value.StartsWith("lo", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsLocalManagementInterface(string device, string connectionName)
+    {
+        return string.Equals(device, "eth0", StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(connectionName, "netplan-eth0", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static List<string> ParseTerseLine(string line)
     {
         var parts = new List<string>();
@@ -444,7 +450,8 @@ public sealed class InterfaceMetadataService
             !Device.StartsWith("xbond", StringComparison.OrdinalIgnoreCase) &&
             !Device.StartsWith("tailscale", StringComparison.OrdinalIgnoreCase) &&
             !Device.StartsWith("p2p-", StringComparison.OrdinalIgnoreCase) &&
-            !Device.Equals("lo", StringComparison.OrdinalIgnoreCase);
+            !Device.Equals("lo", StringComparison.OrdinalIgnoreCase) &&
+            !IsLocalManagementInterface(Device, ConnectionName);
     }
 
     public sealed class ModemProviderResponse

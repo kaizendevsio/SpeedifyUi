@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.48";
+    public const string CurrentVersion = "xbond-2026.06.49";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Hid the Cudy WAN handoff from adapter lists.",
+            Changes =
+            [
+                "The Raspberry Pi eth0 Cudy WAN handoff no longer appears as a live XBond dashboard adapter.",
+                "The live adapter count now reflects usable WAN paths instead of the local Cudy management/upstream link."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.48",
             Date = "2026-06-18",
             Summary = "Fixed Cudy LAN management compatibility.",
             Changes =
