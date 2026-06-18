@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.47";
+    public const string CurrentVersion = "xbond-2026.06.48";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Fixed Cudy LAN management compatibility.",
+            Changes =
+            [
+                "Cudy management now tolerates malformed HTTP header lines returned by the TR3000 firmware during LuCI login.",
+                "The Wifi page and Cudy automation can use the LAN-side Cudy gateway without failing on firmware-generated invalid headers."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.47",
             Date = "2026-06-18",
             Summary = "Restored Cudy management settings.",
             Changes =
