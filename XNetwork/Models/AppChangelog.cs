@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.51";
+    public const string CurrentVersion = "xbond-2026.06.52";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Explained XBond policy modes in Settings.",
+            Changes =
+            [
+                "The XBond policy selector now describes what Balanced, Reliable, and Fast modes do.",
+                "The policy save hint now follows the selected mode instead of always describing Balanced mode."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.51",
             Date = "2026-06-18",
             Summary = "Fixed stale XBond modem sockets after adapter churn.",
             Changes =

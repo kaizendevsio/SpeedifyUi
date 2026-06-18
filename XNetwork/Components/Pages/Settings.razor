@@ -81,6 +81,7 @@
                     <option value="reliable">Reliable</option>
                     <option value="fast">Fast</option>
                 </select>
+                <span class="mt-2 block text-xs leading-relaxed text-slate-400">@PolicyShortDescription(_policy)</span>
             </label>
             <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
                 <span class="text-xs uppercase tracking-wide text-slate-500">Small packet</span>
@@ -103,7 +104,7 @@
             <button type="button" class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40" disabled="@_busy" @onclick="SaveXBondPolicyAsync">
                 Save policy
             </button>
-            <p class="text-xs text-slate-500">Balanced duplicates small packets and only duplicates bulk traffic when anchor loss rises.</p>
+            <p class="text-xs text-slate-500">@PolicySaveHint(_policy)</p>
         </div>
     </section>
 
@@ -908,6 +909,24 @@
     private static string FormatPolicy(string? policy) => string.IsNullOrWhiteSpace(policy)
         ? "Balanced"
         : char.ToUpperInvariant(policy[0]) + policy[1..].Replace('-', ' ');
+
+    private static string PolicyShortDescription(string? policy) => NormalizePolicyName(policy) switch
+    {
+        "reliable" => "Most protective. Duplicates real-time and bulk traffic over the anchor plus the best healthy backup.",
+        "fast" => "Lowest overhead. Uses the anchor first and only adds extra protection when the anchor degrades.",
+        _ => "Recommended default. Duplicates small real-time packets, but keeps bulk traffic anchor-first unless loss rises."
+    };
+
+    private static string PolicySaveHint(string? policy) => NormalizePolicyName(policy) switch
+    {
+        "reliable" => "Reliable favors packet survival and can use more bandwidth or add latency on rough links.",
+        "fast" => "Fast favors throughput and lower overhead, with less protection until recovery is needed.",
+        _ => "Balanced protects calls/Moonlight-style traffic while avoiding unnecessary duplicate bulk traffic."
+    };
+
+    private static string NormalizePolicyName(string? policy) => string.IsNullOrWhiteSpace(policy)
+        ? "balanced"
+        : policy.Trim().ToLowerInvariant();
 
     private static RenderFragment Info(string label, string value) => @<div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
         <p class="text-xs uppercase tracking-wide text-slate-500">@label</p>
