@@ -13,13 +13,23 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.56";
+    public const string CurrentVersion = "xbond-2026.06.57";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Simplified dashboard throughput labels.",
+            Changes =
+            [
+                "The dashboard summary labels are back to Download and Upload while keeping the tooltip that explains they represent useful tunnel payload."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.56",
             Date = "2026-06-18",
             Summary = "Clarified dashboard tunnel throughput.",
             Changes =

@@ -53,11 +53,11 @@
                 <p class="text-white font-bold text-xl"><AnimatedNumber Value="@Latency" Decimals="0" AriaLabel="@($"{Latency} milliseconds")" /> <span class="text-base font-medium text-slate-300">ms</span></p>
             </div>
             <div>
-                <p class="text-slate-400" title="Useful XBond tunnel payload after duplicates, probes, and control traffic are removed.">Tunnel down</p>
+                <p class="text-slate-400" title="Useful XBond tunnel payload after duplicates, probes, and control traffic are removed.">Download</p>
                 <p class="text-white font-bold text-xl"><AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(Download)" Decimals="@SpeedFormatter.GetDisplayDecimals(Download)" AriaLabel="@SpeedFormatter.FormatSpeed(Download)" /> <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Download)</span></p>
             </div>
             <div>
-                <p class="text-slate-400" title="Useful XBond tunnel payload after duplicates, probes, and control traffic are removed.">Tunnel up</p>
+                <p class="text-slate-400" title="Useful XBond tunnel payload after duplicates, probes, and control traffic are removed.">Upload</p>
                 <p class="text-white font-bold text-xl"><AnimatedNumber Value="@SpeedFormatter.GetDisplayValue(Upload)" Decimals="@SpeedFormatter.GetDisplayDecimals(Upload)" AriaLabel="@SpeedFormatter.FormatSpeed(Upload)" /> <span class="text-base font-medium text-slate-300">@SpeedFormatter.GetSpeedUnit(Upload)</span></p>
             </div>
         </div>
