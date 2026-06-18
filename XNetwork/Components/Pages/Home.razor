@@ -86,7 +86,7 @@
             </div>
         }
 
-        <a href="/xbond" class="rubber-card mb-6 block rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg transition-colors hover:border-cyan-500/60 hover:bg-slate-800/70 focus:outline-none focus:ring-2 focus:ring-cyan-500/60">
+        <a href="/xbond" class="mb-6 block rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg transition-colors hover:border-cyan-500/60 hover:bg-slate-800/70 focus:outline-none focus:ring-2 focus:ring-cyan-500/60">
             <div class="flex items-center gap-3">
                 <div class="@GetServerIconClass()">
                     <i class="fas fa-server text-lg"></i>
@@ -354,10 +354,6 @@
                 <span>Score @Math.Round(path.Score)</span>
                 <span>Late @FormatPercent(path.LatePercent)</span>
                 <span>Queue @path.QueueDepth</span>
-                @if (!string.IsNullOrWhiteSpace(path.DecisionText) && !string.Equals(path.DecisionText, path.StateText, StringComparison.OrdinalIgnoreCase))
-                {
-                    <span class="text-slate-300">@path.DecisionText</span>
-                }
             </div>
         }
         else
@@ -423,7 +419,7 @@
 
     private static string GetPathCardClass(XBondPathStatsSnapshot path)
     {
-        const string baseClass = "rubber-card rounded-xl border px-3 py-3 shadow-lg relative";
+        const string baseClass = "rounded-xl border px-3 py-3 shadow-lg relative";
 
         if (!path.InterfaceUp)
         {

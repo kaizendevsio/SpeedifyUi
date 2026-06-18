@@ -243,7 +243,7 @@ public class XBondStatusServiceTests
         var snapshot = XBondStatsService.FromStatus(status);
 
         Assert.True(snapshot.HasTunnelHealth);
-        Assert.Equal("Good Connection", snapshot.ConnectionTitle);
+        Assert.Equal("Excellent Connection", snapshot.ConnectionTitle);
         Assert.True(snapshot.IsStable);
         Assert.Equal(68, snapshot.EffectiveRttMs);
         Assert.Equal(0, snapshot.EffectiveLossPercent);
@@ -301,6 +301,9 @@ public class XBondStatusServiceTests
     }
 
     [Theory]
+    [InlineData(68, 0.00, "Excellent Connection", true)]
+    [InlineData(95, 0.00, "Good Connection", true)]
+    [InlineData(80, 0.01, "Good Connection", true)]
     [InlineData(179, 0.09, "Fair Connection", true)]
     [InlineData(180, 0.00, "Poor Connection", false)]
     [InlineData(100, 0.10, "Poor Connection", false)]

@@ -111,7 +111,12 @@ public sealed class XBondStatsSnapshot
                 return "Fair Connection";
             }
 
-            return "Good Connection";
+            if (loss >= 0.5 || rtt >= 90)
+            {
+                return "Good Connection";
+            }
+
+            return "Excellent Connection";
         }
     }
 

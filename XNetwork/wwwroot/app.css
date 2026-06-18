@@ -715,45 +715,24 @@ body {
 }
 
 .route-transition-enter.route-transition-forward {
-    animation: xnetwork-delayed-slide-in-from-right 560ms cubic-bezier(0.16, 1, 0.3, 1);
+    animation: xnetwork-delayed-slide-in-from-right 420ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .route-transition-exit.route-transition-forward {
-    animation: xnetwork-slide-out-to-left 300ms cubic-bezier(0.4, 0, 1, 1) both;
+    animation: xnetwork-slide-out-to-left 220ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 .route-transition-enter.route-transition-back {
-    animation: xnetwork-delayed-slide-in-from-left 560ms cubic-bezier(0.16, 1, 0.3, 1);
+    animation: xnetwork-delayed-slide-in-from-left 420ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .route-transition-exit.route-transition-back {
-    animation: xnetwork-slide-out-to-right 300ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-
-html[data-route-direction="back"] .route-transition-enter.route-transition-forward,
-html[data-route-direction="back"] .route-transition-enter.route-transition-back {
-    animation-name: xnetwork-delayed-slide-in-from-left;
-}
-
-html[data-route-direction="back"] .route-transition-exit.route-transition-forward,
-html[data-route-direction="back"] .route-transition-exit.route-transition-back {
-    animation-name: xnetwork-slide-out-to-right;
-}
-
-html[data-route-direction="forward"] .route-transition-enter.route-transition-forward,
-html[data-route-direction="forward"] .route-transition-enter.route-transition-back {
-    animation-name: xnetwork-delayed-slide-in-from-right;
-}
-
-html[data-route-direction="forward"] .route-transition-exit.route-transition-forward,
-html[data-route-direction="forward"] .route-transition-exit.route-transition-back {
-    animation-name: xnetwork-slide-out-to-left;
+    animation: xnetwork-slide-out-to-right 220ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 @keyframes xnetwork-delayed-slide-in-from-right {
-    0%, 46% { opacity: 0; transform: translateX(26px) scale(0.985); }
-    78% { opacity: 1; transform: translateX(-3px) scale(1.004); }
-    to { opacity: 1; transform: translateX(0) scale(1); }
+    0%, 34% { opacity: 0; transform: translateX(18px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 @keyframes xnetwork-slide-out-to-left {
@@ -762,9 +741,8 @@ html[data-route-direction="forward"] .route-transition-exit.route-transition-bac
 }
 
 @keyframes xnetwork-delayed-slide-in-from-left {
-    0%, 46% { opacity: 0; transform: translateX(-26px) scale(0.985); }
-    78% { opacity: 1; transform: translateX(3px) scale(1.004); }
-    to { opacity: 1; transform: translateX(0) scale(1); }
+    0%, 34% { opacity: 0; transform: translateX(-18px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 @keyframes xnetwork-slide-out-to-right {
@@ -789,38 +767,12 @@ a:active,
     transform: translateY(1px);
 }
 
-.rubber-card {
-    --rubber-y: 0px;
-    --rubber-scale: 1;
-    transform: translateY(var(--rubber-y)) scale(var(--rubber-scale));
-    transform-origin: center;
-    transition: transform 360ms cubic-bezier(0.2, 1.35, 0.28, 1);
-    will-change: transform;
-}
-
-.rubber-card.rubber-card-dragging {
-    transition-duration: 80ms;
-    transition-timing-function: linear;
-}
-
-.rubber-card.rubber-card-releasing {
-    animation: xnetwork-rubber-release 420ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes xnetwork-rubber-release {
-    0% { transform: translateY(var(--rubber-y)) scale(var(--rubber-scale)); }
-    45% { transform: translateY(-2px) scale(1.003); }
-    72% { transform: translateY(1px) scale(0.998); }
-    100% { transform: translateY(0) scale(1); }
-}
-
 @media (prefers-reduced-motion: reduce) {
     .route-transition-enter,
     .route-transition-exit,
     .route-transition-current,
     .settings-section-modal-backdrop,
     .settings-section-modal,
-    .rubber-card,
     .skeleton-block {
         animation: none;
     }

@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.61";
+    public const string CurrentVersion = "xbond-2026.06.62";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Simplified dashboard motion and health tiers.",
+            Changes =
+            [
+                "Removed the experimental rubber-card drag motion and route-direction override that could make tab transitions flicker.",
+                "Dashboard tab transitions now use a simpler fade-slide with a stronger ease-out curve.",
+                "Dashboard adapter cards no longer show verbose scheduler reason text, and stable low-latency tunnel health can now show Excellent."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.61",
             Date = "2026-06-19",
             Summary = "Refined dashboard and settings motion.",
             Changes =
