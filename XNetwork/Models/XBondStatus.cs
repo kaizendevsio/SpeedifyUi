@@ -76,6 +76,9 @@ public class XBondStatus
     [JsonPropertyName("process")]
     public XBondProcessStatus Process { get; set; } = new();
 
+    [JsonPropertyName("server_recovery")]
+    public XBondServerRecoveryStatus ServerRecovery { get; set; } = new();
+
     [JsonPropertyName("recovery")]
     public XBondRecoveryStatus Recovery { get; set; } = new();
 
@@ -306,6 +309,81 @@ public class XBondProcessStatus
 
     [JsonPropertyName("decoded_frames")]
     public ulong DecodedFrames { get; set; }
+}
+
+public class XBondServerRecoveryStatus
+{
+    [JsonPropertyName("reported")]
+    public bool Reported { get; set; }
+
+    [JsonPropertyName("recovery_active")]
+    public bool RecoveryActive { get; set; }
+
+    [JsonPropertyName("ingress_reorder")]
+    public XBondServerIngressReorderStatus IngressReorder { get; set; } = new();
+
+    [JsonPropertyName("repair")]
+    public XBondRepairStatus Repair { get; set; } = new();
+
+    [JsonPropertyName("updated_at_micros")]
+    public ulong UpdatedAtMicros { get; set; }
+}
+
+public class XBondServerIngressReorderStatus
+{
+    [JsonPropertyName("current_hold_ms")]
+    public int CurrentHoldMs { get; set; }
+
+    [JsonPropertyName("normal_hold_ms")]
+    public int NormalHoldMs { get; set; }
+
+    [JsonPropertyName("recovery_min_hold_ms")]
+    public int RecoveryMinHoldMs { get; set; }
+
+    [JsonPropertyName("recovery_max_hold_ms")]
+    public int RecoveryMaxHoldMs { get; set; }
+
+    [JsonPropertyName("adaptive_recovery_hold_enabled")]
+    public bool AdaptiveRecoveryHoldEnabled { get; set; }
+
+    [JsonPropertyName("adaptive_calm_samples")]
+    public int AdaptiveCalmSamples { get; set; }
+
+    [JsonPropertyName("adaptive_last_adjustment_reason")]
+    public string AdaptiveLastAdjustmentReason { get; set; } = "";
+
+    [JsonPropertyName("capacity")]
+    public int Capacity { get; set; }
+
+    [JsonPropertyName("stats")]
+    public XBondReorderCounters Stats { get; set; } = new();
+}
+
+public class XBondRepairStatus
+{
+    [JsonPropertyName("requests_sent")]
+    public ulong RequestsSent { get; set; }
+
+    [JsonPropertyName("requests_received")]
+    public ulong RequestsReceived { get; set; }
+
+    [JsonPropertyName("frames_sent")]
+    public ulong FramesSent { get; set; }
+
+    [JsonPropertyName("frames_delivered")]
+    public ulong FramesDelivered { get; set; }
+
+    [JsonPropertyName("cache_misses")]
+    public ulong CacheMisses { get; set; }
+
+    [JsonPropertyName("late_frames")]
+    public ulong LateFrames { get; set; }
+
+    [JsonPropertyName("queue_drops")]
+    public ulong QueueDrops { get; set; }
+
+    [JsonPropertyName("cache_entries")]
+    public int CacheEntries { get; set; }
 }
 
 public class XBondRecoveryStatus

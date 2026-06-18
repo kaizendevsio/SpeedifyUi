@@ -183,6 +183,11 @@
                                ChartId="lossChart"
                                ShowLegend="true"
                                LegendItems="@GetPathLegend(includeActualConnection: true)" />
+
+                    <ChartCard Title="Recovery Hold (ms)"
+                               ChartId="recoveryHoldChart"
+                               ShowLegend="true"
+                               LegendItems="@GetRecoveryHoldLegend()" />
                 </div>
             }
         </section>
@@ -234,6 +239,9 @@
     private const string ActualConnectionSeriesId = "__actual_connection";
     private const string ActualConnectionSeriesLabel = "XBond Tunnel";
     private const string ActualConnectionSeriesColor = "#34d399";
+    private const string RecoveryHoldSeriesId = "__server_recovery_hold";
+    private const string RecoveryHoldSeriesLabel = "Server hold";
+    private const string RecoveryHoldSeriesColor = "#fb923c";
     private static readonly IReadOnlyList<(int Seconds, string Label)> _periodOptions =
     [
         (15, "15s"),
@@ -366,8 +374,15 @@
             var uploadOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "uploadChart", "Upload (Mbps)", pathIds, pathNames, timestamp);
             var rttOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "rttChart", "RTT (ms)", qualityIds, qualityNames, timestamp);
             var lossOk = await _chartModule.InvokeAsync<bool>("initializeOrUpdateChart", "lossChart", "Loss (%)", qualityIds, qualityNames, timestamp);
+            var recoveryOk = await _chartModule.InvokeAsync<bool>(
+                "initializeOrUpdateChart",
+                "recoveryHoldChart",
+                "Hold (ms)",
+                new[] { RecoveryHoldSeriesId },
+                new[] { RecoveryHoldSeriesLabel },
+                timestamp);
 
-            _chartsInitialized = downloadOk && uploadOk && rttOk && lossOk;
+            _chartsInitialized = downloadOk && uploadOk && rttOk && lossOk && recoveryOk;
             if (!_chartsInitialized)
             {
                 _chartInitializationError = "One or more chart canvases could not be initialized.";
@@ -398,6 +413,12 @@
             var uploadData = new Dictionary<string, double>(StringComparer.Ordinal);
             var rttData = new Dictionary<string, double>(StringComparer.Ordinal);
             var lossData = new Dictionary<string, double>(StringComparer.Ordinal);
+            var recoveryHoldData = new Dictionary<string, double>(StringComparer.Ordinal)
+            {
+                [RecoveryHoldSeriesId] = snapshot.HasServerRecoveryTelemetry
+                    ? snapshot.RecoveryHoldMs
+                    : 0
+            };
 
             foreach (var path in snapshot.DashboardPaths)
             {
@@ -415,6 +436,7 @@
             await _chartModule.InvokeVoidAsync("addDataToChart", "uploadChart", timestamp, uploadData);
             await _chartModule.InvokeVoidAsync("addDataToChart", "rttChart", timestamp, rttData);
             await _chartModule.InvokeVoidAsync("addDataToChart", "lossChart", timestamp, lossData);
+            await _chartModule.InvokeVoidAsync("addDataToChart", "recoveryHoldChart", timestamp, recoveryHoldData);
         }
         catch (JSDisconnectedException)
         {
@@ -478,6 +500,15 @@
 
         return legend;
     }
+
+    private static List<ChartCard.LegendItem> GetRecoveryHoldLegend() =>
+    [
+        new ChartCard.LegendItem
+        {
+            Label = RecoveryHoldSeriesLabel,
+            Color = RecoveryHoldSeriesColor
+        }
+    ];
 
     private async Task ChangePeriodAsync(int seconds)
     {

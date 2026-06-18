@@ -133,6 +133,28 @@ public sealed class XBondStatsSnapshot
 
     public XBondProcessStatus Process => RawStatus.Process;
 
+    public XBondServerRecoveryStatus ServerRecovery => RawStatus.ServerRecovery;
+
+    public bool HasServerRecoveryTelemetry => ServerRecovery.Reported;
+
+    public bool IsRecoveryActive => RawStatus.Recovery.Active || ServerRecovery.RecoveryActive;
+
+    public int RecoveryHoldMs => ServerRecovery.IngressReorder.CurrentHoldMs;
+
+    public int RecoveryNormalHoldMs => ServerRecovery.IngressReorder.NormalHoldMs;
+
+    public int RecoveryMinHoldMs => ServerRecovery.IngressReorder.RecoveryMinHoldMs;
+
+    public int RecoveryMaxHoldMs => ServerRecovery.IngressReorder.RecoveryMaxHoldMs;
+
+    public string RecoveryReason => ServerRecovery.RecoveryActive
+        ? ServerRecovery.IngressReorder.AdaptiveLastAdjustmentReason
+        : RawStatus.Recovery.Reason;
+
+    public string RecoveryBadgeText => HasServerRecoveryTelemetry && RecoveryHoldMs > 0
+        ? $"Recovery {RecoveryHoldMs} ms"
+        : "Recovery";
+
     public bool Ipv6Supported => false;
 }
 

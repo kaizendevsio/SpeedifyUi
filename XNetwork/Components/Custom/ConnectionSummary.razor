@@ -43,6 +43,18 @@
                             <span>Unstable</span>
                         </span>
                     }
+                    @if (IsRecoveryActive)
+                    {
+                        <span class="inline-flex items-center gap-1 rounded-full border border-orange-400/35 bg-orange-500/10 px-2 py-0.5 text-xs font-medium text-orange-200"
+                              title="@RecoveryReason">
+                            <i class="fas fa-shield-heart text-[10px]"></i>
+                            <span>Recovery</span>
+                            @if (RecoveryHoldMs > 0)
+                            {
+                                <span class="text-orange-100">@RecoveryHoldMs ms</span>
+                            }
+                        </span>
+                    }
                 </div>
                 <p class="text-xs text-slate-400 mt-1">@GetStatusDescription()</p>
             </div>
@@ -77,6 +89,9 @@
     [Parameter] public double? AnchorDownload { get; set; }
     [Parameter] public double? BackupDownload { get; set; }
     [Parameter] public bool IsStable { get; set; } = true;
+    [Parameter] public bool IsRecoveryActive { get; set; }
+    [Parameter] public int RecoveryHoldMs { get; set; }
+    [Parameter] public string RecoveryReason { get; set; } = "";
     [Parameter] public bool ShowTrafficDetailsHint { get; set; }
     [Parameter] public EventCallback OnTrafficDetailsRequested { get; set; }
     
@@ -279,6 +294,13 @@
 
     private string GetStatusDescription()
     {
+        if (IsRecoveryActive)
+        {
+            return RecoveryHoldMs > 0
+                ? $"Recovery mode active; server reorder hold is {RecoveryHoldMs}ms."
+                : "Recovery mode active; XBond is prioritizing packet survival.";
+        }
+
         var status = ConnectionStatus.ToLowerInvariant();
         
         // Initializing state

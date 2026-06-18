@@ -30,7 +30,7 @@ use xbond_core::{
     ScheduleControlMessage, ScheduleMode, SchedulePlan, XBondControlMessage,
     XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
     XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRepairStatus, XBondRuntimeStatus,
-    XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -1149,6 +1149,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut return_reorder = PacketReorderBuffer::new(8192, config.reorder_hold_ms * 1_000);
     let mut resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
     let mut repair = XBondRepairStatus::default();
+    let mut server_recovery_status = XBondServerRecoveryStatus::default();
     let mut sequence = 0u64;
     let mut control_sequence = 1_000_000_000_000u64;
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
@@ -1177,6 +1178,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         role_state.schedule_change_count,
         &return_reorder,
         &repair,
+        &server_recovery_status,
         tun_packet_rx.len(),
         inbound_rx.len(),
     )?;
@@ -1304,6 +1306,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     role_state.schedule_change_count,
                     &return_reorder,
                     &repair,
+                    &server_recovery_status,
                     tun_packet_rx.len(),
                     inbound_rx.len(),
                 )?;
@@ -1398,6 +1401,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     role_state.schedule_change_count,
                     &return_reorder,
                     &repair,
+                    &server_recovery_status,
                     tun_packet_rx.len(),
                     inbound_rx.len(),
                 )?;
@@ -1629,6 +1633,29 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
             Some(inbound) = inbound_rx.recv() => {
                 counters.decoded_frames = counters.decoded_frames.saturating_add(1);
+                if let Some(status) = parse_server_recovery_status(&inbound.frame) {
+                    server_recovery_status = status;
+                    write_tunnel_runtime_status(
+                        &config,
+                        &tun,
+                        options.tun_mtu,
+                        &counters,
+                        &roles,
+                        &schedule,
+                        effective_mode,
+                        effective_policy,
+                        &recovery_status,
+                        &aggregate_health,
+                        active_override.as_ref(),
+                        role_state.schedule_change_count,
+                        &return_reorder,
+                        &repair,
+                        &server_recovery_status,
+                        tun_packet_rx.len(),
+                        inbound_rx.len(),
+                    )?;
+                    continue;
+                }
                 if let Some(sequences) = parse_repair_request(&inbound.frame) {
                     repair.requests_received = repair
                         .requests_received
@@ -2261,12 +2288,28 @@ fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
         return None;
     }
 
-    let XBondControlMessage::RepairRequest { mut sequences } =
-        serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()?;
+    let mut sequences = match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
+        XBondControlMessage::RepairRequest { sequences } => sequences,
+        XBondControlMessage::ServerRecoveryStatus { .. } => return None,
+    };
     sequences.sort_unstable();
     sequences.dedup();
     sequences.truncate(MAX_REPAIR_REQUESTS);
     (!sequences.is_empty()).then_some(sequences)
+}
+
+fn parse_server_recovery_status(frame: &XBondFrame) -> Option<XBondServerRecoveryStatus> {
+    if frame.header.kind != PacketKind::Control {
+        return None;
+    }
+
+    match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
+        XBondControlMessage::ServerRecoveryStatus { mut status } => {
+            status.reported = true;
+            Some(status)
+        }
+        XBondControlMessage::RepairRequest { .. } => None,
+    }
 }
 
 async fn send_repair_requests_for_return_gaps(
@@ -2882,6 +2925,7 @@ fn write_tunnel_runtime_status(
     schedule_change_count: u64,
     return_reorder: &PacketReorderBuffer,
     repair: &XBondRepairStatus,
+    server_recovery_status: &XBondServerRecoveryStatus,
     tun_queue_depth: usize,
     inbound_queue_depth: usize,
 ) -> Result<()> {
@@ -2932,6 +2976,7 @@ fn write_tunnel_runtime_status(
                 return_path: return_reorder.stats(),
             },
             repair: repair.clone(),
+            server_recovery: server_recovery_status.clone(),
             process: XBondProcessStatus {
                 process_cpu_percent: None,
                 rss_bytes: current_process_rss_bytes(),
@@ -3564,6 +3609,7 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         late_packets_dropped: runtime.late_packets_dropped,
         reorder: runtime.reorder,
         repair: runtime.repair,
+        server_recovery: runtime.server_recovery,
         process: runtime.process,
         recovery: runtime.recovery,
         message: runtime.message.unwrap_or_else(|| {

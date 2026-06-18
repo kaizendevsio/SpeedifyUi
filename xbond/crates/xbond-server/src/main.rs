@@ -17,7 +17,7 @@ use xbond_core::{
     PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
     RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache, ScheduleControlMessage,
     SchedulePlan, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
-    XBondTun, XorFecBlock,
+    XBondServerIngressReorderStatus, XBondServerRecoveryStatus, XBondTun, XorFecBlock,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -396,6 +396,7 @@ async fn main() -> Result<()> {
     let mut repair = XBondRepairStatus::default();
     let mut reverse_sequence = initial_reverse_sequence();
     let mut control_sequence = 2_000_000_000_000u64;
+    let mut last_server_recovery_status_sent = Instant::now();
     let mut last_session_id = 0u64;
     let mut reorder_session_id = 0u64;
     let mut reorder_tick = time::interval(Duration::from_millis(
@@ -571,6 +572,26 @@ async fn main() -> Result<()> {
                             })
                         );
                     }
+                    let status = build_server_recovery_status(
+                        return_control
+                            .as_ref()
+                            .is_some_and(|control| control.recovery_active),
+                        &reorder,
+                        &repair,
+                        &hold_controller,
+                        args.ingress_reorder_capacity,
+                    );
+                    send_server_recovery_status(
+                        &socket,
+                        &key,
+                        &peers,
+                        last_session_id,
+                        &mut control_sequence,
+                        status,
+                        args.json_events,
+                    )
+                    .await?;
+                    last_server_recovery_status_sent = Instant::now();
                 }
 
                 let should_ack = matches!(
@@ -877,6 +898,26 @@ async fn main() -> Result<()> {
                             })
                         );
                     }
+                }
+                if last_server_recovery_status_sent.elapsed() >= Duration::from_secs(1) {
+                    let status = build_server_recovery_status(
+                        recovery_active,
+                        &reorder,
+                        &repair,
+                        &hold_controller,
+                        args.ingress_reorder_capacity,
+                    );
+                    send_server_recovery_status(
+                        &socket,
+                        &key,
+                        &peers,
+                        last_session_id,
+                        &mut control_sequence,
+                        status,
+                        args.json_events && args.trace_packets,
+                    )
+                    .await?;
+                    last_server_recovery_status_sent = Instant::now();
                 }
             }
 
@@ -1316,12 +1357,100 @@ fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
         return None;
     }
 
-    let XBondControlMessage::RepairRequest { mut sequences } =
-        serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()?;
+    let mut sequences = match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
+        XBondControlMessage::RepairRequest { sequences } => sequences,
+        XBondControlMessage::ServerRecoveryStatus { .. } => return None,
+    };
     sequences.sort_unstable();
     sequences.dedup();
     sequences.truncate(MAX_REPAIR_REQUESTS);
     (!sequences.is_empty()).then_some(sequences)
+}
+
+fn build_server_recovery_status(
+    recovery_active: bool,
+    reorder: &PacketReorderBuffer,
+    repair: &XBondRepairStatus,
+    hold_controller: &IngressReorderHoldController,
+    capacity: usize,
+) -> XBondServerRecoveryStatus {
+    let adaptive = hold_controller.status();
+    XBondServerRecoveryStatus {
+        reported: true,
+        recovery_active,
+        ingress_reorder: XBondServerIngressReorderStatus {
+            current_hold_ms: adaptive.current_hold_ms,
+            normal_hold_ms: adaptive.normal_hold_ms,
+            recovery_min_hold_ms: adaptive.recovery_min_hold_ms,
+            recovery_max_hold_ms: adaptive.recovery_max_hold_ms,
+            adaptive_recovery_hold_enabled: adaptive.adaptive_enabled,
+            adaptive_calm_samples: adaptive.calm_samples,
+            adaptive_last_adjustment_reason: adaptive.last_adjustment_reason,
+            capacity,
+            stats: reorder.stats(),
+        },
+        repair: repair.clone(),
+        updated_at_micros: now_micros(),
+    }
+}
+
+async fn send_server_recovery_status(
+    socket: &UdpSocket,
+    key: &XBondKey,
+    peers: &HashMap<u16, SocketAddr>,
+    session_id: u64,
+    control_sequence: &mut u64,
+    status: XBondServerRecoveryStatus,
+    json_events: bool,
+) -> Result<()> {
+    if peers.is_empty() || session_id == 0 {
+        return Ok(());
+    }
+
+    *control_sequence = control_sequence.saturating_add(1);
+    let sequence = *control_sequence;
+    let payload = serde_json::to_vec(&XBondControlMessage::ServerRecoveryStatus { status })?;
+
+    for (path_id, peer) in peers {
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Control,
+                session_id,
+                sequence,
+                now_micros(),
+                *path_id,
+            ),
+            payload.clone(),
+        );
+        let encoded = frame.encode_sealed(key)?;
+        if let Err(error) = socket.send_to(&encoded, *peer).await {
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "server-recovery-status-send-failed",
+                        "path_id": path_id,
+                        "peer": peer.to_string(),
+                        "sequence": sequence,
+                        "error": error.to_string(),
+                    })
+                );
+            }
+        }
+    }
+
+    if json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "server-recovery-status-sent",
+                "sequence": sequence,
+                "paths": peers.keys().copied().collect::<Vec<_>>(),
+            })
+        );
+    }
+
+    Ok(())
 }
 
 async fn send_repair_requests_for_ingress_gaps(

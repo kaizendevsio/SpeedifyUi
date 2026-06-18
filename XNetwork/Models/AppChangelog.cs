@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.59";
+    public const string CurrentVersion = "xbond-2026.06.60";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Surfaced XBond recovery hold telemetry.",
+            Changes =
+            [
+                "XBond server recovery and ingress reorder hold telemetry now flows into the router client status JSON.",
+                "The dashboard connection card shows a Recovery badge with the current server hold time while recovery is active.",
+                "Analytics now includes a Recovery Hold chart so adaptive hold changes can be reviewed over time."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.59",
             Date = "2026-06-18",
             Summary = "Removed path-derived connection health substitution.",
             Changes =

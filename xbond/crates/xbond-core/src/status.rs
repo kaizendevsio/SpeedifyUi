@@ -31,6 +31,8 @@ pub struct XBondStatus {
     pub reorder: XBondReorderStatus,
     #[serde(default)]
     pub repair: XBondRepairStatus,
+    #[serde(default)]
+    pub server_recovery: XBondServerRecoveryStatus,
     pub process: XBondProcessStatus,
     pub recovery: RecoveryStatus,
     pub message: String,
@@ -233,7 +235,7 @@ pub struct XBondReorderStatus {
     pub return_path: ReorderStats,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct XBondRepairStatus {
     #[serde(default)]
     pub requests_sent: u64,
@@ -251,6 +253,42 @@ pub struct XBondRepairStatus {
     pub queue_drops: u64,
     #[serde(default)]
     pub cache_entries: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondServerRecoveryStatus {
+    #[serde(default)]
+    pub reported: bool,
+    #[serde(default)]
+    pub recovery_active: bool,
+    #[serde(default)]
+    pub ingress_reorder: XBondServerIngressReorderStatus,
+    #[serde(default)]
+    pub repair: XBondRepairStatus,
+    #[serde(default)]
+    pub updated_at_micros: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondServerIngressReorderStatus {
+    #[serde(default)]
+    pub current_hold_ms: u64,
+    #[serde(default)]
+    pub normal_hold_ms: u64,
+    #[serde(default)]
+    pub recovery_min_hold_ms: u64,
+    #[serde(default)]
+    pub recovery_max_hold_ms: u64,
+    #[serde(default)]
+    pub adaptive_recovery_hold_enabled: bool,
+    #[serde(default)]
+    pub adaptive_calm_samples: u32,
+    #[serde(default)]
+    pub adaptive_last_adjustment_reason: String,
+    #[serde(default)]
+    pub capacity: usize,
+    #[serde(default)]
+    pub stats: ReorderStats,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -342,6 +380,8 @@ pub struct XBondRuntimeStatus {
     pub reorder: XBondReorderStatus,
     #[serde(default)]
     pub repair: XBondRepairStatus,
+    #[serde(default)]
+    pub server_recovery: XBondServerRecoveryStatus,
     #[serde(default)]
     pub process: XBondProcessStatus,
     #[serde(default)]

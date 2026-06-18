@@ -37,7 +37,7 @@ pub use scheduler::{
 };
 pub use status::{
     PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondPathStatus,
-    XBondProcessStatus, XBondReorderStatus, XBondRepairStatus, XBondRuntimeStatus, XBondStatus,
-    XBondTunnelStatus,
+    XBondProcessStatus, XBondReorderStatus, XBondRepairStatus, XBondRuntimeStatus,
+    XBondServerIngressReorderStatus, XBondServerRecoveryStatus, XBondStatus, XBondTunnelStatus,
 };
 pub use tun::{is_ipv4_packet, XBondTun};

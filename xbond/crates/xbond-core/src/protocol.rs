@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::crypto::{CryptoError, XBondKey, TAG_LEN};
+use crate::status::XBondServerRecoveryStatus;
 
 pub const MAGIC: [u8; 4] = *b"XBND";
 pub const VERSION: u8 = 1;
@@ -53,6 +54,7 @@ impl TryFrom<u8> for PacketKind {
 #[serde(tag = "control", rename_all = "kebab-case")]
 pub enum XBondControlMessage {
     RepairRequest { sequences: Vec<u64> },
+    ServerRecoveryStatus { status: XBondServerRecoveryStatus },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -126,6 +126,9 @@
             AnchorDownload="@GetAnchorDownloadMbps()"
             BackupDownload="@GetBackupDownloadMbps()"
             IsStable="@IsConnectionStable()"
+            IsRecoveryActive="@(_snapshot?.IsRecoveryActive == true)"
+            RecoveryHoldMs="@(_snapshot?.RecoveryHoldMs ?? 0)"
+            RecoveryReason="@(_snapshot?.RecoveryReason ?? string.Empty)"
             ShowTrafficDetailsHint="false" />
 
         @if (_starlink.IsAvailable)
