@@ -16,6 +16,7 @@ use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time;
 use xbond_core::{
     build_schedule, decode_sealed_payload_into, default_udp_socket_buffer_bytes,
@@ -373,7 +374,7 @@ struct ProbePathSpec {
     path_id: u16,
     name: String,
     interface_name: Option<String>,
-    bind_addr: String,
+    bind_addr: Option<String>,
     bind_device: Option<String>,
 }
 
@@ -415,6 +416,7 @@ struct PathSendReport {
 #[derive(Debug)]
 struct PathSenderHandle {
     tx: mpsc::Sender<PathSendWork>,
+    task: JoinHandle<()>,
 }
 
 #[derive(Debug, Default)]
@@ -973,6 +975,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         .collect::<HashMap<_, _>>();
     let mut sockets: HashMap<u16, Arc<UdpSocket>> = HashMap::new();
     let mut senders: HashMap<u16, PathSenderHandle> = HashMap::new();
+    let mut receivers: HashMap<u16, JoinHandle<()>> = HashMap::new();
     let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlEnvelope>();
     let (send_report_tx, mut send_report_rx) = mpsc::unbounded_channel::<PathSendReport>();
@@ -1021,6 +1024,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &specs_by_id,
         &mut sockets,
         &mut senders,
+        &mut receivers,
         &mut path_runtime,
         &inbound_tx,
         &send_report_tx,
@@ -1157,6 +1161,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &specs_by_id,
                     &mut sockets,
                     &mut senders,
+                    &mut receivers,
                     &mut path_runtime,
                     &inbound_tx,
                     &send_report_tx,
@@ -1730,6 +1735,7 @@ async fn ensure_tunnel_sockets(
     specs_by_id: &HashMap<u16, ProbePathSpec>,
     sockets: &mut HashMap<u16, Arc<UdpSocket>>,
     senders: &mut HashMap<u16, PathSenderHandle>,
+    receivers: &mut HashMap<u16, JoinHandle<()>>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     inbound_tx: &mpsc::Sender<InboundTunnelFrame>,
     send_report_tx: &mpsc::UnboundedSender<PathSendReport>,
@@ -1740,9 +1746,72 @@ async fn ensure_tunnel_sockets(
         path_runtime.entry(*path_id).or_default();
 
         if !interface_is_live(spec.interface_name.as_deref()) {
-            sockets.remove(path_id);
-            senders.remove(path_id);
+            remove_tunnel_path(*path_id, sockets, senders, receivers);
             continue;
+        }
+
+        let bind_addr = match effective_bind_addr_for_spec(&config.server_addr, spec) {
+            Ok(bind_addr) => bind_addr,
+            Err(error) => {
+                remove_tunnel_path(*path_id, sockets, senders, receivers);
+                record_tunnel_send_failure(path_runtime, *path_id);
+                if json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "path-bind-resolve-failed",
+                            "path_id": path_id,
+                            "interface": spec.interface_name,
+                            "error": error.to_string(),
+                        })
+                    );
+                }
+                continue;
+            }
+        };
+
+        if let Some(socket) = sockets.get(path_id) {
+            if socket_source_matches_bind_addr(socket, &bind_addr) {
+                if !senders.contains_key(path_id) {
+                    let sender = spawn_tunnel_sender(
+                        *path_id,
+                        socket.clone(),
+                        key.clone(),
+                        config.tun_queue_capacity.max(1),
+                        send_report_tx.clone(),
+                    );
+                    senders.insert(*path_id, sender);
+                }
+                if !receivers.contains_key(path_id) {
+                    let receiver = spawn_tunnel_receiver(
+                        *path_id,
+                        socket.clone(),
+                        inbound_tx.clone(),
+                        key.clone(),
+                    );
+                    receivers.insert(*path_id, receiver);
+                }
+                continue;
+            }
+
+            if json_events {
+                let current = socket
+                    .local_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|_| "unknown".to_string());
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "path-socket-recreated",
+                        "path_id": path_id,
+                        "old_local_addr": current,
+                        "new_bind_addr": bind_addr,
+                    })
+                );
+            }
+            remove_tunnel_path(*path_id, sockets, senders, receivers);
+        } else if senders.contains_key(path_id) || receivers.contains_key(path_id) {
+            remove_tunnel_path(*path_id, sockets, senders, receivers);
         }
 
         if let Some(socket) = sockets.get(path_id) {
@@ -1756,11 +1825,20 @@ async fn ensure_tunnel_sockets(
                 );
                 senders.insert(*path_id, sender);
             }
+            if !receivers.contains_key(path_id) {
+                let receiver = spawn_tunnel_receiver(
+                    *path_id,
+                    socket.clone(),
+                    inbound_tx.clone(),
+                    key.clone(),
+                );
+                receivers.insert(*path_id, receiver);
+            }
             continue;
         }
 
         let socket = match create_isolated_udp_socket(
-            &spec.bind_addr,
+            &bind_addr,
             spec.bind_device.as_deref(),
             config.udp_socket_buffer_bytes,
         ) {
@@ -1798,7 +1876,8 @@ async fn ensure_tunnel_sockets(
         }
 
         let socket = Arc::new(socket);
-        spawn_tunnel_receiver(*path_id, socket.clone(), inbound_tx.clone(), key.clone());
+        let receiver =
+            spawn_tunnel_receiver(*path_id, socket.clone(), inbound_tx.clone(), key.clone());
         let sender = spawn_tunnel_sender(
             *path_id,
             socket.clone(),
@@ -1807,10 +1886,26 @@ async fn ensure_tunnel_sockets(
             send_report_tx.clone(),
         );
         senders.insert(*path_id, sender);
+        receivers.insert(*path_id, receiver);
         sockets.insert(*path_id, socket);
     }
 
     Ok(())
+}
+
+fn remove_tunnel_path(
+    path_id: u16,
+    sockets: &mut HashMap<u16, Arc<UdpSocket>>,
+    senders: &mut HashMap<u16, PathSenderHandle>,
+    receivers: &mut HashMap<u16, JoinHandle<()>>,
+) {
+    sockets.remove(&path_id);
+    if let Some(sender) = senders.remove(&path_id) {
+        sender.task.abort();
+    }
+    if let Some(receiver) = receivers.remove(&path_id) {
+        receiver.abort();
+    }
 }
 
 fn spawn_tunnel_sender(
@@ -1821,7 +1916,7 @@ fn spawn_tunnel_sender(
     report_tx: mpsc::UnboundedSender<PathSendReport>,
 ) -> PathSenderHandle {
     let (tx, mut rx) = mpsc::channel::<PathSendWork>(capacity.max(1));
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut encoded = Vec::with_capacity(4096);
         while let Some(work) = rx.recv().await {
             let started = Instant::now();
@@ -1869,7 +1964,7 @@ fn spawn_tunnel_sender(
             let _ = report_tx.send(report);
         }
     });
-    PathSenderHandle { tx }
+    PathSenderHandle { tx, task }
 }
 
 fn spawn_tunnel_receiver(
@@ -1877,7 +1972,7 @@ fn spawn_tunnel_receiver(
     socket: Arc<UdpSocket>,
     inbound_tx: mpsc::Sender<InboundTunnelFrame>,
     key: XBondKey,
-) {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 4096];
         let mut payload = Vec::with_capacity(4096);
@@ -1905,7 +2000,7 @@ fn spawn_tunnel_receiver(
                 break;
             }
         }
-    });
+    })
 }
 
 fn tunnel_health(
@@ -2558,8 +2653,28 @@ async fn prepare_probe_path(
     server: &str,
     target_ip: Option<IpAddr>,
 ) -> Result<PreparedProbePath> {
+    let bind_addr = match effective_bind_addr_for_spec(server, &spec) {
+        Ok(bind_addr) => bind_addr,
+        Err(error) => {
+            let bind_label = configured_bind_label(&spec);
+            let route_verification = RouteVerification::failed("bind-resolve", error.to_string());
+            let stats = ProbePathStats::new(
+                spec.path_id,
+                Some(spec.name.clone()),
+                spec.interface_name.clone(),
+                bind_label,
+                None,
+                route_verification,
+            );
+            return Ok(PreparedProbePath {
+                active: None,
+                inactive_stats: Some(stats),
+            });
+        }
+    };
+
     let socket = match create_isolated_udp_socket(
-        &spec.bind_addr,
+        &bind_addr,
         spec.bind_device.as_deref(),
         default_udp_socket_buffer_bytes(),
     ) {
@@ -2570,7 +2685,7 @@ async fn prepare_probe_path(
                 spec.path_id,
                 Some(spec.name),
                 spec.interface_name,
-                spec.bind_addr,
+                bind_addr,
                 None,
                 route_verification,
             );
@@ -2723,13 +2838,13 @@ fn select_probe_paths(
     Ok(paths)
 }
 
-fn configured_or_default_bind_addr(path: &xbond_core::PathConfig) -> Result<String> {
+fn configured_or_default_bind_addr(path: &xbond_core::PathConfig) -> Result<Option<String>> {
     if let Some(bind_addr) = &path.bind_addr {
-        return Ok(bind_addr.clone());
+        return Ok(Some(bind_addr.clone()));
     }
 
     if path.interface_name.is_some() {
-        return Ok("0.0.0.0:0".to_string());
+        return Ok(None);
     }
 
     bail!(
@@ -2765,9 +2880,87 @@ fn parse_explicit_probe_bind(
         path_id,
         name: format!("explicit-bind-{path_id}"),
         interface_name: None,
-        bind_addr,
+        bind_addr: Some(bind_addr),
         bind_device: None,
     })
+}
+
+fn configured_bind_label(spec: &ProbePathSpec) -> String {
+    spec.bind_addr
+        .clone()
+        .or_else(|| {
+            spec.interface_name
+                .as_ref()
+                .map(|name| format!("interface:{name}"))
+        })
+        .unwrap_or_else(|| "unconfigured".to_string())
+}
+
+fn effective_bind_addr_for_spec(server: &str, spec: &ProbePathSpec) -> Result<String> {
+    if let Some(bind_addr) = spec
+        .bind_addr
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(bind_addr.to_string());
+    }
+
+    let Some(interface_name) = spec.interface_name.as_deref() else {
+        bail!(
+            "path {} ({}) has no bind_addr or interface_name",
+            spec.path_id,
+            spec.name
+        );
+    };
+
+    resolve_interface_source_bind_addr(server, interface_name)
+}
+
+fn resolve_interface_source_bind_addr(server: &str, interface_name: &str) -> Result<String> {
+    if is_tunnel_interface(interface_name) {
+        bail!("refusing to resolve bind source for tunnel interface {interface_name}");
+    }
+
+    let target_ip = resolve_server_ip(server)
+        .with_context(|| format!("failed to resolve XBond server address {server}"))?;
+    if !target_ip.is_ipv4() {
+        bail!("interface source binding is currently IPv4-only; server resolved to {target_ip}");
+    }
+    if !cfg!(target_os = "linux") {
+        bail!("interface source binding requires Linux iproute2");
+    }
+
+    let target_ip = target_ip.to_string();
+    let output = ProcessCommand::new("ip")
+        .args(["-4", "route", "get", &target_ip, "oif", interface_name])
+        .output()
+        .with_context(|| format!("failed to run ip route get for interface {interface_name}"))?;
+    if !output.status.success() {
+        bail!(
+            "ip route get for {target_ip} on {interface_name} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    bind_addr_from_route_output(&String::from_utf8_lossy(&output.stdout), interface_name)
+}
+
+fn bind_addr_from_route_output(route_output: &str, interface_name: &str) -> Result<String> {
+    let route_dev = token_after(route_output, "dev");
+    if route_dev.as_deref() != Some(interface_name) {
+        bail!(
+            "route output dev {:?} does not match interface {interface_name}",
+            route_dev
+        );
+    }
+
+    let source = token_after(route_output, "src").or_else(|| token_after(route_output, "from"));
+    let Some(source) = source else {
+        bail!("route output did not include a source address");
+    };
+
+    Ok(format!("{source}:0"))
 }
 
 fn resolve_server_ip(server: &str) -> Option<IpAddr> {
@@ -2803,6 +2996,20 @@ fn create_isolated_udp_socket(
     socket.set_nonblocking(true)?;
     let std_socket: std::net::UdpSocket = socket.into();
     Ok((UdpSocket::from_std(std_socket)?, isolation))
+}
+
+fn socket_source_matches_bind_addr(socket: &UdpSocket, bind_addr: &str) -> bool {
+    let Ok(expected) = bind_addr.parse::<SocketAddr>() else {
+        return false;
+    };
+    if expected.ip().is_unspecified() {
+        return true;
+    }
+
+    socket
+        .local_addr()
+        .map(|actual| actual.ip() == expected.ip())
+        .unwrap_or(false)
 }
 
 fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
@@ -3404,7 +3611,7 @@ mod tests {
         assert_eq!(paths[0].path_id, 1);
         assert_eq!(paths[0].interface_name.as_deref(), Some("eth0"));
         assert_eq!(paths[1].path_id, 9);
-        assert_eq!(paths[1].bind_addr, "198.51.100.10:0");
+        assert_eq!(paths[1].bind_addr.as_deref(), Some("198.51.100.10:0"));
     }
 
     #[test]
@@ -3415,6 +3622,24 @@ mod tests {
         assert_eq!(token_after(text, "src").as_deref(), Some("192.0.2.10"));
         assert_eq!(token_after(text, "from").as_deref(), Some("192.0.2.10"));
         assert_eq!(token_after(text, "missing"), None);
+    }
+
+    #[test]
+    fn route_output_builds_interface_source_bind_addr() {
+        let text = "45.77.241.247 dev eth0 src 192.0.2.10 uid 0 cache";
+
+        let bind_addr = bind_addr_from_route_output(text, "eth0").unwrap();
+
+        assert_eq!(bind_addr, "192.0.2.10:0");
+    }
+
+    #[test]
+    fn route_output_rejects_wrong_interface_source() {
+        let text = "45.77.241.247 dev wlan0 src 192.0.2.20 uid 0 cache";
+
+        let error = bind_addr_from_route_output(text, "eth0").unwrap_err();
+
+        assert!(error.to_string().contains("does not match interface eth0"));
     }
 
     #[test]
@@ -3460,7 +3685,7 @@ mod tests {
 
         let paths = select_probe_paths(&config, &[], &[]).unwrap();
 
-        assert_eq!(paths[0].bind_addr, "0.0.0.0:0");
+        assert_eq!(paths[0].bind_addr, None);
         assert_eq!(paths[0].bind_device.as_deref(), Some("eth0"));
     }
 }

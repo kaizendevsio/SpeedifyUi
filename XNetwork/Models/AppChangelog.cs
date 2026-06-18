@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.50";
+    public const string CurrentVersion = "xbond-2026.06.51";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-18",
+            Summary = "Fixed stale XBond modem sockets after adapter churn.",
+            Changes =
+            [
+                "XBond interface-only paths now bind to the current IPv4 source address for that interface instead of relying on an unspecified source.",
+                "Old XBond per-path sender and receiver tasks are stopped when path sockets are removed or recreated, preventing stale modem sockets from keeping adapters stuck at 100% loss."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.50",
             Date = "2026-06-18",
             Summary = "Stopped showing stale RTT as live latency.",
             Changes =
