@@ -24,4 +24,15 @@ public class RouteTransitionDirectionServiceTests
     {
         Assert.Equal(RouteTransitionDirectionService.GetRouteOrder("/xrouter"), RouteTransitionDirectionService.GetRouteOrder("/wifi"));
     }
+
+    [Theory]
+    [InlineData("http://xnetwork/")]
+    [InlineData("/")]
+    [InlineData("/details")]
+    public void GetRouteOrder_NormalizesRootAndRelativePathsWithoutRecursion(string uriOrPath)
+    {
+        var order = RouteTransitionDirectionService.GetRouteOrder(uriOrPath);
+
+        Assert.InRange(order, 0, 4);
+    }
 }

@@ -63,7 +63,8 @@ public sealed class RouteTransitionDirectionService
 
     private static string NormalizePath(string uriOrPath)
     {
-        if (Uri.TryCreate(uriOrPath, UriKind.Absolute, out var uri))
+        if (uriOrPath.Contains("://", StringComparison.Ordinal) &&
+            Uri.TryCreate(uriOrPath, UriKind.Absolute, out var uri))
         {
             return NormalizePath(uri.PathAndQuery);
         }

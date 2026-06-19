@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.65";
+    public const string CurrentVersion = "xbond-2026.06.66";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Fixed route path normalization on the router.",
+            Changes =
+            [
+                "Fixed a Linux runtime recursion bug in route path normalization that could crash the dashboard service.",
+                "Kept the tab-order-aware transition direction and smooth chart motion from the previous build."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.65",
             Date = "2026-06-19",
             Summary = "Smoothed tab direction and live charts.",
             Changes =
