@@ -34,11 +34,17 @@ export function setMaxDataPoints(value) {
         }
 
         trimChartData(charts[chartId]);
+        applyNumericScrollWindow(charts[chartId], maxDataPoints);
         charts[chartId].update('none');
     }
 }
 
 function trimChartData(chart, maxPoints = maxDataPoints) {
+    if (chart.$xnetworkNumericScroll) {
+        trimNumericScrollChartData(chart, maxPoints);
+        return;
+    }
+
     while (chart.data.labels.length > maxPoints) {
         chart.data.labels.shift();
     }
@@ -48,6 +54,24 @@ function trimChartData(chart, maxPoints = maxDataPoints) {
             dataset.data.shift();
         }
     });
+}
+
+function trimNumericScrollChartData(chart, maxPoints) {
+    const latestX = chart.$xnetworkLatestX;
+    const minXToKeep = Number.isFinite(latestX)
+        ? Math.max(0, latestX - maxPoints + 1)
+        : 0;
+
+    while (chart.data.labels.length > maxPoints) {
+        const firstPoint = chart.data.datasets[0]?.data?.[0];
+        const firstX = getPointX(firstPoint, 0);
+        if (Number.isFinite(firstX) && firstX >= minXToKeep) {
+            break;
+        }
+
+        chart.data.labels.shift();
+        chart.data.datasets.forEach(dataset => dataset.data.shift());
+    }
 }
 
 function schedulePostAnimationTrim(chartId, maxPoints) {
@@ -65,6 +89,70 @@ function schedulePostAnimationTrim(chartId, maxPoints) {
         chart.update('none');
         delete liveTrimTimers[chartId];
     }, LIVE_CHART_ANIMATION_DURATION + 40);
+}
+
+function configureNumericScrollChart(chart, visiblePoints, startX = 0) {
+    chart.$xnetworkNumericScroll = true;
+    chart.$xnetworkNextX = startX;
+    chart.$xnetworkLatestX = startX > 0 ? startX - 1 : null;
+    chart.$xnetworkVisiblePoints = visiblePoints;
+
+    const xScale = chart.options.scales.x;
+    xScale.type = 'linear';
+    xScale.min = 0;
+    xScale.max = Math.max(visiblePoints - 1, 0);
+}
+
+function reserveChartX(chart) {
+    const x = Number.isFinite(chart.$xnetworkNextX)
+        ? chart.$xnetworkNextX
+        : chart.data.labels.length;
+    chart.$xnetworkNextX = x + 1;
+    chart.$xnetworkLatestX = x;
+    return x;
+}
+
+function createChartPoint(x, value, missingValue = NaN) {
+    return {
+        x,
+        y: normalizeChartValue(value, missingValue)
+    };
+}
+
+function normalizeChartValue(value, missingValue = NaN) {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : missingValue;
+}
+
+function setPointValue(dataset, index, value, missingValue = NaN) {
+    const point = dataset.data[index];
+    const y = normalizeChartValue(value, missingValue);
+
+    if (point && typeof point === 'object' && Object.prototype.hasOwnProperty.call(point, 'y')) {
+        point.y = y;
+        return;
+    }
+
+    dataset.data[index] = y;
+}
+
+function getPointX(point, fallbackIndex) {
+    if (point && typeof point === 'object' && Number.isFinite(point.x)) {
+        return point.x;
+    }
+
+    return fallbackIndex;
+}
+
+function applyNumericScrollWindow(chart, visiblePoints) {
+    if (!chart.$xnetworkNumericScroll || !Number.isFinite(chart.$xnetworkLatestX)) {
+        return;
+    }
+
+    const latestX = chart.$xnetworkLatestX;
+    const visibleWidth = Math.max(visiblePoints - 1, 0);
+    chart.options.scales.x.min = Math.max(0, latestX - visibleWidth);
+    chart.options.scales.x.max = Math.max(visibleWidth, latestX);
 }
 
 function formatValueForAxis(value, yAxisLabel) {
@@ -143,6 +231,7 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 maintainAspectRatio: false,
                 scales: {
                     x: {
+                        type: 'linear',
                         title: {
                             display: false,
                             text: 'Time'
@@ -197,6 +286,7 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 }
             }
         });
+        configureNumericScrollChart(charts[chartId], maxDataPoints);
         console.log(`Chart ${chartId} initialized successfully.`);
         return true; // Indicate success
     } catch (error) {
@@ -217,34 +307,38 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
 
     let addedNewPoint = false;
 
-    if (chart.data.labels.includes(timestamp) && chart.data.labels.length > 1) {
+    const labelIndex = chart.data.labels.indexOf(timestamp);
+    const hasExistingPoint = labelIndex >= 0 && chart.data.datasets.some(dataset => dataset.data.length > labelIndex);
+
+    if (hasExistingPoint) {
         // If timestamp already exists and it's not the very first point, update existing points
         // This handles cases where multiple adapters report at slightly different sub-second times
         // but we group them under the same second-level timestamp.
         // console.log(`Updating data for existing timestamp ${timestamp} in chart ${chartId}`);
-        const labelIndex = chart.data.labels.indexOf(timestamp);
         chart.data.datasets.forEach(dataset => {
             const adapterId = dataset.AdapterId;
             if (Object.prototype.hasOwnProperty.call(dataPointsByAdapterId, adapterId)) {
-                dataset.data[labelIndex] = dataPointsByAdapterId[adapterId];
+                setPointValue(dataset, labelIndex, dataPointsByAdapterId[adapterId]);
             }
         });
 
     } else {
         // Add new timestamp label if it doesn't exist or if it's the first point
-        if (!chart.data.labels.includes(timestamp)) {
+        if (labelIndex < 0) {
             chart.data.labels.push(timestamp);
-            addedNewPoint = true;
         }
 
+        addedNewPoint = true;
+        const pointX = reserveChartX(chart);
         chart.data.datasets.forEach(dataset => {
             const adapterId = dataset.AdapterId;
             const value = Object.prototype.hasOwnProperty.call(dataPointsByAdapterId, adapterId) ? dataPointsByAdapterId[adapterId] : NaN; // Use NaN for missing data
 
-            dataset.data.push(value);
+            dataset.data.push(createChartPoint(pointX, value));
         });
     }
     trimChartData(chart, addedNewPoint ? maxDataPoints + 1 : maxDataPoints);
+    applyNumericScrollWindow(chart, maxDataPoints);
     try {
         chart.update();
         if (addedNewPoint) {
@@ -396,9 +490,10 @@ export function initializeDashboardSparkline(chartId) {
 
     // Generate initial dummy data for sparkline
     const labels = [];
-    for (let i = DASHBOARD_DATA_POINTS - 1; i >= 0; i--) {
+    for (let i = 0; i < DASHBOARD_DATA_POINTS; i++) {
         labels.push('');
     }
+    const emptySparklineData = labels.map((_, index) => ({ x: index, y: null }));
 
     try {
         charts[chartId] = new Chart(ctx, {
@@ -408,7 +503,7 @@ export function initializeDashboardSparkline(chartId) {
                 datasets: [
                     {
                         label: 'Tunnel download',
-                        data: Array(DASHBOARD_DATA_POINTS).fill(null),
+                        data: emptySparklineData.map(point => ({ ...point })),
                         borderColor: '#22d3ee', // cyan-400
                         backgroundColor: 'rgba(34, 211, 238, 0.1)',
                         tension: 0.4, // Smooth bezier curves
@@ -421,7 +516,7 @@ export function initializeDashboardSparkline(chartId) {
                     },
                     {
                         label: 'Anchor download',
-                        data: Array(DASHBOARD_DATA_POINTS).fill(null),
+                        data: emptySparklineData.map(point => ({ ...point })),
                         borderColor: 'rgba(251, 146, 60, 0.62)', // orange-400
                         backgroundColor: 'rgba(251, 146, 60, 0)',
                         tension: 0.4,
@@ -434,7 +529,7 @@ export function initializeDashboardSparkline(chartId) {
                     },
                     {
                         label: 'Backup download',
-                        data: Array(DASHBOARD_DATA_POINTS).fill(null),
+                        data: emptySparklineData.map(point => ({ ...point })),
                         borderColor: 'rgba(244, 114, 182, 0.56)', // pink-400
                         backgroundColor: 'rgba(244, 114, 182, 0)',
                         tension: 0.4,
@@ -452,6 +547,7 @@ export function initializeDashboardSparkline(chartId) {
                 maintainAspectRatio: false,
                 scales: {
                     x: {
+                        type: 'linear',
                         display: false,
                         grid: {
                             display: false
@@ -494,6 +590,7 @@ export function initializeDashboardSparkline(chartId) {
                 }
             }
         });
+        configureNumericScrollChart(charts[chartId], DASHBOARD_DATA_POINTS, DASHBOARD_DATA_POINTS);
         console.log(`Dashboard sparkline ${chartId} initialized successfully.`);
         return true;
     } catch (error) {
@@ -511,12 +608,13 @@ export function updateDashboardSparkline(chartId, value, anchorValue = null, bac
         return false;
     }
 
-    pushDashboardValue(chart.data.datasets[0], value, DASHBOARD_DATA_POINTS + 1);
-    pushDashboardValue(chart.data.datasets[1], anchorValue, DASHBOARD_DATA_POINTS + 1);
-    pushDashboardValue(chart.data.datasets[2], backupValue, DASHBOARD_DATA_POINTS + 1);
-
     chart.data.labels.push('');
+    const pointX = reserveChartX(chart);
+    chart.data.datasets[0].data.push(createChartPoint(pointX, value, null));
+    chart.data.datasets[1].data.push(createChartPoint(pointX, anchorValue, null));
+    chart.data.datasets[2].data.push(createChartPoint(pointX, backupValue, null));
     trimChartData(chart, DASHBOARD_DATA_POINTS + 1);
+    applyNumericScrollWindow(chart, DASHBOARD_DATA_POINTS);
 
     try {
         chart.update();
@@ -525,14 +623,6 @@ export function updateDashboardSparkline(chartId, value, anchorValue = null, bac
     } catch (error) {
         console.error(`Error updating sparkline ${chartId}:`, error);
         return false;
-    }
-}
-
-function pushDashboardValue(dataset, value, maxPoints = DASHBOARD_DATA_POINTS) {
-    const numericValue = Number(value);
-    dataset.data.push(Number.isFinite(numericValue) ? numericValue : null);
-    if (dataset.data.length > maxPoints) {
-        dataset.data.shift();
     }
 }
 

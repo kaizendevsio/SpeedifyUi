@@ -13,7 +13,7 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.67";
+    public const string CurrentVersion = "xbond-2026.06.68";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
@@ -21,11 +21,11 @@ public static class AppChangelog
         {
             Version = CurrentVersion,
             Date = "2026-06-19",
-            Summary = "Reduced live chart edge flicker.",
+            Summary = "Smoothed live chart left-edge exits.",
             Changes =
             [
-                "Live Analytics charts now keep the incoming point present during the horizontal slide before trimming the oldest point.",
-                "The dashboard sparkline uses the same post-animation trim so the right edge does not disappear and reappear.",
+                "Live Analytics charts now use a numeric scrolling x-window so the outgoing left edge slides out instead of disappearing after the update.",
+                "The dashboard sparkline uses the same scrolling window behavior for consistent right-to-left motion.",
                 "The service-worker cache was refreshed so browsers pick up the updated chart script."
             ]
         },
