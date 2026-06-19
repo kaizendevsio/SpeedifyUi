@@ -277,6 +277,7 @@
 - 2026-06-19: XNetwork version `xbond-2026.06.64` moves the `Protecting from loss` badge from the connection summary card to the XBond tunnel card beside the active redundancy policy label.
 - 2026-06-19: XNetwork version `xbond-2026.06.65` restores tab-order-aware route transition direction without changing the current easing/timing, changes Analytics live charts to animate horizontally instead of vertically, gives the dashboard summary sparkline the same smooth right-to-left update motion, and bumps the service-worker cache so clients fetch the updated chart script.
 - 2026-06-19: XNetwork version `xbond-2026.06.66` fixes a Linux runtime recursion bug in route path normalization introduced by `xbond-2026.06.65`; the bug caused `xnetwork.service` to crash-loop on `xeon-network` until patched.
+- 2026-06-19: XNetwork version `xbond-2026.06.67` reduces live chart edge flicker by keeping one extra incoming point during the horizontal slide animation, then trimming the oldest point after the animation completes for Analytics charts and the dashboard sparkline; service-worker cache was bumped so clients fetch the updated chart script.
 - Known Cudy client endpoints are `/cgi-bin/luci/admin/network/devices/devlist?detail=1`, `/cgi-bin/luci/admin/network/devices/internet`, and `/cgi-bin/luci/admin/network/devices/devinfo`.
 - Cudy data caps were not implemented because the inspected firmware endpoint did not expose them.
 - `CudyXRouterClientParser` parses the Cudy HTML table; keep parser tests updated when endpoint markup changes.

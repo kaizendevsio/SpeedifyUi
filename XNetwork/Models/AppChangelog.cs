@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.66";
+    public const string CurrentVersion = "xbond-2026.06.67";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Reduced live chart edge flicker.",
+            Changes =
+            [
+                "Live Analytics charts now keep the incoming point present during the horizontal slide before trimming the oldest point.",
+                "The dashboard sparkline uses the same post-animation trim so the right edge does not disappear and reappear.",
+                "The service-worker cache was refreshed so browsers pick up the updated chart script."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.66",
             Date = "2026-06-19",
             Summary = "Fixed route path normalization on the router.",
             Changes =

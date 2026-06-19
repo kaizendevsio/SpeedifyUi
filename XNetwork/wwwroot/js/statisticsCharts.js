@@ -2,6 +2,7 @@
 
 // Store chart instances to manage them
 const charts = {};
+const liveTrimTimers = {};
 let maxDataPoints = 30; // Number of historical data points to show on charts
 const DASHBOARD_DATA_POINTS = 30;
 const LIVE_CHART_ANIMATION_DURATION = 240;
@@ -37,16 +38,33 @@ export function setMaxDataPoints(value) {
     }
 }
 
-function trimChartData(chart) {
-    while (chart.data.labels.length > maxDataPoints) {
+function trimChartData(chart, maxPoints = maxDataPoints) {
+    while (chart.data.labels.length > maxPoints) {
         chart.data.labels.shift();
     }
 
     chart.data.datasets.forEach(dataset => {
-        while (dataset.data.length > maxDataPoints) {
+        while (dataset.data.length > maxPoints) {
             dataset.data.shift();
         }
     });
+}
+
+function schedulePostAnimationTrim(chartId, maxPoints) {
+    if (liveTrimTimers[chartId]) {
+        clearTimeout(liveTrimTimers[chartId]);
+    }
+
+    liveTrimTimers[chartId] = setTimeout(() => {
+        const chart = charts[chartId];
+        if (!chart) {
+            return;
+        }
+
+        trimChartData(chart, maxPoints);
+        chart.update('none');
+        delete liveTrimTimers[chartId];
+    }, LIVE_CHART_ANIMATION_DURATION + 40);
 }
 
 function formatValueForAxis(value, yAxisLabel) {
@@ -197,6 +215,8 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
         return;
     }
 
+    let addedNewPoint = false;
+
     if (chart.data.labels.includes(timestamp) && chart.data.labels.length > 1) {
         // If timestamp already exists and it's not the very first point, update existing points
         // This handles cases where multiple adapters report at slightly different sub-second times
@@ -214,9 +234,7 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
         // Add new timestamp label if it doesn't exist or if it's the first point
         if (!chart.data.labels.includes(timestamp)) {
             chart.data.labels.push(timestamp);
-            if (chart.data.labels.length > maxDataPoints) {
-                chart.data.labels.shift(); // Remove oldest label
-            }
+            addedNewPoint = true;
         }
 
         chart.data.datasets.forEach(dataset => {
@@ -226,9 +244,12 @@ export function addDataToChart(chartId, timestamp, dataPointsByAdapterId) {
             dataset.data.push(value);
         });
     }
-    trimChartData(chart);
+    trimChartData(chart, addedNewPoint ? maxDataPoints + 1 : maxDataPoints);
     try {
         chart.update();
+        if (addedNewPoint) {
+            schedulePostAnimationTrim(chartId, maxDataPoints);
+        }
     } catch (error) {
         console.error(`Error updating chart ${chartId}:`, error);
     }
@@ -490,17 +511,16 @@ export function updateDashboardSparkline(chartId, value, anchorValue = null, bac
         return false;
     }
 
-    pushDashboardValue(chart.data.datasets[0], value);
-    pushDashboardValue(chart.data.datasets[1], anchorValue);
-    pushDashboardValue(chart.data.datasets[2], backupValue);
+    pushDashboardValue(chart.data.datasets[0], value, DASHBOARD_DATA_POINTS + 1);
+    pushDashboardValue(chart.data.datasets[1], anchorValue, DASHBOARD_DATA_POINTS + 1);
+    pushDashboardValue(chart.data.datasets[2], backupValue, DASHBOARD_DATA_POINTS + 1);
 
     chart.data.labels.push('');
-    if (chart.data.labels.length > DASHBOARD_DATA_POINTS) {
-        chart.data.labels.shift();
-    }
+    trimChartData(chart, DASHBOARD_DATA_POINTS + 1);
 
     try {
         chart.update();
+        schedulePostAnimationTrim(chartId, DASHBOARD_DATA_POINTS);
         return true;
     } catch (error) {
         console.error(`Error updating sparkline ${chartId}:`, error);
@@ -508,10 +528,10 @@ export function updateDashboardSparkline(chartId, value, anchorValue = null, bac
     }
 }
 
-function pushDashboardValue(dataset, value) {
+function pushDashboardValue(dataset, value, maxPoints = DASHBOARD_DATA_POINTS) {
     const numericValue = Number(value);
     dataset.data.push(Number.isFinite(numericValue) ? numericValue : null);
-    if (dataset.data.length > DASHBOARD_DATA_POINTS) {
+    if (dataset.data.length > maxPoints) {
         dataset.data.shift();
     }
 }
