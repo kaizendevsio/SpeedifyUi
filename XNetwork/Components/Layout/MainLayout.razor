@@ -5,6 +5,8 @@
 @using XNetwork.Services
 @inject BuildInfoService BuildInfoService
 @inject IJSRuntime JSRuntime
+@inject NavigationManager NavigationManager
+@inject RouteTransitionDirectionService RouteTransitionDirection
 
 <div class="flex min-h-screen bg-slate-900">
     <!-- SIDEBAR (Desktop) -->
@@ -131,6 +133,12 @@
 
     private BuildInfo BuildInfo => BuildInfoService.GetBuildInfo();
 
+    protected override void OnInitialized()
+    {
+        RouteTransitionDirection.Initialize(NavigationManager.Uri);
+        NavigationManager.LocationChanged += OnLocationChanged;
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (!firstRender)
@@ -142,6 +150,11 @@
         var mobileTabbarCacheKey = Uri.EscapeDataString(BuildInfo.ShortCommit);
         _mobileTabbarModule = await JSRuntime.InvokeAsync<IJSObjectReference>("import", $"/js/mobileNavBehavior.js?v={mobileTabbarCacheKey}");
         _mobileTabbarBehavior = await _mobileTabbarModule.InvokeAsync<IJSObjectReference>("start", _mobileTabbarReference);
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs args)
+    {
+        RouteTransitionDirection.NotifyNavigated(args.Location);
     }
 
     private void OpenChangelog()
@@ -176,6 +189,8 @@
 
     public async ValueTask DisposeAsync()
     {
+        NavigationManager.LocationChanged -= OnLocationChanged;
+
         try
         {
             if (_mobileTabbarBehavior is not null)

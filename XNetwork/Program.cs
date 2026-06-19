@@ -14,6 +14,7 @@ builder.Services.AddRazorComponents()
         options.KeepAliveInterval = TimeSpan.FromSeconds(5);
     });
 builder.Services.AddScoped<BlazorTransitionableRoute.IRouteTransitionInvoker, BlazorTransitionableRoute.DefaultRouteTransitionInvoker>();
+builder.Services.AddScoped<RouteTransitionDirectionService>();
 
 // Add network monitor service
 builder.Services.AddSingleton<NetworkMonitorSettingsStore>();

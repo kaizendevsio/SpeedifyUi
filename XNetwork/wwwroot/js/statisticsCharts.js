@@ -147,11 +147,11 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
                 },
                 animations: {
                     x: {
-                        duration: 0
-                    },
-                    y: {
                         duration: LIVE_CHART_ANIMATION_DURATION,
                         easing: 'easeOutCubic'
+                    },
+                    y: {
+                        duration: 0
                     }
                 },
                 transitions: {
@@ -293,11 +293,11 @@ export function initializeOrUpdateSingleSeriesChart(chartId, yAxisLabel, dataset
                 },
                 animations: {
                     x: {
-                        duration: 0
-                    },
-                    y: {
                         duration: LIVE_CHART_ANIMATION_DURATION,
                         easing: 'easeOutCubic'
+                    },
+                    y: {
+                        duration: 0
                     }
                 },
                 transitions: {
@@ -452,7 +452,24 @@ export function initializeDashboardSparkline(chartId) {
                     }
                 },
                 animation: {
-                    duration: 0
+                    duration: LIVE_CHART_ANIMATION_DURATION,
+                    easing: 'easeOutCubic'
+                },
+                animations: {
+                    x: {
+                        duration: LIVE_CHART_ANIMATION_DURATION,
+                        easing: 'easeOutCubic'
+                    },
+                    y: {
+                        duration: 0
+                    }
+                },
+                transitions: {
+                    resize: {
+                        animation: {
+                            duration: 0
+                        }
+                    }
                 }
             }
         });
@@ -483,7 +500,7 @@ export function updateDashboardSparkline(chartId, value, anchorValue = null, bac
     }
 
     try {
-        chart.update('none');
+        chart.update();
         return true;
     } catch (error) {
         console.error(`Error updating sparkline ${chartId}:`, error);

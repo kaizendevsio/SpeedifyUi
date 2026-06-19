@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.64";
+    public const string CurrentVersion = "xbond-2026.06.65";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Smoothed tab direction and live charts.",
+            Changes =
+            [
+                "Tab transitions now choose forward or back motion from the mobile navigation order while keeping the existing easing.",
+                "Analytics charts now animate horizontally instead of drawing new points upward from the baseline.",
+                "The dashboard summary sparkline now uses the same smooth right-to-left update motion.",
+                "The service-worker cache was refreshed so mobile/PWA clients fetch the updated chart script."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.64",
             Date = "2026-06-19",
             Summary = "Moved the loss-protection badge to the tunnel card.",
             Changes =

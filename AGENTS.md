@@ -275,6 +275,7 @@
 - 2026-06-19: XNetwork version `xbond-2026.06.63` switches the user-facing public speed test to the official Ookla `speedtest --accept-license --accept-gdpr --format=json` CLI and parses Ookla bytes/sec JSON; the router package `speedtest-cli` was removed from `xeon-network` and Ookla `speedtest` 1.2.0.84 arm64 was installed from the official packagecloud `.deb`.
 - 2026-06-19: Dashboard tunnel status can show a `Protecting from loss` badge when active XBond paths report at least 2% loss while aggregate tunnel health remains stable with under 2% tunnel loss and under 180 ms tunnel RTT.
 - 2026-06-19: XNetwork version `xbond-2026.06.64` moves the `Protecting from loss` badge from the connection summary card to the XBond tunnel card beside the active redundancy policy label.
+- 2026-06-19: XNetwork version `xbond-2026.06.65` restores tab-order-aware route transition direction without changing the current easing/timing, changes Analytics live charts to animate horizontally instead of vertically, gives the dashboard summary sparkline the same smooth right-to-left update motion, and bumps the service-worker cache so clients fetch the updated chart script.
 - Known Cudy client endpoints are `/cgi-bin/luci/admin/network/devices/devlist?detail=1`, `/cgi-bin/luci/admin/network/devices/internet`, and `/cgi-bin/luci/admin/network/devices/devinfo`.
 - Cudy data caps were not implemented because the inspected firmware endpoint did not expose them.
 - `CudyXRouterClientParser` parses the Cudy HTML table; keep parser tests updated when endpoint markup changes.
