@@ -55,14 +55,6 @@
                             }
                         </span>
                     }
-                    @if (IsProtectingFromLoss && IsStable && !isInitializing)
-                    {
-                        <span class="inline-flex items-center gap-1 rounded-full border border-cyan-400/35 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-100"
-                              title="@ProtectionReason">
-                            <i class="fas fa-shield-alt text-[10px]"></i>
-                            <span>Protecting from loss</span>
-                        </span>
-                    }
                 </div>
                 <p class="text-xs text-slate-400 mt-1">@GetStatusDescription()</p>
             </div>
@@ -100,8 +92,6 @@
     [Parameter] public bool IsRecoveryActive { get; set; }
     [Parameter] public int RecoveryHoldMs { get; set; }
     [Parameter] public string RecoveryReason { get; set; } = "";
-    [Parameter] public bool IsProtectingFromLoss { get; set; }
-    [Parameter] public string ProtectionReason { get; set; } = "";
     [Parameter] public bool ShowTrafficDetailsHint { get; set; }
     [Parameter] public EventCallback OnTrafficDetailsRequested { get; set; }
     
@@ -309,11 +299,6 @@
             return RecoveryHoldMs > 0
                 ? $"Recovery mode active; server reorder hold is {RecoveryHoldMs}ms."
                 : "Recovery mode active; XBond is prioritizing packet survival.";
-        }
-
-        if (IsProtectingFromLoss)
-        {
-            return "XBond redundancy is absorbing active path loss.";
         }
 
         var status = ConnectionStatus.ToLowerInvariant();

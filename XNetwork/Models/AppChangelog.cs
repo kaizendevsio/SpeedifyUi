@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.63";
+    public const string CurrentVersion = "xbond-2026.06.64";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-19",
+            Summary = "Moved the loss-protection badge to the tunnel card.",
+            Changes =
+            [
+                "The Protecting from loss badge now appears beside the XBond mode label in the tunnel card.",
+                "The connection summary card returns to showing only the current tunnel status, description, and metrics."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.63",
             Date = "2026-06-19",
             Summary = "Switched public speed tests to Ookla and surfaced loss protection.",
             Changes =
