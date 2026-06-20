@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.70";
+    public const string CurrentVersion = "xbond-2026.06.71";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-20",
+            Summary = "Hardened IPv4 interface binding.",
+            Changes =
+            [
+                "XBond now refuses to bind a path to a route source IP unless that IP is actually assigned to the requested interface.",
+                "Configured WAN interfaces are treated as unavailable until they have an IPv4 address, preventing IPv6-only or DHCP-stalled links from being counted as usable XBond paths."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.70",
             Date = "2026-06-20",
             Summary = "Fixed recovery duplicate pruning.",
             Changes =

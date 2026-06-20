@@ -3305,7 +3305,10 @@ fn resolve_interface_source_bind_addr(server: &str, interface_name: &str) -> Res
         );
     }
 
-    bind_addr_from_route_output(&String::from_utf8_lossy(&output.stdout), interface_name)
+    let bind_addr =
+        bind_addr_from_route_output(&String::from_utf8_lossy(&output.stdout), interface_name)?;
+    validate_bind_source_on_interface(&bind_addr, interface_name)?;
+    Ok(bind_addr)
 }
 
 fn bind_addr_from_route_output(route_output: &str, interface_name: &str) -> Result<String> {
@@ -3323,6 +3326,48 @@ fn bind_addr_from_route_output(route_output: &str, interface_name: &str) -> Resu
     };
 
     Ok(format!("{source}:0"))
+}
+
+fn validate_bind_source_on_interface(bind_addr: &str, interface_name: &str) -> Result<()> {
+    let source = bind_addr
+        .parse::<SocketAddr>()
+        .with_context(|| format!("failed to parse bind source {bind_addr}"))?
+        .ip();
+    if !source.is_ipv4() {
+        bail!("interface source binding is currently IPv4-only; source resolved to {source}");
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let output = ProcessCommand::new("ip")
+            .args(["-4", "-o", "addr", "show", "dev", interface_name])
+            .output()
+            .with_context(|| format!("failed to read IPv4 addresses for {interface_name}"))?;
+        if !output.status.success() {
+            bail!(
+                "failed to read IPv4 addresses for {interface_name}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        if !addr_show_has_ipv4_source(&String::from_utf8_lossy(&output.stdout), source) {
+            bail!("route source {source} is not assigned to interface {interface_name}");
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = interface_name;
+    }
+
+    Ok(())
+}
+
+fn addr_show_has_ipv4_source(addr_output: &str, source: IpAddr) -> bool {
+    addr_output
+        .lines()
+        .filter_map(|line| token_after(line, "inet"))
+        .filter_map(|value| value.split('/').next().map(str::to_string))
+        .any(|value| value.parse::<IpAddr>().ok() == Some(source))
 }
 
 fn resolve_server_ip(server: &str) -> Option<IpAddr> {
@@ -3764,7 +3809,9 @@ fn read_interface_state(interface_name: &str) -> InterfaceState {
             .trim()
             .to_string();
 
-        let live = matches!(operstate.as_str(), "up" | "unknown") && carrier != "0";
+        let live = matches!(operstate.as_str(), "up" | "unknown")
+            && carrier != "0"
+            && interface_has_ipv4_address(interface_name);
         return InterfaceState { is_live: live };
     }
 
@@ -3772,6 +3819,30 @@ fn read_interface_state(interface_name: &str) -> InterfaceState {
     {
         let _ = interface_name;
         InterfaceState { is_live: true }
+    }
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn interface_has_ipv4_address(interface_name: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(output) = ProcessCommand::new("ip")
+            .args(["-4", "-o", "addr", "show", "dev", interface_name])
+            .output()
+        else {
+            return false;
+        };
+
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| token_after(line, "inet").is_some())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = interface_name;
+        true
     }
 }
 
@@ -4073,6 +4144,30 @@ mod tests {
         let error = bind_addr_from_route_output(text, "eth0").unwrap_err();
 
         assert!(error.to_string().contains("does not match interface eth0"));
+    }
+
+    #[test]
+    fn addr_show_detects_assigned_ipv4_source() {
+        let text = "2: eth0    inet 192.0.2.10/24 brd 192.0.2.255 scope global eth0\n";
+
+        assert!(addr_show_has_ipv4_source(
+            text,
+            "192.0.2.10".parse().unwrap()
+        ));
+        assert!(!addr_show_has_ipv4_source(
+            text,
+            "192.0.2.20".parse().unwrap()
+        ));
+    }
+
+    #[test]
+    fn addr_show_ignores_ipv6_when_validating_ipv4_source() {
+        let text = "2: eth0    inet6 2001:db8::10/64 scope global dynamic\n";
+
+        assert!(!addr_show_has_ipv4_source(
+            text,
+            "192.0.2.10".parse().unwrap()
+        ));
     }
 
     #[test]
