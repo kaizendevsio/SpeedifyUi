@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.68";
+    public const string CurrentVersion = "xbond-2026.06.69";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-20",
+            Summary = "Added active redundancy count.",
+            Changes =
+            [
+                "The dashboard Actively Redundant header now shows the number of paths currently included in the live XBond schedule.",
+                "The count uses the same runtime schedule-backed membership as the adapter cards, so it follows normal and recovery-mode schedule changes."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.68",
             Date = "2026-06-19",
             Summary = "Smoothed live chart left-edge exits.",
             Changes =
