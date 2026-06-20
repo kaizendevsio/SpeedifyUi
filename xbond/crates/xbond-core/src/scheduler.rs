@@ -438,10 +438,20 @@ fn is_harmful_recovery_duplicate(path: &PathHealthSnapshot, config: RecoveryConf
             .is_some_and(|age| age >= config.degraded_stale_ack_ms.saturating_mul(2).max(3_000))
         || path.send_failure_streak >= 2
         || path.queue_pressure >= 0.95
-        || path.throughput_collapse_score >= 0.95
+        || (path.throughput_collapse_score >= 0.95 && has_recent_recovery_traffic(path))
         || (path.duplicate_usefulness <= 0.05
             && (path.late_rate >= config.degraded_late_threshold
                 || path.loss_rate >= config.degraded_loss_threshold))
+}
+
+fn has_recent_recovery_traffic(path: &PathHealthSnapshot) -> bool {
+    const MIN_RECOVERY_TRAFFIC_BPS: u64 = 250_000;
+
+    path.throughput_bps >= MIN_RECOVERY_TRAFFIC_BPS
+        || path.outbound_throughput_bps >= MIN_RECOVERY_TRAFFIC_BPS
+        || path.inbound_throughput_bps >= MIN_RECOVERY_TRAFFIC_BPS
+        || path.raw_inbound_throughput_bps >= MIN_RECOVERY_TRAFFIC_BPS
+        || path.duplicate_inbound_throughput_bps >= MIN_RECOVERY_TRAFFIC_BPS
 }
 
 fn is_recovery_path_degraded(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
@@ -1041,6 +1051,52 @@ mod tests {
             &[
                 path_with_loss(1, 40.0, 0.10),
                 path_with_queue_pressure(2, 90.0, 0.99),
+                path_with_loss(3, 100.0, 0.14),
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+
+        assert_eq!(expanded.duplicate_path_ids, vec![3]);
+    }
+
+    #[test]
+    fn recovery_keeps_idle_probe_with_high_collapse_score() {
+        let config = RecoveryConfig::default();
+        let mut idle_probe = path_with_loss(3, 100.0, 0.14);
+        idle_probe.throughput_collapse_score = 1.0;
+        idle_probe.outbound_throughput_bps = 0;
+        idle_probe.inbound_throughput_bps = 0;
+        idle_probe.duplicate_inbound_throughput_bps = 0;
+        idle_probe.raw_inbound_throughput_bps = 0;
+        idle_probe.throughput_bps = 0;
+
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                path_with_loss(2, 90.0, 0.12),
+                idle_probe,
+            ],
+            2,
+        );
+        let base = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+        let expanded = expand_schedule_for_recovery(&base, &roles, config);
+
+        assert_eq!(expanded.duplicate_path_ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn recovery_prunes_active_collapsed_duplicate_when_healthier_backup_exists() {
+        let config = RecoveryConfig::default();
+        let mut active_collapsed = path_with_loss(2, 90.0, 0.12);
+        active_collapsed.throughput_collapse_score = 1.0;
+        active_collapsed.throughput_bps = 1_000_000;
+
+        let roles = select_path_roles(
+            &[
+                path_with_loss(1, 40.0, 0.10),
+                active_collapsed,
                 path_with_loss(3, 100.0, 0.14),
             ],
             2,

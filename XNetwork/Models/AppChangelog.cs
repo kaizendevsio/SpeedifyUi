@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.69";
+    public const string CurrentVersion = "xbond-2026.06.70";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-20",
+            Summary = "Fixed recovery duplicate pruning.",
+            Changes =
+            [
+                "Recovery mode no longer excludes idle probe paths just because their collapse score is high while they are not carrying traffic.",
+                "Active paths that are genuinely collapsing under load can still be pruned when healthier backup paths are available."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.69",
             Date = "2026-06-20",
             Summary = "Added active redundancy count.",
             Changes =
