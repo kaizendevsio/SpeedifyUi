@@ -86,6 +86,8 @@ builder.Services.AddHostedService<TrafficBypassStartupService>();
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>
     builder.Configuration.GetSection("StarlinkTelemetry").Get<StarlinkTelemetrySettings>() ?? new StarlinkTelemetrySettings());
+builder.Services.AddSingleton<IStarlinkInterfaceResolver, StarlinkInterfaceResolver>();
+builder.Services.AddSingleton<IStarlinkHttpClientFactory, StarlinkBoundHttpClientFactory>();
 builder.Services.AddSingleton<StarlinkDeviceClient>();
 builder.Services.AddSingleton<StarlinkTelemetryService>();
 builder.Services.AddSingleton<IStarlinkTelemetryService>(sp => sp.GetRequiredService<StarlinkTelemetryService>());

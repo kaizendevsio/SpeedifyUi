@@ -13,24 +13,17 @@ public sealed class StarlinkDeviceClient : IDisposable
 {
     private static readonly byte[] GetStatusPayload = { 0xE2, 0x3E, 0x00 };
     private readonly StarlinkTelemetrySettings _settings;
+    private readonly IStarlinkHttpClientFactory _httpClientFactory;
     private readonly ILogger<StarlinkDeviceClient> _logger;
-    private readonly HttpClient _httpClient;
 
-    public StarlinkDeviceClient(StarlinkTelemetrySettings settings, ILogger<StarlinkDeviceClient> logger)
+    public StarlinkDeviceClient(
+        StarlinkTelemetrySettings settings,
+        IStarlinkHttpClientFactory httpClientFactory,
+        ILogger<StarlinkDeviceClient> logger)
     {
         _settings = settings;
+        _httpClientFactory = httpClientFactory;
         _logger = logger;
-
-        var handler = new SocketsHttpHandler
-        {
-            ConnectTimeout = settings.RequestTimeout,
-            EnableMultipleHttp2Connections = true
-        };
-
-        _httpClient = new HttpClient(handler, disposeHandler: true)
-        {
-            Timeout = settings.RequestTimeout
-        };
     }
 
     public async Task<StarlinkTelemetrySnapshot> GetStatusAsync(CancellationToken cancellationToken)
@@ -55,15 +48,16 @@ public sealed class StarlinkDeviceClient : IDisposable
 
         try
         {
+            using var lease = await _httpClientFactory.CreateAsync(cancellationToken).ConfigureAwait(false);
             var rootUri = new Uri($"http://{_settings.Host}/");
-            rootHtml = await _httpClient.GetStringAsync(rootUri, cancellationToken).ConfigureAwait(false);
+            rootHtml = await lease.Client.GetStringAsync(rootUri, cancellationToken).ConfigureAwait(false);
             webUiReachable = true;
 
             var scriptPath = FindStarlinkScriptPath(rootHtml);
             if (!string.IsNullOrWhiteSpace(scriptPath))
             {
                 var scriptUri = new Uri(rootUri, scriptPath);
-                using var response = await _httpClient.GetAsync(scriptUri, cancellationToken).ConfigureAwait(false);
+                using var response = await lease.Client.GetAsync(scriptUri, cancellationToken).ConfigureAwait(false);
                 response.EnsureSuccessStatusCode();
 
                 var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -96,6 +90,7 @@ public sealed class StarlinkDeviceClient : IDisposable
 
         try
         {
+            using var lease = await _httpClientFactory.CreateAsync(cancellationToken).ConfigureAwait(false);
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
                 BuildUri(_settings.GrpcWebPort))
@@ -108,7 +103,7 @@ public sealed class StarlinkDeviceClient : IDisposable
             request.Headers.TryAddWithoutValidation("x-grpc-web", "1");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/grpc-web+proto"));
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var response = await lease.Client.SendAsync(request, cancellationToken).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -140,6 +135,7 @@ public sealed class StarlinkDeviceClient : IDisposable
 
     private async Task<StarlinkTelemetrySnapshot> GetStatusOverGrpcAsync(CancellationToken cancellationToken)
     {
+        using var lease = await _httpClientFactory.CreateAsync(cancellationToken).ConfigureAwait(false);
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             BuildUri(_settings.GrpcPort))
@@ -152,7 +148,7 @@ public sealed class StarlinkDeviceClient : IDisposable
         request.Headers.TryAddWithoutValidation("grpc-encoding", "identity");
         request.Headers.TryAddWithoutValidation("grpc-accept-encoding", "identity");
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await lease.Client.SendAsync(request, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -161,6 +157,7 @@ public sealed class StarlinkDeviceClient : IDisposable
 
     private async Task<StarlinkTelemetrySnapshot> GetStatusOverGrpcWebAsync(CancellationToken cancellationToken)
     {
+        using var lease = await _httpClientFactory.CreateAsync(cancellationToken).ConfigureAwait(false);
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             BuildUri(_settings.GrpcWebPort))
@@ -173,7 +170,7 @@ public sealed class StarlinkDeviceClient : IDisposable
         request.Headers.TryAddWithoutValidation("x-grpc-web", "1");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/grpc-web+proto"));
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await lease.Client.SendAsync(request, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
 
         var content = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -245,6 +242,5 @@ public sealed class StarlinkDeviceClient : IDisposable
 
     public void Dispose()
     {
-        _httpClient.Dispose();
     }
 }

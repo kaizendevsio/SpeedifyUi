@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.77";
+    public const string CurrentVersion = "xbond-2026.06.78";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Restored Starlink telemetry on XBond.",
+            Changes =
+            [
+                "Starlink telemetry now resolves the matching XBond physical path dynamically instead of relying on hardcoded USB adapter IDs.",
+                "Starlink web and gRPC requests are bound to the resolved Linux interface so dish telemetry can work while the default route points through xbond0.",
+                "Dashboard Starlink cards again show direct dish stats and open the restored Starlink details/actions sheet."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.77",
             Date = "2026-06-25",
             Summary = "Added transparent modem admin ports.",
             Changes =

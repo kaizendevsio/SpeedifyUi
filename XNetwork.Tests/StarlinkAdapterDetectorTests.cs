@@ -54,6 +54,32 @@ public class StarlinkAdapterDetectorTests
     }
 
     [Fact]
+    public void HasStarlinkMetadata_DetectsXBondPathNameWithoutAdapterId()
+    {
+        var path = new XBondPathStatsSnapshot
+        {
+            Name = "Starlink",
+            InterfaceName = "enx-dynamic-usb-id",
+            InterfaceUp = true
+        };
+
+        Assert.True(StarlinkAdapterDetector.HasStarlinkMetadata(path, ["Starlink"]));
+    }
+
+    [Fact]
+    public void HasStarlinkMetadata_DoesNotTreatXBondInterfaceIdAsStarlink()
+    {
+        var path = new XBondPathStatsSnapshot
+        {
+            Name = "enxc8a3627e60c1",
+            InterfaceName = "enxc8a3627e60c1",
+            InterfaceUp = true
+        };
+
+        Assert.False(StarlinkAdapterDetector.HasStarlinkMetadata(path, ["Starlink"]));
+    }
+
+    [Fact]
     public void MatchesManagementGateway_MatchesConfiguredStarlinkHostOnly()
     {
         Assert.True(StarlinkAdapterDetector.MatchesManagementGateway("192.168.100.1", "192.168.100.1"));

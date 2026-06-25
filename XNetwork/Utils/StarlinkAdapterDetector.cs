@@ -27,6 +27,17 @@ public static class StarlinkAdapterDetector
                string.Equals(gateway.Trim(), managementHost.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool HasStarlinkMetadata(XBondPathStatsSnapshot path, IEnumerable<string>? adapterNameHints = null)
+    {
+        var hints = adapterNameHints?.Where(h => !string.IsNullOrWhiteSpace(h)).ToArray() ?? Array.Empty<string>();
+
+        return ContainsStarlink(path.Name) ||
+               ContainsStarlink(path.InterfaceName) ||
+               hints.Any(hint =>
+                   ContainsHint(path.Name, hint) ||
+                   ContainsHint(path.InterfaceName, hint));
+    }
+
     private static bool ContainsStarlink(string? value)
     {
         return !string.IsNullOrWhiteSpace(value) &&
