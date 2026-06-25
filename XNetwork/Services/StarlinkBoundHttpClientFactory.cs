@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using XNetwork.Models;
 
@@ -35,6 +36,7 @@ public sealed class StarlinkBoundHttpClientFactory(
     StarlinkTelemetrySettings settings,
     IStarlinkInterfaceResolver interfaceResolver) : IStarlinkHttpClientFactory
 {
+    private const int SolSocket = 1;
     private const int SoBindToDevice = 25;
 
     public async Task<StarlinkHttpClientLease> CreateAsync(CancellationToken cancellationToken = default)
@@ -112,6 +114,24 @@ public sealed class StarlinkBoundHttpClientFactory(
     private static void BindSocketToDevice(Socket socket, string interfaceName)
     {
         var value = Encoding.ASCII.GetBytes(interfaceName + '\0');
-        socket.SetSocketOption(SocketOptionLevel.Socket, (SocketOptionName)SoBindToDevice, value);
+        var result = setsockopt(
+            socket.Handle,
+            SolSocket,
+            SoBindToDevice,
+            value,
+            (uint)value.Length);
+
+        if (result != 0)
+        {
+            throw new SocketException(Marshal.GetLastPInvokeError());
+        }
     }
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int setsockopt(
+        IntPtr socket,
+        int level,
+        int optionName,
+        byte[] optionValue,
+        uint optionLength);
 }
