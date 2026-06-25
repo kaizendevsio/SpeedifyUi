@@ -45,4 +45,37 @@ public class CudyLuciFormParserTests
 
         Assert.Equal("/cgi-bin/luci/admin/network/wireless/config/combine/embedded/nomodal", action);
     }
+
+    [Fact]
+    public void ParseWirelessStatusReadsSplitBandFields()
+    {
+        var status = CudyLuciClient.ParseWirelessStatus(
+            smartConnect: false,
+            new Dictionary<string, string>
+            {
+                ["cbid.wireless.wlan00.disabled"] = "0",
+                ["cbid.wireless.wlan10.disabled"] = "1"
+            });
+
+        Assert.False(status.IsSmartConnect);
+        Assert.True(status.TwoGEnabled);
+        Assert.False(status.FiveGEnabled);
+        Assert.Equal("Split-band radio state loaded.", status.Message);
+    }
+
+    [Fact]
+    public void ParseWirelessStatusMirrorsSmartConnectRadioState()
+    {
+        var status = CudyLuciClient.ParseWirelessStatus(
+            smartConnect: true,
+            new Dictionary<string, string>
+            {
+                ["cbid.wireless.wlan.disabled"] = "0"
+            });
+
+        Assert.True(status.IsSmartConnect);
+        Assert.True(status.TwoGEnabled);
+        Assert.True(status.FiveGEnabled);
+        Assert.Contains("on", status.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

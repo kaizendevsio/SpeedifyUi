@@ -46,6 +46,41 @@
             </div>
         </div>
 
+        <section class="mb-5 rounded-xl border border-slate-700 bg-slate-800/50 p-4">
+            <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h3 class="text-lg font-semibold text-white">Cudy Wi-Fi Radios</h3>
+                    <p class="text-xs text-slate-400">@(_wirelessStatus?.Message ?? "Reading current radio state from Cudy.")</p>
+                </div>
+                <button class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white disabled:opacity-60"
+                        @onclick="() => RefreshWirelessStatusAsync(false)"
+                        disabled="@IsWirelessBusy">
+                    @(_isWirelessRefreshing ? "Refreshing" : "Refresh radios")
+                </button>
+            </div>
+
+            @if (_wirelessStatus is null)
+            {
+                <div class="grid gap-3 sm:grid-cols-2">
+                    <div class="h-24 rounded-xl bg-slate-900/60 animate-pulse"></div>
+                    <div class="h-24 rounded-xl bg-slate-900/60 animate-pulse"></div>
+                </div>
+            }
+            else if (_wirelessStatus.IsSmartConnect)
+            {
+                <div class="grid gap-3 sm:grid-cols-2">
+                    @RadioCard("Smart Connect", "2.4 & 5 GHz together", _wirelessStatus.TwoGEnabled, CudyWirelessBand.TwoG)
+                </div>
+            }
+            else
+            {
+                <div class="grid gap-3 sm:grid-cols-2">
+                    @RadioCard("2.4 GHz", "Longer range", _wirelessStatus.TwoGEnabled, CudyWirelessBand.TwoG)
+                    @RadioCard("5 GHz", "Higher throughput", _wirelessStatus.FiveGEnabled, CudyWirelessBand.FiveG)
+                </div>
+            }
+        </section>
+
         @if (!string.IsNullOrWhiteSpace(_message))
         {
             <div class="@_messageClass px-4 py-3 rounded-xl mb-5 text-sm">
@@ -173,16 +208,22 @@
     private string _messageClass = "bg-slate-700 text-slate-100";
     private bool _isLoading = true;
     private bool _isRefreshing;
+    private bool _isWirelessRefreshing;
     private bool _showClientDetailsSheet;
     private int _refreshInProgress;
+    private CudyWirelessStatus? _wirelessStatus;
+    private CudyWirelessBand? _wirelessBusyBand;
+    private DateTime _lastWirelessRefreshUtc = DateTime.MinValue;
 
     private XRouterClient? SelectedClient => _clients.FirstOrDefault(client => string.Equals(client.MacAddress, _selectedMac, StringComparison.OrdinalIgnoreCase));
+    private bool IsWirelessBusy => _isWirelessRefreshing || _wirelessBusyBand is not null;
 
     protected override Task OnInitializedAsync()
     {
         _cts = new CancellationTokenSource();
         _refreshTimer = new Timer(_ => _ = InvokeAsync(() => RefreshClientsAsync(true)), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
         _ = InvokeAsync(() => RefreshClientsAsync(false));
+        _ = InvokeAsync(() => RefreshWirelessStatusAsync(false));
         return Task.CompletedTask;
     }
 
@@ -225,6 +266,7 @@
             }
 
             _message = null;
+            await RefreshWirelessStatusIfDueAsync();
         }
         catch (OperationCanceledException) when (_cts?.IsCancellationRequested ?? true)
         {
@@ -313,6 +355,77 @@
         }
     }
 
+    private async Task RefreshWirelessStatusIfDueAsync()
+    {
+        if (DateTime.UtcNow - _lastWirelessRefreshUtc < TimeSpan.FromSeconds(15))
+        {
+            return;
+        }
+
+        await RefreshWirelessStatusAsync(background: true);
+    }
+
+    private async Task RefreshWirelessStatusAsync(bool background)
+    {
+        if (!XRouterService.IsConfigured || (_cts?.IsCancellationRequested ?? true))
+        {
+            return;
+        }
+
+        if (!background)
+        {
+            _isWirelessRefreshing = true;
+            await InvokeAsync(StateHasChanged);
+        }
+
+        try
+        {
+            using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            refreshCts.CancelAfter(ClientRefreshTimeout);
+            _wirelessStatus = await XRouterService.GetWirelessStatusAsync(refreshCts.Token);
+            _lastWirelessRefreshUtc = DateTime.UtcNow;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !(_cts?.IsCancellationRequested ?? false))
+        {
+            _wirelessStatus = new CudyWirelessStatus
+            {
+                IsConfigured = XRouterService.IsConfigured,
+                Message = $"Could not read Cudy radio state: {ex.Message}",
+                UpdatedUtc = DateTime.UtcNow
+            };
+        }
+        finally
+        {
+            if (!background)
+            {
+                _isWirelessRefreshing = false;
+            }
+
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task ToggleWirelessBandAsync(CudyWirelessBand band, bool? currentEnabled)
+    {
+        _wirelessBusyBand = band;
+        try
+        {
+            var enabled = currentEnabled != true;
+            await XRouterService.SetWirelessBandEnabledAsync(band, enabled, _cts?.Token ?? CancellationToken.None);
+            ShowMessage($"{FormatBandLabel(band)} radio turned {(enabled ? "on" : "off")}.", isError: false);
+            await RefreshWirelessStatusAsync(background: false);
+        }
+        catch (Exception ex)
+        {
+            ShowMessage($"Cudy radio action failed: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _wirelessBusyBand = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
     private bool IsBusy(string macAddress)
     {
         return string.Equals(_busyMac, macAddress, StringComparison.OrdinalIgnoreCase);
@@ -396,6 +509,74 @@
     {
         return value >= 10 ? $"{value:F1} Mbps" : $"{value:F2} Mbps";
     }
+
+    private RenderFragment RadioCard(string title, string subtitle, bool? enabled, CudyWirelessBand band) => @<article class="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+        <div class="flex items-start justify-between gap-3">
+            <div>
+                <div class="flex items-center gap-2">
+                    <span class="@GetRadioDotClass(enabled, band)" aria-hidden="true"></span>
+                    <h4 class="font-semibold text-white">@title</h4>
+                </div>
+                <p class="mt-1 text-xs text-slate-400">@subtitle</p>
+                <p class="mt-2 text-sm font-semibold @GetRadioTextClass(enabled, band)">@FormatRadioState(enabled, band)</p>
+            </div>
+            <button class="@GetRadioButtonClass(enabled)"
+                    disabled="@IsWirelessBusy"
+                    @onclick="() => ToggleWirelessBandAsync(band, enabled)">
+                @(enabled == true ? "Turn off" : "Turn on")
+            </button>
+        </div>
+    </article>;
+
+    private string FormatRadioState(bool? enabled, CudyWirelessBand band)
+    {
+        if (_wirelessBusyBand == band)
+        {
+            return "Applying";
+        }
+
+        return enabled switch
+        {
+            true => "On",
+            false => "Off",
+            _ => "Unknown"
+        };
+    }
+
+    private static string FormatBandLabel(CudyWirelessBand band) => band == CudyWirelessBand.TwoG ? "2.4 GHz" : "5 GHz";
+
+    private string GetRadioDotClass(bool? enabled, CudyWirelessBand band)
+    {
+        var color = _wirelessBusyBand == band
+            ? "bg-amber-300"
+            : enabled switch
+            {
+                true => "bg-emerald-400",
+                false => "bg-slate-500",
+                _ => "bg-amber-300"
+            };
+
+        return $"inline-block h-2.5 w-2.5 rounded-full {color}";
+    }
+
+    private string GetRadioTextClass(bool? enabled, CudyWirelessBand band)
+    {
+        if (_wirelessBusyBand == band)
+        {
+            return "text-amber-200";
+        }
+
+        return enabled switch
+        {
+            true => "text-emerald-200",
+            false => "text-slate-300",
+            _ => "text-amber-200"
+        };
+    }
+
+    private static string GetRadioButtonClass(bool? enabled) => enabled == true
+        ? "rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/20 disabled:opacity-60"
+        : "rounded-lg border border-emerald-500/35 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20 disabled:opacity-60";
 
     private int GetBlockedClientCount()
     {

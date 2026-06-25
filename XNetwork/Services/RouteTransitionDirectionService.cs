@@ -53,10 +53,10 @@ public sealed class RouteTransitionDirectionService
             "/" => 0,
             "/details" => 1,
             "/analytics" => 1,
-            "/xbond" => 2,
-            "/xrouter" => 3,
-            "/wifi" => 3,
-            "/settings" => 4,
+            "/xrouter" => 2,
+            "/wifi" => 2,
+            "/settings" => 3,
+            "/xbond" => 3,
             _ => 0
         };
     }

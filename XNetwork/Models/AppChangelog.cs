@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.73";
+    public const string CurrentVersion = "xbond-2026.06.74";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Refined Cudy controls and XNetwork shell UI.",
+            Changes =
+            [
+                "Wifi page now reads Cudy radio state and exposes manual 2.4 GHz / 5 GHz radio controls.",
+                "Local device proxy add and edit fields now open in a modal instead of staying inline.",
+                "Router Wi-Fi settings can select any NetworkManager Wi-Fi adapter, including USB Wi-Fi adapters.",
+                "Primary navigation now keeps XBond diagnostics inside Settings and uses a four-item mobile tab bar.",
+                "The dark theme now follows a VS Code modern dark palette."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.73",
             Date = "2026-06-25",
             Summary = "Fixed F50 telemetry firmware compatibility.",
             Changes =

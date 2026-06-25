@@ -6,6 +6,26 @@
     src: url('/vendor/fonts/inter-latin.woff2') format('woff2');
 }
 
+:root {
+    --vscode-bg: #1e1e1e;
+    --vscode-sidebar: #181818;
+    --vscode-panel: #252526;
+    --vscode-raised: #2d2d30;
+    --vscode-border: #3c3c3c;
+    --vscode-border-soft: rgba(60, 60, 60, 0.78);
+    --vscode-text: #cccccc;
+    --vscode-text-strong: #f3f3f3;
+    --vscode-muted: #858585;
+    --vscode-accent: #007acc;
+    --vscode-accent-bright: #3794ff;
+    --vscode-success: #3fb950;
+    --vscode-warning: #d7ba7d;
+    --vscode-danger: #f85149;
+    --vscode-cyan: #4fc1ff;
+    --vscode-pink: #ff8cc6;
+    color-scheme: dark;
+}
+
 /* Custom Scrollbar Styling for Dark Theme */
 ::-webkit-scrollbar {
     width: 8px;
@@ -13,22 +33,23 @@
 }
 
 ::-webkit-scrollbar-track {
-    background: #0f172a; /* slate-900 */
+    background: var(--vscode-bg);
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #334155; /* slate-700 */
+    background: var(--vscode-border);
     border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: #475569; /* slate-600 */
+    background: #505050;
 }
 
 /* Global Font Family */
 body {
     font-family: 'Inter', sans-serif;
-    background: #0f172a;
+    background: var(--vscode-bg);
+    color: var(--vscode-text);
 }
 
 .adapter-status-dot-button {
@@ -494,14 +515,14 @@ body {
     bottom: calc(1.35rem + env(safe-area-inset-bottom));
     z-index: 50;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.2rem;
     width: min(calc(100vw - 4.5rem), 21rem);
     padding: 0.28rem;
     transform: translateX(-50%);
     border: 1px solid rgba(148, 163, 184, 0.22);
     border-radius: 999px;
-    background: linear-gradient(180deg, rgba(15, 23, 42, 0.58), rgba(2, 6, 23, 0.48));
+    background: linear-gradient(180deg, rgba(37, 37, 38, 0.58), rgba(24, 24, 24, 0.48));
     box-shadow: 0 22px 60px rgba(2, 6, 23, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
     backdrop-filter: blur(24px) saturate(170%);
     -webkit-backdrop-filter: blur(24px) saturate(170%);
@@ -514,9 +535,12 @@ body {
     width: min(calc(100vw - 1.5rem), 28rem);
     padding: 0.35rem;
     border-radius: 1.55rem;
+    background: linear-gradient(180deg, rgba(37, 37, 38, 0.78), rgba(24, 24, 24, 0.68));
 }
 
 .mobile-tabbar-compact {
+    border-color: rgba(204, 204, 204, 0.14);
+    background: linear-gradient(180deg, rgba(37, 37, 38, 0.25), rgba(24, 24, 24, 0.25));
     box-shadow: 0 18px 46px rgba(2, 6, 23, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
@@ -579,8 +603,8 @@ body {
 
 .mobile-tabbar-item-active {
     color: #ffffff;
-    background: linear-gradient(135deg, rgba(8, 145, 178, 0.95), rgba(37, 99, 235, 0.9));
-    box-shadow: 0 10px 26px rgba(8, 145, 178, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    background: linear-gradient(135deg, rgba(0, 122, 204, 0.95), rgba(55, 148, 255, 0.9));
+    box-shadow: 0 10px 26px rgba(0, 122, 204, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 .mobile-tabbar-item-active .mobile-tabbar-icon {
@@ -2075,4 +2099,120 @@ body:has(.settings-section-modal-backdrop) .mobile-tabbar {
     .settings-page .accordion-header {
         min-height: 4.15rem;
     }
+}
+
+/* VS Code modern dark palette bridge for Tailwind-heavy components. */
+.bg-slate-950,
+.bg-slate-950\/50,
+.bg-slate-950\/60 {
+    background-color: rgba(24, 24, 24, 0.92) !important;
+}
+
+.bg-slate-900,
+.bg-slate-900\/40,
+.bg-slate-900\/50,
+.bg-slate-900\/60,
+.bg-slate-900\/70 {
+    background-color: rgba(30, 30, 30, 0.92) !important;
+}
+
+.bg-slate-800,
+.bg-slate-800\/50,
+.bg-slate-800\/60,
+.bg-slate-800\/70 {
+    background-color: rgba(37, 37, 38, 0.88) !important;
+}
+
+.bg-slate-700,
+.bg-slate-700\/40,
+.bg-slate-700\/50 {
+    background-color: rgba(45, 45, 48, 0.9) !important;
+}
+
+.border-slate-800,
+.border-slate-700,
+.border-slate-700\/70,
+.border-slate-700\/80,
+.border-slate-600,
+.border-slate-600\/50 {
+    border-color: var(--vscode-border-soft) !important;
+}
+
+.text-white {
+    color: var(--vscode-text-strong) !important;
+}
+
+.text-slate-100,
+.text-slate-200,
+.text-gray-400 {
+    color: var(--vscode-text) !important;
+}
+
+.text-slate-300,
+.text-slate-400,
+.text-slate-500 {
+    color: var(--vscode-muted) !important;
+}
+
+.text-cyan-100,
+.text-cyan-200,
+.text-cyan-300,
+.text-cyan-400 {
+    color: var(--vscode-cyan) !important;
+}
+
+.text-pink-100,
+.text-pink-200,
+.text-pink-300,
+.text-pink-400 {
+    color: var(--vscode-pink) !important;
+}
+
+.text-emerald-100,
+.text-emerald-200,
+.text-emerald-300,
+.text-emerald-400,
+.text-green-200,
+.text-green-300 {
+    color: var(--vscode-success) !important;
+}
+
+.text-amber-100,
+.text-amber-200,
+.text-amber-300,
+.text-yellow-100,
+.text-yellow-200 {
+    color: var(--vscode-warning) !important;
+}
+
+.text-rose-100,
+.text-rose-200,
+.text-rose-300,
+.text-red-200,
+.text-red-300 {
+    color: var(--vscode-danger) !important;
+}
+
+.focus\:border-cyan-500:focus,
+.hover\:border-cyan-500\/60:hover,
+.hover\:border-cyan-500\/50:hover {
+    border-color: var(--vscode-accent-bright) !important;
+}
+
+.bg-cyan-400,
+.bg-cyan-500,
+.bg-blue-600 {
+    background-color: var(--vscode-accent) !important;
+}
+
+.hover\:bg-cyan-500\/20:hover,
+.bg-cyan-500\/10 {
+    background-color: rgba(0, 122, 204, 0.16) !important;
+}
+
+.border-cyan-500\/25,
+.border-cyan-500\/30,
+.border-cyan-500\/35,
+.border-cyan-500\/40 {
+    border-color: rgba(55, 148, 255, 0.42) !important;
 }

@@ -13,6 +13,7 @@
 @inject CudyAdminPasswordStore CudyAdminPasswordStore
 @inject CudyLuciClient CudyLuciClient
 @inject LocalDeviceProxyService LocalDeviceProxyService
+@inject NavigationManager NavigationManager
 
 <PageTitle>Settings</PageTitle>
 
@@ -71,6 +72,9 @@
             </button>
             <button type="button" class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40" disabled="@(!(_trafficStatus?.CanDisableAtBoot ?? false) || _busy)" @onclick="DisableBootAsync">
                 Disable boot
+            </button>
+            <button type="button" class="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20" @onclick="OpenXBondDiagnostics">
+                XBond diagnostics
             </button>
         </div>
         </div>
@@ -177,7 +181,7 @@
 
     @if (OperatingSystem.IsLinux())
     {
-        <Accordion Title="On-board Wi-Fi" IsExpanded="_wifiExpanded" OnToggle="(expanded) => _wifiExpanded = expanded" BadgeText="@GetWifiBadge()">
+        <Accordion Title="Router Wi-Fi" IsExpanded="_wifiExpanded" OnToggle="(expanded) => _wifiExpanded = expanded" BadgeText="@GetWifiBadge()">
             <div class="space-y-4 pt-2">
                 <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                     <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -205,10 +209,25 @@
 
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block">
-                        <span class="text-sm font-medium text-white">Wi-Fi Interface</span>
-                        <input type="text"
-                               class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
-                               @bind="_wifiInterface" />
+                        <span class="text-sm font-medium text-white">Wi-Fi Adapter</span>
+                        @if (_wifiInterfaces.Count == 0)
+                        {
+                            <input type="text"
+                                   class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                                   @bind="_wifiInterface" />
+                        }
+                        else
+                        {
+                            <select class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                                    @bind="_wifiInterface"
+                                    @bind:after="OnWifiInterfaceChangedAsync">
+                                @foreach (var adapter in _wifiInterfaces)
+                                {
+                                    <option value="@adapter.InterfaceName">@adapter.DisplayName</option>
+                                }
+                            </select>
+                        }
+                        <span class="mt-1 block text-xs text-slate-500">Built-in and USB Wi-Fi adapters discovered by NetworkManager.</span>
                     </label>
 
                     <label class="block">
@@ -224,7 +243,7 @@
                     <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
                         <div>
                             <h4 class="text-sm font-semibold text-white">Nearby Wi-Fi</h4>
-                            <p class="text-xs text-slate-500">Choose the network for the Raspberry Pi Wi-Fi adapter.</p>
+                            <p class="text-xs text-slate-500">Choose the network for the selected Raspberry Pi Wi-Fi adapter.</p>
                         </div>
                         <button type="button"
                                 class="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
@@ -343,10 +362,23 @@
 
             <label class="block">
                 <span class="text-sm font-medium text-white">Wi-Fi Scan Interface</span>
-                <input type="text"
-                       class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
-                       placeholder="wlan0"
-                       @bind="_cudySettings.WifiInterface" />
+                @if (_wifiInterfaces.Count == 0)
+                {
+                    <input type="text"
+                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                           placeholder="wlan0"
+                           @bind="_cudySettings.WifiInterface" />
+                }
+                else
+                {
+                    <select class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                            @bind="_cudySettings.WifiInterface">
+                        @foreach (var adapter in _wifiInterfaces)
+                        {
+                            <option value="@adapter.InterfaceName">@adapter.DisplayName</option>
+                        }
+                    </select>
+                }
                 <span class="mt-1 block text-xs text-slate-500">Used for trusted-home Wi-Fi detection.</span>
             </label>
 
@@ -449,54 +481,12 @@
                 <div class="@_proxyMessageClass rounded-lg border p-3 text-sm">@_proxyMessage</div>
             }
 
-            <div class="grid gap-4 md:grid-cols-2">
-                <label class="block">
-                    <span class="text-sm font-medium text-white">Name</span>
-                    <input type="text"
-                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
-                           placeholder="GOMO F50"
-                           @bind="_proxyDraft.DisplayName" />
-                </label>
-                <label class="block">
-                    <span class="text-sm font-medium text-white">Exposed Route</span>
-                    <input type="text"
-                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
-                           placeholder="/gomo"
-                           @bind="_proxyDraft.ExposedRoute" />
-                    <span class="mt-1 block text-xs text-slate-500">The full route is configurable, for example /gomo or /modems/gomo.</span>
-                </label>
-                <label class="block md:col-span-2">
-                    <span class="text-sm font-medium text-white">Target URL</span>
-                    <input type="text"
-                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
-                           placeholder="http://192.168.5.1"
-                           @bind="_proxyDraft.TargetUrl" />
-                </label>
-            </div>
-
-            <div class="grid gap-3 sm:grid-cols-2">
-                <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
-                    <span>Proxy enabled</span>
-                    <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_proxyDraft.Enabled" />
-                </label>
-                <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
-                    <span>Use for F50 telemetry</span>
-                    <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_proxyDraft.TelemetryEnabled" />
-                </label>
-            </div>
-
             <div class="flex flex-wrap gap-2">
                 <button type="button"
                         class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
                         disabled="@_proxyBusy"
-                        @onclick="SaveProxyAsync">
-                    @(_editingProxyId is null ? "Add proxy" : "Save proxy")
-                </button>
-                <button type="button"
-                        class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
-                        disabled="@_proxyBusy"
-                        @onclick="ResetProxyDraft">
-                    Clear
+                        @onclick="OpenAddProxy">
+                    Add proxy
                 </button>
             </div>
 
@@ -608,6 +598,66 @@
     </div>
 </div>
 
+<ActionSheet IsOpen="_showProxyEditor"
+             Title="@(_editingProxyId is null ? "Add proxy" : "Edit proxy")"
+             Description="Expose a local modem or router admin page through XNetwork."
+             CloseLabel="Close proxy editor"
+             MaxWidthClass="md:max-w-2xl"
+             OnClose="CloseProxyEditorAsync">
+    <div class="space-y-4">
+        <div class="grid gap-4 md:grid-cols-2">
+            <label class="block">
+                <span class="text-sm font-medium text-white">Name</span>
+                <input type="text"
+                       class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                       placeholder="GOMO F50"
+                       @bind="_proxyDraft.DisplayName" />
+            </label>
+            <label class="block">
+                <span class="text-sm font-medium text-white">Exposed Route</span>
+                <input type="text"
+                       class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                       placeholder="/gomo"
+                       @bind="_proxyDraft.ExposedRoute" />
+                <span class="mt-1 block text-xs text-slate-500">The full route is configurable, for example /gomo or /modems/gomo.</span>
+            </label>
+            <label class="block md:col-span-2">
+                <span class="text-sm font-medium text-white">Target URL</span>
+                <input type="text"
+                       class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                       placeholder="http://192.168.5.1"
+                       @bind="_proxyDraft.TargetUrl" />
+            </label>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+                <span>Proxy enabled</span>
+                <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_proxyDraft.Enabled" />
+            </label>
+            <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+                <span>Use for F50 telemetry</span>
+                <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_proxyDraft.TelemetryEnabled" />
+            </label>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+            <button type="button"
+                    class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled="@_proxyBusy"
+                    @onclick="SaveProxyAsync">
+                @(_editingProxyId is null ? "Add proxy" : "Save proxy")
+            </button>
+            <button type="button"
+                    class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled="@_proxyBusy"
+                    @onclick="CloseProxyEditorAsync">
+                Cancel
+            </button>
+        </div>
+    </div>
+</ActionSheet>
+
 @code {
     private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(2));
     private readonly CancellationTokenSource _refreshCts = new();
@@ -619,6 +669,7 @@
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
     private WifiConnectionStatus? _wifiStatus;
+    private List<WifiInterfaceInfo> _wifiInterfaces = new();
     private List<WifiNetwork> _wifiNetworks = new();
     private List<WifiNetwork> _cudyWifiNetworks = new();
     private List<LocalDeviceProxyEntry> _proxyEntries = new();
@@ -648,6 +699,7 @@
     private bool _isWifiRefreshing;
     private bool _isWifiScanning;
     private bool _isWifiConnecting;
+    private bool _showProxyEditor;
     private bool _tunnelExpanded;
     private bool _policyExpanded;
     private bool _adaptersExpanded;
@@ -664,6 +716,7 @@
         _cudySettings = CopyCudySettings(CudyApControlService.Settings);
         _cudyStatus = CudyApControlService.GetStatus();
         LoadProxyEntries();
+        await LoadWifiInterfacesAsync();
         await LoadWifiStatusAsync();
         await LoadWifiNetworksAsync(rescan: false);
         await RefreshAsync();
@@ -700,6 +753,11 @@
     {
         try
         {
+            if (_wifiInterfaces.Count == 0)
+            {
+                await LoadWifiInterfacesAsync();
+            }
+
             _wifiStatus = await WifiService.GetStatusAsync(_wifiInterface, _refreshCts.Token);
             if (_wifiStatus.IsSupported)
             {
@@ -719,6 +777,28 @@
                 Message = $"Could not read Wi-Fi status: {ex.Message}"
             };
         }
+    }
+
+    private async Task LoadWifiInterfacesAsync()
+    {
+        try
+        {
+            _wifiInterfaces = (await WifiService.GetWifiInterfacesAsync(_refreshCts.Token)).ToList();
+            _wifiInterface = WifiService.SelectDefaultInterface(_wifiInterfaces, _wifiInterface);
+            _cudySettings.WifiInterface = WifiService.SelectDefaultInterface(_wifiInterfaces, _cudySettings.WifiInterface);
+        }
+        catch
+        {
+            _wifiInterfaces = new List<WifiInterfaceInfo>();
+        }
+    }
+
+    private async Task OnWifiInterfaceChangedAsync()
+    {
+        _wifiMessage = null;
+        _wifiNetworks = new List<WifiNetwork>();
+        await LoadWifiStatusAsync();
+        await LoadWifiNetworksAsync(rescan: false);
     }
 
     private async Task LoadWifiNetworksAsync(bool rescan)
@@ -1066,6 +1146,13 @@
         _proxyEntries = LocalDeviceProxyService.GetEntries().ToList();
     }
 
+    private void OpenAddProxy()
+    {
+        ResetProxyDraft();
+        ClearProxyMessage();
+        _showProxyEditor = true;
+    }
+
     private async Task SaveProxyAsync()
     {
         _proxyBusy = true;
@@ -1076,6 +1163,7 @@
             await LocalDeviceProxyService.SaveEntryAsync(_proxyDraft, _refreshCts.Token);
             LoadProxyEntries();
             ResetProxyDraft();
+            _showProxyEditor = false;
             ShowProxyMessage("Local device proxy saved.", isError: false);
         }
         catch (Exception ex)
@@ -1119,13 +1207,21 @@
     {
         _editingProxyId = proxy.Id;
         _proxyDraft = CopyProxy(proxy);
-        ShowProxyMessage($"Editing {proxy.DisplayName}.", isError: false);
+        ClearProxyMessage();
+        _showProxyEditor = true;
     }
 
     private void ResetProxyDraft()
     {
         _editingProxyId = null;
         _proxyDraft = NewProxyDraft();
+    }
+
+    private Task CloseProxyEditorAsync()
+    {
+        _showProxyEditor = false;
+        ResetProxyDraft();
+        return Task.CompletedTask;
     }
 
     private void ShowProxyMessage(string message, bool isError)
@@ -1139,6 +1235,11 @@
     private void ClearProxyMessage()
     {
         _proxyMessage = null;
+    }
+
+    private void OpenXBondDiagnostics()
+    {
+        NavigationManager.NavigateTo("/xbond");
     }
 
     private string LocalProxyBadge => $"{_proxyEntries.Count(proxy => proxy.Enabled)} enabled";
@@ -1192,7 +1293,7 @@
 
         if (!_wifiStatus.IsSupported)
         {
-            return "On-board Wi-Fi unavailable";
+            return "Router Wi-Fi unavailable";
         }
 
         return string.IsNullOrWhiteSpace(_wifiStatus.Ssid)

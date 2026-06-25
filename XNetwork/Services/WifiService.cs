@@ -5,6 +5,22 @@ namespace XNetwork.Services;
 
 public class WifiService(ILogger<WifiService> logger)
 {
+    public async Task<IReadOnlyList<WifiInterfaceInfo>> GetWifiInterfacesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return [];
+        }
+
+        if (!await CommandExistsAsync("nmcli", cancellationToken).ConfigureAwait(false))
+        {
+            return [];
+        }
+
+        var deviceOutput = await RunNmcliAsync(new[] { "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status" }, cancellationToken).ConfigureAwait(false);
+        return ParseWifiInterfaces(deviceOutput.Output);
+    }
+
     public async Task<WifiConnectionStatus> GetStatusAsync(string interfaceName = "wlan0", CancellationToken cancellationToken = default)
     {
         if (!OperatingSystem.IsLinux())
@@ -17,25 +33,20 @@ public class WifiService(ILogger<WifiService> logger)
             return new WifiConnectionStatus { IsSupported = false, Message = "NetworkManager nmcli was not found on this router." };
         }
 
-        var deviceOutput = await RunNmcliAsync(new[] { "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status" }, cancellationToken).ConfigureAwait(false);
-        var wifiDevices = deviceOutput.Output
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(ParseTerseLine)
-            .Where(parts => parts.Count >= 4 && parts[1] == "wifi" && !parts[0].StartsWith("p2p-", StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        var selected = wifiDevices.FirstOrDefault(parts => string.Equals(parts[0], interfaceName, StringComparison.OrdinalIgnoreCase)) ?? wifiDevices.FirstOrDefault();
+        var wifiDevices = await GetWifiInterfacesAsync(cancellationToken).ConfigureAwait(false);
+        var selectedInterface = SelectDefaultInterface(wifiDevices, interfaceName);
+        var selected = wifiDevices.FirstOrDefault(device => string.Equals(device.InterfaceName, selectedInterface, StringComparison.OrdinalIgnoreCase));
         if (selected == null)
         {
-            return new WifiConnectionStatus { IsSupported = false, InterfaceName = interfaceName, Message = "No on-board Wi-Fi interface was found." };
+            return new WifiConnectionStatus { IsSupported = false, InterfaceName = interfaceName, Message = "No Wi-Fi interface was found." };
         }
 
         var status = new WifiConnectionStatus
         {
             IsSupported = true,
-            InterfaceName = selected[0],
-            State = selected[2],
-            ConnectionName = string.IsNullOrWhiteSpace(selected[3]) ? null : selected[3]
+            InterfaceName = selected.InterfaceName,
+            State = selected.State,
+            ConnectionName = selected.ConnectionName
         };
 
         try
@@ -169,6 +180,37 @@ public class WifiService(ILogger<WifiService> logger)
     private static Task<ProcessResult> RunNmcliAsync(IEnumerable<string> args, CancellationToken cancellationToken, string? standardInput = null)
     {
         return RunProcessAsync("nmcli", args, cancellationToken, standardInput);
+    }
+
+    public static IReadOnlyList<WifiInterfaceInfo> ParseWifiInterfaces(string output)
+    {
+        return output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(ParseTerseLine)
+            .Where(parts => parts.Count >= 4 && parts[1] == "wifi" && !parts[0].StartsWith("p2p-", StringComparison.OrdinalIgnoreCase))
+            .Select(parts => new WifiInterfaceInfo
+            {
+                InterfaceName = parts[0],
+                State = string.IsNullOrWhiteSpace(parts[2]) ? "unknown" : parts[2],
+                ConnectionName = string.IsNullOrWhiteSpace(parts[3]) || parts[3] == "--" ? null : parts[3]
+            })
+            .OrderByDescending(device => device.IsConnected)
+            .ThenBy(device => device.InterfaceName, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public static string SelectDefaultInterface(IReadOnlyList<WifiInterfaceInfo> interfaces, string? preferredInterface = null)
+    {
+        if (!string.IsNullOrWhiteSpace(preferredInterface) &&
+            interfaces.Any(device => string.Equals(device.InterfaceName, preferredInterface.Trim(), StringComparison.OrdinalIgnoreCase)))
+        {
+            return preferredInterface.Trim();
+        }
+
+        return interfaces.FirstOrDefault(device => device.IsConnected)?.InterfaceName
+               ?? interfaces.FirstOrDefault(device => string.Equals(device.InterfaceName, "wlan0", StringComparison.OrdinalIgnoreCase))?.InterfaceName
+               ?? interfaces.FirstOrDefault()?.InterfaceName
+               ?? (string.IsNullOrWhiteSpace(preferredInterface) ? "wlan0" : preferredInterface.Trim());
     }
 
     private static async Task<ProcessResult> RunProcessAsync(string fileName, IEnumerable<string> args, CancellationToken cancellationToken, string? standardInput = null)

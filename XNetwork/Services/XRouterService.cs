@@ -77,6 +77,25 @@ public class XRouterService(CudyLuciClient cudyClient, CudyApAutomationSettings 
         InvalidateClientCache();
     }
 
+    public async Task<CudyWirelessStatus> GetWirelessStatusAsync(CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured)
+        {
+            return new CudyWirelessStatus
+            {
+                IsConfigured = false,
+                Message = "Cudy management is not configured."
+            };
+        }
+
+        return await cudyClient.GetWirelessStatusAsync(settings, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SetWirelessBandEnabledAsync(CudyWirelessBand band, bool enabled, CancellationToken cancellationToken = default)
+    {
+        await cudyClient.SetWirelessBandEnabledAsync(settings, band, enabled, cancellationToken).ConfigureAwait(false);
+    }
+
     private void InvalidateClientCache()
     {
         _cachedClients = null;

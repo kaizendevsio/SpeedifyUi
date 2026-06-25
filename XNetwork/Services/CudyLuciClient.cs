@@ -18,6 +18,19 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
     private const string XRouterDeviceListPath = "cgi-bin/luci/admin/network/devices/devlist?detail=1";
     private const string XRouterDeviceInfoPath = "cgi-bin/luci/admin/network/devices/devinfo";
     private const string XRouterInternetPath = "cgi-bin/luci/admin/network/devices/internet";
+    private const string CombinedDisabledField = "cbid.wireless.wlan.disabled";
+    private const string TwoGDisabledField = "cbid.wireless.wlan00.disabled";
+    private const string FiveGDisabledField = "cbid.wireless.wlan10.disabled";
+
+    public async Task<CudyWirelessStatus> GetWirelessStatusAsync(CudyApAutomationSettings settings, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateAuthenticatedSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        var wireless = await ReadWirelessFormAsync(session.Client, session.BaseUri, cancellationToken).ConfigureAwait(false);
+        var status = ParseWirelessStatus(wireless.SmartConnect, wireless.Fields);
+        status.IsConfigured = true;
+        status.UpdatedUtc = DateTime.UtcNow;
+        return status;
+    }
 
     public async Task SetWirelessEnabledAsync(CudyApAutomationSettings settings, bool enabled, CancellationToken cancellationToken = default)
     {
@@ -30,35 +43,47 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         var baseUri = session.BaseUri;
         var client = session.Client;
 
-        var smartConnect = await IsSmartConnectEnabledAsync(client, baseUri, cancellationToken).ConfigureAwait(false);
-        var formPath = smartConnect ? CombinePath : UncombinePath;
-        var formHtml = await GetStringAsync(client, BuildUri(baseUri, formPath), cancellationToken).ConfigureAwait(false);
-        var fields = CudyLuciFormParser.ParseFields(formHtml);
+        var wireless = await ReadWirelessFormAsync(client, baseUri, cancellationToken).ConfigureAwait(false);
+        var fields = PrepareWirelessFields(wireless.Fields);
 
-        fields["timeclock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
-        fields["cbi.submit"] = "1";
-        fields["cbi.apply"] = "Save & Apply";
-
-        if (smartConnect)
+        if (wireless.SmartConnect)
         {
-            fields["cbid.wireless.wlan.disabled"] = enabled ? "0" : "1";
+            fields[CombinedDisabledField] = enabled ? "0" : "1";
         }
         else
         {
             if (settings.Disable2G)
             {
-                fields["cbid.wireless.wlan00.disabled"] = enabled ? "0" : "1";
+                fields[TwoGDisabledField] = enabled ? "0" : "1";
             }
 
             if (settings.Disable5G)
             {
-                fields["cbid.wireless.wlan10.disabled"] = enabled ? "0" : "1";
+                fields[FiveGDisabledField] = enabled ? "0" : "1";
             }
         }
 
-        var action = CudyLuciFormParser.ParseFormAction(formHtml) ?? formPath;
-        logger.LogInformation("Setting Cudy AP enabled={Enabled} using {Mode} wireless form at {BaseUrl}", enabled, smartConnect ? "combined" : "split-band", baseUri);
-        await PostMultipartAsync(client, ResolveUri(baseUri, action), fields, cancellationToken).ConfigureAwait(false);
+        logger.LogInformation("Setting Cudy AP enabled={Enabled} using {Mode} wireless form at {BaseUrl}", enabled, wireless.SmartConnect ? "combined" : "split-band", baseUri);
+        await PostMultipartAsync(client, ResolveUri(baseUri, wireless.Action), fields, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SetWirelessBandEnabledAsync(CudyApAutomationSettings settings, CudyWirelessBand band, bool enabled, CancellationToken cancellationToken = default)
+    {
+        using var session = await CreateAuthenticatedSessionAsync(settings, cancellationToken).ConfigureAwait(false);
+        var wireless = await ReadWirelessFormAsync(session.Client, session.BaseUri, cancellationToken).ConfigureAwait(false);
+        var fields = PrepareWirelessFields(wireless.Fields);
+
+        if (wireless.SmartConnect)
+        {
+            fields[CombinedDisabledField] = enabled ? "0" : "1";
+        }
+        else
+        {
+            fields[band == CudyWirelessBand.TwoG ? TwoGDisabledField : FiveGDisabledField] = enabled ? "0" : "1";
+        }
+
+        logger.LogInformation("Setting Cudy {Band} radio enabled={Enabled} using {Mode} wireless form at {BaseUrl}", band, enabled, wireless.SmartConnect ? "combined" : "split-band", session.BaseUri);
+        await PostMultipartAsync(session.Client, ResolveUri(session.BaseUri, wireless.Action), fields, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<XRouterClient>> GetXRouterClientsAsync(CudyApAutomationSettings settings, CancellationToken cancellationToken = default)
@@ -192,6 +217,61 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
         var comboHtml = await GetStringAsync(client, BuildUri(baseUri, ComboPath), cancellationToken).ConfigureAwait(false);
         var fields = CudyLuciFormParser.ParseFields(comboHtml);
         return fields.TryGetValue("cbid.wireless.smart.connect", out var value) && value == "1";
+    }
+
+    private static async Task<WirelessForm> ReadWirelessFormAsync(LenientCudyHttpSession client, Uri baseUri, CancellationToken cancellationToken)
+    {
+        var smartConnect = await IsSmartConnectEnabledAsync(client, baseUri, cancellationToken).ConfigureAwait(false);
+        var formPath = smartConnect ? CombinePath : UncombinePath;
+        var formHtml = await GetStringAsync(client, BuildUri(baseUri, formPath), cancellationToken).ConfigureAwait(false);
+        var fields = CudyLuciFormParser.ParseFields(formHtml);
+        var action = CudyLuciFormParser.ParseFormAction(formHtml) ?? formPath;
+        return new WirelessForm(smartConnect, fields, action);
+    }
+
+    public static CudyWirelessStatus ParseWirelessStatus(bool smartConnect, IReadOnlyDictionary<string, string> fields)
+    {
+        static bool? FieldEnabled(IReadOnlyDictionary<string, string> values, string field)
+        {
+            return values.TryGetValue(field, out var raw)
+                ? !string.Equals(raw, "1", StringComparison.Ordinal)
+                : null;
+        }
+
+        if (smartConnect)
+        {
+            var combinedEnabled = FieldEnabled(fields, CombinedDisabledField);
+            return new CudyWirelessStatus
+            {
+                IsSmartConnect = true,
+                TwoGEnabled = combinedEnabled,
+                FiveGEnabled = combinedEnabled,
+                Message = combinedEnabled switch
+                {
+                    true => "Smart Connect radio is on.",
+                    false => "Smart Connect radio is off.",
+                    _ => "Smart Connect radio state is unknown."
+                }
+            };
+        }
+
+        var twoGEnabled = FieldEnabled(fields, TwoGDisabledField);
+        var fiveGEnabled = FieldEnabled(fields, FiveGDisabledField);
+        return new CudyWirelessStatus
+        {
+            IsSmartConnect = false,
+            TwoGEnabled = twoGEnabled,
+            FiveGEnabled = fiveGEnabled,
+            Message = "Split-band radio state loaded."
+        };
+    }
+
+    private static Dictionary<string, string> PrepareWirelessFields(Dictionary<string, string> fields)
+    {
+        fields["timeclock"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        fields["cbi.submit"] = "1";
+        fields["cbi.apply"] = "Save & Apply";
+        return fields;
     }
 
     private static async Task<string> GetStringAsync(LenientCudyHttpSession client, Uri uri, CancellationToken cancellationToken)
@@ -810,4 +890,6 @@ public class CudyLuciClient(ILogger<CudyLuciClient> logger)
             Client.Dispose();
         }
     }
+
+    private sealed record WirelessForm(bool SmartConnect, Dictionary<string, string> Fields, string Action);
 }

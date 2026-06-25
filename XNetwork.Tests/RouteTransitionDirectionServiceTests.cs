@@ -10,7 +10,7 @@ public class RouteTransitionDirectionServiceTests
         var service = new RouteTransitionDirectionService();
         service.Initialize("http://xnetwork/");
 
-        service.NotifyNavigated("http://xnetwork/xbond");
+        service.NotifyNavigated("http://xnetwork/xrouter");
 
         Assert.False(service.IsBackwards);
 
@@ -25,6 +25,12 @@ public class RouteTransitionDirectionServiceTests
         Assert.Equal(RouteTransitionDirectionService.GetRouteOrder("/xrouter"), RouteTransitionDirectionService.GetRouteOrder("/wifi"));
     }
 
+    [Fact]
+    public void GetRouteOrder_TreatsXBondAsSettingsDetail()
+    {
+        Assert.Equal(RouteTransitionDirectionService.GetRouteOrder("/settings"), RouteTransitionDirectionService.GetRouteOrder("/xbond"));
+    }
+
     [Theory]
     [InlineData("http://xnetwork/")]
     [InlineData("/")]
@@ -33,6 +39,6 @@ public class RouteTransitionDirectionServiceTests
     {
         var order = RouteTransitionDirectionService.GetRouteOrder(uriOrPath);
 
-        Assert.InRange(order, 0, 4);
+        Assert.InRange(order, 0, 3);
     }
 }
