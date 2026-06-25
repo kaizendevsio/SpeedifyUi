@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.72";
+    public const string CurrentVersion = "xbond-2026.06.73";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Fixed F50 telemetry firmware compatibility.",
+            Changes =
+            [
+                "F50 telemetry still uses the direct modem API, but now includes the minimal AJAX headers required by the firmware to avoid none-secure API errors.",
+                "Smart and Dito F50 modems can populate lean cellular generation and signal-bar badges when their API reports those fields."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.72",
             Date = "2026-06-25",
             Summary = "Added local device proxies and F50 signal badges.",
             Changes =

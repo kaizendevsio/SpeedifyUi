@@ -88,7 +88,12 @@ public sealed class F50ModemTelemetryService(
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(RequestTimeout);
             var uri = new Uri(baseUri, "/goform/goform_get_cmd_process?isTest=false&cmd=network_type,current_network_type,signalbar&multi_data=1");
-            using var response = await _httpClient.GetAsync(uri, timeoutCts.Token).ConfigureAwait(false);
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.Referrer = new Uri(baseUri, "/index.html");
+            request.Headers.TryAddWithoutValidation("Origin", $"{baseUri.Scheme}://{baseUri.Host}");
+            request.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
+
+            using var response = await _httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.OK)
             {
                 return null;
@@ -172,4 +177,3 @@ public sealed class F50ModemTelemetryService(
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
     }
 }
-
