@@ -122,6 +122,25 @@ public class LocalDeviceProxyTests
     }
 
     [Fact]
+    public void TryBuildDirectoryRedirectPath_RedirectsProxyRootToDirectoryPath()
+    {
+        var shouldRedirect = LocalDeviceProxyMiddleware.TryBuildDirectoryRedirectPath(
+            "/gomo",
+            "/gomo",
+            "?token=1",
+            out var redirectPath);
+
+        Assert.True(shouldRedirect);
+        Assert.Equal("/gomo/?token=1", redirectPath);
+
+        Assert.False(LocalDeviceProxyMiddleware.TryBuildDirectoryRedirectPath(
+            "/gomo",
+            "/gomo/mobile.html",
+            null,
+            out _));
+    }
+
+    [Fact]
     public void RewriteLocalDeviceBody_KeepsRootRelativeAssetsInsideProxyRoute()
     {
         var rewritten = LocalDeviceProxyMiddleware.RewriteLocalDeviceBody(
@@ -137,6 +156,24 @@ public class LocalDeviceProxyTests
         Assert.Contains("href=\"/gomo/index.html\"", rewritten);
         Assert.Contains("url(/gomo/img/icon.png)", rewritten);
         Assert.Contains("fetch('/gomo/goform/status')", rewritten);
+    }
+
+    [Fact]
+    public void RewriteLocalDeviceBody_KeepsRelativeScriptNavigationInsideProxyRoute()
+    {
+        var rewritten = LocalDeviceProxyMiddleware.RewriteLocalDeviceBody(
+            """
+            <script>
+            window.location.href = "mobile.html";
+            location.replace('index.html');
+            top.location = "../logout.html";
+            </script>
+            """,
+            "/gomo");
+
+        Assert.Contains("window.location.href = \"/gomo/mobile.html\"", rewritten);
+        Assert.Contains("location.replace('/gomo/index.html')", rewritten);
+        Assert.Contains("top.location = \"/gomo/logout.html\"", rewritten);
     }
 
     [Fact]

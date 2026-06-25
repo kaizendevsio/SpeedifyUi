@@ -13,6 +13,7 @@
 @inject CudyAdminPasswordStore CudyAdminPasswordStore
 @inject CudyLuciClient CudyLuciClient
 @inject LocalDeviceProxyService LocalDeviceProxyService
+@inject TrafficBypassService TrafficBypassService
 @inject NavigationManager NavigationManager
 
 <PageTitle>Settings</PageTitle>
@@ -542,6 +543,85 @@
         </div>
     </Accordion>
 
+    <Accordion Title="Traffic Bypass Rules" IsExpanded="_bypassExpanded" OnToggle="(expanded) => _bypassExpanded = expanded" BadgeText="@TrafficBypassBadge">
+        <div class="space-y-4 pt-2">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-lg font-semibold text-white">Traffic Bypass Rules</h2>
+                    <p class="mt-1 text-sm text-slate-400">Send selected destinations or ports outside XBond through a physical adapter.</p>
+                </div>
+                <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">@TrafficBypassBadge</span>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_bypassMessage))
+            {
+                <div class="@_bypassMessageClass rounded-lg border p-3 text-sm">@_bypassMessage</div>
+            }
+
+            @if (_bypassStatus is not null)
+            {
+                <div class="@GetBypassStatusClass(_bypassStatus) rounded-lg border p-3 text-sm">
+                    <span>@_bypassStatus.Message</span>
+                    @if (!string.IsNullOrWhiteSpace(_bypassStatus.Error))
+                    {
+                        <span class="block break-all text-xs opacity-80">@_bypassStatus.Error</span>
+                    }
+                </div>
+            }
+
+            <div class="flex flex-wrap gap-2">
+                <button type="button"
+                        class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled="@_bypassBusy"
+                        @onclick="OpenAddBypass">
+                    Add bypass rule
+                </button>
+            </div>
+
+            @if (_bypassEntries.Count == 0)
+            {
+                <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-400">
+                    No traffic bypass rules are configured yet.
+                </div>
+            }
+            else
+            {
+                <div class="grid gap-3">
+                    @foreach (var rule in _bypassEntries)
+                    {
+                        <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <h3 class="font-semibold text-white">@rule.DisplayName</h3>
+                                        <span class="@GetBypassPillClass(rule)">@(rule.Enabled ? "Enabled" : "Disabled")</span>
+                                        <span class="rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300">@FormatBypassProtocol(rule.Protocol)</span>
+                                    </div>
+                                    <p class="mt-1 break-all text-sm text-slate-400">@FormatBypassMatch(rule)</p>
+                                    <p class="mt-1 text-xs text-slate-500">Egress: @FormatBypassEgress(rule)</p>
+                                </div>
+                                <div class="flex shrink-0 gap-2">
+                                    <button type="button"
+                                            class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white"
+                                            disabled="@_bypassBusy"
+                                            @onclick="() => EditBypass(rule)">
+                                        Edit
+                                    </button>
+                                    <button type="button"
+                                            class="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/20"
+                                            disabled="@_bypassBusy"
+                                            @onclick="() => DeleteBypassAsync(rule)">
+                                        Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </div>
+    </Accordion>
+
     <Accordion Title="TCP MSS Clamp" IsExpanded="_mssExpanded" OnToggle="(expanded) => _mssExpanded = expanded" BadgeText="@MssClampStateLabel">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
@@ -658,6 +738,92 @@
     </div>
 </ActionSheet>
 
+<ActionSheet IsOpen="_showBypassEditor"
+             Title="@(_editingBypassId is null ? "Add bypass rule" : "Edit bypass rule")"
+             Description="Match selected traffic and send it outside XBond through a physical adapter."
+             CloseLabel="Close bypass rule editor"
+             MaxWidthClass="md:max-w-2xl"
+             OnClose="CloseBypassEditorAsync">
+    <div class="space-y-4">
+        <div class="grid gap-4 md:grid-cols-2">
+            <label class="block">
+                <span class="text-sm font-medium text-white">Name</span>
+                <input type="text"
+                       class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                       placeholder="Bypass work VPN"
+                       @bind="_bypassDraft.DisplayName" />
+            </label>
+            <label class="block">
+                <span class="text-sm font-medium text-white">Protocol</span>
+                <select class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                        @bind="_bypassDraft.Protocol">
+                    <option value="@TrafficBypassProtocols.Any">Any</option>
+                    <option value="@TrafficBypassProtocols.Tcp">TCP</option>
+                    <option value="@TrafficBypassProtocols.Udp">UDP</option>
+                </select>
+            </label>
+            <label class="block md:col-span-2">
+                <span class="text-sm font-medium text-white">Destinations</span>
+                <textarea class="mt-2 min-h-24 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                          placeholder="8.8.8.8, 203.0.113.0/24"
+                          @bind="_bypassDestinationText"></textarea>
+                <span class="mt-1 block text-xs text-slate-500">IPv4 addresses or CIDR ranges. Leave empty only when matching by port.</span>
+            </label>
+            <label class="block md:col-span-2">
+                <span class="text-sm font-medium text-white">Destination ports</span>
+                <input type="text"
+                       class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                       placeholder="443, 5000-5010"
+                       @bind="_bypassPortsText" />
+                <span class="mt-1 block text-xs text-slate-500">Optional. If protocol is Any, port rules apply to both TCP and UDP.</span>
+            </label>
+            <label class="block">
+                <span class="text-sm font-medium text-white">Egress adapter</span>
+                <select class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                        @bind="_bypassDraft.EgressMode">
+                    <option value="@TrafficBypassEgressModes.AutoPhysical">Auto physical</option>
+                    <option value="@TrafficBypassEgressModes.Interface">Choose adapter</option>
+                </select>
+                <span class="mt-1 block text-xs text-slate-500">Auto physical uses the current best non-XBond default route.</span>
+            </label>
+            @if (_bypassDraft.EgressMode == TrafficBypassEgressModes.Interface)
+            {
+                <label class="block">
+                    <span class="text-sm font-medium text-white">Adapter</span>
+                    <select class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                            @bind="_bypassDraft.InterfaceName">
+                        <option value="">Select adapter</option>
+                        @foreach (var adapter in _bypassAdapters)
+                        {
+                            <option value="@adapter.InterfaceName">@adapter.DisplayName (@adapter.InterfaceName)</option>
+                        }
+                    </select>
+                </label>
+            }
+        </div>
+
+        <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+            <span>Rule enabled</span>
+            <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_bypassDraft.Enabled" />
+        </label>
+
+        <div class="flex flex-wrap gap-2">
+            <button type="button"
+                    class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled="@_bypassBusy"
+                    @onclick="SaveBypassAsync">
+                @(_editingBypassId is null ? "Add rule" : "Save rule")
+            </button>
+            <button type="button"
+                    class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    disabled="@_bypassBusy"
+                    @onclick="CloseBypassEditorAsync">
+                Cancel
+            </button>
+        </div>
+    </div>
+</ActionSheet>
+
 @code {
     private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(2));
     private readonly CancellationTokenSource _refreshCts = new();
@@ -674,6 +840,10 @@
     private List<WifiNetwork> _cudyWifiNetworks = new();
     private List<LocalDeviceProxyEntry> _proxyEntries = new();
     private LocalDeviceProxyEntry _proxyDraft = NewProxyDraft();
+    private List<TrafficBypassRule> _bypassEntries = new();
+    private List<TrafficBypassEgressAdapter> _bypassAdapters = new();
+    private TrafficBypassRule _bypassDraft = NewBypassDraft();
+    private TrafficBypassApplyStatus? _bypassStatus;
     private string? _message;
     private string? _error;
     private string? _wifiMessage;
@@ -681,7 +851,12 @@
     private string _cudyLocalMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string? _proxyMessage;
     private string _proxyMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
+    private string? _bypassMessage;
+    private string _bypassMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
+    private string _bypassDestinationText = "";
+    private string _bypassPortsText = "";
     private string? _editingProxyId;
+    private string? _editingBypassId;
     private string _cudyAdminPasswordInput = "";
     private string _wifiInterface = "wlan0";
     private string _wifiSsid = "";
@@ -696,16 +871,19 @@
     private bool _busy;
     private bool _cudyBusy;
     private bool _proxyBusy;
+    private bool _bypassBusy;
     private bool _isWifiRefreshing;
     private bool _isWifiScanning;
     private bool _isWifiConnecting;
     private bool _showProxyEditor;
+    private bool _showBypassEditor;
     private bool _tunnelExpanded;
     private bool _policyExpanded;
     private bool _adaptersExpanded;
     private bool _wifiExpanded;
     private bool _cudyExpanded;
     private bool _proxyExpanded;
+    private bool _bypassExpanded;
     private bool _mssExpanded;
     private bool _monitorExpanded;
     private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
@@ -716,6 +894,7 @@
         _cudySettings = CopyCudySettings(CudyApControlService.Settings);
         _cudyStatus = CudyApControlService.GetStatus();
         LoadProxyEntries();
+        await LoadTrafficBypassAsync();
         await LoadWifiInterfacesAsync();
         await LoadWifiStatusAsync();
         await LoadWifiNetworksAsync(rescan: false);
@@ -745,6 +924,7 @@
         _mssClampStatus = await MssClampService.GetStatusAsync(_refreshCts.Token);
         _networkMonitorStatus = NetworkMonitorService.GetStatus();
         _cudyStatus = CudyApControlService.GetStatus();
+        _bypassStatus = TrafficBypassService.GetLastApplyStatus();
         InitializePolicyFields();
         StateHasChanged();
     }
@@ -1146,6 +1326,13 @@
         _proxyEntries = LocalDeviceProxyService.GetEntries().ToList();
     }
 
+    private async Task LoadTrafficBypassAsync()
+    {
+        _bypassEntries = TrafficBypassService.GetRules().ToList();
+        _bypassAdapters = (await TrafficBypassService.GetEgressAdaptersAsync(_refreshCts.Token)).ToList();
+        _bypassStatus = TrafficBypassService.GetLastApplyStatus();
+    }
+
     private void OpenAddProxy()
     {
         ResetProxyDraft();
@@ -1237,12 +1424,117 @@
         _proxyMessage = null;
     }
 
+    private async Task OpenAddBypass()
+    {
+        ResetBypassDraft();
+        ClearBypassMessage();
+        await LoadTrafficBypassAsync();
+        _showBypassEditor = true;
+    }
+
+    private async Task SaveBypassAsync()
+    {
+        _bypassBusy = true;
+        ClearBypassMessage();
+        try
+        {
+            _bypassDraft.Id = _editingBypassId ?? _bypassDraft.Id;
+            _bypassDraft.Destinations = TrafficBypassService.SplitTextList(_bypassDestinationText).ToList();
+            _bypassDraft.Ports = TrafficBypassService.SplitTextList(_bypassPortsText).ToList();
+            _bypassStatus = await TrafficBypassService.SaveRuleAsync(_bypassDraft, _refreshCts.Token);
+            await LoadTrafficBypassAsync();
+            ResetBypassDraft();
+            _showBypassEditor = false;
+            ShowBypassMessage(_bypassStatus.Applied
+                ? "Traffic bypass rule saved and applied."
+                : $"Traffic bypass rule saved. {_bypassStatus.Message}", isError: !_bypassStatus.Applied);
+        }
+        catch (Exception ex)
+        {
+            ShowBypassMessage($"Could not save bypass rule: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _bypassBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task DeleteBypassAsync(TrafficBypassRule rule)
+    {
+        _bypassBusy = true;
+        ClearBypassMessage();
+        try
+        {
+            _bypassStatus = await TrafficBypassService.DeleteRuleAsync(rule.Id, _refreshCts.Token);
+            await LoadTrafficBypassAsync();
+            if (string.Equals(_editingBypassId, rule.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                ResetBypassDraft();
+            }
+
+            ShowBypassMessage(_bypassStatus.Applied
+                ? "Traffic bypass rule deleted and routes refreshed."
+                : $"Traffic bypass rule deleted. {_bypassStatus.Message}", isError: !_bypassStatus.Applied);
+        }
+        catch (Exception ex)
+        {
+            ShowBypassMessage($"Could not delete bypass rule: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _bypassBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task EditBypass(TrafficBypassRule rule)
+    {
+        _editingBypassId = rule.Id;
+        _bypassDraft = CopyBypass(rule);
+        _bypassDestinationText = string.Join(Environment.NewLine, rule.Destinations);
+        _bypassPortsText = string.Join(", ", rule.Ports);
+        ClearBypassMessage();
+        await LoadTrafficBypassAsync();
+        _showBypassEditor = true;
+    }
+
+    private void ResetBypassDraft()
+    {
+        _editingBypassId = null;
+        _bypassDraft = NewBypassDraft();
+        _bypassDestinationText = "";
+        _bypassPortsText = "";
+    }
+
+    private Task CloseBypassEditorAsync()
+    {
+        _showBypassEditor = false;
+        ResetBypassDraft();
+        return Task.CompletedTask;
+    }
+
+    private void ShowBypassMessage(string message, bool isError)
+    {
+        _bypassMessage = message;
+        _bypassMessageClass = isError
+            ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
+            : "border-emerald-500/25 bg-emerald-500/10 text-emerald-100";
+    }
+
+    private void ClearBypassMessage()
+    {
+        _bypassMessage = null;
+    }
+
     private void OpenXBondDiagnostics()
     {
         NavigationManager.NavigateTo("/xbond");
     }
 
     private string LocalProxyBadge => $"{_proxyEntries.Count(proxy => proxy.Enabled)} enabled";
+
+    private string TrafficBypassBadge => $"{_bypassEntries.Count(rule => rule.Enabled)} enabled";
 
     private static string GetProxyPillClass(LocalDeviceProxyEntry proxy) => proxy.Enabled
         ? "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200"
@@ -1266,6 +1558,55 @@
         Enabled = source.Enabled,
         TelemetryEnabled = source.TelemetryEnabled
     };
+
+    private static TrafficBypassRule NewBypassDraft() => new()
+    {
+        DisplayName = "",
+        Enabled = true,
+        Protocol = TrafficBypassProtocols.Any,
+        EgressMode = TrafficBypassEgressModes.AutoPhysical
+    };
+
+    private static TrafficBypassRule CopyBypass(TrafficBypassRule source) => new()
+    {
+        Id = source.Id,
+        DisplayName = source.DisplayName,
+        Enabled = source.Enabled,
+        Destinations = source.Destinations.ToList(),
+        Protocol = source.Protocol,
+        Ports = source.Ports.ToList(),
+        EgressMode = source.EgressMode,
+        InterfaceName = source.InterfaceName
+    };
+
+    private static string GetBypassPillClass(TrafficBypassRule rule) => rule.Enabled
+        ? "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200"
+        : "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300";
+
+    private static string GetBypassStatusClass(TrafficBypassApplyStatus status) => status.Applied || !status.IsSupported
+        ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-100"
+        : "border-amber-500/30 bg-amber-500/10 text-amber-100";
+
+    private static string FormatBypassProtocol(string protocol) => TrafficBypassProtocols.Normalize(protocol) switch
+    {
+        TrafficBypassProtocols.Tcp => "TCP",
+        TrafficBypassProtocols.Udp => "UDP",
+        _ => "Any"
+    };
+
+    private static string FormatBypassMatch(TrafficBypassRule rule)
+    {
+        var destinations = rule.Destinations.Count == 0 ? "any destination" : string.Join(", ", rule.Destinations);
+        var ports = rule.Ports.Count == 0 ? "any port" : "ports " + string.Join(", ", rule.Ports);
+        return $"{destinations}; {ports}";
+    }
+
+    private static string FormatBypassEgress(TrafficBypassRule rule)
+    {
+        return TrafficBypassEgressModes.Normalize(rule.EgressMode) == TrafficBypassEgressModes.Interface
+            ? rule.InterfaceName
+            : "Auto physical";
+    }
 
     private string? GetWifiBadge()
     {

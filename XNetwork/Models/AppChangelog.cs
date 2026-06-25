@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.74";
+    public const string CurrentVersion = "xbond-2026.06.75";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Added traffic bypass rules and fixed modem proxy paths.",
+            Changes =
+            [
+                "Settings now includes configurable traffic bypass rules for destination IP/CIDR and port matches with Auto physical or selected-adapter egress.",
+                "Traffic bypass rules are applied by a Linux route helper using nftables marks and per-rule policy routes outside XBond.",
+                "Local device proxies now keep modem mobile redirects inside their configured route so pages such as /gomo/mobile.html do not escape to the app root.",
+                "Remaining top bar, Settings modal, and action sheet surfaces now use the VS Code modern dark palette more consistently."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.74",
             Date = "2026-06-25",
             Summary = "Refined Cudy controls and XNetwork shell UI.",
             Changes =

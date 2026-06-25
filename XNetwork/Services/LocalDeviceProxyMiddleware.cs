@@ -37,6 +37,12 @@ public sealed class LocalDeviceProxyMiddleware(
             return;
         }
 
+        if (TryBuildDirectoryRedirectPath(proxy.ExposedRoute, requestPath, context.Request.QueryString.Value, out var redirectPath))
+        {
+            context.Response.Redirect(redirectPath, permanent: false);
+            return;
+        }
+
         var targetUri = BuildTargetUri(proxy.TargetUrl, proxy.ExposedRoute, requestPath, context.Request.QueryString.Value);
         if (targetUri is null)
         {
@@ -109,6 +115,31 @@ public sealed class LocalDeviceProxyMiddleware(
         return builder.Uri;
     }
 
+    public static bool TryBuildDirectoryRedirectPath(
+        string exposedRoute,
+        string requestPath,
+        string? queryString,
+        out string redirectPath)
+    {
+        redirectPath = "";
+        exposedRoute = LocalDeviceProxyService.NormalizeRoute(exposedRoute);
+        requestPath = LocalDeviceProxyService.NormalizeRoute(requestPath);
+        if (!string.Equals(requestPath, exposedRoute, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(exposedRoute) ||
+            exposedRoute == "/")
+        {
+            return false;
+        }
+
+        redirectPath = exposedRoute + "/";
+        if (!string.IsNullOrWhiteSpace(queryString))
+        {
+            redirectPath += queryString.StartsWith('?') ? queryString : "?" + queryString;
+        }
+
+        return true;
+    }
+
     public static string RewriteLocalDeviceBody(string body, string exposedRoute)
     {
         if (string.IsNullOrWhiteSpace(body))
@@ -132,7 +163,33 @@ public sealed class LocalDeviceProxyMiddleware(
             @"(?<prefix>url\(\s*[""']?)/(?!/)",
             match => $"{match.Groups["prefix"].Value}{route}/",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        body = Regex.Replace(
+            body,
+            @"(?<prefix>\b(?:(?:window|document|top)\.)?location(?:\.href)?\s*=\s*[""'])(?<target>(?![a-z][a-z0-9+.\-]*:|/|#|\?)[^""']+)",
+            match => $"{match.Groups["prefix"].Value}{BuildRouteRelativeTarget(route, match.Groups["target"].Value)}",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        body = Regex.Replace(
+            body,
+            @"(?<prefix>\blocation\.(?:assign|replace)\(\s*[""'])(?<target>(?![a-z][a-z0-9+.\-]*:|/|#|\?)[^""']+)",
+            match => $"{match.Groups["prefix"].Value}{BuildRouteRelativeTarget(route, match.Groups["target"].Value)}",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         return body;
+    }
+
+    private static string BuildRouteRelativeTarget(string route, string target)
+    {
+        target = target.TrimStart('/');
+        while (target.StartsWith("./", StringComparison.Ordinal))
+        {
+            target = target[2..];
+        }
+
+        while (target.StartsWith("../", StringComparison.Ordinal))
+        {
+            target = target[3..];
+        }
+
+        return $"{route}/{target}";
     }
 
     private static HttpRequestMessage CreateProxyRequest(HttpContext context, Uri targetUri)

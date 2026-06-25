@@ -72,6 +72,15 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<LocalDeviceProxyService>();
 builder.Services.AddSingleton<F50ModemTelemetryService>();
+builder.Services.AddSingleton<TrafficBypassSettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("TrafficBypass").Get<TrafficBypassSettings>() ?? new TrafficBypassSettings();
+    sp.GetRequiredService<TrafficBypassSettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<TrafficBypassService>();
+builder.Services.AddHostedService<TrafficBypassStartupService>();
 
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>

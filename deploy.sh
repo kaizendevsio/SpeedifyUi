@@ -38,6 +38,21 @@ else
   echo "Warning: unable to create $DIAGNOSTICS_DIR; the app will use its local artifact fallback if needed." >&2
 fi
 
+BYPASS_HELPER_SRC="$APP_DIR/XNetwork/deploy/scripts/xnetwork-traffic-bypass-apply.py"
+BYPASS_HELPER_DST="/usr/local/sbin/xnetwork-traffic-bypass-apply"
+echo "Installing traffic bypass helper..."
+if [[ -f "$BYPASS_HELPER_SRC" ]]; then
+  if install -m 0755 "$BYPASS_HELPER_SRC" "$BYPASS_HELPER_DST" 2>/dev/null; then
+    :
+  elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo install -m 0755 "$BYPASS_HELPER_SRC" "$BYPASS_HELPER_DST"
+  else
+    echo "Warning: unable to install $BYPASS_HELPER_DST; traffic bypass rules cannot be applied until it is installed." >&2
+  fi
+else
+  echo "Warning: bypass helper source missing at $BYPASS_HELPER_SRC" >&2
+fi
+
 APP_VERSION="$(sed -nE 's/.*CurrentVersion = "([^"]+)".*/\1/p' XNetwork/Models/AppChangelog.cs | head -n 1)"
 if [[ -z "$APP_VERSION" ]]; then
   echo "Unable to determine AppChangelog.CurrentVersion" >&2
