@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.76";
+    public const string CurrentVersion = "xbond-2026.06.77";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Added transparent modem admin ports.",
+            Changes =
+            [
+                "Local device proxies can now run in port mode so modem admin UIs stay mounted at / on dedicated ports.",
+                "Smart, DITO, and GOMO modem defaults use ports 18081, 18082, and 18083 instead of fragile path rewriting.",
+                "Dashboard adapter admin buttons open the matching configured modem admin page instead of XBond diagnostics."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.76",
             Date = "2026-06-25",
             Summary = "Fixed modem proxy browser redirects.",
             Changes =

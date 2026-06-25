@@ -247,6 +247,8 @@ public sealed class XBondPathStatsSnapshot
 
     public string BindDevice { get; init; } = "";
 
+    public string? Gateway { get; init; }
+
     public string? CellularGeneration { get; init; }
 
     public int? CellularSignalBars { get; init; }

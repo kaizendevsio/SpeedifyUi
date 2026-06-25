@@ -7,6 +7,8 @@
 @implements IAsyncDisposable
 @inject XBondSnapshotCache XBondSnapshotCache
 @inject IStarlinkTelemetryService StarlinkTelemetryService
+@inject LocalDeviceProxyService LocalDeviceProxyService
+@inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 
 <PageTitle>Dashboard - XNetwork</PageTitle>
@@ -327,6 +329,16 @@
                 </div>
             </div>
             <div class="flex flex-shrink-0 items-center gap-2">
+                @if (GetAdapterAdminUrl(path) is { Length: > 0 } adminUrl)
+                {
+                    <a href="@adminUrl"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-600/50 bg-slate-700/50 text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-600/50 hover:text-white"
+                       title="@($"Open {path.Name} admin page")">
+                        <i class="fas fa-arrow-up-right-from-square text-xs"></i>
+                    </a>
+                }
                 <a href="/xbond" hidden
                    class="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-600/50 bg-slate-700/50 text-slate-300 transition-colors hover:border-slate-500 hover:bg-slate-600/50 hover:text-white"
                    title="Open XBond details">
@@ -640,6 +652,14 @@
         }
 
         return path.Role;
+    }
+
+    private string? GetAdapterAdminUrl(XBondPathStatsSnapshot path)
+    {
+        var proxy = LocalDeviceProxyService.FindAdminProxyForAdapter(path.InterfaceName, path.Name, path.Gateway);
+        return proxy is null
+            ? null
+            : LocalDeviceProxyService.BuildLocalProxyUrl(proxy, NavigationManager.ToAbsoluteUri(NavigationManager.Uri));
     }
 
     private static string GetLossTextClass(XBondPathStatsSnapshot path)

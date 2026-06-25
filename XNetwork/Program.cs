@@ -71,6 +71,7 @@ builder.Services.AddSingleton(sp =>
     return settings;
 });
 builder.Services.AddSingleton<LocalDeviceProxyService>();
+builder.Services.AddHostedService<LocalDevicePortProxyHostedService>();
 builder.Services.AddSingleton<F50ModemTelemetryService>();
 builder.Services.AddSingleton<TrafficBypassSettingsStore>();
 builder.Services.AddSingleton(sp =>

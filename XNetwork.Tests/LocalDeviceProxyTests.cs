@@ -62,9 +62,9 @@ public class LocalDeviceProxyTests
 
             await service.SaveEntryAsync(new LocalDeviceProxyEntry
             {
-                DisplayName = "Dito",
-                ExposedRoute = "/dito",
-                TargetUrl = "http://192.168.4.1"
+                DisplayName = "Lab Device",
+                ExposedRoute = "/lab-device",
+                TargetUrl = "http://192.168.99.1"
             });
 
             Assert.Contains(
@@ -72,8 +72,8 @@ public class LocalDeviceProxyTests
                 string.Join(" ", service.ValidateEntry(new LocalDeviceProxyEntry
                 {
                     DisplayName = "Duplicate",
-                    ExposedRoute = "/dito",
-                    TargetUrl = "http://192.168.4.1"
+                    ExposedRoute = "/lab-device",
+                    TargetUrl = "http://192.168.99.1"
                 }).Errors),
                 StringComparison.OrdinalIgnoreCase);
 
@@ -107,6 +107,60 @@ public class LocalDeviceProxyTests
     }
 
     [Fact]
+    public async Task ValidateEntry_RejectsDuplicateAndUnsafePortProxyPorts()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"local-device-proxies-{Guid.NewGuid():N}.json");
+        try
+        {
+            var settings = new LocalDeviceProxySettings();
+            var service = new LocalDeviceProxyService(
+                settings,
+                new LocalDeviceProxySettingsStore(
+                    NullLogger<LocalDeviceProxySettingsStore>.Instance,
+                    filePath));
+
+            await service.SaveEntryAsync(new LocalDeviceProxyEntry
+            {
+                DisplayName = "Smart",
+                ProxyMode = LocalDeviceProxyModes.Port,
+                ListenPort = 18081,
+                TargetUrl = "http://192.168.3.1"
+            });
+
+            var duplicate = service.ValidateEntry(new LocalDeviceProxyEntry
+            {
+                DisplayName = "Duplicate Smart",
+                ProxyMode = LocalDeviceProxyModes.Port,
+                ListenPort = 18081,
+                TargetUrl = "http://192.168.3.1"
+            });
+            Assert.Contains(
+                "port is already used",
+                string.Join(" ", duplicate.Errors),
+                StringComparison.OrdinalIgnoreCase);
+
+            var unsafePort = service.ValidateEntry(new LocalDeviceProxyEntry
+            {
+                DisplayName = "Bad port",
+                ProxyMode = LocalDeviceProxyModes.Port,
+                ListenPort = 8080,
+                TargetUrl = "http://192.168.4.1"
+            });
+            Assert.Contains(
+                "between 18080 and 18999",
+                string.Join(" ", unsafePort.Errors),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
+    }
+
+    [Fact]
     public void BuildTargetUri_PreservesSubPathsAndQueryStrings()
     {
         var uri = LocalDeviceProxyMiddleware.BuildTargetUri(
@@ -119,6 +173,64 @@ public class LocalDeviceProxyTests
         Assert.Equal(
             "http://192.168.5.1/admin/goform/goform_get_cmd_process?cmd=signalbar",
             uri.ToString());
+    }
+
+    [Fact]
+    public void BuildPortTargetUri_PreservesRootMountedPathsAndQueryStrings()
+    {
+        var uri = LocalDevicePortProxyHostedService.BuildPortTargetUri(
+            "http://192.168.3.1",
+            "/m/index.html?login=1");
+
+        Assert.NotNull(uri);
+        Assert.Equal("http://192.168.3.1/m/index.html?login=1", uri.ToString());
+    }
+
+    [Fact]
+    public async Task FindAdminProxyForAdapter_MatchesGatewayBeforeProviderName()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"local-device-proxies-{Guid.NewGuid():N}.json");
+        try
+        {
+            var settings = new LocalDeviceProxySettings();
+            var service = new LocalDeviceProxyService(
+                settings,
+                new LocalDeviceProxySettingsStore(
+                    NullLogger<LocalDeviceProxySettingsStore>.Instance,
+                    filePath));
+
+            await service.SaveEntryAsync(new LocalDeviceProxyEntry
+            {
+                DisplayName = "Smart",
+                ProxyMode = LocalDeviceProxyModes.Port,
+                ListenPort = 18081,
+                TargetUrl = "http://192.168.3.1"
+            });
+            await service.SaveEntryAsync(new LocalDeviceProxyEntry
+            {
+                DisplayName = "DITO",
+                ProxyMode = LocalDeviceProxyModes.Port,
+                ListenPort = 18082,
+                TargetUrl = "http://192.168.4.1"
+            });
+
+            var gatewayMatch = service.FindAdminProxyForAdapter("enx1", "Not Smart", "192.168.3.1");
+            Assert.NotNull(gatewayMatch);
+            Assert.Equal(18081, gatewayMatch.ListenPort);
+
+            var nameFallback = service.FindAdminProxyForAdapter("enx2", "Dito Telecommunity", null);
+            Assert.NotNull(nameFallback);
+            Assert.Equal(18082, nameFallback.ListenPort);
+
+            Assert.Null(service.FindAdminProxyForAdapter("wlan0", "XNetwork Wi-Fi Asia", null));
+        }
+        finally
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+        }
     }
 
     [Fact]

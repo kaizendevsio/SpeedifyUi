@@ -82,16 +82,63 @@ public sealed class LocalDeviceProxySettingsStore
     {
         return (entries ?? [])
             .Where(entry => entry is not null)
-            .Select(entry => new LocalDeviceProxyEntry
+            .Select(entry =>
             {
-                Id = string.IsNullOrWhiteSpace(entry.Id) ? Guid.NewGuid().ToString("N") : entry.Id.Trim(),
-                DisplayName = entry.DisplayName?.Trim() ?? "",
-                ExposedRoute = LocalDeviceProxyService.NormalizeRoute(entry.ExposedRoute),
-                TargetUrl = LocalDeviceProxyService.NormalizeTargetUrl(entry.TargetUrl),
-                Enabled = entry.Enabled,
-                TelemetryEnabled = entry.TelemetryEnabled
+                var displayName = entry.DisplayName?.Trim() ?? "";
+                var exposedRoute = LocalDeviceProxyService.NormalizeRoute(entry.ExposedRoute);
+                var targetUrl = LocalDeviceProxyService.NormalizeTargetUrl(entry.TargetUrl);
+                var listenPort = entry.ListenPort;
+                var proxyMode = LocalDeviceProxyModes.Normalize(entry.ProxyMode);
+                if (TryGetDefaultModemPort(displayName, exposedRoute, targetUrl, out var defaultPort))
+                {
+                    proxyMode = LocalDeviceProxyModes.Port;
+                    listenPort ??= defaultPort;
+                }
+
+                return new LocalDeviceProxyEntry
+                {
+                    Id = string.IsNullOrWhiteSpace(entry.Id) ? Guid.NewGuid().ToString("N") : entry.Id.Trim(),
+                    DisplayName = displayName,
+                    ProxyMode = proxyMode,
+                    ListenPort = listenPort,
+                    ExposedRoute = exposedRoute,
+                    TargetUrl = targetUrl,
+                    Enabled = entry.Enabled,
+                    TelemetryEnabled = entry.TelemetryEnabled
+                };
             })
             .ToList();
+    }
+
+    private static bool TryGetDefaultModemPort(
+        string displayName,
+        string exposedRoute,
+        string targetUrl,
+        out int port)
+    {
+        var key = $"{displayName} {exposedRoute} {targetUrl}".ToLowerInvariant();
+        if (key.Contains("smart", StringComparison.Ordinal) || targetUrl.Contains("192.168.3.1", StringComparison.Ordinal))
+        {
+            port = 18081;
+            return true;
+        }
+
+        if (key.Contains("dito", StringComparison.Ordinal) || targetUrl.Contains("192.168.4.1", StringComparison.Ordinal))
+        {
+            port = 18082;
+            return true;
+        }
+
+        if (key.Contains("gomo", StringComparison.Ordinal) ||
+            key.Contains("globe", StringComparison.Ordinal) ||
+            targetUrl.Contains("192.168.5.1", StringComparison.Ordinal))
+        {
+            port = 18083;
+            return true;
+        }
+
+        port = 0;
+        return false;
     }
 
     private static string GetAppDataDirectory(IHostEnvironment environment)
@@ -115,4 +162,3 @@ public sealed class LocalDeviceProxySettingsStore
         File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 }
-

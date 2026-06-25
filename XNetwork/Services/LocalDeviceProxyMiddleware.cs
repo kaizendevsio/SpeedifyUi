@@ -26,7 +26,7 @@ public sealed class LocalDeviceProxyMiddleware(
     public async Task InvokeAsync(HttpContext context)
     {
         var requestPath = context.Request.Path.Value ?? "/";
-        var proxy = proxyService.GetEnabledEntries()
+        var proxy = proxyService.GetEnabledRouteEntries()
             .Where(entry => LocalDeviceProxyService.PathMatches(requestPath, entry.ExposedRoute))
             .OrderByDescending(entry => entry.ExposedRoute.Length)
             .FirstOrDefault();
