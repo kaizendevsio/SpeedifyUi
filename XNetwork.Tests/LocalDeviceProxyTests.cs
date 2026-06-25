@@ -135,6 +135,12 @@ public class LocalDeviceProxyTests
 
         Assert.False(LocalDeviceProxyMiddleware.TryBuildDirectoryRedirectPath(
             "/gomo",
+            "/gomo/",
+            null,
+            out _));
+
+        Assert.False(LocalDeviceProxyMiddleware.TryBuildDirectoryRedirectPath(
+            "/gomo",
             "/gomo/mobile.html",
             null,
             out _));
@@ -164,6 +170,7 @@ public class LocalDeviceProxyTests
         var rewritten = LocalDeviceProxyMiddleware.RewriteLocalDeviceBody(
             """
             <script>
+            var tempUrl = "m/index.html";
             window.location.href = "mobile.html";
             location.replace('index.html');
             top.location = "../logout.html";
@@ -171,6 +178,7 @@ public class LocalDeviceProxyTests
             """,
             "/gomo");
 
+        Assert.Contains("var tempUrl = \"/gomo/m/index.html\"", rewritten);
         Assert.Contains("window.location.href = \"/gomo/mobile.html\"", rewritten);
         Assert.Contains("location.replace('/gomo/index.html')", rewritten);
         Assert.Contains("top.location = \"/gomo/logout.html\"", rewritten);

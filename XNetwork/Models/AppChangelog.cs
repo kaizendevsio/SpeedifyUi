@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.75";
+    public const string CurrentVersion = "xbond-2026.06.76";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Fixed modem proxy browser redirects.",
+            Changes =
+            [
+                "Local device proxy roots such as /smart/ no longer redirect back to themselves.",
+                "F50 modem JavaScript redirects through variables such as tempUrl are now scoped under the configured proxy route.",
+                "Browser-opened modem admin pages stay under /smart, /dito, or /gomo instead of escaping to app-root paths or blocked data pages."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.75",
             Date = "2026-06-25",
             Summary = "Added traffic bypass rules and fixed modem proxy paths.",
             Changes =

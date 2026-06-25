@@ -123,8 +123,9 @@ public sealed class LocalDeviceProxyMiddleware(
     {
         redirectPath = "";
         exposedRoute = LocalDeviceProxyService.NormalizeRoute(exposedRoute);
-        requestPath = LocalDeviceProxyService.NormalizeRoute(requestPath);
-        if (!string.Equals(requestPath, exposedRoute, StringComparison.OrdinalIgnoreCase) ||
+        var normalizedRequestPath = LocalDeviceProxyService.NormalizeRoute(requestPath);
+        if (!string.Equals(normalizedRequestPath, exposedRoute, StringComparison.OrdinalIgnoreCase) ||
+            requestPath.EndsWith("/", StringComparison.Ordinal) ||
             string.IsNullOrWhiteSpace(exposedRoute) ||
             exposedRoute == "/")
         {
@@ -171,6 +172,11 @@ public sealed class LocalDeviceProxyMiddleware(
         body = Regex.Replace(
             body,
             @"(?<prefix>\blocation\.(?:assign|replace)\(\s*[""'])(?<target>(?![a-z][a-z0-9+.\-]*:|/|#|\?)[^""']+)",
+            match => $"{match.Groups["prefix"].Value}{BuildRouteRelativeTarget(route, match.Groups["target"].Value)}",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        body = Regex.Replace(
+            body,
+            @"(?<prefix>\b(?:var|let|const)\s+[a-z_$][a-z0-9_$]*(?:url|href)\s*=\s*[""'])(?<target>(?![a-z][a-z0-9+.\-]*:|/|#|\?)[^""']+)",
             match => $"{match.Groups["prefix"].Value}{BuildRouteRelativeTarget(route, match.Groups["target"].Value)}",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         return body;
