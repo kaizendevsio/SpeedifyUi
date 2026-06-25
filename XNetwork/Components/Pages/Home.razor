@@ -306,6 +306,24 @@
                 <div class="flex min-w-0 flex-col">
                     <span class="truncate text-base font-medium text-white">@path.Name</span>
                     <span class="truncate text-sm text-slate-400">@path.InterfaceName</span>
+                    @if (path.HasCellularTelemetry)
+                    {
+                        <span class="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-slate-300" title="F50 modem signal">
+                            @if (!string.IsNullOrWhiteSpace(path.CellularGeneration))
+                            {
+                                <span class="rounded-full border border-cyan-400/25 bg-cyan-400/10 px-1.5 py-0.5 text-cyan-100">@path.CellularGeneration</span>
+                            }
+                            @if (path.CellularSignalBars.HasValue)
+                            {
+                                <span class="inline-flex h-3 items-end gap-0.5" aria-label="@($"{path.CellularSignalBars.Value} signal bars")">
+                                    @for (var i = 0; i < 5; i++)
+                                    {
+                                        <span class="@GetF50SignalBarClass(path, i)"></span>
+                                    }
+                                </span>
+                            }
+                        </span>
+                    }
                 </div>
             </div>
             <div class="flex flex-shrink-0 items-center gap-2">
@@ -593,6 +611,20 @@
         }
 
         return path.IsActive ? "bg-emerald-400" : "bg-cyan-400";
+    }
+
+    private static string GetF50SignalBarClass(XBondPathStatsSnapshot path, int index)
+    {
+        var heightClass = index switch
+        {
+            0 => "h-1.5",
+            1 => "h-2",
+            2 => "h-2.5",
+            3 => "h-3",
+            _ => "h-3.5"
+        };
+        var isActive = index < path.CellularSignalBars.GetValueOrDefault();
+        return $"{heightClass} {(isActive ? "bg-emerald-300" : "bg-slate-700")} w-1 rounded-sm transition-all";
     }
 
     private static string RoleLabel(XBondPathStatsSnapshot path)

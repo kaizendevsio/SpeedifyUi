@@ -79,6 +79,23 @@ public sealed class InterfaceMetadataService
         }
     }
 
+    public async Task<IReadOnlyList<GatewayRoute>> GetDefaultGatewayRoutesAsync(CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return [];
+        }
+
+        var routesResult = await RunProcessAsync(
+            "ip",
+            ["-j", "route", "show", "default"],
+            cancellationToken).ConfigureAwait(false);
+
+        return routesResult.ExitCode == 0
+            ? ParseDefaultRoutes(routesResult.StandardOutput)
+            : [];
+    }
+
     private async Task<IReadOnlyList<InterfaceMetadata>> ReadNetworkManagerInterfacesAsync(CancellationToken cancellationToken)
     {
         try
@@ -132,18 +149,8 @@ public sealed class InterfaceMetadataService
 
     private async Task<IReadOnlyDictionary<string, string>> ReadGatewayProviderNamesAsync(CancellationToken cancellationToken)
     {
-        var routesResult = await RunProcessAsync(
-            "ip",
-            ["-j", "route", "show", "default"],
-            cancellationToken).ConfigureAwait(false);
-
-        if (routesResult.ExitCode != 0)
-        {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        }
-
         return await ReadGatewayProviderNamesAsync(
-            ParseDefaultRoutes(routesResult.StandardOutput),
+            await GetDefaultGatewayRoutesAsync(cancellationToken).ConfigureAwait(false),
             cancellationToken).ConfigureAwait(false);
     }
 

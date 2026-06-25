@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.71";
+    public const string CurrentVersion = "xbond-2026.06.72";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-25",
+            Summary = "Added local device proxies and F50 signal badges.",
+            Changes =
+            [
+                "Settings can add, edit, and delete configurable local proxy routes for modem and router admin pages.",
+                "Local device proxy targets are forwarded without an extra XNetwork authentication layer so each device keeps its own login.",
+                "Adapter cards can show lean F50 cellular generation and signal bars from direct modem telemetry."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.71",
             Date = "2026-06-20",
             Summary = "Hardened IPv4 interface binding.",
             Changes =

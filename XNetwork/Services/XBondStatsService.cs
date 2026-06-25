@@ -9,7 +9,8 @@ public interface IXBondStatsProvider
 
 public sealed class XBondStatsService(
     XBondStatusService statusService,
-    InterfaceMetadataService interfaceMetadataService) : IXBondStatsProvider
+    InterfaceMetadataService interfaceMetadataService,
+    F50ModemTelemetryService f50TelemetryService) : IXBondStatsProvider
 {
     private const ulong StaleRttAckAgeMs = 5_000;
 
@@ -17,7 +18,8 @@ public sealed class XBondStatsService(
     {
         var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
         var interfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
-        return FromStatus(status, interfaces);
+        var modemTelemetry = await f50TelemetryService.GetTelemetryByInterfaceAsync(cancellationToken).ConfigureAwait(false);
+        return FromStatus(status, interfaces, modemTelemetry);
     }
 
     public static XBondStatsSnapshot FromStatus(XBondStatus status)
@@ -36,17 +38,41 @@ public sealed class XBondStatsService(
         XBondStatus status,
         IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces)
     {
+        return FromStatus(
+            status,
+            interfaces,
+            new Dictionary<string, F50ModemTelemetry>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    public static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces,
+        IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry)
+    {
         var interfaceDisplayNames = interfaces
             .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
             .ToDictionary(item => item.Device, item => item.DisplayName, StringComparer.OrdinalIgnoreCase);
 
-        return FromStatus(status, interfaceDisplayNames, interfaces);
+        return FromStatus(status, interfaceDisplayNames, interfaces, modemTelemetry);
     }
 
     private static XBondStatsSnapshot FromStatus(
         XBondStatus status,
         IReadOnlyDictionary<string, string> interfaceDisplayNames,
         IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces)
+    {
+        return FromStatus(
+            status,
+            interfaceDisplayNames,
+            interfaces,
+            new Dictionary<string, F50ModemTelemetry>(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyDictionary<string, string> interfaceDisplayNames,
+        IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces,
+        IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry)
     {
         var activeIds = status.Schedule.DataPathIds
             .Concat(status.Schedule.DuplicatePathIds)
@@ -58,10 +84,12 @@ public sealed class XBondStatsService(
             {
                 var lossPercent = path.LossRate * 100;
                 var isStaleRtt = IsStaleRtt(path, lossPercent);
+                var interfaceName = path.InterfaceName ?? path.BindDevice ?? $"path-{path.PathId}";
+                modemTelemetry.TryGetValue(interfaceName, out var cellular);
                 return new XBondPathStatsSnapshot
                 {
                     PathId = path.PathId,
-                    InterfaceName = path.InterfaceName ?? path.BindDevice ?? $"path-{path.PathId}",
+                    InterfaceName = interfaceName,
                     Name = ResolvePathName(path, interfaceDisplayNames),
                     Role = path.Role,
                     InterfaceUp = path.InterfaceUp,
@@ -86,6 +114,8 @@ public sealed class XBondStatsService(
                     RawInboundThroughputBps = path.RawInboundThroughputBps,
                     BindAddress = path.BindAddress ?? "",
                     BindDevice = path.BindDevice ?? "",
+                    CellularGeneration = cellular?.Generation,
+                    CellularSignalBars = cellular?.SignalBars,
                     IsActive = activeIds.Contains(path.PathId),
                     IsConfigured = true
                 };
@@ -106,6 +136,8 @@ public sealed class XBondStatsService(
                 Name = string.IsNullOrWhiteSpace(item.DisplayName) ? item.Device : item.DisplayName,
                 Role = "standby",
                 InterfaceUp = true,
+                CellularGeneration = modemTelemetry.TryGetValue(item.Device, out var cellular) ? cellular.Generation : null,
+                CellularSignalBars = cellular?.SignalBars,
                 IsConfigured = false
             });
 

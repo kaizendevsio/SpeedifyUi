@@ -12,6 +12,7 @@
 @inject CudyApControlService CudyApControlService
 @inject CudyAdminPasswordStore CudyAdminPasswordStore
 @inject CudyLuciClient CudyLuciClient
+@inject LocalDeviceProxyService LocalDeviceProxyService
 
 <PageTitle>Settings</PageTitle>
 
@@ -433,6 +434,124 @@
         </div>
     </Accordion>
 
+    <Accordion Title="Local Device Proxies" IsExpanded="_proxyExpanded" OnToggle="(expanded) => _proxyExpanded = expanded" BadgeText="@LocalProxyBadge">
+        <div class="space-y-4 pt-2">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-lg font-semibold text-white">Local Device Proxies</h2>
+                    <p class="mt-1 text-sm text-slate-400">Expose local modem or router admin pages through configurable XNetwork routes.</p>
+                </div>
+                <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">@LocalProxyBadge</span>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_proxyMessage))
+            {
+                <div class="@_proxyMessageClass rounded-lg border p-3 text-sm">@_proxyMessage</div>
+            }
+
+            <div class="grid gap-4 md:grid-cols-2">
+                <label class="block">
+                    <span class="text-sm font-medium text-white">Name</span>
+                    <input type="text"
+                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                           placeholder="GOMO F50"
+                           @bind="_proxyDraft.DisplayName" />
+                </label>
+                <label class="block">
+                    <span class="text-sm font-medium text-white">Exposed Route</span>
+                    <input type="text"
+                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                           placeholder="/gomo"
+                           @bind="_proxyDraft.ExposedRoute" />
+                    <span class="mt-1 block text-xs text-slate-500">The full route is configurable, for example /gomo or /modems/gomo.</span>
+                </label>
+                <label class="block md:col-span-2">
+                    <span class="text-sm font-medium text-white">Target URL</span>
+                    <input type="text"
+                           class="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                           placeholder="http://192.168.5.1"
+                           @bind="_proxyDraft.TargetUrl" />
+                </label>
+            </div>
+
+            <div class="grid gap-3 sm:grid-cols-2">
+                <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+                    <span>Proxy enabled</span>
+                    <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_proxyDraft.Enabled" />
+                </label>
+                <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+                    <span>Use for F50 telemetry</span>
+                    <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_proxyDraft.TelemetryEnabled" />
+                </label>
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+                <button type="button"
+                        class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled="@_proxyBusy"
+                        @onclick="SaveProxyAsync">
+                    @(_editingProxyId is null ? "Add proxy" : "Save proxy")
+                </button>
+                <button type="button"
+                        class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled="@_proxyBusy"
+                        @onclick="ResetProxyDraft">
+                    Clear
+                </button>
+            </div>
+
+            @if (_proxyEntries.Count == 0)
+            {
+                <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-400">
+                    No local device proxies are configured yet.
+                </div>
+            }
+            else
+            {
+                <div class="grid gap-3">
+                    @foreach (var proxy in _proxyEntries)
+                    {
+                        <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <h3 class="font-semibold text-white">@proxy.DisplayName</h3>
+                                        <span class="@GetProxyPillClass(proxy)">@(proxy.Enabled ? "Enabled" : "Disabled")</span>
+                                        @if (proxy.TelemetryEnabled)
+                                        {
+                                            <span class="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200">Telemetry</span>
+                                        }
+                                    </div>
+                                    <p class="mt-1 break-all text-sm text-slate-400">@proxy.ExposedRoute -> @proxy.TargetUrl</p>
+                                </div>
+                                <div class="flex shrink-0 gap-2">
+                                    <a class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white"
+                                       href="@proxy.ExposedRoute"
+                                       target="_blank"
+                                       rel="noopener noreferrer">
+                                        Open
+                                    </a>
+                                    <button type="button"
+                                            class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm font-semibold text-slate-200 hover:border-cyan-500/60 hover:text-white"
+                                            disabled="@_proxyBusy"
+                                            @onclick="() => EditProxy(proxy)">
+                                        Edit
+                                    </button>
+                                    <button type="button"
+                                            class="rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/20"
+                                            disabled="@_proxyBusy"
+                                            @onclick="() => DeleteProxyAsync(proxy)">
+                                        Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </div>
+    </Accordion>
+
     <Accordion Title="TCP MSS Clamp" IsExpanded="_mssExpanded" OnToggle="(expanded) => _mssExpanded = expanded" BadgeText="@MssClampStateLabel">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
@@ -502,11 +621,16 @@
     private WifiConnectionStatus? _wifiStatus;
     private List<WifiNetwork> _wifiNetworks = new();
     private List<WifiNetwork> _cudyWifiNetworks = new();
+    private List<LocalDeviceProxyEntry> _proxyEntries = new();
+    private LocalDeviceProxyEntry _proxyDraft = NewProxyDraft();
     private string? _message;
     private string? _error;
     private string? _wifiMessage;
     private string? _cudyLocalMessage;
     private string _cudyLocalMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
+    private string? _proxyMessage;
+    private string _proxyMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
+    private string? _editingProxyId;
     private string _cudyAdminPasswordInput = "";
     private string _wifiInterface = "wlan0";
     private string _wifiSsid = "";
@@ -520,6 +644,7 @@
     private bool _policyFieldsInitialized;
     private bool _busy;
     private bool _cudyBusy;
+    private bool _proxyBusy;
     private bool _isWifiRefreshing;
     private bool _isWifiScanning;
     private bool _isWifiConnecting;
@@ -528,6 +653,7 @@
     private bool _adaptersExpanded;
     private bool _wifiExpanded;
     private bool _cudyExpanded;
+    private bool _proxyExpanded;
     private bool _mssExpanded;
     private bool _monitorExpanded;
     private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
@@ -537,6 +663,7 @@
         CudyApControlService.RefreshStatusFromSettings();
         _cudySettings = CopyCudySettings(CudyApControlService.Settings);
         _cudyStatus = CudyApControlService.GetStatus();
+        LoadProxyEntries();
         await LoadWifiStatusAsync();
         await LoadWifiNetworksAsync(rescan: false);
         await RefreshAsync();
@@ -933,6 +1060,111 @@
     {
         _cudyLocalMessage = null;
     }
+
+    private void LoadProxyEntries()
+    {
+        _proxyEntries = LocalDeviceProxyService.GetEntries().ToList();
+    }
+
+    private async Task SaveProxyAsync()
+    {
+        _proxyBusy = true;
+        ClearProxyMessage();
+        try
+        {
+            _proxyDraft.Id = _editingProxyId ?? _proxyDraft.Id;
+            await LocalDeviceProxyService.SaveEntryAsync(_proxyDraft, _refreshCts.Token);
+            LoadProxyEntries();
+            ResetProxyDraft();
+            ShowProxyMessage("Local device proxy saved.", isError: false);
+        }
+        catch (Exception ex)
+        {
+            ShowProxyMessage($"Could not save proxy: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _proxyBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task DeleteProxyAsync(LocalDeviceProxyEntry proxy)
+    {
+        _proxyBusy = true;
+        ClearProxyMessage();
+        try
+        {
+            await LocalDeviceProxyService.DeleteEntryAsync(proxy.Id, _refreshCts.Token);
+            LoadProxyEntries();
+            if (string.Equals(_editingProxyId, proxy.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                ResetProxyDraft();
+            }
+
+            ShowProxyMessage("Local device proxy deleted.", isError: false);
+        }
+        catch (Exception ex)
+        {
+            ShowProxyMessage($"Could not delete proxy: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _proxyBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void EditProxy(LocalDeviceProxyEntry proxy)
+    {
+        _editingProxyId = proxy.Id;
+        _proxyDraft = CopyProxy(proxy);
+        ShowProxyMessage($"Editing {proxy.DisplayName}.", isError: false);
+    }
+
+    private void ResetProxyDraft()
+    {
+        _editingProxyId = null;
+        _proxyDraft = NewProxyDraft();
+    }
+
+    private void ShowProxyMessage(string message, bool isError)
+    {
+        _proxyMessage = message;
+        _proxyMessageClass = isError
+            ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
+            : "border-emerald-500/25 bg-emerald-500/10 text-emerald-100";
+    }
+
+    private void ClearProxyMessage()
+    {
+        _proxyMessage = null;
+    }
+
+    private string LocalProxyBadge => $"{_proxyEntries.Count(proxy => proxy.Enabled)} enabled";
+
+    private static string GetProxyPillClass(LocalDeviceProxyEntry proxy) => proxy.Enabled
+        ? "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200"
+        : "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300";
+
+    private static LocalDeviceProxyEntry NewProxyDraft() => new()
+    {
+        DisplayName = "",
+        ExposedRoute = "",
+        TargetUrl = "",
+        Enabled = true,
+        TelemetryEnabled = true
+    };
+
+    private static LocalDeviceProxyEntry CopyProxy(LocalDeviceProxyEntry source) => new()
+    {
+        Id = source.Id,
+        DisplayName = source.DisplayName,
+        ExposedRoute = source.ExposedRoute,
+        TargetUrl = source.TargetUrl,
+        Enabled = source.Enabled,
+        TelemetryEnabled = source.TelemetryEnabled
+    };
 
     private string? GetWifiBadge()
     {

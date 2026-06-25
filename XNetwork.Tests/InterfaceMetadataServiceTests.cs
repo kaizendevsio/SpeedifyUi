@@ -164,6 +164,54 @@ public class InterfaceMetadataServiceTests
     }
 
     [Fact]
+    public void XBondStatsService_AttachesF50TelemetryByInterfaceName()
+    {
+        var snapshot = XBondStatsService.FromStatus(
+            new XBondStatus
+            {
+                Schedule = new XBondSchedulePlan
+                {
+                    DataPathIds = [1]
+                },
+                Paths =
+                [
+                    new XBondPathStatus
+                    {
+                        PathId = 1,
+                        Name = "Configured GOMO",
+                        InterfaceName = "enxb8d4bcc3bf30",
+                        Role = "anchor",
+                        InterfaceUp = true
+                    }
+                ]
+            },
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    "enxb8d4bcc3bf30",
+                    "ethernet",
+                    "connected",
+                    "GOMO",
+                    "GOMO")
+            ],
+            new Dictionary<string, F50ModemTelemetry>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["enxb8d4bcc3bf30"] = new()
+                {
+                    Host = "192.168.5.1",
+                    Generation = "5G",
+                    SignalBars = 4,
+                    UpdatedAtUtc = DateTime.UtcNow
+                }
+            });
+
+        var path = Assert.Single(snapshot.Paths);
+        Assert.Equal("GOMO", path.Name);
+        Assert.Equal("5G", path.CellularGeneration);
+        Assert.Equal(4, path.CellularSignalBars);
+        Assert.True(path.HasCellularTelemetry);
+    }
+
+    [Fact]
     public void XBondStatsService_SuppressesStaleRttForDeadPaths()
     {
         var snapshot = XBondStatsService.FromStatus(new XBondStatus

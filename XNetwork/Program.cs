@@ -63,6 +63,16 @@ builder.Services.AddSingleton<XBondScopedRouteService>();
 builder.Services.AddSingleton<XBondSpeedTestService>();
 builder.Services.AddSingleton<XBondMssClampService>();
 
+builder.Services.AddSingleton<LocalDeviceProxySettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("LocalDeviceProxies").Get<LocalDeviceProxySettings>() ?? new LocalDeviceProxySettings();
+    sp.GetRequiredService<LocalDeviceProxySettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<LocalDeviceProxyService>();
+builder.Services.AddSingleton<F50ModemTelemetryService>();
+
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>
     builder.Configuration.GetSection("StarlinkTelemetry").Get<StarlinkTelemetrySettings>() ?? new StarlinkTelemetrySettings());
@@ -87,6 +97,7 @@ if (!app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+app.UseMiddleware<LocalDeviceProxyMiddleware>();
 app.UseAntiforgery();
 
 app.MapStaticAssets();

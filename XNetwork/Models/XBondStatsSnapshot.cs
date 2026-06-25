@@ -247,6 +247,12 @@ public sealed class XBondPathStatsSnapshot
 
     public string BindDevice { get; init; } = "";
 
+    public string? CellularGeneration { get; init; }
+
+    public int? CellularSignalBars { get; init; }
+
+    public bool HasCellularTelemetry => !string.IsNullOrWhiteSpace(CellularGeneration) || CellularSignalBars.HasValue;
+
     public bool IsActive { get; init; }
 
     public bool IsConfigured { get; init; } = true;
