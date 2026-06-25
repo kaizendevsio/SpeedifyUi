@@ -17,7 +17,9 @@ public sealed class LocalDevicePortProxyHostedService(
         "Trailer",
         "Transfer-Encoding",
         "Upgrade",
-        "Host"
+        "Host",
+        "Origin",
+        "Referer"
     };
 
     private readonly Dictionary<int, HttpListener> _listeners = new();
@@ -231,7 +233,55 @@ public sealed class LocalDevicePortProxyHostedService(
         request.Headers.Host = targetUri.IsDefaultPort
             ? targetUri.Host
             : $"{targetUri.Host}:{targetUri.Port}";
+
+        RewriteSecurityContextHeaders(source, request, targetUri);
         return request;
+    }
+
+    public static Uri BuildTargetOrigin(Uri targetUri)
+    {
+        var builder = new UriBuilder(targetUri.Scheme, targetUri.Host, targetUri.IsDefaultPort ? -1 : targetUri.Port)
+        {
+            Path = "",
+            Query = "",
+            Fragment = ""
+        };
+        return builder.Uri;
+    }
+
+    public static Uri BuildTargetReferer(Uri targetUri, string? sourceReferer)
+    {
+        var origin = BuildTargetOrigin(targetUri);
+        var builder = new UriBuilder(origin)
+        {
+            Path = "/"
+        };
+
+        if (!Uri.TryCreate(sourceReferer, UriKind.Absolute, out var referer))
+        {
+            return builder.Uri;
+        }
+
+        builder.Path = string.IsNullOrWhiteSpace(referer.AbsolutePath) ? "/" : referer.AbsolutePath;
+        builder.Query = referer.Query.TrimStart('?');
+        builder.Fragment = referer.Fragment.TrimStart('#');
+        return builder.Uri;
+    }
+
+    private static void RewriteSecurityContextHeaders(
+        HttpListenerRequest source,
+        HttpRequestMessage request,
+        Uri targetUri)
+    {
+        if (!string.IsNullOrWhiteSpace(source.Headers["Origin"]))
+        {
+            request.Headers.TryAddWithoutValidation("Origin", BuildTargetOrigin(targetUri).GetLeftPart(UriPartial.Authority));
+        }
+
+        if (!string.IsNullOrWhiteSpace(source.Headers["Referer"]))
+        {
+            request.Headers.Referrer = BuildTargetReferer(targetUri, source.Headers["Referer"]);
+        }
     }
 
     private static void CopyResponseHeaders(HttpResponseMessage response, HttpListenerResponse target)

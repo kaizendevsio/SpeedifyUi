@@ -187,6 +187,26 @@ public class LocalDeviceProxyTests
     }
 
     [Fact]
+    public void BuildTargetOrigin_UsesModemOriginForPortProxySecurityHeaders()
+    {
+        var origin = LocalDevicePortProxyHostedService.BuildTargetOrigin(
+            new Uri("http://192.168.3.1/goform/goform_get_cmd_process?cmd=login"));
+
+        Assert.Equal("http://192.168.3.1/", origin.ToString());
+        Assert.Equal("http://192.168.3.1", origin.GetLeftPart(UriPartial.Authority));
+    }
+
+    [Fact]
+    public void BuildTargetReferer_RewritesProxyHostToTargetHostAndPreservesPath()
+    {
+        var referer = LocalDevicePortProxyHostedService.BuildTargetReferer(
+            new Uri("http://192.168.3.1/goform/goform_get_cmd_process"),
+            "http://xeon-network:18081/m/index.html#/login");
+
+        Assert.Equal("http://192.168.3.1/m/index.html#/login", referer.ToString());
+    }
+
+    [Fact]
     public async Task FindAdminProxyForAdapter_MatchesGatewayBeforeProviderName()
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"local-device-proxies-{Guid.NewGuid():N}.json");
