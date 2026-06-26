@@ -58,6 +58,11 @@ public sealed partial class F50ModemRecoveryService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        logger.LogInformation(
+            "F50 modem recovery service started; enabled={Enabled}, interval={IntervalMinutes}m",
+            settings.Enabled,
+            settings.CheckIntervalMinutes);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             var delay = TimeSpan.FromMinutes(Math.Clamp(settings.CheckIntervalMinutes, 1, 60));
@@ -117,10 +122,14 @@ public sealed partial class F50ModemRecoveryService(
         if (!await _checkLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
             UpdateStatus(status => status.Message = "F50 modem recovery check is already running.");
+            logger.LogInformation("F50 modem recovery check skipped because another check is still running");
             return;
         }
 
         var startedAt = DateTimeOffset.UtcNow;
+        logger.LogInformation(
+            "Starting {Mode}F50 modem recovery check",
+            manual ? "manual " : "");
         UpdateStatus(status =>
         {
             status.Enabled = settings.Enabled;
@@ -138,6 +147,7 @@ public sealed partial class F50ModemRecoveryService(
                 .ToArray();
             if (entries.Length == 0)
             {
+                logger.LogInformation("F50 modem recovery found no enabled telemetry proxy entries");
                 UpdateStatus(status =>
                 {
                     status.IsRunning = false;
@@ -158,12 +168,21 @@ public sealed partial class F50ModemRecoveryService(
             foreach (var entry in entries)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                results.Add(await CheckEntryAsync(
+                var result = await CheckEntryAsync(
                     entry,
                     xbondStatus,
                     routeByGateway,
                     manual,
-                    cancellationToken).ConfigureAwait(false));
+                    cancellationToken).ConfigureAwait(false);
+                results.Add(result);
+                logger.LogInformation(
+                    "F50 recovery result for {DisplayName} on {Interface}: state={State}, action={Action}, result={Result}, error={Error}",
+                    result.DisplayName,
+                    result.InterfaceName ?? "unknown",
+                    result.State,
+                    result.LastAction,
+                    result.LastResult,
+                    result.LastError ?? "");
             }
 
             var actions = results.Count(result => !string.Equals(result.LastAction, "none", StringComparison.OrdinalIgnoreCase));

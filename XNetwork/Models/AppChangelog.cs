@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.79";
+    public const string CurrentVersion = "xbond-2026.06.80";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-26",
+            Summary = "Added F50 recovery observability.",
+            Changes =
+            [
+                "F50 modem recovery now logs service start, scheduled/manual check start, and each modem recovery decision.",
+                "The logs make it clear whether automation is rebinding a stale XBond path, resetting a modem, cooling down, or taking no action."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.79",
             Date = "2026-06-26",
             Summary = "Added F50 modem recovery and XBond hot rebind.",
             Changes =
