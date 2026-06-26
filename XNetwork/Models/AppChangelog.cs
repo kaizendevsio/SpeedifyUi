@@ -13,13 +13,24 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.80";
+    public const string CurrentVersion = "xbond-2026.06.81";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-26",
+            Summary = "Fixed F50 USB target resolution.",
+            Changes =
+            [
+                "F50 modem recovery now resolves USB reset targets with Linux readlink -f before falling back to managed symlink resolution.",
+                "This fixes automatic USB reset target detection for modem interfaces whose /sys/class/net device links are relative symlinks."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.80",
             Date = "2026-06-26",
             Summary = "Added F50 recovery observability.",
             Changes =

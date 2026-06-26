@@ -500,8 +500,7 @@ public sealed partial class F50ModemRecoveryService(
     {
         try
         {
-            var deviceLink = new FileInfo($"/sys/class/net/{interfaceName}/device");
-            var target = deviceLink.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            var target = ResolveSysfsDevicePath(interfaceName);
             return BuildUsbResetTargetFromUsbDeviceDirectory(target, path =>
             {
                 try
@@ -517,6 +516,57 @@ public sealed partial class F50ModemRecoveryService(
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Unable to resolve USB reset target for interface {Interface}", interfaceName);
+            return null;
+        }
+    }
+
+    private static string? ResolveSysfsDevicePath(string interfaceName)
+    {
+        var devicePath = $"/sys/class/net/{interfaceName}/device";
+        var readlinkTarget = ReadLinkFinal(devicePath);
+        if (!string.IsNullOrWhiteSpace(readlinkTarget))
+        {
+            return readlinkTarget;
+        }
+
+        var deviceLink = new FileInfo(devicePath);
+        return deviceLink.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+    }
+
+    private static string? ReadLinkFinal(string path)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return null;
+        }
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "readlink",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                }
+            };
+            process.StartInfo.ArgumentList.Add("-f");
+            process.StartInfo.ArgumentList.Add(path);
+            process.Start();
+            if (!process.WaitForExit(2000))
+            {
+                TryKill(process);
+                return null;
+            }
+
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            return process.ExitCode == 0 && !string.IsNullOrWhiteSpace(output) ? output : null;
+        }
+        catch
+        {
             return null;
         }
     }
