@@ -2123,6 +2123,14 @@ mod tests {
             throughput_collapse_score: 0.0,
             demotion_reason: None,
             role_reason: None,
+            socket_generation: 0,
+            socket_ifindex: None,
+            socket_bind_addr: None,
+            last_socket_error: None,
+            last_rebind_reason: None,
+            last_rebind_error: None,
+            last_rebind_at_micros: None,
+            rebind_count: 0,
         }
     }
 

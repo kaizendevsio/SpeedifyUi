@@ -195,6 +195,22 @@ public sealed class XBondPathStatsSnapshot
 
     public int SendFailureStreak { get; init; }
 
+    public ulong SocketGeneration { get; init; }
+
+    public uint? SocketIfindex { get; init; }
+
+    public string? SocketBindAddress { get; init; }
+
+    public string? LastSocketError { get; init; }
+
+    public string? LastRebindReason { get; init; }
+
+    public string? LastRebindError { get; init; }
+
+    public ulong? LastRebindAtMicros { get; init; }
+
+    public ulong RebindCount { get; init; }
+
     public ulong? StaleAckMs { get; init; }
 
     public double QueuePressure { get; init; }

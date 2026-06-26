@@ -73,6 +73,15 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<LocalDeviceProxyService>();
 builder.Services.AddHostedService<LocalDevicePortProxyHostedService>();
 builder.Services.AddSingleton<F50ModemTelemetryService>();
+builder.Services.AddSingleton<F50ModemRecoverySettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("F50ModemRecovery").Get<F50ModemRecoverySettings>() ?? new F50ModemRecoverySettings();
+    sp.GetRequiredService<F50ModemRecoverySettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<F50ModemRecoveryService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<F50ModemRecoveryService>());
 builder.Services.AddSingleton<TrafficBypassSettingsStore>();
 builder.Services.AddSingleton(sp =>
 {

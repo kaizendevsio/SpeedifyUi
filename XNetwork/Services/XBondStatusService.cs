@@ -270,7 +270,15 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             DuplicateUsefulness = path.DuplicateUsefulness,
             ThroughputCollapseScore = path.ThroughputCollapseScore,
             DemotionReason = path.DemotionReason,
-            RoleReason = path.RoleReason
+            RoleReason = path.RoleReason,
+            SocketGeneration = path.SocketGeneration,
+            SocketIfindex = path.SocketIfindex,
+            SocketBindAddress = path.SocketBindAddress,
+            LastSocketError = path.LastSocketError,
+            LastRebindReason = path.LastRebindReason,
+            LastRebindError = path.LastRebindError,
+            LastRebindAtMicros = path.LastRebindAtMicros,
+            RebindCount = path.RebindCount
         };
     }
 

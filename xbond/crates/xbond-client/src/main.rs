@@ -121,6 +121,16 @@ enum Command {
         #[command(subcommand)]
         action: OverrideCommand,
     },
+    PathRebind {
+        #[arg(long = "path-id")]
+        path_id: Option<u16>,
+        #[arg(long = "interface")]
+        interface_name: Option<String>,
+        #[arg(long, default_value = "/run/xbond/client-control.sock")]
+        socket: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -254,6 +264,14 @@ async fn main() -> Result<()> {
         Command::Override { action } => {
             run_override_command(action).await?;
         }
+        Command::PathRebind {
+            path_id,
+            interface_name,
+            socket,
+            json,
+        } => {
+            run_path_rebind_command(socket, path_id, interface_name, json).await?;
+        }
     }
     Ok(())
 }
@@ -338,6 +356,38 @@ async fn run_override_command(action: OverrideCommand) -> Result<()> {
     }
 }
 
+async fn run_path_rebind_command(
+    socket: PathBuf,
+    path_id: Option<u16>,
+    interface_name: Option<String>,
+    json: bool,
+) -> Result<()> {
+    if path_id.is_none() && interface_name.as_deref().unwrap_or_default().trim().is_empty() {
+        bail!("provide --path-id or --interface for XBond path rebind")
+    }
+
+    let response = send_control_request(
+        &socket,
+        ControlRequest::RebindPath {
+            path_id,
+            interface_name,
+        },
+    )
+    .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("{}", response.message);
+    }
+
+    if response.ok {
+        Ok(())
+    } else {
+        bail!(response.message)
+    }
+}
+
 #[cfg(unix)]
 async fn send_control_request(
     socket: &PathBuf,
@@ -411,6 +461,15 @@ struct PathSendReport {
     encoded: bool,
     success: bool,
     error: Option<String>,
+    raw_os_error: Option<i32>,
+    needs_rebind: bool,
+}
+
+#[derive(Debug)]
+struct PathSocketEvent {
+    path_id: u16,
+    reason: String,
+    error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -444,6 +503,18 @@ struct TunnelPathRuntime {
     duplicate_useful_packets: u64,
     duplicate_late_packets: u64,
     peak_throughput_bps: u64,
+    socket_generation: u64,
+    socket_ifindex: Option<u32>,
+    socket_bind_addr: Option<String>,
+    socket_bind_device: Option<String>,
+    last_socket_error: Option<String>,
+    last_rebind_reason: Option<String>,
+    last_rebind_error: Option<String>,
+    last_rebind_at_micros: Option<u64>,
+    rebind_count: u64,
+    force_rebind_reason: Option<String>,
+    force_rebind_bypass_rate_limit: bool,
+    last_rebind_attempt: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -527,14 +598,29 @@ enum ControlRequest {
         ttl_seconds: u64,
     },
     ClearOverride,
+    RebindPath {
+        #[serde(default)]
+        path_id: Option<u16>,
+        #[serde(default)]
+        interface_name: Option<String>,
+    },
     Status,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ControlResponse {
     ok: bool,
     message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     active_override: Option<XBondDiagnosticOverrideStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path_id: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interface_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    socket_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rebound: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -826,6 +912,7 @@ fn handle_control_request(
                     mode, redundancy_policy, ttl_seconds
                 ),
                 active_override: active_override.as_ref().map(ActiveScheduleOverride::status),
+                ..ControlResponse::default()
             }
         }
         ControlRequest::ClearOverride => {
@@ -834,8 +921,14 @@ fn handle_control_request(
                 ok: true,
                 message: "XBond override cleared.".to_string(),
                 active_override: None,
+                ..ControlResponse::default()
             }
         }
+        ControlRequest::RebindPath { .. } => ControlResponse {
+            ok: false,
+            message: "XBond path rebind must be handled by the tunnel supervisor.".to_string(),
+            ..ControlResponse::default()
+        },
         ControlRequest::Status => ControlResponse {
             ok: true,
             message: if active_override.is_some() {
@@ -844,6 +937,7 @@ fn handle_control_request(
                 "No XBond override is active.".to_string()
             },
             active_override: active_override.as_ref().map(ActiveScheduleOverride::status),
+            ..ControlResponse::default()
         },
     }
 }
@@ -855,6 +949,38 @@ fn prune_expired_override(active_override: &mut Option<ActiveScheduleOverride>) 
     {
         *active_override = None;
     }
+}
+
+fn resolve_control_rebind_path(
+    specs_by_id: &HashMap<u16, ProbePathSpec>,
+    path_id: Option<u16>,
+    interface_name: Option<&str>,
+) -> Result<(u16, Option<String>)> {
+    if let Some(path_id) = path_id {
+        let spec = specs_by_id
+            .get(&path_id)
+            .with_context(|| format!("XBond path {path_id} is not configured"))?;
+        return Ok((path_id, spec.interface_name.clone()));
+    }
+
+    let interface_name = interface_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("provide --path-id or --interface for XBond path rebind")?;
+
+    specs_by_id
+        .iter()
+        .find(|(_, spec)| {
+            spec.interface_name
+                .as_deref()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(interface_name))
+                || spec
+                    .bind_device
+                    .as_deref()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(interface_name))
+        })
+        .map(|(path_id, spec)| (*path_id, spec.interface_name.clone()))
+        .with_context(|| format!("no configured XBond path uses interface {interface_name}"))
 }
 
 fn effective_mode_and_policy(
@@ -1025,6 +1151,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlEnvelope>();
     let (send_report_tx, mut send_report_rx) = mpsc::unbounded_channel::<PathSendReport>();
+    let (socket_event_tx, mut socket_event_rx) = mpsc::unbounded_channel::<PathSocketEvent>();
     spawn_control_listener(
         options.control_socket.clone(),
         control_tx,
@@ -1074,6 +1201,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &mut path_runtime,
         &inbound_tx,
         &send_report_tx,
+        &socket_event_tx,
         &key,
         options.json_events,
     )
@@ -1215,6 +1343,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut path_runtime,
                     &inbound_tx,
                     &send_report_tx,
+                    &socket_event_tx,
                     &key,
                     options.json_events,
                 ).await?;
@@ -1335,8 +1464,81 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             Some(envelope) = control_rx.recv() => {
-                let mut response =
-                    handle_control_request(envelope.request, &mut active_override);
+                let request = envelope.request;
+                let mut response = match request {
+                    ControlRequest::RebindPath { path_id, interface_name } => {
+                        match resolve_control_rebind_path(&specs_by_id, path_id, interface_name.as_deref()) {
+                            Ok((resolved_path_id, resolved_interface)) => {
+                                mark_path_socket_for_rebind(
+                                    &mut path_runtime,
+                                    resolved_path_id,
+                                    "manual-control",
+                                    None,
+                                    true,
+                                );
+                                match ensure_tunnel_sockets(
+                                    &config,
+                                    &specs_by_id,
+                                    &mut sockets,
+                                    &mut senders,
+                                    &mut receivers,
+                                    &mut path_runtime,
+                                    &inbound_tx,
+                                    &send_report_tx,
+                                    &socket_event_tx,
+                                    &key,
+                                    options.json_events,
+                                ).await {
+                                    Ok(()) if sockets.contains_key(&resolved_path_id) => {
+                                        let generation = path_runtime
+                                            .get(&resolved_path_id)
+                                            .map(|runtime| runtime.socket_generation);
+                                        ControlResponse {
+                                            ok: true,
+                                            message: format!(
+                                                "XBond path {resolved_path_id} rebound{}.",
+                                                resolved_interface
+                                                    .as_deref()
+                                                    .map(|iface| format!(" on {iface}"))
+                                                    .unwrap_or_default()
+                                            ),
+                                            path_id: Some(resolved_path_id),
+                                            interface_name: resolved_interface,
+                                            socket_generation: generation,
+                                            rebound: Some(true),
+                                            ..ControlResponse::default()
+                                        }
+                                    }
+                                    Ok(()) => ControlResponse {
+                                        ok: false,
+                                        message: format!(
+                                            "XBond path {resolved_path_id} could not be rebound because no live socket was opened."
+                                        ),
+                                        path_id: Some(resolved_path_id),
+                                        interface_name: resolved_interface,
+                                        rebound: Some(false),
+                                        ..ControlResponse::default()
+                                    },
+                                    Err(error) => ControlResponse {
+                                        ok: false,
+                                        message: format!("XBond path rebind failed: {error}"),
+                                        path_id: Some(resolved_path_id),
+                                        interface_name: resolved_interface,
+                                        rebound: Some(false),
+                                        ..ControlResponse::default()
+                                    },
+                                }
+                            }
+                            Err(error) => ControlResponse {
+                                ok: false,
+                                message: error.to_string(),
+                                rebound: Some(false),
+                                ..ControlResponse::default()
+                            },
+                        }
+                    }
+                    other => handle_control_request(other, &mut active_override),
+                };
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);
                 recovery_status =
@@ -1426,6 +1628,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     );
                 } else {
                     record_tunnel_send_failure(&mut path_runtime, report.path_id);
+                    if report.needs_rebind {
+                        mark_path_socket_for_rebind(
+                            &mut path_runtime,
+                            report.path_id,
+                            "udp-send-enodev",
+                            report.error.clone(),
+                            false,
+                        );
+                    }
                     if options.json_events {
                         println!(
                             "{}",
@@ -1434,9 +1645,33 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 "path_id": report.path_id,
                                 "packet_kind": report.packet_kind,
                                 "error": report.error.unwrap_or_else(|| "unknown send failure".to_string()),
+                                "raw_os_error": report.raw_os_error,
+                                "needs_rebind": report.needs_rebind,
                             })
                         );
                     }
+                }
+            }
+
+            Some(event) = socket_event_rx.recv() => {
+                record_tunnel_send_failure(&mut path_runtime, event.path_id);
+                mark_path_socket_for_rebind(
+                    &mut path_runtime,
+                    event.path_id,
+                    event.reason.clone(),
+                    event.error.clone(),
+                    false,
+                );
+                if options.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "path-socket-rebind-requested",
+                            "path_id": event.path_id,
+                            "reason": event.reason,
+                            "error": event.error,
+                        })
+                    );
                 }
             }
 
@@ -1830,6 +2065,7 @@ async fn ensure_tunnel_sockets(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     inbound_tx: &mpsc::Sender<InboundTunnelFrame>,
     send_report_tx: &mpsc::UnboundedSender<PathSendReport>,
+    socket_event_tx: &mpsc::UnboundedSender<PathSocketEvent>,
     key: &XBondKey,
     json_events: bool,
 ) -> Result<()> {
@@ -1838,6 +2074,9 @@ async fn ensure_tunnel_sockets(
 
         if !interface_is_live(spec.interface_name.as_deref()) {
             remove_tunnel_path(*path_id, sockets, senders, receivers);
+            if let Some(runtime) = path_runtime.get_mut(path_id) {
+                runtime.last_socket_error = Some("interface is not live".to_string());
+            }
             continue;
         }
 
@@ -1846,6 +2085,9 @@ async fn ensure_tunnel_sockets(
             Err(error) => {
                 remove_tunnel_path(*path_id, sockets, senders, receivers);
                 record_tunnel_send_failure(path_runtime, *path_id);
+                if let Some(runtime) = path_runtime.get_mut(path_id) {
+                    runtime.last_socket_error = Some(format!("bind address resolution failed: {error}"));
+                }
                 if json_events {
                     println!(
                         "{}",
@@ -1860,9 +2102,40 @@ async fn ensure_tunnel_sockets(
                 continue;
             }
         };
+        let bind_device = spec.bind_device.as_deref().or(spec.interface_name.as_deref());
+        let current_ifindex = interface_ifindex(bind_device);
+        let mut recreate_reason = None::<String>;
 
         if let Some(socket) = sockets.get(path_id) {
-            if socket_source_matches_bind_addr(socket, &bind_addr) {
+            if let Some(runtime) = path_runtime.get_mut(path_id) {
+                if let Some(reason) = runtime.force_rebind_reason.take() {
+                    let rate_limited = !runtime.force_rebind_bypass_rate_limit
+                        && runtime.last_rebind_attempt.is_some_and(|last_attempt| {
+                            last_attempt.elapsed() < Duration::from_secs(15)
+                        });
+                    runtime.force_rebind_bypass_rate_limit = false;
+                    if rate_limited {
+                        runtime.force_rebind_reason = Some(reason);
+                    } else {
+                        recreate_reason = Some(reason);
+                    }
+                }
+
+                if recreate_reason.is_none()
+                    && !socket_source_matches_bind_addr(socket, &bind_addr)
+                {
+                    recreate_reason = Some("bind-source-changed".to_string());
+                }
+
+                if recreate_reason.is_none()
+                    && runtime.socket_ifindex.is_some()
+                    && runtime.socket_ifindex != current_ifindex
+                {
+                    recreate_reason = Some("interface-ifindex-changed".to_string());
+                }
+            }
+
+            if recreate_reason.is_none() && socket_source_matches_bind_addr(socket, &bind_addr) {
                 if !senders.contains_key(path_id) {
                     let sender = spawn_tunnel_sender(
                         *path_id,
@@ -1878,6 +2151,7 @@ async fn ensure_tunnel_sockets(
                         *path_id,
                         socket.clone(),
                         inbound_tx.clone(),
+                        socket_event_tx.clone(),
                         key.clone(),
                     );
                     receivers.insert(*path_id, receiver);
@@ -1897,8 +2171,19 @@ async fn ensure_tunnel_sockets(
                         "path_id": path_id,
                         "old_local_addr": current,
                         "new_bind_addr": bind_addr,
+                        "reason": recreate_reason.as_deref().unwrap_or("socket-mismatch"),
                     })
                 );
+            }
+            if let Some(runtime) = path_runtime.get_mut(path_id) {
+                runtime.last_rebind_reason = Some(
+                    recreate_reason
+                        .clone()
+                        .unwrap_or_else(|| "socket-mismatch".to_string()),
+                );
+                runtime.last_rebind_attempt = Some(Instant::now());
+                runtime.last_rebind_at_micros = Some(now_micros());
+                runtime.last_socket_error = None;
             }
             remove_tunnel_path(*path_id, sockets, senders, receivers);
         } else if senders.contains_key(path_id) || receivers.contains_key(path_id) {
@@ -1921,6 +2206,7 @@ async fn ensure_tunnel_sockets(
                     *path_id,
                     socket.clone(),
                     inbound_tx.clone(),
+                    socket_event_tx.clone(),
                     key.clone(),
                 );
                 receivers.insert(*path_id, receiver);
@@ -1930,12 +2216,16 @@ async fn ensure_tunnel_sockets(
 
         let socket = match create_isolated_udp_socket(
             &bind_addr,
-            spec.bind_device.as_deref(),
+            bind_device,
             config.udp_socket_buffer_bytes,
         ) {
             Ok((socket, _isolation)) => socket,
             Err(error) => {
                 record_tunnel_send_failure(path_runtime, *path_id);
+                if let Some(runtime) = path_runtime.get_mut(path_id) {
+                    runtime.last_socket_error = Some(format!("socket open failed: {error}"));
+                    runtime.last_rebind_error = Some(error.to_string());
+                }
                 if json_events {
                     println!(
                         "{}",
@@ -1952,6 +2242,10 @@ async fn ensure_tunnel_sockets(
 
         if let Err(error) = socket.connect(&config.server_addr).await {
             record_tunnel_send_failure(path_runtime, *path_id);
+            if let Some(runtime) = path_runtime.get_mut(path_id) {
+                runtime.last_socket_error = Some(format!("socket connect failed: {error}"));
+                runtime.last_rebind_error = Some(error.to_string());
+            }
             if json_events {
                 println!(
                     "{}",
@@ -1967,8 +2261,13 @@ async fn ensure_tunnel_sockets(
         }
 
         let socket = Arc::new(socket);
-        let receiver =
-            spawn_tunnel_receiver(*path_id, socket.clone(), inbound_tx.clone(), key.clone());
+        let receiver = spawn_tunnel_receiver(
+            *path_id,
+            socket.clone(),
+            inbound_tx.clone(),
+            socket_event_tx.clone(),
+            key.clone(),
+        );
         let sender = spawn_tunnel_sender(
             *path_id,
             socket.clone(),
@@ -1976,6 +2275,19 @@ async fn ensure_tunnel_sockets(
             config.tun_queue_capacity.max(1),
             send_report_tx.clone(),
         );
+        if let Some(runtime) = path_runtime.get_mut(path_id) {
+            runtime.socket_generation = runtime.socket_generation.saturating_add(1);
+            runtime.socket_ifindex = current_ifindex;
+            runtime.socket_bind_addr = Some(bind_addr.clone());
+            runtime.socket_bind_device = bind_device.map(ToString::to_string);
+            runtime.last_socket_error = None;
+            runtime.last_rebind_error = None;
+            runtime.force_rebind_reason = None;
+            runtime.force_rebind_bypass_rate_limit = false;
+            if runtime.last_rebind_reason.is_some() {
+                runtime.rebind_count = runtime.rebind_count.saturating_add(1);
+            }
+        }
         senders.insert(*path_id, sender);
         receivers.insert(*path_id, receiver);
         sockets.insert(*path_id, socket);
@@ -2030,6 +2342,8 @@ fn spawn_tunnel_sender(
                             encoded: true,
                             success: true,
                             error: None,
+                            raw_os_error: None,
+                            needs_rebind: false,
                         },
                         Err(error) => PathSendReport {
                             path_id,
@@ -2038,6 +2352,8 @@ fn spawn_tunnel_sender(
                             encode_micros,
                             encoded: true,
                             success: false,
+                            needs_rebind: socket_error_requires_rebind(&error),
+                            raw_os_error: error.raw_os_error(),
                             error: Some(error.to_string()),
                         },
                     }
@@ -2050,6 +2366,8 @@ fn spawn_tunnel_sender(
                     encoded: false,
                     success: false,
                     error: Some(error.to_string()),
+                    raw_os_error: None,
+                    needs_rebind: false,
                 },
             };
             let _ = report_tx.send(report);
@@ -2062,6 +2380,7 @@ fn spawn_tunnel_receiver(
     path_id: u16,
     socket: Arc<UdpSocket>,
     inbound_tx: mpsc::Sender<InboundTunnelFrame>,
+    socket_event_tx: mpsc::UnboundedSender<PathSocketEvent>,
     key: XBondKey,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -2071,6 +2390,13 @@ fn spawn_tunnel_receiver(
             let len = match socket.recv(&mut buf).await {
                 Ok(len) => len,
                 Err(error) => {
+                    if socket_error_requires_rebind(&error) {
+                        let _ = socket_event_tx.send(PathSocketEvent {
+                            path_id,
+                            reason: "udp-recv-enodev".to_string(),
+                            error: Some(error.to_string()),
+                        });
+                    }
                     eprintln!("xbond path receiver for path {path_id} hit UDP recv error: {error}");
                     time::sleep(Duration::from_millis(50)).await;
                     continue;
@@ -2140,6 +2466,14 @@ fn tunnel_health(
                     path.in_cooldown = true;
                     path.loss_rate = 1.0;
                 }
+                path.socket_generation = runtime.socket_generation;
+                path.socket_ifindex = runtime.socket_ifindex;
+                path.socket_bind_addr = runtime.socket_bind_addr.clone();
+                path.last_socket_error = runtime.last_socket_error.clone();
+                path.last_rebind_reason = runtime.last_rebind_reason.clone();
+                path.last_rebind_error = runtime.last_rebind_error.clone();
+                path.last_rebind_at_micros = runtime.last_rebind_at_micros;
+                path.rebind_count = runtime.rebind_count;
             }
 
             path
@@ -2200,6 +2534,30 @@ fn record_tunnel_send_report_success(
 fn record_tunnel_send_failure(path_runtime: &mut HashMap<u16, TunnelPathRuntime>, path_id: u16) {
     let runtime = path_runtime.entry(path_id).or_default();
     runtime.send_failures = runtime.send_failures.saturating_add(1);
+}
+
+fn mark_path_socket_for_rebind(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    path_id: u16,
+    reason: impl Into<String>,
+    error: Option<String>,
+    bypass_rate_limit: bool,
+) {
+    let runtime = path_runtime.entry(path_id).or_default();
+    runtime.force_rebind_reason = Some(reason.into());
+    runtime.force_rebind_bypass_rate_limit = bypass_rate_limit;
+    if let Some(error) = error {
+        runtime.last_socket_error = Some(error);
+    }
+}
+
+fn socket_error_requires_rebind(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(19)
+        || error.kind() == ErrorKind::NotFound
+        || error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("no such device")
 }
 
 const TUNNEL_HEALTH_WINDOW: usize = 20;
@@ -3775,6 +4133,14 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             throughput_collapse_score: 0.0,
             demotion_reason: None,
             role_reason: None,
+            socket_generation: 0,
+            socket_ifindex: None,
+            socket_bind_addr: None,
+            last_socket_error: None,
+            last_rebind_reason: None,
+            last_rebind_error: None,
+            last_rebind_at_micros: None,
+            rebind_count: 0,
         })
         .collect()
 }
@@ -3785,6 +4151,26 @@ fn interface_is_live(interface_name: Option<&str>) -> bool {
     };
 
     read_interface_state(interface_name).is_live
+}
+
+fn interface_ifindex(interface_name: Option<&str>) -> Option<u32> {
+    let interface_name = interface_name?.trim();
+    if interface_name.is_empty() {
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(PathBuf::from("/sys/class/net").join(interface_name).join("ifindex"))
+            .ok()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = interface_name;
+        None
+    }
 }
 
 #[derive(Debug, Clone)]

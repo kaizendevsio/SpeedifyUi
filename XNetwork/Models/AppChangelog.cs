@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.78";
+    public const string CurrentVersion = "xbond-2026.06.79";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-26",
+            Summary = "Added F50 modem recovery and XBond hot rebind.",
+            Changes =
+            [
+                "XBond client paths can now be manually hot-rebound through the client control socket after a USB modem re-enumerates.",
+                "Settings now includes configurable F50 modem recovery checks with interval, cooldown, ping target, and USB reset controls.",
+                "The background recovery worker can rebind a stale XBond path or USB-reset a failed modem, then skips the next check after a failed recovery attempt."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.78",
             Date = "2026-06-25",
             Summary = "Restored Starlink telemetry on XBond.",
             Changes =

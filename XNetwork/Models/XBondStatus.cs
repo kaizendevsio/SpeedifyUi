@@ -246,6 +246,30 @@ public class XBondPathStatus
 
     [JsonPropertyName("role_reason")]
     public string? RoleReason { get; set; }
+
+    [JsonPropertyName("socket_generation")]
+    public ulong SocketGeneration { get; set; }
+
+    [JsonPropertyName("socket_ifindex")]
+    public uint? SocketIfindex { get; set; }
+
+    [JsonPropertyName("socket_bind_addr")]
+    public string? SocketBindAddress { get; set; }
+
+    [JsonPropertyName("last_socket_error")]
+    public string? LastSocketError { get; set; }
+
+    [JsonPropertyName("last_rebind_reason")]
+    public string? LastRebindReason { get; set; }
+
+    [JsonPropertyName("last_rebind_error")]
+    public string? LastRebindError { get; set; }
+
+    [JsonPropertyName("last_rebind_at_micros")]
+    public ulong? LastRebindAtMicros { get; set; }
+
+    [JsonPropertyName("rebind_count")]
+    public ulong RebindCount { get; set; }
 }
 
 public class XBondPathIsolationStatus

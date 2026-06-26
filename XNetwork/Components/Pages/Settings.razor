@@ -13,6 +13,7 @@
 @inject CudyAdminPasswordStore CudyAdminPasswordStore
 @inject CudyLuciClient CudyLuciClient
 @inject LocalDeviceProxyService LocalDeviceProxyService
+@inject F50ModemRecoveryService F50ModemRecoveryService
 @inject TrafficBypassService TrafficBypassService
 @inject NavigationManager NavigationManager
 
@@ -548,6 +549,114 @@
         </div>
     </Accordion>
 
+    <Accordion Title="F50 Modem Recovery" IsExpanded="_f50RecoveryExpanded" OnToggle="(expanded) => _f50RecoveryExpanded = expanded" BadgeText="@F50RecoveryBadge">
+        <div class="space-y-4 pt-2">
+            <div class="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                    <h2 class="text-lg font-semibold text-white">F50 Modem Recovery</h2>
+                    <p class="mt-1 text-sm text-slate-400">Automatically hot-rebinds stale XBond modem sockets and can USB-reset a modem when its data link does not recover.</p>
+                </div>
+                <span class="@F50RecoveryPillClass">@F50RecoveryBadge</span>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_f50RecoveryMessage))
+            {
+                <div class="@_f50RecoveryMessageClass rounded-lg border p-3 text-sm">@_f50RecoveryMessage</div>
+            }
+
+            <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+                    <span>Background checks</span>
+                    <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_f50RecoveryDraft.Enabled" />
+                </label>
+                <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <span class="text-xs uppercase tracking-wide text-slate-500">Check interval</span>
+                    <input type="number" min="1" max="60" class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_f50RecoveryDraft.CheckIntervalMinutes" />
+                    <span class="mt-1 block text-xs text-slate-500">Minutes between checks.</span>
+                </label>
+                <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <span class="text-xs uppercase tracking-wide text-slate-500">Failed cooldown</span>
+                    <input type="number" min="0" max="10" class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_f50RecoveryDraft.FailedRecoveryCooldownRounds" />
+                    <span class="mt-1 block text-xs text-slate-500">Skipped rounds after failed recovery.</span>
+                </label>
+                <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <span class="text-xs uppercase tracking-wide text-slate-500">Settle timeout</span>
+                    <input type="number" min="15" max="300" class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_f50RecoveryDraft.SettleTimeoutSeconds" />
+                    <span class="mt-1 block text-xs text-slate-500">Seconds to wait after USB reset.</span>
+                </label>
+                <label class="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200">
+                    <span>Allow USB reset</span>
+                    <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_f50RecoveryDraft.UsbResetEnabled" />
+                </label>
+                <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <span class="text-xs uppercase tracking-wide text-slate-500">Ping target</span>
+                    <input class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_f50RecoveryDraft.PingTarget" />
+                </label>
+                <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <span class="text-xs uppercase tracking-wide text-slate-500">Severe loss</span>
+                    <input type="number" min="50" max="100" class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_f50RecoveryDraft.SevereLossPercent" />
+                    <span class="mt-1 block text-xs text-slate-500">Percent path loss before recovery.</span>
+                </label>
+                <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <span class="text-xs uppercase tracking-wide text-slate-500">USB reset command</span>
+                    <input class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_f50RecoveryDraft.UsbResetCommandPath" />
+                </label>
+            </div>
+
+            <div class="flex flex-wrap gap-2">
+                <button type="button"
+                        class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled="@_f50RecoveryBusy"
+                        @onclick="SaveF50RecoverySettingsAsync">
+                    Save recovery settings
+                </button>
+                <button type="button"
+                        class="rounded-lg border border-slate-700 bg-slate-950/60 px-4 py-2 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                        disabled="@_f50RecoveryBusy"
+                        @onclick="RunF50RecoveryNowAsync">
+                    Run check now
+                </button>
+            </div>
+
+            <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                    <span>@(_f50RecoveryStatus?.Message ?? "F50 recovery status is unavailable.")</span>
+                    <span class="text-xs text-slate-500">@FormatF50RecoveryUpdated()</span>
+                </div>
+            </div>
+
+            @if (_f50RecoveryStatus?.Modems.Count > 0)
+            {
+                <div class="grid gap-3">
+                    @foreach (var modem in _f50RecoveryStatus.Modems)
+                    {
+                        <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <h3 class="font-semibold text-white">@modem.DisplayName</h3>
+                                        <span class="@GetF50ModemStatePillClass(modem)">@FormatF50ModemState(modem)</span>
+                                        @if (modem.CooldownRoundsRemaining > 0)
+                                        {
+                                            <span class="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-100">Cooldown @modem.CooldownRoundsRemaining</span>
+                                        }
+                                    </div>
+                                    <p class="mt-1 break-all text-sm text-slate-400">@(modem.InterfaceName ?? "no interface") · @modem.TargetHost</p>
+                                    <p class="mt-2 text-xs text-slate-500">@FormatF50ModemDetail(modem)</p>
+                                    @if (!string.IsNullOrWhiteSpace(modem.LastError))
+                                    {
+                                        <p class="mt-1 break-all text-xs text-rose-200">@modem.LastError</p>
+                                    }
+                                </div>
+                                <span class="text-xs text-slate-500">@FormatAgo(modem.UpdatedAtUtc)</span>
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </div>
+    </Accordion>
+
     <Accordion Title="Traffic Bypass Rules" IsExpanded="_bypassExpanded" OnToggle="(expanded) => _bypassExpanded = expanded" BadgeText="@TrafficBypassBadge">
         <div class="space-y-4 pt-2">
             <div class="flex flex-wrap items-start justify-between gap-4">
@@ -869,6 +978,8 @@
     private List<WifiNetwork> _cudyWifiNetworks = new();
     private List<LocalDeviceProxyEntry> _proxyEntries = new();
     private LocalDeviceProxyEntry _proxyDraft = NewProxyDraft();
+    private F50ModemRecoverySettings _f50RecoveryDraft = new();
+    private F50ModemRecoveryStatus? _f50RecoveryStatus;
     private List<TrafficBypassRule> _bypassEntries = new();
     private List<TrafficBypassEgressAdapter> _bypassAdapters = new();
     private TrafficBypassRule _bypassDraft = NewBypassDraft();
@@ -880,6 +991,8 @@
     private string _cudyLocalMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string? _proxyMessage;
     private string _proxyMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
+    private string? _f50RecoveryMessage;
+    private string _f50RecoveryMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string? _bypassMessage;
     private string _bypassMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string _bypassDestinationText = "";
@@ -900,6 +1013,7 @@
     private bool _busy;
     private bool _cudyBusy;
     private bool _proxyBusy;
+    private bool _f50RecoveryBusy;
     private bool _bypassBusy;
     private bool _isWifiRefreshing;
     private bool _isWifiScanning;
@@ -912,6 +1026,7 @@
     private bool _wifiExpanded;
     private bool _cudyExpanded;
     private bool _proxyExpanded;
+    private bool _f50RecoveryExpanded;
     private bool _bypassExpanded;
     private bool _mssExpanded;
     private bool _monitorExpanded;
@@ -922,6 +1037,8 @@
         CudyApControlService.RefreshStatusFromSettings();
         _cudySettings = CopyCudySettings(CudyApControlService.Settings);
         _cudyStatus = CudyApControlService.GetStatus();
+        _f50RecoveryDraft = CopyF50RecoverySettings(F50ModemRecoveryService.Settings);
+        _f50RecoveryStatus = F50ModemRecoveryService.GetStatus();
         LoadProxyEntries();
         await LoadTrafficBypassAsync();
         await LoadWifiInterfacesAsync();
@@ -953,6 +1070,7 @@
         _mssClampStatus = await MssClampService.GetStatusAsync(_refreshCts.Token);
         _networkMonitorStatus = NetworkMonitorService.GetStatus();
         _cudyStatus = CudyApControlService.GetStatus();
+        _f50RecoveryStatus = F50ModemRecoveryService.GetStatus();
         _bypassStatus = TrafficBypassService.GetLastApplyStatus();
         InitializePolicyFields();
         StateHasChanged();
@@ -1453,6 +1571,61 @@
         _proxyMessage = null;
     }
 
+    private async Task SaveF50RecoverySettingsAsync()
+    {
+        _f50RecoveryBusy = true;
+        ClearF50RecoveryMessage();
+        try
+        {
+            await F50ModemRecoveryService.SaveSettingsAsync(_f50RecoveryDraft, _refreshCts.Token);
+            _f50RecoveryDraft = CopyF50RecoverySettings(F50ModemRecoveryService.Settings);
+            _f50RecoveryStatus = F50ModemRecoveryService.GetStatus();
+            ShowF50RecoveryMessage("F50 modem recovery settings saved.", isError: false);
+        }
+        catch (Exception ex)
+        {
+            ShowF50RecoveryMessage($"Could not save F50 recovery settings: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _f50RecoveryBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RunF50RecoveryNowAsync()
+    {
+        _f50RecoveryBusy = true;
+        ClearF50RecoveryMessage();
+        try
+        {
+            _f50RecoveryStatus = await F50ModemRecoveryService.RunCheckNowAsync(_refreshCts.Token);
+            ShowF50RecoveryMessage(_f50RecoveryStatus.Message, isError: false);
+        }
+        catch (Exception ex)
+        {
+            ShowF50RecoveryMessage($"F50 recovery check failed: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _f50RecoveryBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ShowF50RecoveryMessage(string message, bool isError)
+    {
+        _f50RecoveryMessage = message;
+        _f50RecoveryMessageClass = isError
+            ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
+            : "border-emerald-500/25 bg-emerald-500/10 text-emerald-100";
+    }
+
+    private void ClearF50RecoveryMessage()
+    {
+        _f50RecoveryMessage = null;
+    }
+
     private async Task OpenAddBypass()
     {
         ResetBypassDraft();
@@ -1640,6 +1813,130 @@
         Enabled = source.Enabled,
         TelemetryEnabled = source.TelemetryEnabled
     };
+
+    private string F50RecoveryBadge => _f50RecoveryStatus?.IsRunning == true
+        ? "Checking"
+        : _f50RecoveryDraft.Enabled ? "Enabled" : "Disabled";
+
+    private string F50RecoveryPillClass => _f50RecoveryDraft.Enabled
+        ? "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-100"
+        : "rounded-full border border-slate-600 bg-slate-700/40 px-2.5 py-1 text-xs font-semibold text-slate-300";
+
+    private static F50ModemRecoverySettings CopyF50RecoverySettings(F50ModemRecoverySettings source) => new()
+    {
+        Enabled = source.Enabled,
+        CheckIntervalMinutes = source.CheckIntervalMinutes,
+        FailedRecoveryCooldownRounds = source.FailedRecoveryCooldownRounds,
+        SettleTimeoutSeconds = source.SettleTimeoutSeconds,
+        UsbResetEnabled = source.UsbResetEnabled,
+        UsbResetCommandPath = source.UsbResetCommandPath,
+        PingTarget = source.PingTarget,
+        PingCount = source.PingCount,
+        PingTimeoutSeconds = source.PingTimeoutSeconds,
+        SevereLossPercent = source.SevereLossPercent
+    };
+
+    private string FormatF50RecoveryUpdated()
+    {
+        if (_f50RecoveryStatus?.LastCompletedAtUtc is { } completed)
+        {
+            return $"Updated {FormatAgo(completed)}";
+        }
+
+        if (_f50RecoveryStatus?.NextRunAtUtc is { } next)
+        {
+            return $"Next {FormatAgo(next)}";
+        }
+
+        return "Not run";
+    }
+
+    private static string FormatF50ModemState(F50ModemRecoveryEntryStatus modem) => modem.State switch
+    {
+        "healthy" => "Healthy",
+        "recovered" => "Recovered",
+        "rebound" => "Rebound",
+        "cooldown" => "Cooldown",
+        "failed" => "Failed",
+        "unknown" => "Unknown",
+        _ => "Checked"
+    };
+
+    private static string GetF50ModemStatePillClass(F50ModemRecoveryEntryStatus modem) => modem.State switch
+    {
+        "healthy" or "recovered" or "rebound" => "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-200",
+        "cooldown" => "rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-100",
+        "failed" => "rounded-full border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-xs font-semibold text-rose-100",
+        _ => "rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-semibold text-slate-300"
+    };
+
+    private static string FormatF50ModemDetail(F50ModemRecoveryEntryStatus modem)
+    {
+        var pieces = new List<string>();
+        if (!string.IsNullOrWhiteSpace(modem.Role))
+        {
+            pieces.Add(modem.Role);
+        }
+
+        if (modem.PathId is not null)
+        {
+            pieces.Add($"path {modem.PathId}");
+        }
+
+        if (modem.LossPercent is not null)
+        {
+            pieces.Add($"{modem.LossPercent}% loss");
+        }
+
+        if (!string.IsNullOrWhiteSpace(modem.WanIpAddress))
+        {
+            pieces.Add($"WAN {modem.WanIpAddress}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(modem.LastAction) &&
+            !string.Equals(modem.LastAction, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            pieces.Add(modem.LastAction);
+        }
+
+        if (!string.IsNullOrWhiteSpace(modem.LastResult))
+        {
+            pieces.Add(modem.LastResult);
+        }
+
+        return pieces.Count == 0 ? "No recovery details yet." : string.Join(" · ", pieces);
+    }
+
+    private static string FormatAgo(DateTimeOffset value)
+    {
+        var delta = DateTimeOffset.UtcNow - value;
+        var future = delta < TimeSpan.Zero;
+        if (future)
+        {
+            delta = -delta;
+        }
+
+        var text = "now";
+        if (delta.TotalSeconds >= 3600)
+        {
+            text = $"{(int)delta.TotalHours}h";
+        }
+        else if (delta.TotalSeconds >= 60)
+        {
+            text = $"{(int)delta.TotalMinutes}m";
+        }
+        else if (delta.TotalSeconds >= 5)
+        {
+            text = $"{(int)delta.TotalSeconds}s";
+        }
+
+        if (text == "now")
+        {
+            return "now";
+        }
+
+        return future ? $"in {text}" : $"{text} ago";
+    }
 
     private static TrafficBypassRule NewBypassDraft() => new()
     {

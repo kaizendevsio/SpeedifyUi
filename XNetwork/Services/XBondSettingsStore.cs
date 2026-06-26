@@ -105,6 +105,9 @@ public class XBondSettingsStore
         target.RuntimeStatusPath = string.IsNullOrWhiteSpace(source.RuntimeStatusPath)
             ? target.RuntimeStatusPath
             : source.RuntimeStatusPath;
+        target.ClientControlSocketPath = string.IsNullOrWhiteSpace(source.ClientControlSocketPath)
+            ? target.ClientControlSocketPath
+            : source.ClientControlSocketPath;
         target.ScheduleMode = string.IsNullOrWhiteSpace(source.ScheduleMode)
             ? target.ScheduleMode
             : source.ScheduleMode;

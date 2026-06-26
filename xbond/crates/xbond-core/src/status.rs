@@ -78,6 +78,22 @@ pub struct XBondPathStatus {
     pub demotion_reason: Option<String>,
     #[serde(default)]
     pub role_reason: Option<String>,
+    #[serde(default)]
+    pub socket_generation: u64,
+    #[serde(default)]
+    pub socket_ifindex: Option<u32>,
+    #[serde(default)]
+    pub socket_bind_addr: Option<String>,
+    #[serde(default)]
+    pub last_socket_error: Option<String>,
+    #[serde(default)]
+    pub last_rebind_reason: Option<String>,
+    #[serde(default)]
+    pub last_rebind_error: Option<String>,
+    #[serde(default)]
+    pub last_rebind_at_micros: Option<u64>,
+    #[serde(default)]
+    pub rebind_count: u64,
 }
 
 impl From<ScoredPath> for XBondPathStatus {
@@ -110,6 +126,14 @@ impl From<ScoredPath> for XBondPathStatus {
             throughput_collapse_score: value.path.throughput_collapse_score,
             demotion_reason: value.path.demotion_reason,
             role_reason: value.path.role_reason,
+            socket_generation: value.path.socket_generation,
+            socket_ifindex: value.path.socket_ifindex,
+            socket_bind_addr: value.path.socket_bind_addr,
+            last_socket_error: value.path.last_socket_error,
+            last_rebind_reason: value.path.last_rebind_reason,
+            last_rebind_error: value.path.last_rebind_error,
+            last_rebind_at_micros: value.path.last_rebind_at_micros,
+            rebind_count: value.path.rebind_count,
         }
     }
 }

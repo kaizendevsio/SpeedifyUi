@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("xbond-2026.06.78", AppChangelog.CurrentVersion);
+        Assert.Equal("xbond-2026.06.79", AppChangelog.CurrentVersion);
         Assert.Matches(@"^xbond-\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 
@@ -17,9 +17,9 @@ public class AppChangelogTests
         var entry = AppChangelog.Entries.First();
 
         Assert.Equal(AppChangelog.CurrentVersion, entry.Version);
-        Assert.Contains(entry.Changes, change => change.Contains("Starlink", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change => change.Contains("interface", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change => change.Contains("details", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("hot-rebound", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("F50 modem recovery", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("USB-reset", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

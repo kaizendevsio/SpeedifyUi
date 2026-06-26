@@ -35,6 +35,22 @@ pub struct PathHealthSnapshot {
     pub demotion_reason: Option<String>,
     #[serde(default)]
     pub role_reason: Option<String>,
+    #[serde(default)]
+    pub socket_generation: u64,
+    #[serde(default)]
+    pub socket_ifindex: Option<u32>,
+    #[serde(default)]
+    pub socket_bind_addr: Option<String>,
+    #[serde(default)]
+    pub last_socket_error: Option<String>,
+    #[serde(default)]
+    pub last_rebind_reason: Option<String>,
+    #[serde(default)]
+    pub last_rebind_error: Option<String>,
+    #[serde(default)]
+    pub last_rebind_at_micros: Option<u64>,
+    #[serde(default)]
+    pub rebind_count: u64,
 }
 
 impl PathHealthSnapshot {
@@ -484,6 +500,14 @@ mod tests {
             throughput_collapse_score: 0.0,
             demotion_reason: None,
             role_reason: None,
+            socket_generation: 0,
+            socket_ifindex: None,
+            socket_bind_addr: None,
+            last_socket_error: None,
+            last_rebind_reason: None,
+            last_rebind_error: None,
+            last_rebind_at_micros: None,
+            rebind_count: 0,
         }
     }
 
