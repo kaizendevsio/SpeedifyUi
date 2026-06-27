@@ -42,9 +42,9 @@ export async function initialize(element, dotNetReference) {
             target: null,
             yaw: -0.04,
             pitch: 0.22,
-            distance: 10.3,
+            distance: 10.9,
             minDistance: 6.1,
-            maxDistance: 15.2,
+            maxDistance: 15.8,
             activePointers: new Map(),
             lastPinchDistance: 0,
             lastPinchCenter: null,
@@ -242,6 +242,7 @@ function updateThreeScene(state) {
     const rect = state.element.getBoundingClientRect();
     const compact = rect.width < 560;
     const count = Math.max(1, paths.length);
+    state.serverCore.position.set(compact ? 2.68 : 4.35, 0.02, compact ? -0.06 : -0.15);
 
     paths.forEach((path, index) => {
         const position = getAdapterPosition(index, count, compact);
@@ -270,9 +271,9 @@ function updateThreeScene(state) {
 }
 
 function getAdapterPosition(index, count, compact) {
-    const verticalGap = compact ? 0.58 : 0.72;
+    const verticalGap = compact ? 0.5 : 0.72;
     const centerOffset = (count - 1) * verticalGap * 0.5;
-    const columnX = compact ? -3.15 : -4.28;
+    const columnX = compact ? -2.58 : -4.28;
     const zBase = compact ? 0.25 : 0.08;
     const zOffset = (index % 2 === 0 ? 0.18 : -0.24) + Math.sin(index * 0.8) * 0.08;
     return new THREE.Vector3(
@@ -286,16 +287,16 @@ function createEnergyCore(THREE, glowTexture) {
     const core = new THREE.Group();
     core.name = 'XBond energy core';
 
-    const glow = createGlowSprite(THREE, glowTexture, 0x22c55e, 1.35, 3.45);
+    const glow = createGlowSprite(THREE, glowTexture, 0x22c55e, 1.18, 2.6);
     glow.userData.role = 'core-glow';
     core.add(glow);
 
     const rings = [];
     const ringSpecs = [
-        { radius: 0.58, tube: 0.012, color: 0x9fffe3, opacity: 0.85, rotation: [Math.PI / 2, 0, 0] },
-        { radius: 0.95, tube: 0.014, color: 0x22d3ee, opacity: 0.58, rotation: [1.1, 0.35, 0.12] },
-        { radius: 1.35, tube: 0.011, color: 0x60a5fa, opacity: 0.36, rotation: [0.75, -0.58, 0.2] },
-        { radius: 1.75, tube: 0.008, color: 0xf472b6, opacity: 0.22, rotation: [1.35, 0.82, -0.15] }
+        { radius: 0.45, tube: 0.012, color: 0x9fffe3, opacity: 0.88, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 0.74, tube: 0.014, color: 0x22d3ee, opacity: 0.62, rotation: [1.1, 0.35, 0.12] },
+        { radius: 1.02, tube: 0.011, color: 0x60a5fa, opacity: 0.4, rotation: [0.75, -0.58, 0.2] },
+        { radius: 1.28, tube: 0.008, color: 0xf472b6, opacity: 0.25, rotation: [1.35, 0.82, -0.15] }
     ];
 
     ringSpecs.forEach((spec, index) => {
@@ -332,7 +333,7 @@ function createEnergyCore(THREE, glowTexture) {
     core.add(pulse);
 
     const shield = new THREE.Mesh(
-        new THREE.SphereGeometry(1.42, 48, 32),
+        new THREE.SphereGeometry(1.08, 48, 32),
         new THREE.MeshBasicMaterial({
             color: 0x22d3ee,
             transparent: true,

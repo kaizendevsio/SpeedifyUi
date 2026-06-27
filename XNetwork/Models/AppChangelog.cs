@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.85";
+    public const string CurrentVersion = "xbond-2026.06.86";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Tuned Live cockpit mobile framing.",
+            Changes =
+            [
+                "Adjusted the Live cockpit default mobile camera framing so local adapters, the XBond core, and the server endpoint are visible without panning first.",
+                "Reduced the core shield size so the energy beams and endpoint layout read more clearly on narrow screens.",
+                "Kept the 3D orbit, zoom, pan, and adapter selection controls from the previous Live cockpit update."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.85",
             Date = "2026-06-28",
             Summary = "Reworked Live into a 3D XBond cockpit.",
             Changes =
