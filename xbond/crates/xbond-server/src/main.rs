@@ -27,6 +27,7 @@ const REPAIR_CACHE_CAPACITY: usize = 4096;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const MAX_REPAIR_REQUESTS: usize = 64;
+const PEER_STALE_AFTER_MICROS: u64 = 15_000_000;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -114,6 +115,12 @@ struct ReturnSendReport {
 #[derive(Debug)]
 struct ReturnSenderHandle {
     tx: mpsc::Sender<ReturnSendWork>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PeerState {
+    addr: SocketAddr,
+    last_seen_micros: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -389,7 +396,7 @@ async fn main() -> Result<()> {
     let mut fec_recovery = FecRecovery::new(8192);
     let mut reorder =
         PacketReorderBuffer::new(args.ingress_reorder_capacity, current_ingress_hold_micros);
-    let mut peers: HashMap<u16, SocketAddr> = HashMap::new();
+    let mut peers: HashMap<u16, PeerState> = HashMap::new();
     let mut return_senders: HashMap<u16, ReturnSenderHandle> = HashMap::new();
     let mut return_control: Option<ReturnControl> = None;
     let mut resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
@@ -507,6 +514,7 @@ async fn main() -> Result<()> {
             Some(inbound) = udp_frame_rx.recv() => {
                 let frame = inbound.frame;
                 let peer = inbound.peer;
+                let receive_micros = monotonic_micros();
                 if last_session_id != 0 && frame.header.session_id != last_session_id {
                     peers.clear();
                     return_senders.clear();
@@ -518,6 +526,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 last_session_id = frame.header.session_id;
+                expire_stale_peers(&mut peers, receive_micros);
                 if is_tunnel_payload(frame.header.kind)
                     && reorder_session_id != frame.header.session_id
                 {
@@ -526,7 +535,13 @@ async fn main() -> Result<()> {
                     reorder_session_id = frame.header.session_id;
                 }
                 if frame.header.path_id != 0 {
-                    peers.insert(frame.header.path_id, peer);
+                    peers.insert(
+                        frame.header.path_id,
+                        PeerState {
+                            addr: peer,
+                            last_seen_micros: receive_micros,
+                        },
+                    );
                 }
                 if let Some(control) = parse_return_control(&frame) {
                     let schedule_changed = return_control.as_ref().is_none_or(|previous| {
@@ -940,6 +955,7 @@ async fn main() -> Result<()> {
                     return_control.as_ref(),
                     &peers,
                     packet_payload.len(),
+                    monotonic_micros(),
                 );
                 let mut sent_paths = 0usize;
                 for (path_id, peer, kind) in return_targets {
@@ -1397,12 +1413,14 @@ fn build_server_recovery_status(
 async fn send_server_recovery_status(
     socket: &UdpSocket,
     key: &XBondKey,
-    peers: &HashMap<u16, SocketAddr>,
+    peers: &HashMap<u16, PeerState>,
     session_id: u64,
     control_sequence: &mut u64,
     status: XBondServerRecoveryStatus,
     json_events: bool,
 ) -> Result<()> {
+    let now = monotonic_micros();
+    let peers = fresh_peers(peers, now);
     if peers.is_empty() || session_id == 0 {
         return Ok(());
     }
@@ -1411,7 +1429,7 @@ async fn send_server_recovery_status(
     let sequence = *control_sequence;
     let payload = serde_json::to_vec(&XBondControlMessage::ServerRecoveryStatus { status })?;
 
-    for (path_id, peer) in peers {
+    for (path_id, peer) in &peers {
         let frame = XBondFrame::new(
             XBondHeader::new(
                 PacketKind::Control,
@@ -1445,7 +1463,7 @@ async fn send_server_recovery_status(
             serde_json::json!({
                 "event": "server-recovery-status-sent",
                 "sequence": sequence,
-                "paths": peers.keys().copied().collect::<Vec<_>>(),
+                "paths": peers.iter().map(|(path_id, _)| *path_id).collect::<Vec<_>>(),
             })
         );
     }
@@ -1456,7 +1474,7 @@ async fn send_server_recovery_status(
 async fn send_repair_requests_for_ingress_gaps(
     socket: &UdpSocket,
     key: &XBondKey,
-    peers: &HashMap<u16, SocketAddr>,
+    peers: &HashMap<u16, PeerState>,
     session_id: u64,
     control_sequence: &mut u64,
     reorder: &mut PacketReorderBuffer,
@@ -1464,6 +1482,8 @@ async fn send_repair_requests_for_ingress_gaps(
     recovery_active: bool,
     json_events: bool,
 ) -> Result<()> {
+    let now = monotonic_micros();
+    let peers = fresh_peers(peers, now);
     if !recovery_active || peers.is_empty() || session_id == 0 {
         return Ok(());
     }
@@ -1491,12 +1511,12 @@ async fn send_repair_requests_for_ingress_gaps(
                 session_id,
                 control_id,
                 now_micros(),
-                *path_id,
+                path_id,
             ),
             payload.clone(),
         );
         let encoded = frame.encode_sealed(key)?;
-        if let Err(error) = socket.send_to(&encoded, *peer).await {
+        if let Err(error) = socket.send_to(&encoded, peer).await {
             if json_events {
                 println!(
                     "{}",
@@ -1522,7 +1542,7 @@ async fn send_repair_frames_from_server_cache(
     key: &XBondKey,
     return_senders: &mut HashMap<u16, ReturnSenderHandle>,
     return_control: Option<&ReturnControl>,
-    peers: &HashMap<u16, SocketAddr>,
+    peers: &HashMap<u16, PeerState>,
     resend_cache: &mut ResendCache,
     session_id: u64,
     sequences: &[u64],
@@ -1536,7 +1556,8 @@ async fn send_repair_frames_from_server_cache(
             continue;
         };
 
-        let targets = select_return_targets(return_control, peers, payload.len());
+        let targets =
+            select_return_targets(return_control, peers, payload.len(), monotonic_micros());
         if targets.is_empty() {
             repair.cache_misses = repair.cache_misses.saturating_add(1);
             continue;
@@ -1613,10 +1634,11 @@ fn build_return_control(
 
 fn select_return_targets(
     control: Option<&ReturnControl>,
-    peers: &HashMap<u16, SocketAddr>,
+    peers: &HashMap<u16, PeerState>,
     packet_len: usize,
+    now_micros: u64,
 ) -> Vec<(u16, SocketAddr, PacketKind)> {
-    let scheduled = control
+    let mut scheduled = control
         .map(|control| {
             control
                 .transmission_plans
@@ -1634,17 +1656,29 @@ fn select_return_targets(
                 .filter_map(|transmission| {
                     peers
                         .get(&transmission.path_id)
-                        .map(|peer| (transmission.path_id, *peer, transmission.packet_kind))
+                        .filter(|peer| peer_is_fresh(peer, now_micros))
+                        .map(|peer| (transmission.path_id, peer.addr, transmission.packet_kind))
                 })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
 
     if !scheduled.is_empty() {
+        if !scheduled
+            .iter()
+            .any(|(_, _, kind)| *kind == PacketKind::Data)
+        {
+            if let Some(first) = scheduled.first_mut() {
+                first.2 = PacketKind::Data;
+            }
+        }
         return scheduled;
     }
 
-    let mut fallback = peers.iter().collect::<Vec<_>>();
+    let mut fallback = peers
+        .iter()
+        .filter(|(_, peer)| peer_is_fresh(peer, now_micros))
+        .collect::<Vec<_>>();
     fallback.sort_by_key(|(path_id, _)| **path_id);
     fallback
         .into_iter()
@@ -1655,9 +1689,27 @@ fn select_return_targets(
             } else {
                 PacketKind::Duplicate
             };
-            (*path_id, *peer, kind)
+            (*path_id, peer.addr, kind)
         })
         .collect()
+}
+
+fn peer_is_fresh(peer: &PeerState, now_micros: u64) -> bool {
+    now_micros.saturating_sub(peer.last_seen_micros) <= PEER_STALE_AFTER_MICROS
+}
+
+fn fresh_peers(peers: &HashMap<u16, PeerState>, now_micros: u64) -> Vec<(u16, SocketAddr)> {
+    let mut fresh = peers
+        .iter()
+        .filter(|(_, peer)| peer_is_fresh(peer, now_micros))
+        .map(|(path_id, peer)| (*path_id, peer.addr))
+        .collect::<Vec<_>>();
+    fresh.sort_by_key(|(path_id, _)| *path_id);
+    fresh
+}
+
+fn expire_stale_peers(peers: &mut HashMap<u16, PeerState>, now_micros: u64) {
+    peers.retain(|_, peer| peer_is_fresh(peer, now_micros));
 }
 
 fn write_reordered_packets(
@@ -2001,7 +2053,8 @@ mod tests {
     fn scheduled_return_targets_follow_client_schedule_order() {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
-        let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
+        let now = 1_000_000;
+        let peers = HashMap::from([(3, peer_state(peer_3, now)), (5, peer_state(peer_5, now))]);
         let control = build_return_control(
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
@@ -2017,7 +2070,7 @@ mod tests {
         );
 
         assert_eq!(
-            select_return_targets(Some(&control), &peers, 1_200),
+            select_return_targets(Some(&control), &peers, 1_200, now),
             vec![
                 (5, peer_5, PacketKind::Data),
                 (3, peer_3, PacketKind::Duplicate),
@@ -2029,10 +2082,11 @@ mod tests {
     fn return_targets_fallback_to_sorted_peers_without_schedule() {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
-        let peers = HashMap::from([(5, peer_5), (3, peer_3)]);
+        let now = 1_000_000;
+        let peers = HashMap::from([(5, peer_state(peer_5, now)), (3, peer_state(peer_3, now))]);
 
         assert_eq!(
-            select_return_targets(None, &peers, 1_200),
+            select_return_targets(None, &peers, 1_200, now),
             vec![
                 (3, peer_3, PacketKind::Data),
                 (5, peer_5, PacketKind::Duplicate),
@@ -2044,7 +2098,8 @@ mod tests {
     fn balanced_return_targets_do_not_duplicate_healthy_bulk_packets() {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
-        let peers = HashMap::from([(3, peer_3), (5, peer_5)]);
+        let now = 1_000_000;
+        let peers = HashMap::from([(3, peer_state(peer_3, now)), (5, peer_state(peer_5, now))]);
         let control = build_return_control(
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
@@ -2060,7 +2115,7 @@ mod tests {
         );
 
         assert_eq!(
-            select_return_targets(Some(&control), &peers, 1_200),
+            select_return_targets(Some(&control), &peers, 1_200, now),
             vec![(5, peer_5, PacketKind::Data)]
         );
     }
@@ -2070,7 +2125,12 @@ mod tests {
         let peer_2: SocketAddr = "192.0.2.2:2000".parse().unwrap();
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
-        let peers = HashMap::from([(2, peer_2), (3, peer_3), (5, peer_5)]);
+        let now = 1_000_000;
+        let peers = HashMap::from([
+            (2, peer_state(peer_2, now)),
+            (3, peer_state(peer_3, now)),
+            (5, peer_state(peer_5, now)),
+        ]);
         let control = build_return_control(
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
@@ -2090,12 +2150,57 @@ mod tests {
         );
 
         assert_eq!(
-            select_return_targets(Some(&control), &peers, 1_200),
+            select_return_targets(Some(&control), &peers, 1_200, now),
             vec![
                 (5, peer_5, PacketKind::Data),
                 (2, peer_2, PacketKind::Duplicate),
                 (3, peer_3, PacketKind::Duplicate),
             ]
+        );
+    }
+
+    #[test]
+    fn stale_scheduled_peers_are_not_return_targets() {
+        let stale_peer: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let fresh_peer: SocketAddr = "192.0.2.3:3000".parse().unwrap();
+        let now = 30_000_000;
+        let peers = HashMap::from([
+            (1, peer_state(stale_peer, 0)),
+            (3, peer_state(fresh_peer, now)),
+        ]);
+        let control = build_return_control(
+            SchedulePlan {
+                mode: ScheduleMode::AnchorDuplicate1,
+                anchor_path_id: Some(1),
+                data_path_ids: vec![1],
+                duplicate_path_ids: vec![3],
+                fec_path_ids: Vec::new(),
+            },
+            RedundancyPolicy::Reliable,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+
+        assert_eq!(
+            select_return_targets(Some(&control), &peers, 1_200, now),
+            vec![(3, fresh_peer, PacketKind::Data)]
+        );
+    }
+
+    #[test]
+    fn fallback_ignores_stale_peers() {
+        let stale_peer: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let fresh_peer: SocketAddr = "192.0.2.3:3000".parse().unwrap();
+        let now = 30_000_000;
+        let peers = HashMap::from([
+            (1, peer_state(stale_peer, 0)),
+            (3, peer_state(fresh_peer, now)),
+        ]);
+
+        assert_eq!(
+            select_return_targets(None, &peers, 1_200, now),
+            vec![(3, fresh_peer, PacketKind::Data)]
         );
     }
 
@@ -2131,6 +2236,13 @@ mod tests {
             last_rebind_error: None,
             last_rebind_at_micros: None,
             rebind_count: 0,
+        }
+    }
+
+    fn peer_state(addr: SocketAddr, last_seen_micros: u64) -> PeerState {
+        PeerState {
+            addr,
+            last_seen_micros,
         }
     }
 
