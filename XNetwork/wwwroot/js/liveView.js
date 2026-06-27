@@ -279,7 +279,7 @@ function updateThreeScene(state) {
 function getAdapterPosition(index, count, compact) {
     const verticalGap = compact ? 0.38 : 0.72;
     const centerOffset = (count - 1) * verticalGap * 0.5;
-    const columnX = compact ? -1.95 : -4.28;
+    const columnX = compact ? -1.55 : -4.28;
     const zBase = compact ? 0.12 : 0.08;
     const zOffset = compact
         ? (index % 2 === 0 ? 0.08 : -0.1)
@@ -435,6 +435,20 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
 
     const glow = createGlowSprite(THREE, glowTexture, color, opacity, (active ? 1.05 : 0.72) * scale);
     node.add(glow);
+
+    const seed = new THREE.Mesh(
+        new THREE.SphereGeometry(0.085 * scale, 18, 12),
+        new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: active ? 0.95 : 0.62,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false
+        })
+    );
+    seed.userData.role = 'adapter-seed';
+    node.add(seed);
 
     const outer = new THREE.Mesh(
         new THREE.TorusGeometry(0.34 * scale, 0.008, 8, 92),
