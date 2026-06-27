@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.89";
+    public const string CurrentVersion = "xbond-2026.06.90";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Raised Live adapter nodes above the HUD.",
+            Changes =
+            [
+                "Moved compact Live adapter energy nodes upward so they are visible in the 3D scene instead of sitting behind the lower path chips.",
+                "Increased the adapter energy seed size while keeping the non-blocky beam/shield visual style.",
+                "Preserved the 3D cockpit topology and orbit/pan/zoom camera controls."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.89",
             Date = "2026-06-28",
             Summary = "Made Live adapter energy nodes visible.",
             Changes =

@@ -286,7 +286,7 @@ function getAdapterPosition(index, count, compact) {
         : (index % 2 === 0 ? 0.18 : -0.24) + Math.sin(index * 0.8) * 0.08;
     return new THREE.Vector3(
         columnX,
-        centerOffset - index * verticalGap,
+        centerOffset - index * verticalGap + (compact ? 0.88 : 0),
         zBase + zOffset
     );
 }
@@ -437,7 +437,7 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     node.add(glow);
 
     const seed = new THREE.Mesh(
-        new THREE.SphereGeometry(0.085 * scale, 18, 12),
+        new THREE.SphereGeometry(0.16 * scale, 22, 14),
         new THREE.MeshBasicMaterial({
             color,
             transparent: true,
