@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.81";
+    public const string CurrentVersion = "xbond-2026.06.82";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Added the animated XBond Live view.",
+            Changes =
+            [
+                "Added a Live tab with an animated Three.js scene for XBond tunnel health, active paths, recovery, and loss-protection state.",
+                "Live adapter nodes can be selected to inspect path latency, loss, and throughput without changing the operational dashboard.",
+                "Primary route transitions now include the Live tab between Dashboard and Analytics."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.81",
             Date = "2026-06-26",
             Summary = "Fixed F50 USB target resolution.",
             Changes =

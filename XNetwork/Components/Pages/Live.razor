@@ -1,0 +1,496 @@
+@page "/live"
+@using XNetwork.Components.Custom
+@using XNetwork.Models
+@using XNetwork.Services
+@using XNetwork.Utils
+@implements IAsyncDisposable
+@inject XBondSnapshotCache XBondSnapshotCache
+@inject IJSRuntime JSRuntime
+
+<PageTitle>Live - XNetwork</PageTitle>
+
+<div class="live-page p-4 md:p-6">
+    <div class="mb-6 hidden md:block">
+        <h2 class="mb-1 text-3xl font-bold text-white">Live</h2>
+        <p class="text-slate-400">Animated XBond tunnel view.</p>
+    </div>
+
+    @if (_snapshot is null)
+    {
+        <div class="rounded-2xl border border-slate-700 bg-slate-800/50 p-5 shadow-lg">
+            <div class="flex items-center gap-3">
+                <SkeletonBlock CssClass="h-12 w-12 rounded-full" />
+                <div class="flex-grow space-y-2">
+                    <SkeletonBlock CssClass="h-5 w-48" />
+                    <SkeletonBlock CssClass="h-4 w-64 max-w-full" />
+                </div>
+            </div>
+            <SkeletonBlock CssClass="mt-5 h-[26rem] w-full rounded-2xl" />
+        </div>
+    }
+    else
+    {
+        <section class="live-stage">
+            <div class="live-scene"
+                 @ref="_sceneElement"
+                 role="img"
+                 aria-label="@BuildSceneAriaLabel()"></div>
+
+            <div class="live-stage-vignette" aria-hidden="true"></div>
+
+            <div class="live-hud live-hud-primary">
+                <div class="min-w-0">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="@GetStatusPillClass()">@GetShortConnectionStatus()</span>
+                        <span class="live-pill live-pill-muted">@FormatMode(_snapshot.RedundancyPolicy)</span>
+                        @if (_snapshot.IsRecoveryActive)
+                        {
+                            <span class="live-pill live-pill-recovery">@_snapshot.RecoveryBadgeText</span>
+                        }
+                        @if (_snapshot.IsProtectingFromLoss)
+                        {
+                            <span class="live-pill live-pill-protection">Protecting from loss</span>
+                        }
+                    </div>
+                    <h3 class="mt-3 text-2xl font-semibold text-white md:text-4xl">@_snapshot.ConnectionTitle</h3>
+                </div>
+            </div>
+
+            <div class="live-hud live-hud-metrics">
+                <div class="live-metric">
+                    <span>Latency</span>
+                    <strong>@FormatLatency(_snapshot.EffectiveRttMs)</strong>
+                </div>
+                <div class="live-metric">
+                    <span>Download</span>
+                    <strong>@SpeedFormatter.FormatSpeed(_snapshot.DownloadMbps)</strong>
+                </div>
+                <div class="live-metric">
+                    <span>Upload</span>
+                    <strong>@SpeedFormatter.FormatSpeed(_snapshot.UploadMbps)</strong>
+                </div>
+            </div>
+
+            <div class="live-hud live-hud-paths">
+                @foreach (var path in _snapshot.DashboardPaths.Take(6))
+                {
+                    <button type="button"
+                            class="@GetPathChipClass(path)"
+                            title="@GetPathChipTitle(path)"
+                            @onclick="() => SelectPath(path.PathId)">
+                        <span class="@GetPathChipDotClass(path)"></span>
+                        <span class="min-w-0 truncate">@path.Name</span>
+                    </button>
+                }
+            </div>
+        </section>
+
+        <section class="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+            <article class="rounded-2xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg">
+                <div class="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                        <h3 class="text-lg font-semibold text-white">Tunnel</h3>
+                        <p class="text-sm text-slate-400">@_snapshot.ActivePaths.Count active path(s), @_snapshot.StandbyPaths.Count standby path(s)</p>
+                    </div>
+                    <span class="@GetStatusDotClass()" aria-hidden="true"></span>
+                </div>
+                <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <div class="live-stat-tile">
+                        <span>Loss</span>
+                        <strong>@FormatPercent(_snapshot.EffectiveLossPercent)</strong>
+                    </div>
+                    <div class="live-stat-tile">
+                        <span>Jitter</span>
+                        <strong>@FormatNullableMs(_snapshot.RawStatus.Tunnel.JitterMs)</strong>
+                    </div>
+                    <div class="live-stat-tile">
+                        <span>Queue</span>
+                        <strong>@_snapshot.ActivePaths.Sum(path => path.QueueDepth)</strong>
+                    </div>
+                    <div class="live-stat-tile">
+                        <span>Late</span>
+                        <strong>@FormatPercent(_snapshot.ActivePaths.Select(path => path.LatePercent).DefaultIfEmpty(0).Max())</strong>
+                    </div>
+                </div>
+            </article>
+
+            <article class="rounded-2xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg">
+                @{
+                    var selected = GetSelectedPath();
+                }
+                @if (selected is null)
+                {
+                    <h3 class="text-lg font-semibold text-white">Adapter</h3>
+                    <p class="mt-2 text-sm text-slate-400">No live adapter data.</p>
+                }
+                else
+                {
+                    <div class="mb-4 flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <h3 class="truncate text-lg font-semibold text-white">@selected.Name</h3>
+                            <p class="truncate text-sm text-slate-400">@selected.InterfaceName</p>
+                        </div>
+                        <span class="live-pill live-pill-muted">@RoleLabel(selected)</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="live-stat-tile">
+                            <span>Latency</span>
+                            <strong>@FormatNullableMs(selected.RttMs)</strong>
+                        </div>
+                        <div class="live-stat-tile">
+                            <span>Loss</span>
+                            <strong>@FormatPercent(selected.LossPercent)</strong>
+                        </div>
+                        <div class="live-stat-tile">
+                            <span>Down</span>
+                            <strong>@SpeedFormatter.FormatSpeed(selected.DownloadMbps)</strong>
+                        </div>
+                        <div class="live-stat-tile">
+                            <span>Up</span>
+                            <strong>@SpeedFormatter.FormatSpeed(selected.UploadMbps)</strong>
+                        </div>
+                    </div>
+                }
+            </article>
+        </section>
+    }
+</div>
+
+@code {
+    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(1));
+    private readonly CancellationTokenSource _refreshCts = new();
+    private DotNetObjectReference<Live>? _dotNetReference;
+    private IJSObjectReference? _sceneModule;
+    private ElementReference _sceneElement;
+    private XBondStatsSnapshot? _snapshot;
+    private int? _selectedPathId;
+    private bool _sceneInitialized;
+    private bool _disposed;
+    private int _refreshInProgress;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync(pushScene: false);
+        _ = RunRefreshLoopAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || !firstRender)
+        {
+            return;
+        }
+
+        try
+        {
+            _dotNetReference = DotNetObjectReference.Create(this);
+            _sceneModule = await JSRuntime.InvokeAsync<IJSObjectReference>(
+                "import",
+                $"/js/liveView.js?v={Uri.EscapeDataString(AppChangelog.CurrentVersion)}");
+            await _sceneModule.InvokeVoidAsync("initialize", _sceneElement, _dotNetReference);
+            _sceneInitialized = true;
+            await PushSceneAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Live view scene initialization failed: {ex.Message}");
+        }
+    }
+
+    private async Task RunRefreshLoopAsync()
+    {
+        try
+        {
+            while (await _timer.WaitForNextTickAsync(_refreshCts.Token))
+            {
+                await InvokeAsync(() => RefreshAsync(pushScene: true));
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task RefreshAsync(bool pushScene)
+    {
+        if (_disposed || Interlocked.Exchange(ref _refreshInProgress, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            _snapshot = await XBondSnapshotCache.GetSnapshotAsync(_refreshCts.Token);
+            EnsureSelectedPath();
+            StateHasChanged();
+
+            if (pushScene)
+            {
+                await PushSceneAsync();
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshInProgress, 0);
+        }
+    }
+
+    private async Task PushSceneAsync()
+    {
+        if (_disposed || !_sceneInitialized || _sceneModule is null || _snapshot is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _sceneModule.InvokeVoidAsync("update", _sceneElement, BuildScenePayload());
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
+    private object BuildScenePayload()
+    {
+        var snapshot = _snapshot!;
+        return new
+        {
+            status = GetShortConnectionStatus(),
+            mode = FormatMode(snapshot.RedundancyPolicy),
+            running = snapshot.IsRunning,
+            recovery = snapshot.IsRecoveryActive,
+            protecting = snapshot.IsProtectingFromLoss,
+            rtt = snapshot.EffectiveRttMs,
+            loss = snapshot.EffectiveLossPercent,
+            download = snapshot.DownloadMbps,
+            upload = snapshot.UploadMbps,
+            selectedPathId = _selectedPathId,
+            paths = snapshot.DashboardPaths.Select(path => new
+            {
+                id = path.PathId,
+                name = path.Name,
+                iface = path.InterfaceName,
+                role = RoleLabel(path),
+                active = path.IsActive,
+                anchor = path.IsAnchor,
+                up = path.InterfaceUp,
+                cooldown = path.InCooldown,
+                configured = path.IsConfigured,
+                rtt = path.RttMs,
+                loss = path.LossPercent,
+                down = path.DownloadMbps,
+                upMbps = path.UploadMbps,
+                signal = GetSignalStrength(path),
+                status = GetPathStatusKind(path)
+            }).ToArray()
+        };
+    }
+
+    [JSInvokable]
+    public Task SelectPathFromScene(int pathId)
+    {
+        SelectPath(pathId);
+        return Task.CompletedTask;
+    }
+
+    private void SelectPath(int pathId)
+    {
+        if (_snapshot?.DashboardPaths.Any(path => path.PathId == pathId) != true)
+        {
+            return;
+        }
+
+        _selectedPathId = pathId;
+        _ = PushSceneAsync();
+    }
+
+    private void EnsureSelectedPath()
+    {
+        if (_snapshot?.DashboardPaths.Any() != true)
+        {
+            _selectedPathId = null;
+            return;
+        }
+
+        if (_selectedPathId.HasValue && _snapshot.DashboardPaths.Any(path => path.PathId == _selectedPathId.Value))
+        {
+            return;
+        }
+
+        _selectedPathId = _snapshot.ActivePaths.FirstOrDefault(path => path.IsAnchor)?.PathId
+            ?? _snapshot.ActivePaths.FirstOrDefault()?.PathId
+            ?? _snapshot.DashboardPaths.First().PathId;
+    }
+
+    private XBondPathStatsSnapshot? GetSelectedPath()
+    {
+        EnsureSelectedPath();
+        return _selectedPathId.HasValue
+            ? _snapshot?.DashboardPaths.FirstOrDefault(path => path.PathId == _selectedPathId.Value)
+            : null;
+    }
+
+    private string BuildSceneAriaLabel()
+    {
+        if (_snapshot is null)
+        {
+            return "XBond live scene loading";
+        }
+
+        return $"{_snapshot.ConnectionTitle}, {FormatLatency(_snapshot.EffectiveRttMs)}, {_snapshot.ActivePaths.Count} active paths";
+    }
+
+    private string GetShortConnectionStatus()
+    {
+        return (_snapshot?.ConnectionTitle ?? "Loading").Replace(" Connection", "", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetStatusPillClass()
+    {
+        return GetShortConnectionStatus() switch
+        {
+            "Excellent" => "live-pill live-pill-excellent",
+            "Good" => "live-pill live-pill-good",
+            "Fair" => "live-pill live-pill-fair",
+            "Poor" => "live-pill live-pill-poor",
+            "Critical" => "live-pill live-pill-critical",
+            _ => "live-pill live-pill-muted"
+        };
+    }
+
+    private string GetStatusDotClass()
+    {
+        return GetShortConnectionStatus() switch
+        {
+            "Excellent" => "live-status-dot live-status-dot-excellent",
+            "Good" => "live-status-dot live-status-dot-good",
+            "Fair" => "live-status-dot live-status-dot-fair",
+            "Poor" => "live-status-dot live-status-dot-poor",
+            "Critical" => "live-status-dot live-status-dot-critical",
+            _ => "live-status-dot"
+        };
+    }
+
+    private string GetPathChipClass(XBondPathStatsSnapshot path)
+    {
+        var selected = _selectedPathId == path.PathId ? " live-path-chip-selected" : "";
+        return $"live-path-chip{selected}";
+    }
+
+    private static string GetPathChipDotClass(XBondPathStatsSnapshot path)
+    {
+        return $"live-path-chip-dot live-path-chip-dot-{GetPathStatusKind(path)}";
+    }
+
+    private static string GetPathChipTitle(XBondPathStatsSnapshot path)
+    {
+        return $"{path.Name}: {RoleLabel(path)}, {FormatNullableMs(path.RttMs)}, {FormatPercent(path.LossPercent)} loss";
+    }
+
+    private static string RoleLabel(XBondPathStatsSnapshot path)
+    {
+        if (!path.IsConfigured)
+        {
+            return "not in XBond";
+        }
+
+        if (path.IsActive && !path.IsAnchor && string.Equals(path.Role, "probe", StringComparison.OrdinalIgnoreCase))
+        {
+            return "backup";
+        }
+
+        return path.Role;
+    }
+
+    private static string GetPathStatusKind(XBondPathStatsSnapshot path)
+    {
+        if (!path.InterfaceUp || path.LossPercent >= 99.5)
+        {
+            return "down";
+        }
+
+        if (path.InCooldown || path.LossPercent >= 10 || path.RttMs >= 180)
+        {
+            return "warn";
+        }
+
+        return path.IsActive ? "active" : "standby";
+    }
+
+    private static int GetSignalStrength(XBondPathStatsSnapshot path)
+    {
+        if (!path.InterfaceUp)
+        {
+            return 0;
+        }
+
+        if (path.InCooldown || path.LossPercent >= 25 || path.RttMs >= 300)
+        {
+            return 1;
+        }
+
+        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        {
+            return 2;
+        }
+
+        if (path.LossPercent >= 2 || path.RttMs >= 120)
+        {
+            return 3;
+        }
+
+        return 4;
+    }
+
+    private static string FormatMode(string? mode)
+    {
+        return string.IsNullOrWhiteSpace(mode) ? "XBond" : mode.Replace('-', ' ');
+    }
+
+    private static string FormatLatency(double value)
+    {
+        return value > 0 ? $"{Math.Round(value)} ms" : "--";
+    }
+
+    private static string FormatNullableMs(double? value)
+    {
+        return value.HasValue && value.Value > 0 ? $"{Math.Round(value.Value)} ms" : "--";
+    }
+
+    private static string FormatPercent(double value)
+    {
+        return $"{Math.Round(value, Math.Abs(value - Math.Round(value)) < 0.05 ? 0 : 1)}%";
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _refreshCts.Cancel();
+        _timer.Dispose();
+        _refreshCts.Dispose();
+
+        try
+        {
+            if (_sceneModule is not null)
+            {
+                await _sceneModule.InvokeVoidAsync("dispose", _sceneElement);
+                await _sceneModule.DisposeAsync();
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        _dotNetReference?.Dispose();
+    }
+}

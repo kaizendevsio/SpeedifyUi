@@ -14,9 +14,16 @@ public class RouteTransitionDirectionServiceTests
 
         Assert.False(service.IsBackwards);
 
-        service.NotifyNavigated("http://xnetwork/details");
+        service.NotifyNavigated("http://xnetwork/live");
 
         Assert.True(service.IsBackwards);
+    }
+
+    [Fact]
+    public void GetRouteOrder_TreatsLiveAsPrimaryTabBetweenDashboardAndAnalytics()
+    {
+        Assert.True(RouteTransitionDirectionService.GetRouteOrder("/live") > RouteTransitionDirectionService.GetRouteOrder("/"));
+        Assert.True(RouteTransitionDirectionService.GetRouteOrder("/live") < RouteTransitionDirectionService.GetRouteOrder("/details"));
     }
 
     [Fact]
@@ -39,6 +46,6 @@ public class RouteTransitionDirectionServiceTests
     {
         var order = RouteTransitionDirectionService.GetRouteOrder(uriOrPath);
 
-        Assert.InRange(order, 0, 3);
+        Assert.InRange(order, 0, 4);
     }
 }
