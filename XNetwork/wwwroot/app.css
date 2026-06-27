@@ -858,6 +858,23 @@ body {
         bottom: 0.75rem;
         left: 0.75rem;
         min-width: 0;
+        gap: 0.35rem;
+        padding: 0.42rem;
+    }
+
+    .live-hud-metrics .live-metric {
+        padding: 0.55rem 0.48rem;
+        border-radius: 0.75rem;
+    }
+
+    .live-hud-metrics .live-metric span {
+        font-size: 0.64rem;
+    }
+
+    .live-hud-metrics .live-metric strong {
+        font-size: clamp(0.78rem, 3.2vw, 0.92rem);
+        line-height: 1.12;
+        white-space: normal;
     }
 
     .live-path-chip {

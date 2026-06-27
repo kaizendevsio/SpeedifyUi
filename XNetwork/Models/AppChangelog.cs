@@ -13,7 +13,7 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.82";
+    public const string CurrentVersion = "xbond-2026.06.83";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
@@ -26,7 +26,8 @@ public static class AppChangelog
             [
                 "Added a Live tab with an animated Three.js scene for XBond tunnel health, active paths, recovery, and loss-protection state.",
                 "Live adapter nodes can be selected to inspect path latency, loss, and throughput without changing the operational dashboard.",
-                "Primary route transitions now include the Live tab between Dashboard and Analytics."
+                "Primary route transitions now include the Live tab between Dashboard and Analytics.",
+                "Tightened the mobile Live HUD metric sizing so values fit without truncation."
             ]
         },
         new ChangelogEntry
