@@ -23,6 +23,7 @@ export async function initialize(element, dotNetReference) {
         pathGroup: null,
         beamGroup: null,
         packetGroup: null,
+        labelGroup: null,
         nodeMeshes: new Map(),
         packets: [],
         data: null,
@@ -32,6 +33,23 @@ export async function initialize(element, dotNetReference) {
         fallbackContext: null,
         fallbackAnimationId: 0,
         pointerDownHandler: null,
+        pointerMoveHandler: null,
+        pointerUpHandler: null,
+        pointerCancelHandler: null,
+        wheelHandler: null,
+        contextMenuHandler: null,
+        controls: {
+            target: null,
+            yaw: -0.04,
+            pitch: 0.22,
+            distance: 10.3,
+            minDistance: 6.1,
+            maxDistance: 15.2,
+            activePointers: new Map(),
+            lastPinchDistance: 0,
+            lastPinchCenter: null,
+            dragMoved: false
+        },
         lastFrameTime: performance.now(),
         glowTexture: null
     };
@@ -83,6 +101,26 @@ export function dispose(element) {
         state.element.removeEventListener('pointerdown', state.pointerDownHandler);
     }
 
+    if (state.pointerMoveHandler) {
+        state.element.removeEventListener('pointermove', state.pointerMoveHandler);
+    }
+
+    if (state.pointerUpHandler) {
+        state.element.removeEventListener('pointerup', state.pointerUpHandler);
+    }
+
+    if (state.pointerCancelHandler) {
+        state.element.removeEventListener('pointercancel', state.pointerCancelHandler);
+    }
+
+    if (state.wheelHandler) {
+        state.element.removeEventListener('wheel', state.wheelHandler);
+    }
+
+    if (state.contextMenuHandler) {
+        state.element.removeEventListener('contextmenu', state.contextMenuHandler);
+    }
+
     if (state.renderer) {
         disposeObjectTree(state.scene);
         state.glowTexture?.dispose?.();
@@ -114,15 +152,14 @@ function setupThreeScene(state, THREE) {
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(0x07090d, 0.035);
 
-    const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 100);
-    camera.position.set(0, 2.6, 9.6);
-    camera.lookAt(0, 0, 0);
+    const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 100);
 
     const fieldGroup = new THREE.Group();
     const pathGroup = new THREE.Group();
     const beamGroup = new THREE.Group();
     const packetGroup = new THREE.Group();
-    scene.add(fieldGroup, beamGroup, packetGroup, pathGroup);
+    const labelGroup = new THREE.Group();
+    scene.add(fieldGroup, beamGroup, packetGroup, pathGroup, labelGroup);
 
     const ambient = new THREE.AmbientLight(0x5f7f9f, 0.45);
     const coreLight = new THREE.PointLight(0x22d3ee, 50, 10);
@@ -134,7 +171,7 @@ function setupThreeScene(state, THREE) {
     const glowTexture = createGlowTexture(THREE);
     const tunnelCore = createEnergyCore(THREE, glowTexture);
     const serverCore = createEnergyGate(THREE, glowTexture);
-    serverCore.position.set(4.35, 0.05, -1.15);
+    serverCore.position.set(4.35, 0.02, -0.15);
     scene.add(tunnelCore, serverCore);
 
     const field = createEnergyField(THREE);
@@ -150,12 +187,25 @@ function setupThreeScene(state, THREE) {
     state.pathGroup = pathGroup;
     state.beamGroup = beamGroup;
     state.packetGroup = packetGroup;
+    state.labelGroup = labelGroup;
     state.tunnelCore = tunnelCore;
     state.serverCore = serverCore;
     state.glowTexture = glowTexture;
+    state.controls.target = new THREE.Vector3(-0.05, 0.02, 0);
+    updateCameraFromControls(state);
 
     state.pointerDownHandler = event => handlePointerDown(state, event);
+    state.pointerMoveHandler = event => handlePointerMove(state, event);
+    state.pointerUpHandler = event => handlePointerUp(state, event);
+    state.pointerCancelHandler = event => handlePointerCancel(state, event);
+    state.wheelHandler = event => handleWheel(state, event);
+    state.contextMenuHandler = event => event.preventDefault();
     element.addEventListener('pointerdown', state.pointerDownHandler);
+    element.addEventListener('pointermove', state.pointerMoveHandler);
+    element.addEventListener('pointerup', state.pointerUpHandler);
+    element.addEventListener('pointercancel', state.pointerCancelHandler);
+    element.addEventListener('wheel', state.wheelHandler, { passive: false });
+    element.addEventListener('contextmenu', state.contextMenuHandler);
 
     const resize = () => resizeRenderer(state);
     state.resizeObserver = new ResizeObserver(resize);
@@ -179,22 +229,22 @@ function updateThreeScene(state) {
     const THREE = state.THREE;
     const paths = Array.isArray(state.data?.paths) ? state.data.paths : [];
     const selectedPathId = Number(state.data?.selectedPathId);
+    const activePaths = paths.filter(path => path.active && path.up);
 
     disposeGroupChildren(state.pathGroup);
     disposeGroupChildren(state.beamGroup);
     disposeGroupChildren(state.packetGroup);
+    disposeGroupChildren(state.labelGroup);
     state.nodeMeshes.clear();
     state.packets = [];
 
     const materialCache = new Map();
-    const width = state.element.getBoundingClientRect().width;
-    const compact = width < 560;
-    const radiusX = compact ? 3.45 : 4.75;
-    const radiusZ = compact ? 1.8 : 2.45;
+    const rect = state.element.getBoundingClientRect();
+    const compact = rect.width < 560;
     const count = Math.max(1, paths.length);
 
     paths.forEach((path, index) => {
-        const position = getEmitterPosition(index, count, radiusX, radiusZ);
+        const position = getAdapterPosition(index, count, compact);
         const color = getPathColor(path);
         const selected = Number(path.id) === selectedPathId;
         const active = Boolean(path.active);
@@ -204,9 +254,7 @@ function updateThreeScene(state) {
         state.pathGroup.add(node);
         state.nodeMeshes.set(Number(path.id), node);
 
-        const target = active ? state.tunnelCore.position : state.serverCore.position;
-        const lift = path.anchor ? 0.85 : active ? 0.62 : 0.35;
-        const points = makeEnergyCurvePoints(position, target, lift, index);
+        const points = makeEnergyCurvePoints(position, state.tunnelCore.position, active ? 0.72 : 0.32, index);
         addEnergyBeam(state, materialCache, points, color, path);
 
         if (active) {
@@ -214,22 +262,23 @@ function updateThreeScene(state) {
         }
     });
 
+    addCoreToServerStreams(state, materialCache, activePaths.length > 0 ? activePaths : paths.slice(0, 1));
+    addSceneLabels(state, materialCache, paths, compact);
+
     const healthColor = getHealthColor(state.data);
     setEnergyCoreColor(state.tunnelCore, healthColor, state.data?.recovery);
 }
 
-function getEmitterPosition(index, count, radiusX, radiusZ) {
-    if (count === 1) {
-        return new THREE.Vector3(-radiusX, -0.15, 0.2);
-    }
-
-    const normalized = index / Math.max(1, count - 1);
-    const angle = Math.PI * 0.73 + normalized * Math.PI * 0.86;
-    const y = -0.42 + Math.sin(normalized * Math.PI) * 0.72;
+function getAdapterPosition(index, count, compact) {
+    const verticalGap = compact ? 0.58 : 0.72;
+    const centerOffset = (count - 1) * verticalGap * 0.5;
+    const columnX = compact ? -3.15 : -4.28;
+    const zBase = compact ? 0.25 : 0.08;
+    const zOffset = (index % 2 === 0 ? 0.18 : -0.24) + Math.sin(index * 0.8) * 0.08;
     return new THREE.Vector3(
-        Math.cos(angle) * radiusX,
-        y,
-        Math.sin(angle) * radiusZ - 0.25
+        columnX,
+        centerOffset - index * verticalGap,
+        zBase + zOffset
     );
 }
 
@@ -282,9 +331,24 @@ function createEnergyCore(THREE, glowTexture) {
     pulse.userData.role = 'pulse';
     core.add(pulse);
 
+    const shield = new THREE.Mesh(
+        new THREE.SphereGeometry(1.42, 48, 32),
+        new THREE.MeshBasicMaterial({
+            color: 0x22d3ee,
+            transparent: true,
+            opacity: 0.075,
+            blending: THREE.AdditiveBlending,
+            wireframe: true,
+            depthWrite: false
+        })
+    );
+    shield.userData.role = 'shield';
+    core.add(shield);
+
     core.userData.glow = glow;
     core.userData.rings = rings;
     core.userData.pulse = pulse;
+    core.userData.shield = shield;
     return core;
 }
 
@@ -292,16 +356,16 @@ function createEnergyGate(THREE, glowTexture) {
     const gate = new THREE.Group();
     gate.name = 'XBond server gate';
 
-    const glow = createGlowSprite(THREE, glowTexture, 0x3794ff, 0.52, 1.65);
+    const glow = createGlowSprite(THREE, glowTexture, 0x3794ff, 0.72, 2.05);
     gate.add(glow);
 
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
         const ring = new THREE.Mesh(
-            new THREE.TorusGeometry(0.34 + i * 0.16, 0.009, 8, 96),
+            new THREE.TorusGeometry(0.38 + i * 0.15, 0.01, 8, 112),
             new THREE.MeshBasicMaterial({
                 color: i === 0 ? 0xb7e7ff : 0x3794ff,
                 transparent: true,
-                opacity: 0.55 - i * 0.12,
+                opacity: 0.64 - i * 0.1,
                 blending: THREE.AdditiveBlending,
                 depthWrite: false
             })
@@ -399,6 +463,94 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
 
     node.userData.rings = [outer, inner];
     return node;
+}
+
+function addSceneLabels(state, cache, paths, compact) {
+    const THREE = state.THREE;
+    if (!compact) {
+        paths.forEach(path => {
+            const node = state.nodeMeshes.get(Number(path.id));
+            if (!node) {
+                return;
+            }
+
+            const label = createTextSprite(
+                THREE,
+                cache,
+                path.name || path.iface || 'Adapter',
+                path.active ? '#f8fafc' : '#a8b3c2',
+                0.68
+            );
+            label.position.copy(node.position).add(new THREE.Vector3(0.62, 0.04, 0));
+            state.labelGroup.add(label);
+        });
+    }
+
+    const coreLabel = createTextSprite(THREE, cache, 'XBond Core', '#b7e7ff', compact ? 0.56 : 0.7);
+    coreLabel.position.copy(state.tunnelCore.position).add(new THREE.Vector3(-0.58, -1.55, 0));
+    state.labelGroup.add(coreLabel);
+
+    const serverLabel = createTextSprite(THREE, cache, 'Vultr Server', '#b7e7ff', compact ? 0.52 : 0.68);
+    serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
+    state.labelGroup.add(serverLabel);
+
+    if (!compact) {
+        const localLabel = createTextSprite(THREE, cache, 'Local adapters', '#858585', 0.56);
+        localLabel.position.set(-4.92, 1.94, 0.04);
+        state.labelGroup.add(localLabel);
+    }
+}
+
+function createTextSprite(THREE, cache, text, color, size) {
+    const canvas = document.createElement('canvas');
+    const width = 512;
+    const height = 128;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, width, height);
+    ctx.font = '700 42px Inter, Segoe UI, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.shadowColor = 'rgba(0,0,0,0.75)';
+    ctx.shadowBlur = 10;
+    ctx.fillStyle = color;
+    ctx.fillText(text, 18, height / 2, width - 36);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 0.92,
+        depthWrite: false
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(size * 2.8, size * 0.7, 1);
+    return sprite;
+}
+
+function addCoreToServerStreams(state, cache, paths) {
+    if (!paths.length) {
+        return;
+    }
+
+    const start = state.tunnelCore.position;
+    const end = state.serverCore.position;
+    paths.forEach((path, index) => {
+        const color = getPathColor({ ...path, active: true });
+        const lane = index - (paths.length - 1) / 2;
+        const laneOffset = new state.THREE.Vector3(0, lane * 0.1, lane * 0.15);
+        const points = makeEnergyCurvePoints(
+            start.clone().add(laneOffset),
+            end.clone().add(laneOffset.multiplyScalar(0.55)),
+            path.anchor ? 0.42 : 0.3,
+            index + 18
+        );
+
+        addEnergyBeam(state, cache, points, color, { ...path, active: true });
+        addEnergyPackets(state, cache, points, color, { ...path, active: true });
+    });
 }
 
 function addEnergyBeam(state, cache, points, color, path) {
@@ -517,6 +669,11 @@ function setEnergyCoreColor(core, color, recovery) {
     if (core.userData.pulse?.material) {
         core.userData.pulse.material.color.setHex(recovery ? 0xfb923c : 0xffffff);
     }
+
+    if (core.userData.shield?.material) {
+        core.userData.shield.material.color.setHex(recovery ? 0xfb923c : color);
+        core.userData.shield.material.opacity = recovery ? 0.14 : 0.075;
+    }
 }
 
 function disposeGroupChildren(group) {
@@ -565,6 +722,14 @@ function animateThree(state) {
         pulse.material.opacity = Math.max(0, 0.5 - (time % 1) * 0.48);
     }
 
+    if (state.tunnelCore.userData.shield) {
+        const shield = state.tunnelCore.userData.shield;
+        shield.rotation.y += delta * 0.24;
+        shield.rotation.x += delta * 0.08;
+        const shieldPulse = 1 + Math.sin(time * (state.data?.recovery ? 3.8 : 1.7)) * (state.data?.recovery ? 0.045 : 0.018);
+        shield.scale.setScalar(shieldPulse);
+    }
+
     state.serverCore.rotation.y = Math.sin(time * 0.7) * 0.22;
     state.serverCore.children.forEach((child, index) => {
         if (child.userData?.spin) {
@@ -599,13 +764,169 @@ function animateThree(state) {
 }
 
 function handlePointerDown(state, event) {
+    if (!state.camera) {
+        return;
+    }
+
+    event.preventDefault();
+    state.element.setPointerCapture?.(event.pointerId);
+    state.controls.activePointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        button: event.button,
+        shiftKey: event.shiftKey
+    });
+    state.controls.dragMoved = false;
+
+    if (state.controls.activePointers.size === 2) {
+        const pointers = [...state.controls.activePointers.values()];
+        state.controls.lastPinchDistance = distanceBetween(pointers[0], pointers[1]);
+        state.controls.lastPinchCenter = midpointBetween(pointers[0], pointers[1]);
+    }
+}
+
+function handlePointerMove(state, event) {
+    const pointer = state.controls.activePointers.get(event.pointerId);
+    if (!pointer) {
+        return;
+    }
+
+    event.preventDefault();
+    const previous = { x: pointer.x, y: pointer.y };
+    pointer.x = event.clientX;
+    pointer.y = event.clientY;
+    pointer.shiftKey = event.shiftKey || pointer.shiftKey;
+
+    const dx = pointer.x - previous.x;
+    const dy = pointer.y - previous.y;
+    if (Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) > 5) {
+        state.controls.dragMoved = true;
+    }
+
+    if (state.controls.activePointers.size >= 2) {
+        handlePinchPan(state);
+        return;
+    }
+
+    if (event.buttons === 2 || pointer.button === 2 || event.shiftKey || pointer.shiftKey) {
+        panCamera(state, dx, dy);
+        return;
+    }
+
+    rotateCamera(state, dx, dy);
+}
+
+function handlePointerUp(state, event) {
+    const pointer = state.controls.activePointers.get(event.pointerId);
+    state.controls.activePointers.delete(event.pointerId);
+    state.element.releasePointerCapture?.(event.pointerId);
+
+    if (!pointer) {
+        return;
+    }
+
+    const moved = Math.hypot(event.clientX - pointer.startX, event.clientY - pointer.startY) > 6 || state.controls.dragMoved;
+    if (!moved) {
+        selectFromPointer(state, event.clientX, event.clientY);
+    }
+
+    if (state.controls.activePointers.size < 2) {
+        state.controls.lastPinchDistance = 0;
+        state.controls.lastPinchCenter = null;
+    }
+}
+
+function handlePointerCancel(state, event) {
+    state.controls.activePointers.delete(event.pointerId);
+    state.element.releasePointerCapture?.(event.pointerId);
+    if (state.controls.activePointers.size < 2) {
+        state.controls.lastPinchDistance = 0;
+        state.controls.lastPinchCenter = null;
+    }
+}
+
+function handleWheel(state, event) {
+    event.preventDefault();
+    const zoomFactor = 1 + Math.sign(event.deltaY) * 0.075;
+    state.controls.distance = clamp(
+        state.controls.distance * zoomFactor,
+        state.controls.minDistance,
+        state.controls.maxDistance
+    );
+    updateCameraFromControls(state);
+}
+
+function handlePinchPan(state) {
+    const pointers = [...state.controls.activePointers.values()];
+    const currentDistance = distanceBetween(pointers[0], pointers[1]);
+    const currentCenter = midpointBetween(pointers[0], pointers[1]);
+
+    if (state.controls.lastPinchDistance > 0) {
+        const ratio = state.controls.lastPinchDistance / Math.max(1, currentDistance);
+        state.controls.distance = clamp(
+            state.controls.distance * ratio,
+            state.controls.minDistance,
+            state.controls.maxDistance
+        );
+    }
+
+    if (state.controls.lastPinchCenter) {
+        panCamera(
+            state,
+            currentCenter.x - state.controls.lastPinchCenter.x,
+            currentCenter.y - state.controls.lastPinchCenter.y
+        );
+    }
+
+    state.controls.lastPinchDistance = currentDistance;
+    state.controls.lastPinchCenter = currentCenter;
+    updateCameraFromControls(state);
+}
+
+function rotateCamera(state, dx, dy) {
+    state.controls.yaw -= dx * 0.006;
+    state.controls.pitch = clamp(state.controls.pitch + dy * 0.0045, -0.82, 0.9);
+    updateCameraFromControls(state);
+}
+
+function panCamera(state, dx, dy) {
+    const THREE = state.THREE;
+    const right = new THREE.Vector3().setFromMatrixColumn(state.camera.matrix, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(state.camera.matrix, 1);
+    const factor = state.controls.distance * 0.00145;
+    state.controls.target.addScaledVector(right, -dx * factor);
+    state.controls.target.addScaledVector(up, dy * factor);
+    state.controls.target.x = clamp(state.controls.target.x, -2.2, 2.2);
+    state.controls.target.y = clamp(state.controls.target.y, -1.15, 1.25);
+    state.controls.target.z = clamp(state.controls.target.z, -1.2, 1.2);
+    updateCameraFromControls(state);
+}
+
+function updateCameraFromControls(state) {
+    const target = state.controls.target;
+    if (!target || !state.camera) {
+        return;
+    }
+
+    const cosPitch = Math.cos(state.controls.pitch);
+    state.camera.position.set(
+        target.x + Math.sin(state.controls.yaw) * cosPitch * state.controls.distance,
+        target.y + Math.sin(state.controls.pitch) * state.controls.distance,
+        target.z + Math.cos(state.controls.yaw) * cosPitch * state.controls.distance
+    );
+    state.camera.lookAt(target);
+}
+
+function selectFromPointer(state, clientX, clientY) {
     if (!state.raycaster || !state.camera) {
         return;
     }
 
     const rect = state.element.getBoundingClientRect();
-    state.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    state.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    state.pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    state.pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     state.raycaster.setFromCamera(state.pointer, state.camera);
 
     const intersects = state.raycaster.intersectObjects(state.pathGroup.children, true);
@@ -616,6 +937,21 @@ function handlePointerDown(state, event) {
     if (hit) {
         state.dotNetReference?.invokeMethodAsync('SelectPathFromScene', hit.userData.pathId);
     }
+}
+
+function distanceBetween(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function midpointBetween(a, b) {
+    return {
+        x: (a.x + b.x) / 2,
+        y: (a.y + b.y) / 2
+    };
+}
+
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
 }
 
 function findPathGroup(object) {
@@ -761,8 +1097,10 @@ function drawFallback(state) {
     const height = canvas.height;
     const paths = Array.isArray(state.data?.paths) ? state.data.paths : [];
     const time = performance.now() / 1000;
-    const centerX = width * 0.5;
+    const centerX = width * 0.48;
     const centerY = height * 0.48;
+    const serverX = width * 0.84;
+    const serverY = height * 0.47;
 
     ctx.clearRect(0, 0, width, height);
     const gradient = ctx.createRadialGradient(centerX, centerY, 20, centerX, centerY, width * 0.7);
@@ -783,10 +1121,10 @@ function drawFallback(state) {
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y);
         ctx.bezierCurveTo(
-            pos.x + (centerX - pos.x) * 0.35,
-            pos.y - 90 + Math.sin(time + index) * 16,
+            pos.x + (centerX - pos.x) * 0.38,
+            pos.y - height * 0.13 + Math.sin(time + index) * 16,
             centerX + (pos.x - centerX) * 0.18,
-            centerY - 75,
+            centerY - height * 0.12,
             centerX,
             centerY
         );
@@ -808,15 +1146,43 @@ function drawFallback(state) {
         ctx.ellipse(centerX, centerY, 65 + i * 26, 22 + i * 10, time * 0.35 + i, 0, Math.PI * 2);
         ctx.stroke();
     }
+
+    drawGlow(ctx, serverX, serverY, 34 + Math.sin(time * 2) * 3, '#3794ff');
+    ctx.strokeStyle = '#3794ff';
+    ctx.globalAlpha = 0.65;
+    for (let i = 0; i < 3; i += 1) {
+        ctx.beginPath();
+        ctx.ellipse(serverX, serverY, 32 + i * 16, 18 + i * 8, Math.PI / 2, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    paths.filter(path => path.active && path.up).slice(0, 4).forEach((path, index) => {
+        const color = `#${getPathColor(path).toString(16).padStart(6, '0')}`;
+        const lane = index - 1.5;
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = path.anchor ? 0.8 : 0.62;
+        ctx.lineWidth = path.anchor ? 5 : 4;
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY + lane * 8);
+        ctx.bezierCurveTo(
+            centerX + (serverX - centerX) * 0.34,
+            centerY - height * 0.08 + lane * 12,
+            centerX + (serverX - centerX) * 0.68,
+            serverY + height * 0.08 - lane * 8,
+            serverX,
+            serverY + lane * 7
+        );
+        ctx.stroke();
+    });
     ctx.restore();
 }
 
 function getFallbackEmitterPosition(index, count, width, height) {
-    const normalized = count === 1 ? 0.5 : index / (count - 1);
-    const angle = Math.PI * 0.73 + normalized * Math.PI * 0.86;
+    const gap = Math.min(height * 0.13, 86 * (window.devicePixelRatio || 1));
+    const top = height * 0.5 - ((count - 1) * gap) / 2;
     return {
-        x: width * 0.5 + Math.cos(angle) * width * 0.36,
-        y: height * 0.5 + Math.sin(angle) * height * 0.22
+        x: width * 0.17,
+        y: top + index * gap
     };
 }
 

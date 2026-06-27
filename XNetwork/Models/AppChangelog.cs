@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.84";
+    public const string CurrentVersion = "xbond-2026.06.85";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Reworked Live into a 3D XBond cockpit.",
+            Changes =
+            [
+                "Replaced the primitive Live tab geometry with a Three.js cockpit layout: local adapters on the left, XBond core in the center, and the Vultr server endpoint on the right.",
+                "Live beams now use the operational color language: orange anchor, pink redundant backup, dim standby/probe, and red or amber degraded paths.",
+                "Added orbit-style scene controls so drag rotates the camera, mouse wheel or pinch zooms, and Shift/right-drag or two-finger drag pans around the cockpit."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.84",
             Date = "2026-06-28",
             Summary = "Reworked Live into an energy-wave view.",
             Changes =
