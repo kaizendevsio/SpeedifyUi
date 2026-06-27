@@ -251,11 +251,17 @@ function updateThreeScene(state) {
         const active = Boolean(path.active);
         const node = createPathEmitter(THREE, state.glowTexture, materialCache, path, color, selected);
         node.position.copy(position);
+        node.scale.setScalar(compact ? 1.18 : 1);
         node.userData.pathId = Number(path.id);
         state.pathGroup.add(node);
         state.nodeMeshes.set(Number(path.id), node);
 
-        const points = makeEnergyCurvePoints(position, state.tunnelCore.position, active ? 0.72 : 0.32, index);
+        const points = makeEnergyCurvePoints(
+            position,
+            state.tunnelCore.position,
+            compact ? (active ? 0.38 : 0.18) : (active ? 0.72 : 0.32),
+            index
+        );
         addEnergyBeam(state, materialCache, points, color, path);
 
         if (active) {
@@ -271,11 +277,13 @@ function updateThreeScene(state) {
 }
 
 function getAdapterPosition(index, count, compact) {
-    const verticalGap = compact ? 0.5 : 0.72;
+    const verticalGap = compact ? 0.38 : 0.72;
     const centerOffset = (count - 1) * verticalGap * 0.5;
-    const columnX = compact ? -2.58 : -4.28;
-    const zBase = compact ? 0.25 : 0.08;
-    const zOffset = (index % 2 === 0 ? 0.18 : -0.24) + Math.sin(index * 0.8) * 0.08;
+    const columnX = compact ? -1.95 : -4.28;
+    const zBase = compact ? 0.12 : 0.08;
+    const zOffset = compact
+        ? (index % 2 === 0 ? 0.08 : -0.1)
+        : (index % 2 === 0 ? 0.18 : -0.24) + Math.sin(index * 0.8) * 0.08;
     return new THREE.Vector3(
         columnX,
         centerOffset - index * verticalGap,
@@ -545,7 +553,7 @@ function addCoreToServerStreams(state, cache, paths) {
         const points = makeEnergyCurvePoints(
             start.clone().add(laneOffset),
             end.clone().add(laneOffset.multiplyScalar(0.55)),
-            path.anchor ? 0.42 : 0.3,
+            path.anchor ? 0.28 : 0.22,
             index + 18
         );
 
@@ -559,19 +567,19 @@ function addEnergyBeam(state, cache, points, color, path) {
     const active = Boolean(path.active);
     const anchor = Boolean(path.anchor);
     const standbyOpacity = path.up ? 0.15 : 0.06;
-    const baseOpacity = active ? (anchor ? 0.62 : 0.5) : standbyOpacity;
+    const baseOpacity = active ? (anchor ? 0.86 : 0.74) : standbyOpacity;
     const curve = new THREE.CatmullRomCurve3(points);
 
     if (active) {
         const halo = new THREE.Mesh(
             new THREE.TubeGeometry(curve, 72, anchor ? 0.045 : 0.036, 8, false),
-            getEnergyMaterial(cache, THREE, color, 0.105)
+            getEnergyMaterial(cache, THREE, color, 0.16)
         );
         state.beamGroup.add(halo);
     }
 
     const beam = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, 88, active ? 0.014 : 0.008, 7, false),
+        new THREE.TubeGeometry(curve, 88, active ? 0.019 : 0.008, 7, false),
         getEnergyMaterial(cache, THREE, color, baseOpacity)
     );
     state.beamGroup.add(beam);
