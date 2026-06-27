@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.87";
+    public const string CurrentVersion = "xbond-2026.06.88";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Fixed Live cockpit beam visibility.",
+            Changes =
+            [
+                "Changed Live cockpit energy beams, path emitters, labels, and shield materials to render without depth hiding so active paths remain visible through the transparent core.",
+                "Kept the adapter-left, XBond-core, server-right 3D cockpit layout and orbit/pan/zoom camera controls.",
+                "Preserved the operational role colors for anchor, backup, standby, warning, and down paths."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.87",
             Date = "2026-06-28",
             Summary = "Improved Live cockpit adapter visibility.",
             Changes =

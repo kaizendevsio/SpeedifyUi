@@ -313,9 +313,10 @@ function createEnergyCore(THREE, glowTexture) {
             new THREE.MeshBasicMaterial({
                 color: spec.color,
                 transparent: true,
-                opacity: spec.opacity,
-                blending: THREE.AdditiveBlending,
-                depthWrite: false
+            opacity: spec.opacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false
             })
         );
         ring.rotation.set(...spec.rotation);
@@ -333,7 +334,8 @@ function createEnergyCore(THREE, glowTexture) {
             opacity: 0.45,
             blending: THREE.AdditiveBlending,
             side: THREE.DoubleSide,
-            depthWrite: false
+            depthWrite: false,
+            depthTest: false
         })
     );
     pulse.rotation.x = Math.PI / 2;
@@ -348,7 +350,8 @@ function createEnergyCore(THREE, glowTexture) {
             opacity: 0.075,
             blending: THREE.AdditiveBlending,
             wireframe: true,
-            depthWrite: false
+            depthWrite: false,
+            depthTest: false
         })
     );
     shield.userData.role = 'shield';
@@ -376,7 +379,8 @@ function createEnergyGate(THREE, glowTexture) {
                 transparent: true,
                 opacity: 0.64 - i * 0.1,
                 blending: THREE.AdditiveBlending,
-                depthWrite: false
+                depthWrite: false,
+                depthTest: false
             })
         );
         ring.rotation.y = Math.PI / 2;
@@ -464,7 +468,8 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
             color,
             transparent: true,
             opacity: 0,
-            depthWrite: false
+            depthWrite: false,
+            depthTest: false
         })
     );
     hitTarget.name = path.name || path.iface || 'adapter';
@@ -532,7 +537,8 @@ function createTextSprite(THREE, cache, text, color, size) {
         map: texture,
         transparent: true,
         opacity: 0.92,
-        depthWrite: false
+        depthWrite: false,
+        depthTest: false
     });
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(size * 2.8, size * 0.7, 1);
@@ -656,7 +662,8 @@ function createGlowSprite(THREE, glowTexture, color, opacity, size) {
         transparent: true,
         opacity,
         blending: THREE.AdditiveBlending,
-        depthWrite: false
+        depthWrite: false,
+        depthTest: false
     });
     const sprite = new THREE.Sprite(material);
     sprite.scale.set(size, size, 1);
@@ -1030,6 +1037,7 @@ function getBasicMaterial(cache, THREE, color, opacity) {
             opacity,
             blending: THREE.AdditiveBlending,
             depthWrite: false,
+            depthTest: false,
             side: THREE.DoubleSide
         }));
     }
@@ -1045,7 +1053,8 @@ function getLineMaterial(cache, THREE, color, opacity) {
             transparent: true,
             opacity,
             blending: THREE.AdditiveBlending,
-            depthWrite: false
+            depthWrite: false,
+            depthTest: false
         }));
     }
 
@@ -1060,7 +1069,8 @@ function getEnergyMaterial(cache, THREE, color, opacity) {
             transparent: true,
             opacity,
             blending: THREE.AdditiveBlending,
-            depthWrite: false
+            depthWrite: false,
+            depthTest: false
         }));
     }
 
