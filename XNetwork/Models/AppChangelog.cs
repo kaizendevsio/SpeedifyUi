@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.83";
+    public const string CurrentVersion = "xbond-2026.06.84";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Reworked Live into an energy-wave view.",
+            Changes =
+            [
+                "Replaced the primitive Live tab geometry with an abstract Three.js energy visualization using glowing tunnel cores, flowing beams, wave rings, and particle packets.",
+                "Path emitters now read as signal sources instead of toy adapter objects while keeping the existing XBond status, path selection, and metric bindings.",
+                "The canvas fallback was updated to use the same energy-beam visual language."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.83",
             Date = "2026-06-28",
             Summary = "Added the animated XBond Live view.",
             Changes =

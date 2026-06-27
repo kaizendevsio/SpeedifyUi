@@ -19,6 +19,7 @@ export async function initialize(element, dotNetReference) {
         pointer: null,
         tunnelCore: null,
         serverCore: null,
+        fieldGroup: null,
         pathGroup: null,
         beamGroup: null,
         packetGroup: null,
@@ -31,7 +32,8 @@ export async function initialize(element, dotNetReference) {
         fallbackContext: null,
         fallbackAnimationId: 0,
         pointerDownHandler: null,
-        lastFrameTime: performance.now()
+        lastFrameTime: performance.now(),
+        glowTexture: null
     };
 
     scenes.set(element, state);
@@ -83,6 +85,7 @@ export function dispose(element) {
 
     if (state.renderer) {
         disposeObjectTree(state.scene);
+        state.glowTexture?.dispose?.();
         state.renderer.dispose();
         state.renderer.domElement.remove();
     }
@@ -99,76 +102,43 @@ async function loadThree() {
 function setupThreeScene(state, THREE) {
     const { element } = state;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        powerPreference: 'high-performance'
+    });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     element.replaceChildren(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x0c111a, 0.025);
+    scene.fog = new THREE.FogExp2(0x07090d, 0.035);
 
-    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-    camera.position.set(0, 4.3, 12);
+    const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 100);
+    camera.position.set(0, 2.6, 9.6);
     camera.lookAt(0, 0, 0);
 
+    const fieldGroup = new THREE.Group();
     const pathGroup = new THREE.Group();
     const beamGroup = new THREE.Group();
     const packetGroup = new THREE.Group();
-    scene.add(pathGroup, beamGroup, packetGroup);
+    scene.add(fieldGroup, beamGroup, packetGroup, pathGroup);
 
-    const ambient = new THREE.AmbientLight(0x8fb7ff, 1.1);
-    const key = new THREE.DirectionalLight(0xffffff, 2.5);
-    key.position.set(3, 7, 8);
-    const rim = new THREE.PointLight(0x22d3ee, 75, 18);
-    rim.position.set(-4, 2, 3);
-    scene.add(ambient, key, rim);
+    const ambient = new THREE.AmbientLight(0x5f7f9f, 0.45);
+    const coreLight = new THREE.PointLight(0x22d3ee, 50, 10);
+    coreLight.position.set(0, 0.2, 0);
+    const rimLight = new THREE.PointLight(0xf472b6, 28, 12);
+    rimLight.position.set(-4.5, 1.8, -1.5);
+    scene.add(ambient, coreLight, rimLight);
 
-    const floor = new THREE.Mesh(
-        new THREE.CircleGeometry(8.5, 96),
-        new THREE.MeshBasicMaterial({
-            color: 0x102033,
-            transparent: true,
-            opacity: 0.34,
-            depthWrite: false
-        }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -1.9;
-    scene.add(floor);
+    const glowTexture = createGlowTexture(THREE);
+    const tunnelCore = createEnergyCore(THREE, glowTexture);
+    const serverCore = createEnergyGate(THREE, glowTexture);
+    serverCore.position.set(4.35, 0.05, -1.15);
+    scene.add(tunnelCore, serverCore);
 
-    const tunnelCore = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(1.05, 2),
-        new THREE.MeshStandardMaterial({
-            color: 0x22c55e,
-            emissive: 0x0f5132,
-            metalness: 0.28,
-            roughness: 0.24
-        }));
-    tunnelCore.name = 'XBond core';
-    tunnelCore.position.set(0, 0, 0);
-    scene.add(tunnelCore);
-
-    const ringMaterial = new THREE.MeshBasicMaterial({
-        color: 0x22d3ee,
-        transparent: true,
-        opacity: 0.32,
-        side: THREE.DoubleSide,
-        depthWrite: false
-    });
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(1.55, 0.025, 12, 128), ringMaterial);
-    ring.rotation.x = Math.PI / 2;
-    tunnelCore.add(ring);
-    tunnelCore.userData.ring = ring;
-
-    const serverCore = new THREE.Mesh(
-        new THREE.BoxGeometry(1.15, 0.78, 0.78),
-        new THREE.MeshStandardMaterial({
-            color: 0x3794ff,
-            emissive: 0x0a2d52,
-            metalness: 0.5,
-            roughness: 0.3
-        }));
-    serverCore.position.set(4.6, 0.2, -1.2);
-    scene.add(serverCore);
+    const field = createEnergyField(THREE);
+    fieldGroup.add(field);
 
     state.THREE = THREE;
     state.renderer = renderer;
@@ -176,11 +146,13 @@ function setupThreeScene(state, THREE) {
     state.camera = camera;
     state.raycaster = new THREE.Raycaster();
     state.pointer = new THREE.Vector2();
+    state.fieldGroup = fieldGroup;
     state.pathGroup = pathGroup;
     state.beamGroup = beamGroup;
     state.packetGroup = packetGroup;
     state.tunnelCore = tunnelCore;
     state.serverCore = serverCore;
+    state.glowTexture = glowTexture;
 
     state.pointerDownHandler = event => handlePointerDown(state, event);
     element.addEventListener('pointerdown', state.pointerDownHandler);
@@ -207,7 +179,6 @@ function updateThreeScene(state) {
     const THREE = state.THREE;
     const paths = Array.isArray(state.data?.paths) ? state.data.paths : [];
     const selectedPathId = Number(state.data?.selectedPathId);
-    const activeCount = Math.max(1, paths.filter(path => path.active).length);
 
     disposeGroupChildren(state.pathGroup);
     disposeGroupChildren(state.beamGroup);
@@ -215,84 +186,337 @@ function updateThreeScene(state) {
     state.nodeMeshes.clear();
     state.packets = [];
 
-    const nodeMaterialCache = new Map();
-    const beamMaterialCache = new Map();
-    const radius = getResponsiveRadius(state.element);
+    const materialCache = new Map();
+    const width = state.element.getBoundingClientRect().width;
+    const compact = width < 560;
+    const radiusX = compact ? 3.45 : 4.75;
+    const radiusZ = compact ? 1.8 : 2.45;
+    const count = Math.max(1, paths.length);
 
     paths.forEach((path, index) => {
-        const angle = paths.length <= 1
-            ? Math.PI
-            : Math.PI * 0.88 + (index / Math.max(1, paths.length - 1)) * Math.PI * 1.24;
-        const position = new THREE.Vector3(
-            Math.cos(angle) * radius - 0.6,
-            Math.sin(index * 1.31) * 0.42,
-            Math.sin(angle) * radius * 0.36
-        );
-
+        const position = getEmitterPosition(index, count, radiusX, radiusZ);
         const color = getPathColor(path);
         const selected = Number(path.id) === selectedPathId;
-        const scale = selected ? 1.18 : 1;
-        const node = new THREE.Group();
+        const active = Boolean(path.active);
+        const node = createPathEmitter(THREE, state.glowTexture, materialCache, path, color, selected);
         node.position.copy(position);
         node.userData.pathId = Number(path.id);
-
-        const material = getCachedStandardMaterial(nodeMaterialCache, THREE, color, path.active ? 0.48 : 0.18);
-        const core = new THREE.Mesh(new THREE.SphereGeometry(0.34 * scale, 24, 16), material);
-        node.add(core);
-
-        const bars = Math.max(0, Math.min(4, Number(path.signal) || 0));
-        for (let i = 0; i < 4; i += 1) {
-            const barHeight = 0.18 + i * 0.12;
-            const bar = new THREE.Mesh(
-                new THREE.BoxGeometry(0.08, barHeight, 0.08),
-                getCachedBasicMaterial(nodeMaterialCache, THREE, i < bars ? color : 0x334155, i < bars ? 0.9 : 0.45)
-            );
-            bar.position.set(-0.42 + i * 0.13, -0.44 + barHeight / 2, 0.02);
-            node.add(bar);
-        }
-
-        if (selected) {
-            const halo = new THREE.Mesh(
-                new THREE.TorusGeometry(0.54, 0.018, 10, 64),
-                getCachedBasicMaterial(nodeMaterialCache, THREE, color, 0.72)
-            );
-            halo.rotation.x = Math.PI / 2;
-            node.add(halo);
-        }
-
         state.pathGroup.add(node);
         state.nodeMeshes.set(Number(path.id), node);
 
-        const target = path.active ? state.tunnelCore.position : state.serverCore.position;
-        const opacity = path.active ? (path.anchor ? 0.78 : 0.58) : 0.22;
-        const beamMaterial = getCachedLineMaterial(beamMaterialCache, THREE, color, opacity);
-        const points = makeArcPoints(position, target, path.anchor ? 0.85 : 0.48);
-        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), beamMaterial);
-        state.beamGroup.add(line);
+        const target = active ? state.tunnelCore.position : state.serverCore.position;
+        const lift = path.anchor ? 0.85 : active ? 0.62 : 0.35;
+        const points = makeEnergyCurvePoints(position, target, lift, index);
+        addEnergyBeam(state, materialCache, points, color, path);
 
-        if (path.active) {
-            const packetCount = Math.min(5, Math.max(2, Math.ceil(activeCount + Number(path.down || 0) + Number(path.upMbps || 0))));
-            for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
-                const packet = new THREE.Mesh(
-                    new THREE.SphereGeometry(path.anchor ? 0.055 : 0.045, 12, 8),
-                    getCachedBasicMaterial(nodeMaterialCache, THREE, color, path.anchor ? 0.95 : 0.75)
-                );
-                packet.userData = {
-                    points,
-                    offset: packetIndex / packetCount,
-                    speed: path.anchor ? 0.23 : 0.18,
-                    reverse: packetIndex % 2 === 1
-                };
-                state.packetGroup.add(packet);
-                state.packets.push(packet);
-            }
+        if (active) {
+            addEnergyPackets(state, materialCache, points, color, path);
         }
     });
 
     const healthColor = getHealthColor(state.data);
-    state.tunnelCore.material.color.setHex(healthColor);
-    state.tunnelCore.material.emissive.setHex(darkenHex(healthColor, 0.26));
-    state.tunnelCore.userData.ring.material.color.setHex(state.data?.recovery ? 0xfb923c : 0x22d3ee);
+    setEnergyCoreColor(state.tunnelCore, healthColor, state.data?.recovery);
+}
+
+function getEmitterPosition(index, count, radiusX, radiusZ) {
+    if (count === 1) {
+        return new THREE.Vector3(-radiusX, -0.15, 0.2);
+    }
+
+    const normalized = index / Math.max(1, count - 1);
+    const angle = Math.PI * 0.73 + normalized * Math.PI * 0.86;
+    const y = -0.42 + Math.sin(normalized * Math.PI) * 0.72;
+    return new THREE.Vector3(
+        Math.cos(angle) * radiusX,
+        y,
+        Math.sin(angle) * radiusZ - 0.25
+    );
+}
+
+function createEnergyCore(THREE, glowTexture) {
+    const core = new THREE.Group();
+    core.name = 'XBond energy core';
+
+    const glow = createGlowSprite(THREE, glowTexture, 0x22c55e, 1.35, 3.45);
+    glow.userData.role = 'core-glow';
+    core.add(glow);
+
+    const rings = [];
+    const ringSpecs = [
+        { radius: 0.58, tube: 0.012, color: 0x9fffe3, opacity: 0.85, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 0.95, tube: 0.014, color: 0x22d3ee, opacity: 0.58, rotation: [1.1, 0.35, 0.12] },
+        { radius: 1.35, tube: 0.011, color: 0x60a5fa, opacity: 0.36, rotation: [0.75, -0.58, 0.2] },
+        { radius: 1.75, tube: 0.008, color: 0xf472b6, opacity: 0.22, rotation: [1.35, 0.82, -0.15] }
+    ];
+
+    ringSpecs.forEach((spec, index) => {
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(spec.radius, spec.tube, 8, 160),
+            new THREE.MeshBasicMaterial({
+                color: spec.color,
+                transparent: true,
+                opacity: spec.opacity,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            })
+        );
+        ring.rotation.set(...spec.rotation);
+        ring.userData.spin = index % 2 === 0 ? 1 : -1;
+        ring.userData.baseOpacity = spec.opacity;
+        rings.push(ring);
+        core.add(ring);
+    });
+
+    const pulse = new THREE.Mesh(
+        new THREE.RingGeometry(0.18, 0.22, 96),
+        new THREE.MeshBasicMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.45,
+            blending: THREE.AdditiveBlending,
+            side: THREE.DoubleSide,
+            depthWrite: false
+        })
+    );
+    pulse.rotation.x = Math.PI / 2;
+    pulse.userData.role = 'pulse';
+    core.add(pulse);
+
+    core.userData.glow = glow;
+    core.userData.rings = rings;
+    core.userData.pulse = pulse;
+    return core;
+}
+
+function createEnergyGate(THREE, glowTexture) {
+    const gate = new THREE.Group();
+    gate.name = 'XBond server gate';
+
+    const glow = createGlowSprite(THREE, glowTexture, 0x3794ff, 0.52, 1.65);
+    gate.add(glow);
+
+    for (let i = 0; i < 3; i += 1) {
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(0.34 + i * 0.16, 0.009, 8, 96),
+            new THREE.MeshBasicMaterial({
+                color: i === 0 ? 0xb7e7ff : 0x3794ff,
+                transparent: true,
+                opacity: 0.55 - i * 0.12,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            })
+        );
+        ring.rotation.y = Math.PI / 2;
+        ring.userData.spin = i % 2 === 0 ? 1 : -1;
+        gate.add(ring);
+    }
+
+    return gate;
+}
+
+function createEnergyField(THREE) {
+    const count = 180;
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const color = new THREE.Color();
+
+    for (let i = 0; i < count; i += 1) {
+        const radius = 2.8 + Math.random() * 5.8;
+        const angle = Math.random() * Math.PI * 2;
+        positions[i * 3] = Math.cos(angle) * radius;
+        positions[i * 3 + 1] = -1.7 + Math.random() * 3.4;
+        positions[i * 3 + 2] = Math.sin(angle) * radius * 0.55 - 1.2;
+
+        color.setHex(i % 5 === 0 ? 0xf472b6 : i % 3 === 0 ? 0x22c55e : 0x22d3ee);
+        colors[i * 3] = color.r;
+        colors[i * 3 + 1] = color.g;
+        colors[i * 3 + 2] = color.b;
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    return new THREE.Points(
+        geometry,
+        new THREE.PointsMaterial({
+            size: 0.018,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.55,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        })
+    );
+}
+
+function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
+    const node = new THREE.Group();
+    const active = Boolean(path.active);
+    const scale = selected ? 1.16 : 1;
+    const opacity = active ? 0.92 : path.up ? 0.55 : 0.35;
+
+    const glow = createGlowSprite(THREE, glowTexture, color, opacity, (active ? 1.05 : 0.72) * scale);
+    node.add(glow);
+
+    const outer = new THREE.Mesh(
+        new THREE.TorusGeometry(0.34 * scale, 0.008, 8, 92),
+        getBasicMaterial(cache, THREE, color, active ? 0.78 : 0.36)
+    );
+    outer.rotation.x = Math.PI / 2.2;
+    outer.userData.spin = active ? 1 : 0.5;
+    node.add(outer);
+
+    const inner = new THREE.Mesh(
+        new THREE.TorusGeometry(0.18 * scale, 0.011, 8, 80),
+        getBasicMaterial(cache, THREE, color, active ? 0.95 : 0.45)
+    );
+    inner.rotation.y = Math.PI / 2;
+    inner.userData.spin = active ? -1.35 : -0.65;
+    node.add(inner);
+
+    if (selected) {
+        const selectedHalo = new THREE.Mesh(
+            new THREE.TorusGeometry(0.48, 0.012, 8, 112),
+            getBasicMaterial(cache, THREE, 0x3794ff, 0.92)
+        );
+        selectedHalo.rotation.x = Math.PI / 2;
+        selectedHalo.userData.spin = 1.4;
+        node.add(selectedHalo);
+    }
+
+    const hitTarget = new THREE.Mesh(
+        new THREE.SphereGeometry(0.62, 16, 12),
+        new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: 0,
+            depthWrite: false
+        })
+    );
+    hitTarget.name = path.name || path.iface || 'adapter';
+    node.add(hitTarget);
+
+    node.userData.rings = [outer, inner];
+    return node;
+}
+
+function addEnergyBeam(state, cache, points, color, path) {
+    const THREE = state.THREE;
+    const active = Boolean(path.active);
+    const anchor = Boolean(path.anchor);
+    const standbyOpacity = path.up ? 0.15 : 0.06;
+    const baseOpacity = active ? (anchor ? 0.62 : 0.5) : standbyOpacity;
+    const curve = new THREE.CatmullRomCurve3(points);
+
+    if (active) {
+        const halo = new THREE.Mesh(
+            new THREE.TubeGeometry(curve, 72, anchor ? 0.045 : 0.036, 8, false),
+            getEnergyMaterial(cache, THREE, color, 0.105)
+        );
+        state.beamGroup.add(halo);
+    }
+
+    const beam = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 88, active ? 0.014 : 0.008, 7, false),
+        getEnergyMaterial(cache, THREE, color, baseOpacity)
+    );
+    state.beamGroup.add(beam);
+
+    const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        getLineMaterial(cache, THREE, color, active ? 0.86 : 0.22)
+    );
+    state.beamGroup.add(line);
+}
+
+function addEnergyPackets(state, cache, points, color, path) {
+    const THREE = state.THREE;
+    const throughput = Math.min(5, Number(path.down || 0) + Number(path.upMbps || 0));
+    const packetCount = Math.max(3, Math.min(8, Math.ceil(throughput) + 3));
+
+    for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
+        const packet = createGlowSprite(
+            THREE,
+            state.glowTexture,
+            color,
+            path.anchor ? 0.95 : 0.82,
+            path.anchor ? 0.19 : 0.15
+        );
+        packet.userData = {
+            points,
+            offset: packetIndex / packetCount,
+            speed: path.anchor ? 0.34 : 0.27,
+            reverse: packetIndex % 3 === 0
+        };
+        state.packetGroup.add(packet);
+        state.packets.push(packet);
+    }
+}
+
+function makeEnergyCurvePoints(from, to, lift, seed) {
+    const points = [];
+    for (let i = 0; i <= 56; i += 1) {
+        const t = i / 56;
+        const point = from.clone().lerp(to, t);
+        const wave = Math.sin(t * Math.PI * 2.2 + seed * 0.75) * 0.12 * Math.sin(t * Math.PI);
+        point.y += Math.sin(t * Math.PI) * lift + wave;
+        point.x += Math.sin(t * Math.PI * 1.6 + seed) * 0.08 * Math.sin(t * Math.PI);
+        point.z += Math.cos(t * Math.PI * 1.4 + seed) * 0.06 * Math.sin(t * Math.PI);
+        points.push(point);
+    }
+
+    return points;
+}
+
+function createGlowTexture(THREE) {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    const gradient = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    gradient.addColorStop(0, 'rgba(255,255,255,1)');
+    gradient.addColorStop(0.25, 'rgba(255,255,255,0.72)');
+    gradient.addColorStop(0.52, 'rgba(255,255,255,0.22)');
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, size, size);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+}
+
+function createGlowSprite(THREE, glowTexture, color, opacity, size) {
+    const material = new THREE.SpriteMaterial({
+        map: glowTexture,
+        color,
+        transparent: true,
+        opacity,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(size, size, 1);
+    return sprite;
+}
+
+function setEnergyCoreColor(core, color, recovery) {
+    const glow = core.userData.glow;
+    if (glow?.material?.color) {
+        glow.material.color.setHex(color);
+        glow.material.opacity = recovery ? 1 : 0.88;
+    }
+
+    core.userData.rings?.forEach((ring, index) => {
+        ring.material.color.setHex(index === 3 && recovery ? 0xfb923c : color);
+        ring.material.opacity = Math.min(0.92, ring.userData.baseOpacity + (recovery ? 0.18 : 0));
+    });
+
+    if (core.userData.pulse?.material) {
+        core.userData.pulse.material.color.setHex(recovery ? 0xfb923c : 0xffffff);
+    }
 }
 
 function disposeGroupChildren(group) {
@@ -325,16 +549,35 @@ function animateThree(state) {
     state.lastFrameTime = now;
 
     const time = now / 1000;
-    const recoveryPulse = state.data?.recovery ? 1 + Math.sin(time * 5.2) * 0.08 : 1 + Math.sin(time * 2.1) * 0.025;
-    state.tunnelCore.rotation.y += delta * 0.45;
-    state.tunnelCore.rotation.x = Math.sin(time * 0.7) * 0.06;
+    const recoveryPulse = state.data?.recovery ? 1 + Math.sin(time * 5.5) * 0.07 : 1 + Math.sin(time * 2.2) * 0.025;
     state.tunnelCore.scale.setScalar(recoveryPulse);
-    state.tunnelCore.userData.ring.rotation.z += delta * (state.data?.recovery ? 1.9 : 0.7);
-    state.serverCore.rotation.y = Math.sin(time * 0.5) * 0.16;
+    state.tunnelCore.rotation.y += delta * 0.16;
 
+    state.tunnelCore.userData.rings?.forEach((ring, index) => {
+        ring.rotation.z += delta * ring.userData.spin * (0.65 + index * 0.28);
+        ring.rotation.x += delta * ring.userData.spin * 0.06;
+    });
+
+    if (state.tunnelCore.userData.pulse) {
+        const pulse = state.tunnelCore.userData.pulse;
+        const pulseScale = 1.1 + (time % 1) * 2.4;
+        pulse.scale.setScalar(pulseScale);
+        pulse.material.opacity = Math.max(0, 0.5 - (time % 1) * 0.48);
+    }
+
+    state.serverCore.rotation.y = Math.sin(time * 0.7) * 0.22;
+    state.serverCore.children.forEach((child, index) => {
+        if (child.userData?.spin) {
+            child.rotation.z += delta * child.userData.spin * (0.8 + index * 0.2);
+        }
+    });
+
+    state.fieldGroup.rotation.y += delta * 0.015;
     state.pathGroup.children.forEach((node, index) => {
-        node.rotation.y += delta * 0.5;
-        node.position.y += Math.sin(time * 1.6 + index) * 0.0009;
+        node.position.y += Math.sin(time * 1.7 + index) * 0.0007;
+        node.userData.rings?.forEach((ring, ringIndex) => {
+            ring.rotation.z += delta * ring.userData.spin * (1.2 + ringIndex * 0.4);
+        });
     });
 
     state.packets.forEach(packet => {
@@ -347,6 +590,8 @@ function animateThree(state) {
         const t = packet.userData.reverse ? 1 - raw : raw;
         const point = sampleArc(points, t);
         packet.position.copy(point);
+        const scale = 0.13 + Math.sin(time * 8 + packet.userData.offset * 10) * 0.025;
+        packet.scale.set(scale, scale, 1);
     });
 
     state.renderer.render(state.scene, state.camera);
@@ -386,28 +631,11 @@ function findPathGroup(object) {
     return null;
 }
 
-function makeArcPoints(from, to, lift) {
-    const points = [];
-    for (let i = 0; i <= 32; i += 1) {
-        const t = i / 32;
-        const point = from.clone().lerp(to, t);
-        point.y += Math.sin(t * Math.PI) * lift;
-        points.push(point);
-    }
-
-    return points;
-}
-
 function sampleArc(points, t) {
     const scaled = Math.max(0, Math.min(0.999, t)) * (points.length - 1);
     const index = Math.floor(scaled);
     const localT = scaled - index;
     return points[index].clone().lerp(points[Math.min(points.length - 1, index + 1)], localT);
-}
-
-function getResponsiveRadius(element) {
-    const width = element.getBoundingClientRect().width;
-    return width < 560 ? 3.7 : 4.8;
 }
 
 function getPathColor(path) {
@@ -448,49 +676,46 @@ function getHealthColor(data) {
     return 0x22c55e;
 }
 
-function darkenHex(hex, factor) {
-    const r = Math.floor(((hex >> 16) & 255) * factor);
-    const g = Math.floor(((hex >> 8) & 255) * factor);
-    const b = Math.floor((hex & 255) * factor);
-    return (r << 16) | (g << 8) | b;
-}
-
-function getCachedStandardMaterial(cache, THREE, color, emissiveFactor) {
-    const key = `standard-${color}-${emissiveFactor}`;
-    if (!cache.has(key)) {
-        cache.set(key, new THREE.MeshStandardMaterial({
-            color,
-            emissive: darkenHex(color, emissiveFactor),
-            metalness: 0.28,
-            roughness: 0.22
-        }));
-    }
-
-    return cache.get(key);
-}
-
-function getCachedBasicMaterial(cache, THREE, color, opacity) {
+function getBasicMaterial(cache, THREE, color, opacity) {
     const key = `basic-${color}-${opacity}`;
     if (!cache.has(key)) {
         cache.set(key, new THREE.MeshBasicMaterial({
             color,
-            transparent: opacity < 1,
+            transparent: true,
             opacity,
-            depthWrite: opacity >= 1
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide
         }));
     }
 
     return cache.get(key);
 }
 
-function getCachedLineMaterial(cache, THREE, color, opacity) {
-    const key = `${color}-${opacity}`;
+function getLineMaterial(cache, THREE, color, opacity) {
+    const key = `line-${color}-${opacity}`;
     if (!cache.has(key)) {
         cache.set(key, new THREE.LineBasicMaterial({
             color,
             transparent: true,
             opacity,
-            linewidth: 2
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        }));
+    }
+
+    return cache.get(key);
+}
+
+function getEnergyMaterial(cache, THREE, color, opacity) {
+    const key = `energy-${color}-${opacity}`;
+    if (!cache.has(key)) {
+        cache.set(key, new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
         }));
     }
 
@@ -506,8 +731,9 @@ function setupFallbackCanvas(state) {
 
     const resize = () => {
         const rect = state.element.getBoundingClientRect();
-        canvas.width = Math.max(1, Math.floor(rect.width * Math.min(window.devicePixelRatio || 1, 2)));
-        canvas.height = Math.max(1, Math.floor(rect.height * Math.min(window.devicePixelRatio || 1, 2)));
+        const ratio = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+        canvas.height = Math.max(1, Math.floor(rect.height * ratio));
         canvas.style.width = `${rect.width}px`;
         canvas.style.height = `${rect.height}px`;
         drawFallback(state);
@@ -546,29 +772,61 @@ function drawFallback(state) {
     ctx.fillRect(0, 0, width, height);
 
     paths.forEach((path, index) => {
-        const angle = Math.PI * 0.8 + index / Math.max(1, paths.length - 1) * Math.PI * 1.4;
-        const x = centerX + Math.cos(angle) * width * 0.34;
-        const y = centerY + Math.sin(angle) * height * 0.24;
         const color = `#${getPathColor(path).toString(16).padStart(6, '0')}`;
+        const pos = getFallbackEmitterPosition(index, Math.max(1, paths.length), width, height);
 
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
         ctx.strokeStyle = color;
-        ctx.globalAlpha = path.active ? 0.75 : 0.25;
-        ctx.lineWidth = path.active ? 3 : 1.5;
+        ctx.globalAlpha = path.active ? 0.72 : 0.22;
+        ctx.lineWidth = path.active ? 5 : 2;
         ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.quadraticCurveTo(centerX, centerY - 70, centerX, centerY);
+        ctx.moveTo(pos.x, pos.y);
+        ctx.bezierCurveTo(
+            pos.x + (centerX - pos.x) * 0.35,
+            pos.y - 90 + Math.sin(time + index) * 16,
+            centerX + (pos.x - centerX) * 0.18,
+            centerY - 75,
+            centerX,
+            centerY
+        );
         ctx.stroke();
 
-        ctx.globalAlpha = 1;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(x, y + Math.sin(time * 2 + index) * 3, path.active ? 10 : 7, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.globalAlpha = path.active ? 0.95 : 0.55;
+        drawGlow(ctx, pos.x, pos.y, path.active ? 20 : 13, color);
+        ctx.restore();
     });
 
-    ctx.fillStyle = `#${getHealthColor(state.data).toString(16).padStart(6, '0')}`;
+    const coreColor = `#${getHealthColor(state.data).toString(16).padStart(6, '0')}`;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    drawGlow(ctx, centerX, centerY, 54 + Math.sin(time * 3) * 5, coreColor);
+    ctx.strokeStyle = coreColor;
+    ctx.globalAlpha = 0.8;
+    for (let i = 0; i < 3; i += 1) {
+        ctx.beginPath();
+        ctx.ellipse(centerX, centerY, 65 + i * 26, 22 + i * 10, time * 0.35 + i, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function getFallbackEmitterPosition(index, count, width, height) {
+    const normalized = count === 1 ? 0.5 : index / (count - 1);
+    const angle = Math.PI * 0.73 + normalized * Math.PI * 0.86;
+    return {
+        x: width * 0.5 + Math.cos(angle) * width * 0.36,
+        y: height * 0.5 + Math.sin(angle) * height * 0.22
+    };
+}
+
+function drawGlow(ctx, x, y, radius, color) {
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, color);
+    gradient.addColorStop(0.35, `${color}88`);
+    gradient.addColorStop(1, `${color}00`);
+    ctx.fillStyle = gradient;
     ctx.beginPath();
-    ctx.arc(centerX, centerY, 26 + Math.sin(time * 3) * 2, 0, Math.PI * 2);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
-    ctx.globalAlpha = 1;
 }
