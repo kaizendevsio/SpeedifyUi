@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.93";
+    public const string CurrentVersion = "xbond-2026.06.94";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Improved Live hardware spacing and satellite endpoint.",
+            Changes =
+            [
+                "Spread compact Live adapter hardware nodes farther apart so tower glyphs do not visually stack on top of each other.",
+                "Replaced the server-side portal/gate visual with a satellite relay endpoint using solar panels, antenna detail, and signal rings.",
+                "Updated the fallback Live canvas endpoint to use the same satellite relay concept."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.93",
             Date = "2026-06-28",
             Summary = "Changed Live nodes into network hardware glyphs.",
             Changes =

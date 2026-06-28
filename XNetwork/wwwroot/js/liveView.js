@@ -171,7 +171,7 @@ function setupThreeScene(state, THREE) {
 
     const glowTexture = createGlowTexture(THREE);
     const tunnelCore = createEnergyCore(THREE, glowTexture);
-    const serverCore = createEnergyGate(THREE, glowTexture);
+    const serverCore = createSatelliteEndpoint(THREE, glowTexture);
     serverCore.position.set(4.35, 0.02, -0.15);
     scene.add(tunnelCore, serverCore);
 
@@ -256,7 +256,7 @@ function updateThreeScene(state) {
         const active = Boolean(path.active);
         const node = createPathEmitter(THREE, state.glowTexture, materialCache, path, color, selected);
         node.position.copy(position);
-        node.scale.setScalar(compact ? 1.3 : 1.08);
+        node.scale.setScalar(compact ? 1.1 : 1.08);
         node.userData.pathId = Number(path.id);
         state.pathGroup.add(node);
         state.nodeMeshes.set(Number(path.id), node);
@@ -283,13 +283,16 @@ function updateThreeScene(state) {
 
 function getSceneLayout(state, compact, count) {
     const THREE = state.THREE;
-    const adapterGap = compact ? 0.46 : 0.7;
+    const compactAdapterGap = count <= 4
+        ? 0.82
+        : Math.max(0.6, Math.min(0.74, 2.7 / Math.max(1, count - 1)));
+    const adapterGap = compact ? compactAdapterGap : 0.82;
     const adapterColumnHeight = Math.max(0, (count - 1) * adapterGap);
-    const adapterCenterY = compact ? 0.95 : 0.2;
+    const adapterCenterY = compact ? 0.68 : 0.2;
 
     return {
         compact,
-        adapterX: compact ? -1.48 : -4.18,
+        adapterX: compact ? -1.5 : -4.18,
         adapterY: adapterCenterY,
         adapterZ: compact ? 0.08 : 0.05,
         adapterGap,
@@ -410,31 +413,137 @@ function createEnergyCore(THREE, glowTexture) {
     return core;
 }
 
-function createEnergyGate(THREE, glowTexture) {
-    const gate = new THREE.Group();
-    gate.name = 'XBond server gate';
+function createSatelliteEndpoint(THREE, glowTexture) {
+    const satellite = new THREE.Group();
+    satellite.name = 'XBond satellite endpoint';
+    satellite.rotation.z = -0.08;
+    satellite.rotation.x = 0.08;
 
-    const glow = createGlowSprite(THREE, glowTexture, 0x3794ff, 0.72, 2.05);
-    gate.add(glow);
+    const glow = createGlowSprite(THREE, glowTexture, 0x60a5fa, 0.68, 1.64);
+    satellite.add(glow);
 
-    for (let i = 0; i < 4; i += 1) {
-        const ring = new THREE.Mesh(
-            new THREE.TorusGeometry(0.38 + i * 0.15, 0.01, 8, 112),
-            new THREE.MeshBasicMaterial({
-                color: i === 0 ? 0xb7e7ff : 0x3794ff,
-                transparent: true,
-                opacity: 0.64 - i * 0.1,
-                blending: THREE.AdditiveBlending,
-                depthWrite: false,
-                depthTest: false
-            })
+    const bodyMaterial = new THREE.MeshBasicMaterial({
+        color: 0xb7e7ff,
+        transparent: true,
+        opacity: 0.88,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: false
+    });
+    const panelMaterial = new THREE.MeshBasicMaterial({
+        color: 0x2563eb,
+        transparent: true,
+        opacity: 0.58,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: false
+    });
+    const signalMaterial = new THREE.LineBasicMaterial({
+        color: 0x60a5fa,
+        transparent: true,
+        opacity: 0.58,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: false
+    });
+
+    const body = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.24, 0.24),
+        bodyMaterial
+    );
+    satellite.add(body);
+
+    [-1, 1].forEach(side => {
+        addCylinder(
+            satellite,
+            THREE,
+            new THREE.Vector3(side * 0.18, 0, 0),
+            new THREE.Vector3(side * 0.33, 0, 0),
+            0.014,
+            bodyMaterial
         );
-        ring.rotation.y = Math.PI / 2;
+
+        const panel = new THREE.Mesh(
+            new THREE.BoxGeometry(0.56, 0.3, 0.022),
+            panelMaterial
+        );
+        panel.position.set(side * 0.62, 0, 0);
+        panel.rotation.y = side * 0.18;
+        satellite.add(panel);
+
+        [-0.09, 0.09].forEach(offset => {
+            const gridLine = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(side * 0.36, offset, 0.02),
+                    new THREE.Vector3(side * 0.88, offset, 0.02)
+                ]),
+                signalMaterial.clone()
+            );
+            gridLine.material.opacity = 0.32;
+            satellite.add(gridLine);
+        });
+    });
+
+    addCylinder(
+        satellite,
+        THREE,
+        new THREE.Vector3(0, 0.13, 0),
+        new THREE.Vector3(0, 0.42, 0),
+        0.012,
+        bodyMaterial
+    );
+
+    const beacon = new THREE.Mesh(
+        new THREE.SphereGeometry(0.045, 16, 10),
+        bodyMaterial
+    );
+    beacon.position.set(0, 0.46, 0);
+    satellite.add(beacon);
+
+    const dish = new THREE.Mesh(
+        new THREE.TorusGeometry(0.16, 0.012, 8, 96),
+        bodyMaterial
+    );
+    dish.scale.y = 0.62;
+    dish.position.set(0.03, -0.31, 0);
+    satellite.add(dish);
+
+    addCylinder(
+        satellite,
+        THREE,
+        new THREE.Vector3(0, -0.13, 0),
+        new THREE.Vector3(0.03, -0.25, 0),
+        0.01,
+        bodyMaterial
+    );
+
+    for (let i = 0; i < 3; i += 1) {
+        const ring = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(
+                makeEllipsePoints(0.34 + i * 0.12, 0.16 + i * 0.07, 56)
+                    .map(point => new THREE.Vector3(0.42 + point.x, point.y, 0.02))
+            ),
+            signalMaterial.clone()
+        );
+        ring.material.opacity = 0.5 - i * 0.11;
         ring.userData.spin = i % 2 === 0 ? 1 : -1;
-        gate.add(ring);
+        satellite.add(ring);
     }
 
-    return gate;
+    return satellite;
+}
+
+function makeEllipsePoints(radiusX, radiusY, segments) {
+    const points = [];
+    for (let i = 0; i <= segments; i += 1) {
+        const angle = (i / segments) * Math.PI * 2;
+        points.push({
+            x: Math.cos(angle) * radiusX,
+            y: Math.sin(angle) * radiusY
+        });
+    }
+
+    return points;
 }
 
 function createEnergyField(THREE) {
@@ -697,7 +806,7 @@ function addSceneLabels(state, cache, paths, compact) {
     coreLabel.position.copy(state.tunnelCore.position).add(new THREE.Vector3(-0.58, -1.55, 0));
     state.labelGroup.add(coreLabel);
 
-    const serverLabel = createTextSprite(THREE, cache, 'Vultr Server', '#b7e7ff', compact ? 0.52 : 0.68);
+    const serverLabel = createTextSprite(THREE, cache, 'Satellite Relay', '#b7e7ff', compact ? 0.52 : 0.68);
     serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
     state.labelGroup.add(serverLabel);
 
@@ -1398,12 +1507,27 @@ function drawFallback(state) {
         ctx.stroke();
     }
 
-    drawGlow(ctx, serverX, serverY, 34 + Math.sin(time * 2) * 3, '#3794ff');
-    ctx.strokeStyle = '#3794ff';
-    ctx.globalAlpha = 0.65;
+    drawGlow(ctx, serverX, serverY, 34 + Math.sin(time * 2) * 3, '#60a5fa');
+    ctx.strokeStyle = '#60a5fa';
+    ctx.fillStyle = 'rgba(183, 231, 255, 0.82)';
+    ctx.globalAlpha = 0.78;
+    ctx.lineWidth = 3;
+    ctx.fillRect(serverX - 16, serverY - 11, 32, 22);
+    ctx.strokeRect(serverX - 16, serverY - 11, 32, 22);
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.58)';
+    ctx.fillRect(serverX - 62, serverY - 15, 38, 30);
+    ctx.fillRect(serverX + 24, serverY - 15, 38, 30);
+    ctx.beginPath();
+    ctx.moveTo(serverX, serverY - 12);
+    ctx.lineTo(serverX, serverY - 42);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(serverX, serverY - 46, 4, 0, Math.PI * 2);
+    ctx.fill();
     for (let i = 0; i < 3; i += 1) {
+        ctx.globalAlpha = 0.48 - i * 0.1;
         ctx.beginPath();
-        ctx.ellipse(serverX, serverY, 32 + i * 16, 18 + i * 8, Math.PI / 2, 0, Math.PI * 2);
+        ctx.ellipse(serverX + 34, serverY, 26 + i * 16, 12 + i * 7, 0, 0, Math.PI * 2);
         ctx.stroke();
     }
 
