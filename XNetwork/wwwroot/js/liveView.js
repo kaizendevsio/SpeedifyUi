@@ -247,6 +247,7 @@ function updateThreeScene(state) {
 
     state.tunnelCore.position.copy(layout.core);
     state.serverCore.position.copy(layout.server);
+    state.serverCore.scale.setScalar(compact ? 0.88 : 1);
     applyDefaultCameraLayout(state, layout);
 
     paths.forEach((path, index) => {
@@ -298,7 +299,7 @@ function getSceneLayout(state, compact, count) {
         adapterGap,
         adapterColumnHeight,
         core: new THREE.Vector3(compact ? 0.04 : 0.04, compact ? 0.72 : 0.2, 0),
-        server: new THREE.Vector3(compact ? 1.98 : 4.18, compact ? 0.72 : 0.2, -0.08),
+        server: new THREE.Vector3(compact ? 1.78 : 4.18, compact ? 0.72 : 0.2, -0.08),
         cameraTarget: new THREE.Vector3(compact ? 0.18 : 0.04, compact ? 0.72 : 0.2, 0),
         cameraDistance: compact ? 8.55 : 8.8,
         cameraPitch: compact ? 0.08 : 0.12,

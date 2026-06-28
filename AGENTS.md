@@ -337,6 +337,7 @@
 - 2026-06-28: XNetwork version `xbond-2026.06.92` fixes compact `/live` framing so local adapter nodes are inside the default mobile viewport while keeping the XBond core, server endpoint, and role-colored energy beams visible together. This is UI-only and does not require paired Rust/XBond deployment.
 - 2026-06-28: XNetwork version `xbond-2026.06.93` changes `/live` adapter emitters from planet-like orbs to network hardware glyphs: cellular/F50 paths render as tower silhouettes with pulsing signal arcs, and Wi-Fi/Starlink-like paths render as dish emitters. Role-colored beams and pan/rotate controls remain unchanged. This is UI-only and does not require paired Rust/XBond deployment.
 - 2026-06-28: XNetwork version `xbond-2026.06.94` spreads compact `/live` adapter hardware glyphs farther apart so tower nodes no longer visually stack, and replaces the server-side portal/gate visual with a satellite relay endpoint using solar panels, antenna detail, and signal rings. This is UI-only and does not require paired Rust/XBond deployment.
+- 2026-06-28: XNetwork version `xbond-2026.06.95` tightens compact `/live` satellite framing by pulling the satellite relay farther into the mobile viewport and scaling it down slightly so the solar panels remain visible. This is UI-only and does not require paired Rust/XBond deployment.
 
 ## Settings Page
 - `Settings.razor` is a large accordion/modal page; reusable controls live in `XNetwork/Components/Custom` and related styles are in `XNetwork/wwwroot/app.css`.
