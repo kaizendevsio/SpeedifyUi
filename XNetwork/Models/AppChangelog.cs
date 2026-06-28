@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.90";
+    public const string CurrentVersion = "xbond-2026.06.91";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Rebuilt Live as an energy topology.",
+            Changes =
+            [
+                "Replaced the large globe-like Live core with smaller reactor rings and shield bands so the view no longer reads as a decorative orb.",
+                "Reframed the Three.js scene around explicit local adapter nodes, the XBond core, the Vultr server endpoint, and stronger role-colored energy beams.",
+                "Preserved 3D pan, zoom, rotate, and adapter tap selection while keeping the default mobile camera framed on the full topology."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.90",
             Date = "2026-06-28",
             Summary = "Raised Live adapter nodes above the HUD.",
             Changes =

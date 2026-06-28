@@ -40,15 +40,16 @@ export async function initialize(element, dotNetReference) {
         contextMenuHandler: null,
         controls: {
             target: null,
-            yaw: -0.04,
-            pitch: 0.22,
-            distance: 10.9,
-            minDistance: 6.1,
-            maxDistance: 15.8,
+            yaw: 0,
+            pitch: 0.14,
+            distance: 8.9,
+            minDistance: 4.8,
+            maxDistance: 14.4,
             activePointers: new Map(),
             lastPinchDistance: 0,
             lastPinchCenter: null,
-            dragMoved: false
+            dragMoved: false,
+            hasUserMoved: false
         },
         lastFrameTime: performance.now(),
         glowTexture: null
@@ -152,7 +153,7 @@ function setupThreeScene(state, THREE) {
     const scene = new THREE.Scene();
     scene.fog = new THREE.FogExp2(0x07090d, 0.035);
 
-    const camera = new THREE.PerspectiveCamera(44, 1, 0.1, 100);
+    const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
 
     const fieldGroup = new THREE.Group();
     const pathGroup = new THREE.Group();
@@ -191,7 +192,7 @@ function setupThreeScene(state, THREE) {
     state.tunnelCore = tunnelCore;
     state.serverCore = serverCore;
     state.glowTexture = glowTexture;
-    state.controls.target = new THREE.Vector3(-0.05, 0.02, 0);
+    state.controls.target = new THREE.Vector3(0.1, 0.58, 0);
     updateCameraFromControls(state);
 
     state.pointerDownHandler = event => handlePointerDown(state, event);
@@ -242,16 +243,20 @@ function updateThreeScene(state) {
     const rect = state.element.getBoundingClientRect();
     const compact = rect.width < 560;
     const count = Math.max(1, paths.length);
-    state.serverCore.position.set(compact ? 2.68 : 4.35, 0.02, compact ? -0.06 : -0.15);
+    const layout = getSceneLayout(state, compact, count);
+
+    state.tunnelCore.position.copy(layout.core);
+    state.serverCore.position.copy(layout.server);
+    applyDefaultCameraLayout(state, layout);
 
     paths.forEach((path, index) => {
-        const position = getAdapterPosition(index, count, compact);
+        const position = getAdapterPosition(state, index, count, layout);
         const color = getPathColor(path);
         const selected = Number(path.id) === selectedPathId;
         const active = Boolean(path.active);
         const node = createPathEmitter(THREE, state.glowTexture, materialCache, path, color, selected);
         node.position.copy(position);
-        node.scale.setScalar(compact ? 1.18 : 1);
+        node.scale.setScalar(compact ? 1.3 : 1.08);
         node.userData.pathId = Number(path.id);
         state.pathGroup.add(node);
         state.nodeMeshes.set(Number(path.id), node);
@@ -259,7 +264,7 @@ function updateThreeScene(state) {
         const points = makeEnergyCurvePoints(
             position,
             state.tunnelCore.position,
-            compact ? (active ? 0.38 : 0.18) : (active ? 0.72 : 0.32),
+            compact ? (active ? 0.48 : 0.22) : (active ? 0.78 : 0.34),
             index
         );
         addEnergyBeam(state, materialCache, points, color, path);
@@ -276,18 +281,51 @@ function updateThreeScene(state) {
     setEnergyCoreColor(state.tunnelCore, healthColor, state.data?.recovery);
 }
 
-function getAdapterPosition(index, count, compact) {
-    const verticalGap = compact ? 0.38 : 0.72;
-    const centerOffset = (count - 1) * verticalGap * 0.5;
-    const columnX = compact ? -1.55 : -4.28;
-    const zBase = compact ? 0.12 : 0.08;
-    const zOffset = compact
-        ? (index % 2 === 0 ? 0.08 : -0.1)
-        : (index % 2 === 0 ? 0.18 : -0.24) + Math.sin(index * 0.8) * 0.08;
+function getSceneLayout(state, compact, count) {
+    const THREE = state.THREE;
+    const adapterGap = compact ? 0.46 : 0.7;
+    const adapterColumnHeight = Math.max(0, (count - 1) * adapterGap);
+    const adapterCenterY = compact ? 0.95 : 0.2;
+
+    return {
+        compact,
+        adapterX: compact ? -2.12 : -4.18,
+        adapterY: adapterCenterY,
+        adapterZ: compact ? 0.08 : 0.05,
+        adapterGap,
+        adapterColumnHeight,
+        core: new THREE.Vector3(compact ? -0.02 : 0.04, compact ? 0.72 : 0.2, 0),
+        server: new THREE.Vector3(compact ? 2.26 : 4.18, compact ? 0.72 : 0.2, -0.08),
+        cameraTarget: new THREE.Vector3(compact ? 0.08 : 0.04, compact ? 0.72 : 0.2, 0),
+        cameraDistance: compact ? 8.1 : 8.8,
+        cameraPitch: compact ? 0.08 : 0.12,
+        cameraYaw: 0
+    };
+}
+
+function applyDefaultCameraLayout(state, layout) {
+    if (state.controls.hasUserMoved) {
+        return;
+    }
+
+    state.controls.target.copy(layout.cameraTarget);
+    state.controls.distance = layout.cameraDistance;
+    state.controls.pitch = layout.cameraPitch;
+    state.controls.yaw = layout.cameraYaw;
+    updateCameraFromControls(state);
+}
+
+function getAdapterPosition(state, index, count, layout) {
+    const THREE = state.THREE;
+    const centerOffset = layout.adapterColumnHeight * 0.5;
+    const row = centerOffset - index * layout.adapterGap;
+    const zOffset = layout.compact
+        ? (index % 2 === 0 ? 0.2 : -0.14)
+        : (index % 2 === 0 ? 0.22 : -0.24) + Math.sin(index * 0.8) * 0.08;
     return new THREE.Vector3(
-        columnX,
-        centerOffset - index * verticalGap + (compact ? 0.88 : 0),
-        zBase + zOffset
+        layout.adapterX,
+        layout.adapterY + row,
+        layout.adapterZ + zOffset
     );
 }
 
@@ -295,16 +333,15 @@ function createEnergyCore(THREE, glowTexture) {
     const core = new THREE.Group();
     core.name = 'XBond energy core';
 
-    const glow = createGlowSprite(THREE, glowTexture, 0x22c55e, 1.18, 2.6);
+    const glow = createGlowSprite(THREE, glowTexture, 0x22c55e, 1.02, 1.72);
     glow.userData.role = 'core-glow';
     core.add(glow);
 
     const rings = [];
     const ringSpecs = [
-        { radius: 0.45, tube: 0.012, color: 0x9fffe3, opacity: 0.88, rotation: [Math.PI / 2, 0, 0] },
-        { radius: 0.74, tube: 0.014, color: 0x22d3ee, opacity: 0.62, rotation: [1.1, 0.35, 0.12] },
-        { radius: 1.02, tube: 0.011, color: 0x60a5fa, opacity: 0.4, rotation: [0.75, -0.58, 0.2] },
-        { radius: 1.28, tube: 0.008, color: 0xf472b6, opacity: 0.25, rotation: [1.35, 0.82, -0.15] }
+        { radius: 0.26, tube: 0.012, color: 0x9fffe3, opacity: 0.92, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 0.46, tube: 0.012, color: 0x22d3ee, opacity: 0.7, rotation: [1.1, 0.35, 0.12] },
+        { radius: 0.66, tube: 0.009, color: 0x60a5fa, opacity: 0.45, rotation: [0.75, -0.58, 0.2] }
     ];
 
     ringSpecs.forEach((spec, index) => {
@@ -313,10 +350,10 @@ function createEnergyCore(THREE, glowTexture) {
             new THREE.MeshBasicMaterial({
                 color: spec.color,
                 transparent: true,
-            opacity: spec.opacity,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            depthTest: false
+                opacity: spec.opacity,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                depthTest: false
             })
         );
         ring.rotation.set(...spec.rotation);
@@ -342,25 +379,34 @@ function createEnergyCore(THREE, glowTexture) {
     pulse.userData.role = 'pulse';
     core.add(pulse);
 
-    const shield = new THREE.Mesh(
-        new THREE.SphereGeometry(1.08, 48, 32),
-        new THREE.MeshBasicMaterial({
-            color: 0x22d3ee,
-            transparent: true,
-            opacity: 0.075,
-            blending: THREE.AdditiveBlending,
-            wireframe: true,
-            depthWrite: false,
-            depthTest: false
-        })
-    );
-    shield.userData.role = 'shield';
-    core.add(shield);
+    const shieldRings = [];
+    [
+        { radius: 0.86, tube: 0.009, opacity: 0.28, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 1.02, tube: 0.008, opacity: 0.2, rotation: [0.18, Math.PI / 2, 0.08] },
+        { radius: 1.18, tube: 0.006, opacity: 0.16, rotation: [1.02, 0.55, -0.24] }
+    ].forEach((spec, index) => {
+        const shieldRing = new THREE.Mesh(
+            new THREE.TorusGeometry(spec.radius, spec.tube, 8, 192),
+            new THREE.MeshBasicMaterial({
+                color: index === 2 ? 0xf472b6 : 0x22d3ee,
+                transparent: true,
+                opacity: spec.opacity,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                depthTest: false
+            })
+        );
+        shieldRing.rotation.set(...spec.rotation);
+        shieldRing.userData.spin = index % 2 === 0 ? 1 : -1;
+        shieldRing.userData.baseOpacity = spec.opacity;
+        shieldRings.push(shieldRing);
+        core.add(shieldRing);
+    });
 
     core.userData.glow = glow;
     core.userData.rings = rings;
     core.userData.pulse = pulse;
-    core.userData.shield = shield;
+    core.userData.shieldRings = shieldRings;
     return core;
 }
 
@@ -433,11 +479,11 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     const scale = selected ? 1.16 : 1;
     const opacity = active ? 0.92 : path.up ? 0.55 : 0.35;
 
-    const glow = createGlowSprite(THREE, glowTexture, color, opacity, (active ? 1.05 : 0.72) * scale);
+    const glow = createGlowSprite(THREE, glowTexture, color, opacity, (active ? 1.26 : 0.86) * scale);
     node.add(glow);
 
     const seed = new THREE.Mesh(
-        new THREE.SphereGeometry(0.16 * scale, 22, 14),
+        new THREE.SphereGeometry(0.22 * scale, 28, 18),
         new THREE.MeshBasicMaterial({
             color,
             transparent: true,
@@ -451,7 +497,7 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     node.add(seed);
 
     const outer = new THREE.Mesh(
-        new THREE.TorusGeometry(0.34 * scale, 0.008, 8, 92),
+        new THREE.TorusGeometry(0.42 * scale, 0.009, 8, 112),
         getBasicMaterial(cache, THREE, color, active ? 0.78 : 0.36)
     );
     outer.rotation.x = Math.PI / 2.2;
@@ -459,16 +505,29 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     node.add(outer);
 
     const inner = new THREE.Mesh(
-        new THREE.TorusGeometry(0.18 * scale, 0.011, 8, 80),
+        new THREE.TorusGeometry(0.23 * scale, 0.011, 8, 96),
         getBasicMaterial(cache, THREE, color, active ? 0.95 : 0.45)
     );
     inner.rotation.y = Math.PI / 2;
     inner.userData.spin = active ? -1.35 : -0.65;
     node.add(inner);
 
+    for (let i = 0; i < 3; i += 1) {
+        const y = (i - 1) * 0.09 * scale;
+        const filament = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0.12 * scale, y, 0),
+                new THREE.Vector3((active ? 0.62 : 0.42) * scale, y * 0.35, (i - 1) * 0.04)
+            ]),
+            getLineMaterial(cache, THREE, color, active ? 0.42 : 0.18)
+        );
+        filament.userData.spin = 0;
+        node.add(filament);
+    }
+
     if (selected) {
         const selectedHalo = new THREE.Mesh(
-            new THREE.TorusGeometry(0.48, 0.012, 8, 112),
+            new THREE.TorusGeometry(0.58, 0.012, 8, 128),
             getBasicMaterial(cache, THREE, 0x3794ff, 0.92)
         );
         selectedHalo.rotation.x = Math.PI / 2;
@@ -477,7 +536,7 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     }
 
     const hitTarget = new THREE.Mesh(
-        new THREE.SphereGeometry(0.62, 16, 12),
+        new THREE.SphereGeometry(0.74, 16, 12),
         new THREE.MeshBasicMaterial({
             color,
             transparent: true,
@@ -566,14 +625,22 @@ function addCoreToServerStreams(state, cache, paths) {
 
     const start = state.tunnelCore.position;
     const end = state.serverCore.position;
+    const conduitPoints = makeEnergyCurvePoints(
+        start.clone().add(new state.THREE.Vector3(0.08, -0.05, -0.03)),
+        end.clone().add(new state.THREE.Vector3(-0.08, -0.05, -0.03)),
+        0.16,
+        99
+    );
+    addEnergyBeam(state, cache, conduitPoints, 0x22d3ee, { active: true, anchor: true, up: true });
+
     paths.forEach((path, index) => {
         const color = getPathColor({ ...path, active: true });
         const lane = index - (paths.length - 1) / 2;
-        const laneOffset = new state.THREE.Vector3(0, lane * 0.1, lane * 0.15);
+        const laneOffset = new state.THREE.Vector3(0, lane * 0.12, lane * 0.16);
         const points = makeEnergyCurvePoints(
             start.clone().add(laneOffset),
             end.clone().add(laneOffset.multiplyScalar(0.55)),
-            path.anchor ? 0.28 : 0.22,
+            path.anchor ? 0.36 : 0.28,
             index + 18
         );
 
@@ -587,19 +654,25 @@ function addEnergyBeam(state, cache, points, color, path) {
     const active = Boolean(path.active);
     const anchor = Boolean(path.anchor);
     const standbyOpacity = path.up ? 0.15 : 0.06;
-    const baseOpacity = active ? (anchor ? 0.86 : 0.74) : standbyOpacity;
+    const baseOpacity = active ? (anchor ? 0.98 : 0.9) : standbyOpacity;
     const curve = new THREE.CatmullRomCurve3(points);
 
     if (active) {
         const halo = new THREE.Mesh(
-            new THREE.TubeGeometry(curve, 72, anchor ? 0.045 : 0.036, 8, false),
-            getEnergyMaterial(cache, THREE, color, 0.16)
+            new THREE.TubeGeometry(curve, 72, anchor ? 0.078 : 0.066, 10, false),
+            getEnergyMaterial(cache, THREE, color, anchor ? 0.18 : 0.15)
         );
         state.beamGroup.add(halo);
+
+        const aura = new THREE.Mesh(
+            new THREE.TubeGeometry(curve, 64, anchor ? 0.14 : 0.11, 8, false),
+            getEnergyMaterial(cache, THREE, color, anchor ? 0.06 : 0.05)
+        );
+        state.beamGroup.add(aura);
     }
 
     const beam = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, 88, active ? 0.019 : 0.008, 7, false),
+        new THREE.TubeGeometry(curve, 88, active ? (anchor ? 0.031 : 0.026) : 0.008, 8, false),
         getEnergyMaterial(cache, THREE, color, baseOpacity)
     );
     state.beamGroup.add(beam);
@@ -614,20 +687,20 @@ function addEnergyBeam(state, cache, points, color, path) {
 function addEnergyPackets(state, cache, points, color, path) {
     const THREE = state.THREE;
     const throughput = Math.min(5, Number(path.down || 0) + Number(path.upMbps || 0));
-    const packetCount = Math.max(3, Math.min(8, Math.ceil(throughput) + 3));
+    const packetCount = Math.max(5, Math.min(10, Math.ceil(throughput) + 5));
 
     for (let packetIndex = 0; packetIndex < packetCount; packetIndex += 1) {
         const packet = createGlowSprite(
             THREE,
             state.glowTexture,
             color,
-            path.anchor ? 0.95 : 0.82,
-            path.anchor ? 0.19 : 0.15
+            path.anchor ? 0.98 : 0.9,
+            path.anchor ? 0.26 : 0.22
         );
         packet.userData = {
             points,
             offset: packetIndex / packetCount,
-            speed: path.anchor ? 0.34 : 0.27,
+            speed: path.anchor ? 0.48 : 0.4,
             reverse: packetIndex % 3 === 0
         };
         state.packetGroup.add(packet);
@@ -700,10 +773,10 @@ function setEnergyCoreColor(core, color, recovery) {
         core.userData.pulse.material.color.setHex(recovery ? 0xfb923c : 0xffffff);
     }
 
-    if (core.userData.shield?.material) {
-        core.userData.shield.material.color.setHex(recovery ? 0xfb923c : color);
-        core.userData.shield.material.opacity = recovery ? 0.14 : 0.075;
-    }
+    core.userData.shieldRings?.forEach((ring, index) => {
+        ring.material.color.setHex(recovery ? 0xfb923c : index === 2 ? 0xf472b6 : color);
+        ring.material.opacity = Math.min(0.46, ring.userData.baseOpacity + (recovery ? 0.16 : 0));
+    });
 }
 
 function disposeGroupChildren(group) {
@@ -752,13 +825,12 @@ function animateThree(state) {
         pulse.material.opacity = Math.max(0, 0.5 - (time % 1) * 0.48);
     }
 
-    if (state.tunnelCore.userData.shield) {
-        const shield = state.tunnelCore.userData.shield;
-        shield.rotation.y += delta * 0.24;
-        shield.rotation.x += delta * 0.08;
-        const shieldPulse = 1 + Math.sin(time * (state.data?.recovery ? 3.8 : 1.7)) * (state.data?.recovery ? 0.045 : 0.018);
-        shield.scale.setScalar(shieldPulse);
-    }
+    state.tunnelCore.userData.shieldRings?.forEach((ring, index) => {
+        ring.rotation.z += delta * ring.userData.spin * (0.34 + index * 0.18);
+        ring.rotation.x += delta * ring.userData.spin * 0.035;
+        const shieldPulse = 1 + Math.sin(time * (state.data?.recovery ? 3.8 : 1.7) + index) * (state.data?.recovery ? 0.045 : 0.018);
+        ring.scale.setScalar(shieldPulse);
+    });
 
     state.serverCore.rotation.y = Math.sin(time * 0.7) * 0.22;
     state.serverCore.children.forEach((child, index) => {
@@ -879,6 +951,7 @@ function handlePointerCancel(state, event) {
 
 function handleWheel(state, event) {
     event.preventDefault();
+    state.controls.hasUserMoved = true;
     const zoomFactor = 1 + Math.sign(event.deltaY) * 0.075;
     state.controls.distance = clamp(
         state.controls.distance * zoomFactor,
@@ -895,6 +968,7 @@ function handlePinchPan(state) {
 
     if (state.controls.lastPinchDistance > 0) {
         const ratio = state.controls.lastPinchDistance / Math.max(1, currentDistance);
+        state.controls.hasUserMoved = true;
         state.controls.distance = clamp(
             state.controls.distance * ratio,
             state.controls.minDistance,
@@ -916,6 +990,7 @@ function handlePinchPan(state) {
 }
 
 function rotateCamera(state, dx, dy) {
+    state.controls.hasUserMoved = true;
     state.controls.yaw -= dx * 0.006;
     state.controls.pitch = clamp(state.controls.pitch + dy * 0.0045, -0.82, 0.9);
     updateCameraFromControls(state);
@@ -923,6 +998,7 @@ function rotateCamera(state, dx, dy) {
 
 function panCamera(state, dx, dy) {
     const THREE = state.THREE;
+    state.controls.hasUserMoved = true;
     const right = new THREE.Vector3().setFromMatrixColumn(state.camera.matrix, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(state.camera.matrix, 1);
     const factor = state.controls.distance * 0.00145;
