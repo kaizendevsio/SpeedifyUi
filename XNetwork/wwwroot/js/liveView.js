@@ -289,15 +289,15 @@ function getSceneLayout(state, compact, count) {
 
     return {
         compact,
-        adapterX: compact ? -2.12 : -4.18,
+        adapterX: compact ? -1.48 : -4.18,
         adapterY: adapterCenterY,
         adapterZ: compact ? 0.08 : 0.05,
         adapterGap,
         adapterColumnHeight,
-        core: new THREE.Vector3(compact ? -0.02 : 0.04, compact ? 0.72 : 0.2, 0),
-        server: new THREE.Vector3(compact ? 2.26 : 4.18, compact ? 0.72 : 0.2, -0.08),
-        cameraTarget: new THREE.Vector3(compact ? 0.08 : 0.04, compact ? 0.72 : 0.2, 0),
-        cameraDistance: compact ? 8.1 : 8.8,
+        core: new THREE.Vector3(compact ? 0.04 : 0.04, compact ? 0.72 : 0.2, 0),
+        server: new THREE.Vector3(compact ? 1.98 : 4.18, compact ? 0.72 : 0.2, -0.08),
+        cameraTarget: new THREE.Vector3(compact ? 0.18 : 0.04, compact ? 0.72 : 0.2, 0),
+        cameraDistance: compact ? 8.55 : 8.8,
         cameraPitch: compact ? 0.08 : 0.12,
         cameraYaw: 0
     };

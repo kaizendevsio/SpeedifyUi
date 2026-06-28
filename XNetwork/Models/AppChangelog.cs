@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.91";
+    public const string CurrentVersion = "xbond-2026.06.92";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Fixed Live mobile topology framing.",
+            Changes =
+            [
+                "Pulled Live adapter nodes back inside the compact mobile viewport so local adapters, XBond core, and server endpoint are all visible by default.",
+                "Kept the energy-topology geometry, role-colored beams, and 3D pan/rotate controls from the previous Live rebuild.",
+                "Adjusted only the compact scene framing; desktop topology remains unchanged."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.91",
             Date = "2026-06-28",
             Summary = "Rebuilt Live as an energy topology.",
             Changes =
