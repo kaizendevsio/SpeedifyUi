@@ -482,48 +482,8 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     const glow = createGlowSprite(THREE, glowTexture, color, opacity, (active ? 1.26 : 0.86) * scale);
     node.add(glow);
 
-    const seed = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22 * scale, 28, 18),
-        new THREE.MeshBasicMaterial({
-            color,
-            transparent: true,
-            opacity: active ? 0.95 : 0.62,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-            depthTest: false
-        })
-    );
-    seed.userData.role = 'adapter-seed';
-    node.add(seed);
-
-    const outer = new THREE.Mesh(
-        new THREE.TorusGeometry(0.42 * scale, 0.009, 8, 112),
-        getBasicMaterial(cache, THREE, color, active ? 0.78 : 0.36)
-    );
-    outer.rotation.x = Math.PI / 2.2;
-    outer.userData.spin = active ? 1 : 0.5;
-    node.add(outer);
-
-    const inner = new THREE.Mesh(
-        new THREE.TorusGeometry(0.23 * scale, 0.011, 8, 96),
-        getBasicMaterial(cache, THREE, color, active ? 0.95 : 0.45)
-    );
-    inner.rotation.y = Math.PI / 2;
-    inner.userData.spin = active ? -1.35 : -0.65;
-    node.add(inner);
-
-    for (let i = 0; i < 3; i += 1) {
-        const y = (i - 1) * 0.09 * scale;
-        const filament = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(0.12 * scale, y, 0),
-                new THREE.Vector3((active ? 0.62 : 0.42) * scale, y * 0.35, (i - 1) * 0.04)
-            ]),
-            getLineMaterial(cache, THREE, color, active ? 0.42 : 0.18)
-        );
-        filament.userData.spin = 0;
-        node.add(filament);
-    }
+    const glyph = createAdapterGlyph(THREE, cache, path, color, active, scale);
+    node.add(glyph);
 
     if (selected) {
         const selectedHalo = new THREE.Mesh(
@@ -548,8 +508,168 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     hitTarget.name = path.name || path.iface || 'adapter';
     node.add(hitTarget);
 
-    node.userData.rings = [outer, inner];
+    node.userData.rings = glyph.userData.rings || [];
+    node.userData.pulseParts = glyph.userData.pulseParts || [];
     return node;
+}
+
+function createAdapterGlyph(THREE, cache, path, color, active, scale) {
+    const kind = getAdapterGlyphKind(path);
+    return kind === 'tower'
+        ? createCellTowerGlyph(THREE, cache, color, active, scale)
+        : createDishGlyph(THREE, cache, color, active, scale);
+}
+
+function getAdapterGlyphKind(path) {
+    const text = `${path?.name || ''} ${path?.iface || ''}`.toLowerCase();
+    if (text.includes('smart') || text.includes('dito') || text.includes('gomo') || text.includes('globe') || text.includes('telecom') || text.includes('cell') || text.includes('5g') || text.includes('lte')) {
+        return 'tower';
+    }
+
+    return 'dish';
+}
+
+function createCellTowerGlyph(THREE, cache, color, active, scale) {
+    const glyph = new THREE.Group();
+    const material = getGlyphMaterial(cache, THREE, color, active ? 0.92 : 0.5);
+    const pulseParts = [];
+
+    addCylinder(glyph, THREE, new THREE.Vector3(0, -0.36 * scale, 0), new THREE.Vector3(0, 0.34 * scale, 0), 0.018 * scale, material);
+    addCylinder(glyph, THREE, new THREE.Vector3(0, 0.08 * scale, 0), new THREE.Vector3(-0.18 * scale, -0.36 * scale, 0), 0.012 * scale, material);
+    addCylinder(glyph, THREE, new THREE.Vector3(0, 0.08 * scale, 0), new THREE.Vector3(0.18 * scale, -0.36 * scale, 0), 0.012 * scale, material);
+    addCylinder(glyph, THREE, new THREE.Vector3(-0.15 * scale, -0.16 * scale, 0), new THREE.Vector3(0.15 * scale, -0.16 * scale, 0), 0.01 * scale, material);
+    addCylinder(glyph, THREE, new THREE.Vector3(-0.1 * scale, 0.05 * scale, 0), new THREE.Vector3(0.1 * scale, 0.05 * scale, 0), 0.01 * scale, material);
+
+    const beacon = new THREE.Mesh(
+        new THREE.SphereGeometry(0.052 * scale, 18, 12),
+        material
+    );
+    beacon.position.set(0, 0.38 * scale, 0);
+    glyph.add(beacon);
+
+    [-1, 1].forEach(side => {
+        [0.18, 0.31, 0.44].forEach((radius, index) => {
+            const arc = createSignalArc(THREE, radius * scale, side, 0.12 * scale, color, active ? 0.48 - index * 0.08 : 0.2);
+            arc.userData.baseOpacity = arc.material.opacity;
+            pulseParts.push(arc);
+            glyph.add(arc);
+        });
+    });
+
+    glyph.userData.rings = [];
+    glyph.userData.pulseParts = pulseParts;
+    return glyph;
+}
+
+function createDishGlyph(THREE, cache, color, active, scale) {
+    const glyph = new THREE.Group();
+    const material = getGlyphMaterial(cache, THREE, color, active ? 0.9 : 0.48);
+    const line = getLineMaterial(cache, THREE, color, active ? 0.7 : 0.28);
+    const pulseParts = [];
+
+    addCylinder(glyph, THREE, new THREE.Vector3(-0.1 * scale, -0.34 * scale, 0), new THREE.Vector3(-0.1 * scale, -0.08 * scale, 0), 0.016 * scale, material);
+    addCylinder(glyph, THREE, new THREE.Vector3(-0.1 * scale, -0.08 * scale, 0), new THREE.Vector3(0.1 * scale, 0.06 * scale, 0), 0.014 * scale, material);
+
+    const rim = new THREE.Mesh(
+        new THREE.TorusGeometry(0.27 * scale, 0.012 * scale, 8, 112),
+        material
+    );
+    rim.scale.y = 0.64;
+    rim.position.set(0.06 * scale, 0.08 * scale, 0);
+    glyph.add(rim);
+
+    const feed = new THREE.Mesh(
+        new THREE.SphereGeometry(0.04 * scale, 16, 10),
+        material
+    );
+    feed.position.set(0.34 * scale, 0.08 * scale, 0);
+    glyph.add(feed);
+
+    [-0.16, 0, 0.16].forEach(offset => {
+        const rib = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-0.08 * scale, 0.08 * scale, 0),
+                new THREE.Vector3((0.06 + offset) * scale, (0.08 + offset * 0.62) * scale, 0)
+            ]),
+            line.clone()
+        );
+        glyph.add(rib);
+    });
+
+    [0.18, 0.31, 0.44].forEach((radius, index) => {
+        const arc = createForwardSignalArc(THREE, radius * scale, 0.08 * scale, color, active ? 0.52 - index * 0.1 : 0.22);
+        arc.userData.baseOpacity = arc.material.opacity;
+        pulseParts.push(arc);
+        glyph.add(arc);
+    });
+
+    glyph.userData.rings = [];
+    glyph.userData.pulseParts = pulseParts;
+    return glyph;
+}
+
+function addCylinder(group, THREE, from, to, radius, material) {
+    const direction = to.clone().sub(from);
+    const length = direction.length();
+    if (length <= 0) {
+        return;
+    }
+
+    const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(radius, radius, length, 10, 1, false),
+        material
+    );
+    mesh.position.copy(from).add(to).multiplyScalar(0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+    group.add(mesh);
+}
+
+function createSignalArc(THREE, radius, side, yOffset, color, opacity) {
+    const points = [];
+    for (let i = 0; i <= 28; i += 1) {
+        const angle = -0.85 + (i / 28) * 1.7;
+        points.push(new THREE.Vector3(
+            side * Math.cos(angle) * radius,
+            yOffset + Math.sin(angle) * radius,
+            0.012
+        ));
+    }
+
+    return new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false
+        })
+    );
+}
+
+function createForwardSignalArc(THREE, radius, yOffset, color, opacity) {
+    const points = [];
+    for (let i = 0; i <= 28; i += 1) {
+        const angle = -0.82 + (i / 28) * 1.64;
+        points.push(new THREE.Vector3(
+            0.22 + Math.cos(angle) * radius,
+            yOffset + Math.sin(angle) * radius * 0.65,
+            0.012
+        ));
+    }
+
+    return new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false
+        })
+    );
 }
 
 function addSceneLabels(state, cache, paths, compact) {
@@ -844,6 +964,11 @@ function animateThree(state) {
         node.position.y += Math.sin(time * 1.7 + index) * 0.0007;
         node.userData.rings?.forEach((ring, ringIndex) => {
             ring.rotation.z += delta * ring.userData.spin * (1.2 + ringIndex * 0.4);
+        });
+        node.userData.pulseParts?.forEach((part, pulseIndex) => {
+            if (part.material && Number.isFinite(part.userData?.baseOpacity)) {
+                part.material.opacity = part.userData.baseOpacity * (0.72 + Math.sin(time * 2.4 + index + pulseIndex * 0.7) * 0.28);
+            }
         });
     });
 
@@ -1161,6 +1286,23 @@ function getEnergyMaterial(cache, THREE, color, opacity) {
             blending: THREE.AdditiveBlending,
             depthWrite: false,
             depthTest: false
+        }));
+    }
+
+    return cache.get(key);
+}
+
+function getGlyphMaterial(cache, THREE, color, opacity) {
+    const key = `glyph-${color}-${opacity}`;
+    if (!cache.has(key)) {
+        cache.set(key, new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false,
+            side: THREE.DoubleSide
         }));
     }
 

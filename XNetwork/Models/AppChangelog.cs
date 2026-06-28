@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.92";
+    public const string CurrentVersion = "xbond-2026.06.93";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-06-28",
+            Summary = "Changed Live nodes into network hardware glyphs.",
+            Changes =
+            [
+                "Replaced planet-like Live adapter orbs with dish and cell-tower style 3D glyphs.",
+                "Cellular/F50 provider paths render as tower silhouettes with pulsing signal arcs, while Wi-Fi/Starlink-like paths render as dish emitters.",
+                "Kept the XBond energy beams, topology framing, and 3D pan/rotate camera behavior."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.92",
             Date = "2026-06-28",
             Summary = "Fixed Live mobile topology framing.",
             Changes =
