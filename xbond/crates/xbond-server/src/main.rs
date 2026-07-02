@@ -29,6 +29,7 @@ const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const MAX_REPAIR_REQUESTS: usize = 64;
 const PEER_STALE_AFTER_MICROS: u64 = 15_000_000;
 const RETURN_SCHEDULE_STALE_AFTER_MICROS: u64 = 10_000_000;
+const MAX_UDP_DATAGRAM_BYTES: usize = 65_535;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -427,8 +428,8 @@ async fn main() -> Result<()> {
     let recv_socket = socket.clone();
     let recv_key = key.clone();
     tokio::spawn(async move {
-        let mut buf = vec![0u8; 4096];
-        let mut payload = Vec::with_capacity(4096);
+        let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
+        let mut payload = Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES);
         loop {
             let (len, peer) = match recv_socket.recv_from(&mut buf).await {
                 Ok(result) => result,
@@ -444,7 +445,7 @@ async fn main() -> Result<()> {
             };
             let frame = XBondFrame::new(
                 header,
-                std::mem::replace(&mut payload, Vec::with_capacity(4096)),
+                std::mem::replace(&mut payload, Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES)),
             );
             if udp_frame_tx
                 .send(InboundServerFrame { frame, peer })

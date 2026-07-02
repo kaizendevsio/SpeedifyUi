@@ -2448,8 +2448,8 @@ fn spawn_tunnel_receiver(
     key: XBondKey,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut buf = vec![0u8; 4096];
-        let mut payload = Vec::with_capacity(4096);
+        let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
+        let mut payload = Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES);
         loop {
             let len = match socket.recv(&mut buf).await {
                 Ok(len) => len,
@@ -2471,7 +2471,7 @@ fn spawn_tunnel_receiver(
             };
             let frame = XBondFrame::new(
                 header,
-                std::mem::replace(&mut payload, Vec::with_capacity(4096)),
+                std::mem::replace(&mut payload, Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES)),
             );
             if inbound_tx
                 .send(InboundTunnelFrame { path_id, frame })
@@ -2631,6 +2631,7 @@ const REPAIR_CACHE_CAPACITY: usize = 4096;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const MAX_REPAIR_REQUESTS: usize = 64;
+const MAX_UDP_DATAGRAM_BYTES: usize = 65_535;
 
 async fn send_tunnel_schedule_control(
     config: &ClientConfig,
