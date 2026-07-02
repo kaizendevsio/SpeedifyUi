@@ -286,6 +286,12 @@ pub struct XBondServerRecoveryStatus {
     #[serde(default)]
     pub recovery_active: bool,
     #[serde(default)]
+    pub schedule_required: bool,
+    #[serde(default)]
+    pub schedule_generation: u64,
+    #[serde(default)]
+    pub schedule_age_ms: u64,
+    #[serde(default)]
     pub ingress_reorder: XBondServerIngressReorderStatus,
     #[serde(default)]
     pub repair: XBondRepairStatus,
@@ -372,6 +378,8 @@ pub struct XBondRuntimeStatus {
     pub anchor_path_id: Option<u16>,
     #[serde(default)]
     pub schedule: Option<SchedulePlan>,
+    #[serde(default)]
+    pub schedule_generation: u64,
     #[serde(default)]
     pub paths: Vec<crate::health::PathHealthSnapshot>,
     #[serde(default)]

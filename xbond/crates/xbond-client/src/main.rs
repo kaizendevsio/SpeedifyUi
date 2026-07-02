@@ -362,7 +362,13 @@ async fn run_path_rebind_command(
     interface_name: Option<String>,
     json: bool,
 ) -> Result<()> {
-    if path_id.is_none() && interface_name.as_deref().unwrap_or_default().trim().is_empty() {
+    if path_id.is_none()
+        && interface_name
+            .as_deref()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+    {
         bail!("provide --path-id or --interface for XBond path rebind")
     }
 
@@ -1031,6 +1037,15 @@ fn schedule_control_signature(
     }
 }
 
+fn server_needs_schedule(
+    server_status: &XBondServerRecoveryStatus,
+    current_schedule_generation: u64,
+) -> bool {
+    server_status.reported
+        && (server_status.schedule_required
+            || server_status.schedule_generation < current_schedule_generation)
+}
+
 #[cfg(unix)]
 fn spawn_control_listener(
     socket_path: PathBuf,
@@ -1245,6 +1260,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
     let mut transmission_plans =
         precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
+    let mut current_schedule_generation = 1u64;
     let mut last_control_signature: Option<ScheduleControlSignature>;
     let mut last_control_sent_at: Instant;
 
@@ -1304,6 +1320,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &aggregate_health,
         active_override.as_ref(),
         role_state.schedule_change_count,
+        current_schedule_generation,
         &return_reorder,
         &repair,
         &server_recovery_status,
@@ -1319,6 +1336,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &key,
         session_id,
         &mut control_sequence,
+        current_schedule_generation,
         recovery_status.active,
         options.json_events,
         options.trace_packets,
@@ -1401,7 +1419,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 repair.cache_entries = resend_cache.len();
                 let control_signature =
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
-                if last_control_signature.as_ref() != Some(&control_signature)
+                let schedule_changed = last_control_signature.as_ref() != Some(&control_signature);
+                if schedule_changed {
+                    current_schedule_generation = current_schedule_generation.saturating_add(1);
+                }
+                if schedule_changed
+                    || server_needs_schedule(&server_recovery_status, current_schedule_generation)
                     || last_control_sent_at.elapsed() >= Duration::from_secs(5)
                 {
                     send_tunnel_schedule_control(
@@ -1413,6 +1436,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &key,
                         session_id,
                         &mut control_sequence,
+                        current_schedule_generation,
                         recovery_status.active,
                         options.json_events,
                         options.trace_packets,
@@ -1433,6 +1457,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &aggregate_health,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
+                    current_schedule_generation,
                     &return_reorder,
                     &repair,
                     &server_recovery_status,
@@ -1563,6 +1588,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 repair.cache_entries = resend_cache.len();
                 let control_signature =
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
+                if last_control_signature.as_ref() != Some(&control_signature) {
+                    current_schedule_generation = current_schedule_generation.saturating_add(1);
+                }
                 if response.ok {
                     match send_tunnel_schedule_control(
                         &config,
@@ -1573,6 +1601,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &key,
                         session_id,
                         &mut control_sequence,
+                        current_schedule_generation,
                         recovery_status.active,
                         options.json_events,
                         options.trace_packets,
@@ -1601,6 +1630,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &aggregate_health,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
+                    current_schedule_generation,
                     &return_reorder,
                     &repair,
                     &server_recovery_status,
@@ -1870,6 +1900,36 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 counters.decoded_frames = counters.decoded_frames.saturating_add(1);
                 if let Some(status) = parse_server_recovery_status(&inbound.frame) {
                     server_recovery_status = status;
+                    if server_needs_schedule(&server_recovery_status, current_schedule_generation)
+                    {
+                        if options.json_events {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "server-schedule-required",
+                                    "current_schedule_generation": current_schedule_generation,
+                                    "server_schedule_generation": server_recovery_status.schedule_generation,
+                                    "server_schedule_required": server_recovery_status.schedule_required,
+                                    "server_schedule_age_ms": server_recovery_status.schedule_age_ms,
+                                })
+                            );
+                        }
+                        send_tunnel_schedule_control(
+                            &config,
+                            &schedule,
+                            transmission_policy,
+                            &mut path_runtime,
+                            &sockets,
+                            &key,
+                            session_id,
+                            &mut control_sequence,
+                            current_schedule_generation,
+                            recovery_status.active,
+                            options.json_events,
+                            options.trace_packets,
+                        ).await?;
+                        last_control_sent_at = Instant::now();
+                    }
                     write_tunnel_runtime_status(
                         &config,
                         &tun,
@@ -1883,6 +1943,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &aggregate_health,
                         active_override.as_ref(),
                         role_state.schedule_change_count,
+                        current_schedule_generation,
                         &return_reorder,
                         &repair,
                         &server_recovery_status,
@@ -2086,7 +2147,8 @@ async fn ensure_tunnel_sockets(
                 remove_tunnel_path(*path_id, sockets, senders, receivers);
                 record_tunnel_send_failure(path_runtime, *path_id);
                 if let Some(runtime) = path_runtime.get_mut(path_id) {
-                    runtime.last_socket_error = Some(format!("bind address resolution failed: {error}"));
+                    runtime.last_socket_error =
+                        Some(format!("bind address resolution failed: {error}"));
                 }
                 if json_events {
                     println!(
@@ -2102,7 +2164,10 @@ async fn ensure_tunnel_sockets(
                 continue;
             }
         };
-        let bind_device = spec.bind_device.as_deref().or(spec.interface_name.as_deref());
+        let bind_device = spec
+            .bind_device
+            .as_deref()
+            .or(spec.interface_name.as_deref());
         let current_ifindex = interface_ifindex(bind_device);
         let mut recreate_reason = None::<String>;
 
@@ -2121,8 +2186,7 @@ async fn ensure_tunnel_sockets(
                     }
                 }
 
-                if recreate_reason.is_none()
-                    && !socket_source_matches_bind_addr(socket, &bind_addr)
+                if recreate_reason.is_none() && !socket_source_matches_bind_addr(socket, &bind_addr)
                 {
                     recreate_reason = Some("bind-source-changed".to_string());
                 }
@@ -2577,6 +2641,7 @@ async fn send_tunnel_schedule_control(
     key: &XBondKey,
     session_id: u64,
     control_sequence: &mut u64,
+    schedule_generation: u64,
     recovery_active: bool,
     json_events: bool,
     trace_packets: bool,
@@ -2588,6 +2653,7 @@ async fn send_tunnel_schedule_control(
     *control_sequence = control_sequence.saturating_add(1);
     let sequence = *control_sequence;
     let payload = serde_json::to_vec(&ScheduleControlMessage {
+        schedule_generation,
         schedule: schedule.clone(),
         redundancy_policy,
         policy_config: RedundancyPolicyConfig {
@@ -2633,6 +2699,7 @@ async fn send_tunnel_schedule_control(
             serde_json::json!({
                 "event": "schedule-control-sent",
                 "sequence": sequence,
+                "schedule_generation": schedule_generation,
                 "schedule": schedule,
             })
         );
@@ -3281,6 +3348,7 @@ fn write_tunnel_runtime_status(
     aggregate_health: &TunnelAggregateHealthRuntime,
     active_override: Option<&ActiveScheduleOverride>,
     schedule_change_count: u64,
+    schedule_generation: u64,
     return_reorder: &PacketReorderBuffer,
     repair: &XBondRepairStatus,
     server_recovery_status: &XBondServerRecoveryStatus,
@@ -3317,6 +3385,7 @@ fn write_tunnel_runtime_status(
             },
             anchor_path_id: schedule.anchor_path_id,
             schedule: Some(schedule.clone()),
+            schedule_generation,
             paths,
             data_packets_sent: counters.data_packets_sent,
             duplicate_packets_sent: counters.duplicate_packets_sent,
@@ -4161,9 +4230,13 @@ fn interface_ifindex(interface_name: Option<&str>) -> Option<u32> {
 
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string(PathBuf::from("/sys/class/net").join(interface_name).join("ifindex"))
-            .ok()
-            .and_then(|value| value.trim().parse::<u32>().ok())
+        std::fs::read_to_string(
+            PathBuf::from("/sys/class/net")
+                .join(interface_name)
+                .join("ifindex"),
+        )
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
     }
 
     #[cfg(not(target_os = "linux"))]

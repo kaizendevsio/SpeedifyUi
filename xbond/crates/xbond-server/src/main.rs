@@ -28,6 +28,7 @@ const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const MAX_REPAIR_REQUESTS: usize = 64;
 const PEER_STALE_AFTER_MICROS: u64 = 15_000_000;
+const RETURN_SCHEDULE_STALE_AFTER_MICROS: u64 = 10_000_000;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -125,6 +126,8 @@ struct PeerState {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ReturnControl {
+    schedule_generation: u64,
+    received_at_micros: u64,
     schedule: SchedulePlan,
     policy: RedundancyPolicy,
     policy_config: RedundancyPolicyConfig,
@@ -138,6 +141,9 @@ struct ServerRuntimeStatus {
     bind: String,
     tun: Option<String>,
     updated_at_micros: u64,
+    schedule_required: bool,
+    schedule_generation: u64,
+    schedule_age_ms: u64,
     return_schedule: Option<ServerReturnScheduleStatus>,
     ingress_reorder: ServerIngressReorderStatus,
     repair: XBondRepairStatus,
@@ -148,6 +154,9 @@ struct ServerRuntimeStatus {
 struct ServerReturnScheduleStatus {
     policy: RedundancyPolicy,
     recovery_active: bool,
+    schedule_generation: u64,
+    schedule_age_ms: u64,
+    schedule_stale: bool,
     schedule: SchedulePlan,
 }
 
@@ -543,7 +552,7 @@ async fn main() -> Result<()> {
                         },
                     );
                 }
-                if let Some(control) = parse_return_control(&frame) {
+                if let Some(control) = parse_return_control(&frame, receive_micros) {
                     let schedule_changed = return_control.as_ref().is_none_or(|previous| {
                         previous.schedule != control.schedule
                             || previous.policy != control.policy
@@ -587,10 +596,16 @@ async fn main() -> Result<()> {
                             })
                         );
                     }
+                    let now = monotonic_micros();
+                    let (schedule_required, schedule_generation, schedule_age_ms) =
+                        schedule_sync_status(return_control.as_ref(), now);
                     let status = build_server_recovery_status(
                         return_control
                             .as_ref()
                             .is_some_and(|control| control.recovery_active),
+                        schedule_required,
+                        schedule_generation,
+                        schedule_age_ms,
                         &reorder,
                         &repair,
                         &hold_controller,
@@ -915,8 +930,14 @@ async fn main() -> Result<()> {
                     }
                 }
                 if last_server_recovery_status_sent.elapsed() >= Duration::from_secs(1) {
+                    let now = monotonic_micros();
+                    let (schedule_required, schedule_generation, schedule_age_ms) =
+                        schedule_sync_status(return_control.as_ref(), now);
                     let status = build_server_recovery_status(
                         recovery_active,
+                        schedule_required,
+                        schedule_generation,
+                        schedule_age_ms,
                         &reorder,
                         &repair,
                         &hold_controller,
@@ -1278,14 +1299,23 @@ fn write_server_status(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
+    let now = monotonic_micros();
+    let (schedule_required, schedule_generation, current_schedule_age_ms) =
+        schedule_sync_status(return_control, now);
     let status = ServerRuntimeStatus {
         running: true,
         bind: args.bind.clone(),
         tun: tun.map(|tun| tun.name().to_string()),
         updated_at_micros: now_micros(),
+        schedule_required,
+        schedule_generation,
+        schedule_age_ms: current_schedule_age_ms,
         return_schedule: return_control.map(|control| ServerReturnScheduleStatus {
             policy: control.policy,
             recovery_active: control.recovery_active,
+            schedule_generation: control.schedule_generation,
+            schedule_age_ms: schedule_age_ms(control, now),
+            schedule_stale: return_schedule_is_stale(control, now),
             schedule: control.schedule.clone(),
         }),
         ingress_reorder: ServerIngressReorderStatus {
@@ -1343,13 +1373,15 @@ fn is_tunnel_payload(kind: PacketKind) -> bool {
     )
 }
 
-fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
+fn parse_return_control(frame: &XBondFrame, received_at_micros: u64) -> Option<ReturnControl> {
     if frame.header.kind != PacketKind::Control {
         return None;
     }
 
     if let Ok(control) = serde_json::from_slice::<ScheduleControlMessage>(&frame.payload) {
         return Some(build_return_control(
+            control.schedule_generation,
+            received_at_micros,
             control.schedule,
             control.redundancy_policy,
             control.policy_config,
@@ -1360,6 +1392,8 @@ fn parse_return_control(frame: &XBondFrame) -> Option<ReturnControl> {
 
     let schedule = serde_json::from_slice::<SchedulePlan>(&frame.payload).ok()?;
     Some(build_return_control(
+        0,
+        received_at_micros,
         schedule,
         RedundancyPolicy::Reliable,
         RedundancyPolicyConfig::default(),
@@ -1385,6 +1419,9 @@ fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
 
 fn build_server_recovery_status(
     recovery_active: bool,
+    schedule_required: bool,
+    schedule_generation: u64,
+    schedule_age_ms: u64,
     reorder: &PacketReorderBuffer,
     repair: &XBondRepairStatus,
     hold_controller: &IngressReorderHoldController,
@@ -1394,6 +1431,9 @@ fn build_server_recovery_status(
     XBondServerRecoveryStatus {
         reported: true,
         recovery_active,
+        schedule_required,
+        schedule_generation,
+        schedule_age_ms,
         ingress_reorder: XBondServerIngressReorderStatus {
             current_hold_ms: adaptive.current_hold_ms,
             normal_hold_ms: adaptive.normal_hold_ms,
@@ -1615,6 +1655,8 @@ async fn send_repair_frames_from_server_cache(
 }
 
 fn build_return_control(
+    schedule_generation: u64,
+    received_at_micros: u64,
     schedule: SchedulePlan,
     policy: RedundancyPolicy,
     policy_config: RedundancyPolicyConfig,
@@ -1624,6 +1666,8 @@ fn build_return_control(
     let transmission_plans =
         precompute_transmission_plans(&schedule, policy, &paths, policy_config);
     ReturnControl {
+        schedule_generation,
+        received_at_micros,
         schedule,
         policy,
         policy_config,
@@ -1639,6 +1683,7 @@ fn select_return_targets(
     now_micros: u64,
 ) -> Vec<(u16, SocketAddr, PacketKind)> {
     let mut scheduled = control
+        .filter(|control| !return_schedule_is_stale(control, now_micros))
         .map(|control| {
             control
                 .transmission_plans
@@ -1675,27 +1720,35 @@ fn select_return_targets(
         return scheduled;
     }
 
-    let mut fallback = peers
-        .iter()
-        .filter(|(_, peer)| peer_is_fresh(peer, now_micros))
-        .collect::<Vec<_>>();
-    fallback.sort_by_key(|(path_id, _)| **path_id);
-    fallback
-        .into_iter()
-        .enumerate()
-        .map(|(index, (path_id, peer))| {
-            let kind = if index == 0 {
-                PacketKind::Data
-            } else {
-                PacketKind::Duplicate
-            };
-            (*path_id, peer.addr, kind)
-        })
-        .collect()
+    Vec::new()
 }
 
 fn peer_is_fresh(peer: &PeerState, now_micros: u64) -> bool {
     now_micros.saturating_sub(peer.last_seen_micros) <= PEER_STALE_AFTER_MICROS
+}
+
+fn return_schedule_is_stale(control: &ReturnControl, now_micros: u64) -> bool {
+    now_micros.saturating_sub(control.received_at_micros) > RETURN_SCHEDULE_STALE_AFTER_MICROS
+}
+
+fn schedule_age_ms(control: &ReturnControl, now_micros: u64) -> u64 {
+    now_micros
+        .saturating_sub(control.received_at_micros)
+        .saturating_div(1_000)
+}
+
+fn schedule_sync_status(
+    return_control: Option<&ReturnControl>,
+    now_micros: u64,
+) -> (bool, u64, u64) {
+    match return_control {
+        Some(control) => (
+            return_schedule_is_stale(control, now_micros),
+            control.schedule_generation,
+            schedule_age_ms(control, now_micros),
+        ),
+        None => (true, 0, 0),
+    }
 }
 
 fn fresh_peers(peers: &HashMap<u16, PeerState>, now_micros: u64) -> Vec<(u16, SocketAddr)> {
@@ -2015,11 +2068,12 @@ mod tests {
             serde_json::to_vec(&schedule).unwrap(),
         );
 
-        let control = parse_return_control(&frame).unwrap();
+        let control = parse_return_control(&frame, 10_000).unwrap();
 
         assert_eq!(control.schedule, schedule);
         assert_eq!(control.policy, RedundancyPolicy::Reliable);
         assert!(!control.recovery_active);
+        assert_eq!(control.schedule_generation, 0);
     }
 
     #[test]
@@ -2032,6 +2086,7 @@ mod tests {
             fec_path_ids: Vec::new(),
         };
         let message = ScheduleControlMessage {
+            schedule_generation: 42,
             schedule: schedule.clone(),
             redundancy_policy: RedundancyPolicy::Reliable,
             policy_config: RedundancyPolicyConfig::default(),
@@ -2043,10 +2098,11 @@ mod tests {
             serde_json::to_vec(&message).unwrap(),
         );
 
-        let control = parse_return_control(&frame).unwrap();
+        let control = parse_return_control(&frame, 10_000).unwrap();
 
         assert_eq!(control.schedule, schedule);
         assert!(control.recovery_active);
+        assert_eq!(control.schedule_generation, 42);
     }
 
     #[test]
@@ -2056,6 +2112,8 @@ mod tests {
         let now = 1_000_000;
         let peers = HashMap::from([(3, peer_state(peer_3, now)), (5, peer_state(peer_5, now))]);
         let control = build_return_control(
+            1,
+            now,
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
                 anchor_path_id: Some(5),
@@ -2079,19 +2137,13 @@ mod tests {
     }
 
     #[test]
-    fn return_targets_fallback_to_sorted_peers_without_schedule() {
+    fn return_targets_are_empty_without_authoritative_schedule() {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
         let now = 1_000_000;
         let peers = HashMap::from([(5, peer_state(peer_5, now)), (3, peer_state(peer_3, now))]);
 
-        assert_eq!(
-            select_return_targets(None, &peers, 1_200, now),
-            vec![
-                (3, peer_3, PacketKind::Data),
-                (5, peer_5, PacketKind::Duplicate),
-            ]
-        );
+        assert!(select_return_targets(None, &peers, 1_200, now).is_empty());
     }
 
     #[test]
@@ -2101,6 +2153,8 @@ mod tests {
         let now = 1_000_000;
         let peers = HashMap::from([(3, peer_state(peer_3, now)), (5, peer_state(peer_5, now))]);
         let control = build_return_control(
+            1,
+            now,
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
                 anchor_path_id: Some(5),
@@ -2132,6 +2186,8 @@ mod tests {
             (5, peer_state(peer_5, now)),
         ]);
         let control = build_return_control(
+            1,
+            now,
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
                 anchor_path_id: Some(5),
@@ -2169,6 +2225,8 @@ mod tests {
             (3, peer_state(fresh_peer, now)),
         ]);
         let control = build_return_control(
+            1,
+            now,
             SchedulePlan {
                 mode: ScheduleMode::AnchorDuplicate1,
                 anchor_path_id: Some(1),
@@ -2189,7 +2247,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_ignores_stale_peers() {
+    fn no_schedule_returns_no_targets_even_with_fresh_peers() {
         let stale_peer: SocketAddr = "192.0.2.1:1000".parse().unwrap();
         let fresh_peer: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let now = 30_000_000;
@@ -2198,10 +2256,33 @@ mod tests {
             (3, peer_state(fresh_peer, now)),
         ]);
 
-        assert_eq!(
-            select_return_targets(None, &peers, 1_200, now),
-            vec![(3, fresh_peer, PacketKind::Data)]
+        assert!(select_return_targets(None, &peers, 1_200, now).is_empty());
+    }
+
+    #[test]
+    fn stale_return_schedule_returns_no_targets() {
+        let peer_1: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let peer_2: SocketAddr = "192.0.2.2:2000".parse().unwrap();
+        let now = RETURN_SCHEDULE_STALE_AFTER_MICROS + 2_000_000;
+        let peers = HashMap::from([(1, peer_state(peer_1, now)), (2, peer_state(peer_2, now))]);
+        let control = build_return_control(
+            7,
+            1,
+            SchedulePlan {
+                mode: ScheduleMode::AnchorDuplicate1,
+                anchor_path_id: Some(1),
+                data_path_ids: vec![1],
+                duplicate_path_ids: vec![2],
+                fec_path_ids: Vec::new(),
+            },
+            RedundancyPolicy::Reliable,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
         );
+
+        assert!(return_schedule_is_stale(&control, now));
+        assert!(select_return_targets(Some(&control), &peers, 1_200, now).is_empty());
     }
 
     fn healthy_path(path_id: u16, rtt_ms: f64, loss_rate: f64) -> PathHealthSnapshot {

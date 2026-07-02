@@ -508,6 +508,8 @@ impl PacketTransmissionPlans {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleControlMessage {
+    #[serde(default)]
+    pub schedule_generation: u64,
     pub schedule: SchedulePlan,
     #[serde(default)]
     pub redundancy_policy: RedundancyPolicy,
