@@ -8,8 +8,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::net::{TcpStream, UdpSocket};
+use tokio::sync::{mpsc, RwLock};
 use tokio::time;
 use xbond_core::{
     build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into,
@@ -17,7 +17,8 @@ use xbond_core::{
     PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
     RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache, ScheduleControlMessage,
     SchedulePlan, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
-    XBondServerIngressReorderStatus, XBondServerRecoveryStatus, XBondTun, XorFecBlock,
+    XBondServerHealthStatus, XBondServerHealthTargetStatus, XBondServerIngressReorderStatus,
+    XBondServerRecoveryStatus, XBondTun, XorFecBlock,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -88,6 +89,24 @@ struct Args {
 
     #[arg(long, default_value_t = DEFAULT_UDP_SOCKET_BUFFER_BYTES)]
     udp_socket_buffer_bytes: usize,
+
+    #[arg(long, default_value_t = true, action = ArgAction::Set)]
+    server_health_enabled: bool,
+
+    #[arg(long, default_value_t = 10)]
+    server_health_interval_seconds: u64,
+
+    #[arg(long, default_value_t = 1500)]
+    server_health_timeout_ms: u64,
+
+    #[arg(
+        long = "server-health-target",
+        default_values_t = [
+            "8.8.8.8:53".to_string(),
+            "1.1.1.1:443".to_string()
+        ]
+    )]
+    server_health_targets: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -148,6 +167,7 @@ struct ServerRuntimeStatus {
     return_schedule: Option<ServerReturnScheduleStatus>,
     ingress_reorder: ServerIngressReorderStatus,
     repair: XBondRepairStatus,
+    server_health: XBondServerHealthStatus,
     counters: TunnelCounters,
 }
 
@@ -388,6 +408,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let key_text = std::env::var(&args.key_env)?;
     let key = XBondKey::from_passphrase(&key_text);
+    let server_health = start_server_health_monitor(&args);
     let socket = Arc::new(bind_udp_socket(&args.bind, args.udp_socket_buffer_bytes).await?);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let mut tun = match args.tun_name.as_deref() {
@@ -498,11 +519,16 @@ async fn main() -> Result<()> {
                 "ingress_reorder_recovery_increase_step_ms": args.ingress_reorder_recovery_increase_step_ms,
                 "ingress_reorder_recovery_decrease_step_ms": args.ingress_reorder_recovery_decrease_step_ms,
                 "ingress_reorder_capacity": args.ingress_reorder_capacity,
+                "server_health_enabled": args.server_health_enabled,
+                "server_health_interval_seconds": args.server_health_interval_seconds,
+                "server_health_timeout_ms": args.server_health_timeout_ms,
+                "server_health_targets": &args.server_health_targets,
             })
         );
     } else {
         println!("xbond-server listening on {}", args.bind);
     }
+    let server_health_status = server_health.read().await.clone();
     write_server_status(
         &args,
         tun.as_ref(),
@@ -517,6 +543,7 @@ async fn main() -> Result<()> {
             non_ipv4_packets_dropped,
         },
         &repair,
+        &server_health_status,
         &hold_controller,
     )?;
     loop {
@@ -600,6 +627,7 @@ async fn main() -> Result<()> {
                     let now = monotonic_micros();
                     let (schedule_required, schedule_generation, schedule_age_ms) =
                         schedule_sync_status(return_control.as_ref(), now);
+                    let server_health_status = server_health.read().await.clone();
                     let status = build_server_recovery_status(
                         return_control
                             .as_ref()
@@ -609,6 +637,7 @@ async fn main() -> Result<()> {
                         schedule_age_ms,
                         &reorder,
                         &repair,
+                        &server_health_status,
                         &hold_controller,
                         args.ingress_reorder_capacity,
                     );
@@ -903,6 +932,7 @@ async fn main() -> Result<()> {
                     invalid_fec_packets_dropped,
                     non_ipv4_packets_dropped,
                 };
+                let server_health_status = server_health.read().await.clone();
                 write_server_status(
                     &args,
                     tun.as_ref(),
@@ -910,6 +940,7 @@ async fn main() -> Result<()> {
                     &reorder,
                     counters,
                     &repair,
+                    &server_health_status,
                     &hold_controller,
                 )?;
                 if args.json_events {
@@ -934,6 +965,7 @@ async fn main() -> Result<()> {
                     let now = monotonic_micros();
                     let (schedule_required, schedule_generation, schedule_age_ms) =
                         schedule_sync_status(return_control.as_ref(), now);
+                    let server_health_status = server_health.read().await.clone();
                     let status = build_server_recovery_status(
                         recovery_active,
                         schedule_required,
@@ -941,6 +973,7 @@ async fn main() -> Result<()> {
                         schedule_age_ms,
                         &reorder,
                         &repair,
+                        &server_health_status,
                         &hold_controller,
                         args.ingress_reorder_capacity,
                     );
@@ -1079,6 +1112,137 @@ async fn bind_udp_socket(bind_addr: &str, socket_buffer_bytes: usize) -> Result<
     socket.set_nonblocking(true)?;
     let std_socket: std::net::UdpSocket = socket.into();
     Ok(UdpSocket::from_std(std_socket)?)
+}
+
+fn start_server_health_monitor(args: &Args) -> Arc<RwLock<XBondServerHealthStatus>> {
+    let updated_at_micros = now_micros();
+    let state = Arc::new(RwLock::new(if args.server_health_enabled {
+        XBondServerHealthStatus::default()
+    } else {
+        XBondServerHealthStatus::disabled(&args.server_health_targets, updated_at_micros)
+    }));
+
+    if !args.server_health_enabled {
+        return state;
+    }
+
+    let state_for_task = state.clone();
+    let targets = args.server_health_targets.clone();
+    let interval = Duration::from_secs(args.server_health_interval_seconds.max(1));
+    let timeout = Duration::from_millis(args.server_health_timeout_ms.max(1));
+    let json_events = args.json_events;
+    tokio::spawn(async move {
+        run_server_health_monitor(state_for_task, targets, interval, timeout, json_events).await;
+    });
+
+    state
+}
+
+async fn run_server_health_monitor(
+    state: Arc<RwLock<XBondServerHealthStatus>>,
+    targets: Vec<String>,
+    interval: Duration,
+    timeout_duration: Duration,
+    json_events: bool,
+) {
+    let mut consecutive_failures = 0u32;
+    let mut last_success_at: Option<Instant> = None;
+
+    loop {
+        let (status, next_failures, next_success_at) = probe_server_health_once(
+            &targets,
+            timeout_duration,
+            consecutive_failures,
+            last_success_at,
+        )
+        .await;
+        consecutive_failures = next_failures;
+        last_success_at = next_success_at;
+
+        if json_events {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "server-health",
+                    "status": status.status,
+                    "success_rate": status.success_rate,
+                    "avg_connect_ms": status.avg_connect_ms,
+                    "consecutive_failures": status.consecutive_failures,
+                    "targets": status.targets,
+                })
+            );
+        }
+
+        *state.write().await = status;
+        time::sleep(interval).await;
+    }
+}
+
+async fn probe_server_health_once(
+    targets: &[String],
+    timeout_duration: Duration,
+    previous_consecutive_failures: u32,
+    previous_last_success_at: Option<Instant>,
+) -> (XBondServerHealthStatus, u32, Option<Instant>) {
+    let mut target_statuses = Vec::with_capacity(targets.len());
+    for target in targets {
+        target_statuses.push(probe_server_health_target(target, timeout_duration).await);
+    }
+
+    let has_success = target_statuses.iter().any(|target| target.success);
+    let consecutive_failures = if has_success {
+        0
+    } else {
+        previous_consecutive_failures.saturating_add(1)
+    };
+    let last_success_at = if has_success {
+        Some(Instant::now())
+    } else {
+        previous_last_success_at
+    };
+    let last_success_age_ms = last_success_at.map(|instant| instant.elapsed().as_millis() as u64);
+    let status = XBondServerHealthStatus::classify(
+        target_statuses,
+        consecutive_failures,
+        last_success_age_ms,
+        now_micros(),
+    );
+
+    (status, consecutive_failures, last_success_at)
+}
+
+async fn probe_server_health_target(
+    target: &str,
+    timeout_duration: Duration,
+) -> XBondServerHealthTargetStatus {
+    let updated_at_micros = now_micros();
+    let started = Instant::now();
+    match time::timeout(timeout_duration, TcpStream::connect(target)).await {
+        Ok(Ok(_stream)) => XBondServerHealthTargetStatus {
+            target: target.to_string(),
+            success: true,
+            connect_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
+            error: None,
+            updated_at_micros,
+        },
+        Ok(Err(error)) => XBondServerHealthTargetStatus {
+            target: target.to_string(),
+            success: false,
+            connect_ms: None,
+            error: Some(error.to_string()),
+            updated_at_micros,
+        },
+        Err(_elapsed) => XBondServerHealthTargetStatus {
+            target: target.to_string(),
+            success: false,
+            connect_ms: None,
+            error: Some(format!(
+                "timed out after {} ms",
+                timeout_duration.as_millis()
+            )),
+            updated_at_micros,
+        },
+    }
 }
 
 fn spawn_return_sender(
@@ -1293,6 +1457,7 @@ fn write_server_status(
     reorder: &PacketReorderBuffer,
     counters: TunnelCounters,
     repair: &XBondRepairStatus,
+    server_health: &XBondServerHealthStatus,
     hold_controller: &IngressReorderHoldController,
 ) -> Result<()> {
     if let Some(parent) = args.status_path.parent() {
@@ -1332,6 +1497,7 @@ fn write_server_status(
             stats: reorder.stats(),
         },
         repair: repair.clone(),
+        server_health: server_health.clone(),
         counters,
     };
     let json = serde_json::to_vec(&status)?;
@@ -1425,6 +1591,7 @@ fn build_server_recovery_status(
     schedule_age_ms: u64,
     reorder: &PacketReorderBuffer,
     repair: &XBondRepairStatus,
+    server_health: &XBondServerHealthStatus,
     hold_controller: &IngressReorderHoldController,
     capacity: usize,
 ) -> XBondServerRecoveryStatus {
@@ -1447,6 +1614,7 @@ fn build_server_recovery_status(
             stats: reorder.stats(),
         },
         repair: repair.clone(),
+        server_health: server_health.clone(),
         updated_at_micros: now_micros(),
     }
 }

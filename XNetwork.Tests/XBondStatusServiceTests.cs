@@ -108,6 +108,32 @@ public class XBondStatusServiceTests
                 "degraded_ticks": 4,
                 "clean_ticks": 0
               },
+              "server_health": {
+                "status": "healthy",
+                "reason": "All server egress targets are reachable with low connect latency.",
+                "success_rate": 1.0,
+                "avg_connect_ms": 14.5,
+                "max_connect_ms": 20.0,
+                "last_success_age_ms": 250,
+                "consecutive_failures": 0,
+                "updated_at_micros": 9999999999999999,
+                "targets": [
+                  {
+                    "target": "8.8.8.8:53",
+                    "success": true,
+                    "connect_ms": 9.0,
+                    "error": null,
+                    "updated_at_micros": 9999999999999999
+                  },
+                  {
+                    "target": "1.1.1.1:443",
+                    "success": true,
+                    "connect_ms": 20.0,
+                    "error": null,
+                    "updated_at_micros": 9999999999999999
+                  }
+                ]
+              },
               "late_packets_dropped": 1,
               "reorder": {
                 "return_path": {
@@ -159,6 +185,11 @@ public class XBondStatusServiceTests
         Assert.Equal(4, status.Recovery.DegradedTicks);
         Assert.Equal(0, status.Recovery.CleanTicks);
         Assert.Contains("duplicating all traffic", status.Recovery.Reason);
+        Assert.Equal("healthy", status.ServerHealth.Status);
+        Assert.Equal(14.5, status.ServerHealth.AvgConnectMs);
+        Assert.Equal(20.0, status.ServerHealth.MaxConnectMs);
+        Assert.Equal(2, status.ServerHealth.Targets.Count);
+        Assert.Equal("8.8.8.8:53", status.ServerHealth.Targets[0].Target);
         Assert.Equal((ulong)1, status.LatePacketsDropped);
         Assert.Equal((ulong)1, status.Reorder.ReturnPath.PendingDepth);
         Assert.Equal((ulong)4, status.Reorder.ReturnPath.LateDuplicates);
@@ -196,6 +227,9 @@ public class XBondStatusServiceTests
         Assert.Equal(72.5, snapshot.EffectiveRttMs);
         Assert.Equal(3, snapshot.EffectiveLossPercent, precision: 6);
         Assert.True(snapshot.IsStable);
+        Assert.Equal("Server OK", snapshot.ServerHealthLabel);
+        Assert.Equal(0, snapshot.ServerHealthFailurePercent);
+        Assert.Contains("8.8.8.8:53 OK 9", snapshot.ServerHealthDetails);
     }
 
     [Fact]
@@ -349,6 +383,69 @@ public class XBondStatusServiceTests
 
         Assert.Equal(expectedTitle, snapshot.ConnectionTitle);
         Assert.Equal(expectedStable, snapshot.IsStable);
+    }
+
+    [Fact]
+    public void ParseRuntimeStatusJson_MapsRelayedServerHealth()
+    {
+        var status = XBondStatusService.ParseRuntimeStatusJson(
+            """
+            {
+              "running": true,
+              "mode": "anchor-duplicate-1",
+              "redundancy_policy": "balanced",
+              "server_addr": "45.77.241.247:8444",
+              "tunnel": {
+                "state": "running",
+                "rtt_ms": 45,
+                "loss_rate": 0,
+                "reason": "Tunnel heartbeat is healthy."
+              },
+              "server_recovery": {
+                "reported": true,
+                "recovery_active": false,
+                "server_health": {
+                  "status": "degraded",
+                  "reason": "1/2 server egress targets are reachable.",
+                  "success_rate": 0.5,
+                  "avg_connect_ms": 110.0,
+                  "max_connect_ms": 110.0,
+                  "last_success_age_ms": 1000,
+                  "consecutive_failures": 0,
+                  "updated_at_micros": 9999999999999999,
+                  "targets": [
+                    {
+                      "target": "8.8.8.8:53",
+                      "success": true,
+                      "connect_ms": 110.0,
+                      "error": null,
+                      "updated_at_micros": 9999999999999999
+                    },
+                    {
+                      "target": "1.1.1.1:443",
+                      "success": false,
+                      "connect_ms": null,
+                      "error": "timed out",
+                      "updated_at_micros": 9999999999999999
+                    }
+                  ]
+                }
+              },
+              "paths": []
+            }
+            """,
+            new XBondSettings());
+
+        Assert.True(status.ServerRecovery.Reported);
+        Assert.Equal("degraded", status.ServerHealth.Status);
+        Assert.Equal(0.5, status.ServerHealth.SuccessRate);
+
+        var snapshot = XBondStatsService.FromStatus(status);
+
+        Assert.Equal("Server degraded", snapshot.ServerHealthLabel);
+        Assert.Equal(50, snapshot.ServerHealthFailurePercent);
+        Assert.Equal(110, snapshot.ServerEgressConnectMs);
+        Assert.Contains("1.1.1.1:443 failed", snapshot.ServerHealthDetails);
     }
 
     [Fact]

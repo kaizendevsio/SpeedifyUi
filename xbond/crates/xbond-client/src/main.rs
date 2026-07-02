@@ -3405,6 +3405,7 @@ fn write_tunnel_runtime_status(
             },
             repair: repair.clone(),
             server_recovery: server_recovery_status.clone(),
+            server_health: server_recovery_status.server_health.clone(),
             process: XBondProcessStatus {
                 process_cpu_percent: None,
                 rss_bytes: current_process_rss_bytes(),
@@ -4083,6 +4084,7 @@ fn load_status(config_path: &PathBuf) -> Result<XBondStatus> {
         reorder: runtime.reorder,
         repair: runtime.repair,
         server_recovery: runtime.server_recovery,
+        server_health: runtime.server_health,
         process: runtime.process,
         recovery: runtime.recovery,
         message: runtime.message.unwrap_or_else(|| {

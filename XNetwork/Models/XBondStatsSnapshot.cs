@@ -154,6 +154,77 @@ public sealed class XBondStatsSnapshot
 
     public bool HasServerRecoveryTelemetry => ServerRecovery.Reported;
 
+    public XBondServerHealthStatus ServerHealth => RawStatus.ServerHealth;
+
+    public string EffectiveServerHealthStatus
+    {
+        get
+        {
+            if (IsServerHealthStale)
+            {
+                return "unknown";
+            }
+
+            return string.IsNullOrWhiteSpace(ServerHealth.Status)
+                ? "unknown"
+                : ServerHealth.Status.ToLowerInvariant();
+        }
+    }
+
+    public bool HasServerHealthTelemetry => ServerHealth.UpdatedAtMicros > 0 && EffectiveServerHealthStatus != "unknown";
+
+    public bool IsServerHealthStale
+    {
+        get
+        {
+            if (ServerHealth.UpdatedAtMicros == 0)
+            {
+                return false;
+            }
+
+            var nowMicros = (ulong)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1_000);
+            return ServerHealth.UpdatedAtMicros < nowMicros &&
+                   nowMicros - ServerHealth.UpdatedAtMicros > 30_000_000;
+        }
+    }
+
+    public string ServerHealthLabel => EffectiveServerHealthStatus switch
+    {
+        "healthy" => "Server OK",
+        "degraded" => "Server degraded",
+        "down" => "Server down",
+        _ => "Server unknown"
+    };
+
+    public double ServerEgressConnectMs => ServerHealth.AvgConnectMs.GetValueOrDefault();
+
+    public double ServerHealthFailurePercent =>
+        Math.Round((1 - Math.Clamp(ServerHealth.SuccessRate, 0, 1)) * 100, 1);
+
+    public string ServerHealthDetails
+    {
+        get
+        {
+            var details = ServerHealth.Targets.Count == 0
+                ? "No probe targets reported."
+                : string.Join("; ", ServerHealth.Targets.Select(target =>
+                {
+                    if (target.Success)
+                    {
+                        return $"{target.Target} OK {target.ConnectMs.GetValueOrDefault():0.#} ms";
+                    }
+
+                    return $"{target.Target} failed{(string.IsNullOrWhiteSpace(target.Error) ? string.Empty : $": {target.Error}")}";
+                }));
+
+            var lastSuccess = ServerHealth.LastSuccessAgeMs.HasValue
+                ? $" Last success {FormatAge(ServerHealth.LastSuccessAgeMs.Value)} ago."
+                : " No successful probe yet.";
+
+            return $"{ServerHealth.Reason} {details}.{lastSuccess}";
+        }
+    }
+
     public bool IsRecoveryActive => RawStatus.Recovery.Active || ServerRecovery.RecoveryActive;
 
     public int RecoveryHoldMs => ServerRecovery.IngressReorder.CurrentHoldMs;
@@ -173,6 +244,21 @@ public sealed class XBondStatsSnapshot
         : "Recovery";
 
     public bool Ipv6Supported => false;
+
+    private static string FormatAge(ulong ageMs)
+    {
+        if (ageMs < 1_000)
+        {
+            return $"{ageMs} ms";
+        }
+
+        if (ageMs < 60_000)
+        {
+            return $"{ageMs / 1_000d:0.#} s";
+        }
+
+        return $"{ageMs / 60_000d:0.#} min";
+    }
 }
 
 public sealed class XBondPathStatsSnapshot

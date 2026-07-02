@@ -118,6 +118,10 @@
                                 <span>Recovery @_snapshot.RecoveryHoldMs ms</span>
                             </span>
                         }
+                        <span class="@GetServerHealthBadgeClass()" title="@_snapshot.ServerHealthDetails">
+                            <i class="fas fa-cloud-arrow-up text-[0.65rem]"></i>
+                            <span>@_snapshot.ServerHealthLabel</span>
+                        </span>
                     </div>
                 </div>
             </div>
@@ -752,6 +756,18 @@
             { HasError: true } => "flex-shrink-0 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-200",
             { IsRunning: true } => "flex-shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-200",
             _ => "flex-shrink-0 rounded-full border border-slate-600 bg-slate-700/40 px-2 py-0.5 text-xs font-medium text-slate-300"
+        };
+    }
+
+    private string GetServerHealthBadgeClass()
+    {
+        const string baseClass = "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-semibold";
+        return _snapshot?.EffectiveServerHealthStatus switch
+        {
+            "healthy" => $"{baseClass} border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
+            "degraded" => $"{baseClass} border-amber-500/35 bg-amber-500/10 text-amber-100",
+            "down" => $"{baseClass} border-rose-500/35 bg-rose-500/10 text-rose-100",
+            _ => $"{baseClass} border-slate-600 bg-slate-700/35 text-slate-300"
         };
     }
 

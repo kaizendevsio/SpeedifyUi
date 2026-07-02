@@ -50,7 +50,7 @@ impl TryFrom<u8> for PacketKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "control", rename_all = "kebab-case")]
 pub enum XBondControlMessage {
     RepairRequest { sequences: Vec<u64> },

@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.95";
+    public const string CurrentVersion = "xbond-2026.06.96";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-03",
+            Summary = "Added Vultr server egress health telemetry.",
+            Changes =
+            [
+                "XBond server now probes configurable external TCP targets from Vultr and reports server egress health without changing routing or QoS.",
+                "The Pi client relays server health through the normal XBond runtime status so the dashboard can show Server OK, degraded, down, or unknown.",
+                "Analytics now includes a server egress latency view to compare Vultr-side connectivity against tunnel RTT."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.95",
             Date = "2026-06-28",
             Summary = "Tuned Live satellite mobile framing.",
             Changes =

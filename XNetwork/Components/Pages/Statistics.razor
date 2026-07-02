@@ -70,7 +70,7 @@
                 <span class="@GetStatusBadgeClass()">@GetStatusText()</span>
             </div>
 
-            <div class="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
+            <div class="mb-4 grid grid-cols-2 gap-4 md:grid-cols-5">
                 <div class="rounded-lg bg-slate-900/50 p-4">
                     <div class="mb-2 flex items-center gap-2">
                         <i class="fas fa-layer-group text-slate-400"></i>
@@ -117,6 +117,18 @@
                         <span class="text-sm text-slate-400">@SpeedFormatter.GetSpeedUnit(_snapshot.AggregateThroughputMbps)</span>
                     </div>
                     <p class="mt-1 text-xs text-slate-500">Down + up</p>
+                </div>
+
+                <div class="rounded-lg bg-slate-900/50 p-4" title="@_snapshot.ServerHealthDetails">
+                    <div class="mb-2 flex items-center gap-2">
+                        <i class="fas fa-cloud-arrow-up text-slate-400"></i>
+                        <span class="text-xs text-slate-400">Server Egress</span>
+                    </div>
+                    <div class="flex items-baseline gap-1">
+                        <AnimatedNumber Value="@Math.Round(_snapshot.ServerEgressConnectMs)" Decimals="0" CssClass="@($"text-2xl font-bold {GetServerHealthTextColor()}")" AriaLabel="@($"{Math.Round(_snapshot.ServerEgressConnectMs)} milliseconds server egress connect latency")" />
+                        <span class="text-sm text-slate-400">ms</span>
+                    </div>
+                    <p class="mt-1 text-xs text-slate-500">@_snapshot.ServerHealthLabel, @FormatServerFailurePercent() fail</p>
                 </div>
             </div>
 
@@ -188,6 +200,11 @@
                                ChartId="recoveryHoldChart"
                                ShowLegend="true"
                                LegendItems="@GetRecoveryHoldLegend()" />
+
+                    <ChartCard Title="Server Egress (ms)"
+                               ChartId="serverHealthChart"
+                               ShowLegend="true"
+                               LegendItems="@GetServerHealthLegend()" />
                 </div>
             }
         </section>
@@ -242,6 +259,9 @@
     private const string RecoveryHoldSeriesId = "__server_recovery_hold";
     private const string RecoveryHoldSeriesLabel = "Server hold";
     private const string RecoveryHoldSeriesColor = "#fb923c";
+    private const string ServerHealthSeriesId = "__server_egress_connect";
+    private const string ServerHealthSeriesLabel = "Vultr egress";
+    private const string ServerHealthSeriesColor = "#3794ff";
     private static readonly IReadOnlyList<(int Seconds, string Label)> _periodOptions =
     [
         (15, "15s"),
@@ -381,8 +401,15 @@
                 new[] { RecoveryHoldSeriesId },
                 new[] { RecoveryHoldSeriesLabel },
                 timestamp);
+            var serverHealthOk = await _chartModule.InvokeAsync<bool>(
+                "initializeOrUpdateChart",
+                "serverHealthChart",
+                "Connect (ms)",
+                new[] { ServerHealthSeriesId },
+                new[] { ServerHealthSeriesLabel },
+                timestamp);
 
-            _chartsInitialized = downloadOk && uploadOk && rttOk && lossOk && recoveryOk;
+            _chartsInitialized = downloadOk && uploadOk && rttOk && lossOk && recoveryOk && serverHealthOk;
             if (!_chartsInitialized)
             {
                 _chartInitializationError = "One or more chart canvases could not be initialized.";
@@ -419,6 +446,12 @@
                     ? snapshot.RecoveryHoldMs
                     : 0
             };
+            var serverHealthData = new Dictionary<string, double>(StringComparer.Ordinal)
+            {
+                [ServerHealthSeriesId] = snapshot.HasServerHealthTelemetry
+                    ? Math.Round(snapshot.ServerEgressConnectMs, 1)
+                    : 0
+            };
 
             foreach (var path in snapshot.DashboardPaths)
             {
@@ -437,6 +470,7 @@
             await _chartModule.InvokeVoidAsync("addDataToChart", "rttChart", timestamp, rttData);
             await _chartModule.InvokeVoidAsync("addDataToChart", "lossChart", timestamp, lossData);
             await _chartModule.InvokeVoidAsync("addDataToChart", "recoveryHoldChart", timestamp, recoveryHoldData);
+            await _chartModule.InvokeVoidAsync("addDataToChart", "serverHealthChart", timestamp, serverHealthData);
         }
         catch (JSDisconnectedException)
         {
@@ -507,6 +541,15 @@
         {
             Label = RecoveryHoldSeriesLabel,
             Color = RecoveryHoldSeriesColor
+        }
+    ];
+
+    private static List<ChartCard.LegendItem> GetServerHealthLegend() =>
+    [
+        new ChartCard.LegendItem
+        {
+            Label = ServerHealthSeriesLabel,
+            Color = ServerHealthSeriesColor
         }
     ];
 
@@ -599,6 +642,22 @@
         if (loss < 2) return "text-cyan-300";
         if (loss < 10) return "text-yellow-300";
         return "text-red-300";
+    }
+
+    private string GetServerHealthTextColor()
+    {
+        return _snapshot?.EffectiveServerHealthStatus switch
+        {
+            "healthy" => "text-emerald-300",
+            "degraded" => "text-amber-300",
+            "down" => "text-red-300",
+            _ => "text-slate-300"
+        };
+    }
+
+    private string FormatServerFailurePercent()
+    {
+        return _snapshot is null ? "--" : $"{_snapshot.ServerHealthFailurePercent:0.#}%";
     }
 
     private static int GetPercentDecimals(double value)

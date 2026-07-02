@@ -33,6 +33,8 @@ pub struct XBondStatus {
     pub repair: XBondRepairStatus,
     #[serde(default)]
     pub server_recovery: XBondServerRecoveryStatus,
+    #[serde(default)]
+    pub server_health: XBondServerHealthStatus,
     pub process: XBondProcessStatus,
     pub recovery: RecoveryStatus,
     pub message: String,
@@ -279,7 +281,145 @@ pub struct XBondRepairStatus {
     pub cache_entries: usize,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct XBondServerHealthTargetStatus {
+    pub target: String,
+    pub success: bool,
+    #[serde(default)]
+    pub connect_ms: Option<f64>,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub updated_at_micros: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct XBondServerHealthStatus {
+    pub status: String,
+    pub reason: String,
+    pub success_rate: f64,
+    #[serde(default)]
+    pub avg_connect_ms: Option<f64>,
+    #[serde(default)]
+    pub max_connect_ms: Option<f64>,
+    #[serde(default)]
+    pub last_success_age_ms: Option<u64>,
+    pub consecutive_failures: u32,
+    pub updated_at_micros: u64,
+    #[serde(default)]
+    pub targets: Vec<XBondServerHealthTargetStatus>,
+}
+
+impl Default for XBondServerHealthStatus {
+    fn default() -> Self {
+        Self {
+            status: "unknown".to_string(),
+            reason: "Server egress health has not collected a sample yet.".to_string(),
+            success_rate: 0.0,
+            avg_connect_ms: None,
+            max_connect_ms: None,
+            last_success_age_ms: None,
+            consecutive_failures: 0,
+            updated_at_micros: 0,
+            targets: Vec::new(),
+        }
+    }
+}
+
+impl XBondServerHealthStatus {
+    pub fn disabled(targets: &[String], updated_at_micros: u64) -> Self {
+        Self {
+            status: "unknown".to_string(),
+            reason: "Server egress health probes are disabled.".to_string(),
+            updated_at_micros,
+            targets: targets
+                .iter()
+                .map(|target| XBondServerHealthTargetStatus {
+                    target: target.clone(),
+                    success: false,
+                    connect_ms: None,
+                    error: Some("disabled".to_string()),
+                    updated_at_micros,
+                })
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    pub fn classify(
+        targets: Vec<XBondServerHealthTargetStatus>,
+        consecutive_failures: u32,
+        last_success_age_ms: Option<u64>,
+        updated_at_micros: u64,
+    ) -> Self {
+        if targets.is_empty() {
+            return Self {
+                status: "unknown".to_string(),
+                reason: "No server egress health targets are configured.".to_string(),
+                consecutive_failures,
+                updated_at_micros,
+                ..Self::default()
+            };
+        }
+
+        let success_count = targets.iter().filter(|target| target.success).count();
+        let success_rate = success_count as f64 / targets.len() as f64;
+        let mut connect_times = targets
+            .iter()
+            .filter_map(|target| target.connect_ms)
+            .collect::<Vec<_>>();
+        connect_times.sort_by(|left, right| left.total_cmp(right));
+        let avg_connect_ms = (!connect_times.is_empty())
+            .then(|| connect_times.iter().sum::<f64>() / connect_times.len() as f64);
+        let max_connect_ms = connect_times.last().copied();
+
+        let (status, reason) = if success_count == 0 && consecutive_failures >= 2 {
+            (
+                "down",
+                format!("All {} server egress targets failed for {consecutive_failures} consecutive rounds.", targets.len()),
+            )
+        } else if success_count == 0 {
+            (
+                "degraded",
+                "All server egress targets failed in the latest round.".to_string(),
+            )
+        } else if success_count == targets.len() && avg_connect_ms.is_some_and(|avg| avg < 100.0) {
+            (
+                "healthy",
+                "All server egress targets are reachable with low connect latency.".to_string(),
+            )
+        } else if success_count == targets.len() {
+            (
+                "degraded",
+                format!(
+                    "Server egress targets are reachable, but average connect latency is {:.0} ms.",
+                    avg_connect_ms.unwrap_or_default()
+                ),
+            )
+        } else {
+            (
+                "degraded",
+                format!(
+                    "{success_count}/{} server egress targets are reachable.",
+                    targets.len()
+                ),
+            )
+        };
+
+        Self {
+            status: status.to_string(),
+            reason,
+            success_rate,
+            avg_connect_ms,
+            max_connect_ms,
+            last_success_age_ms,
+            consecutive_failures,
+            updated_at_micros,
+            targets,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct XBondServerRecoveryStatus {
     #[serde(default)]
     pub reported: bool,
@@ -295,6 +435,8 @@ pub struct XBondServerRecoveryStatus {
     pub ingress_reorder: XBondServerIngressReorderStatus,
     #[serde(default)]
     pub repair: XBondRepairStatus,
+    #[serde(default)]
+    pub server_health: XBondServerHealthStatus,
     #[serde(default)]
     pub updated_at_micros: u64,
 }
@@ -415,6 +557,8 @@ pub struct XBondRuntimeStatus {
     #[serde(default)]
     pub server_recovery: XBondServerRecoveryStatus,
     #[serde(default)]
+    pub server_health: XBondServerHealthStatus,
+    #[serde(default)]
     pub process: XBondProcessStatus,
     #[serde(default)]
     pub recovery: RecoveryStatus,
@@ -476,5 +620,102 @@ mod tests {
         assert_eq!(json["pending_probes"], 1);
         assert_eq!(json["last_success_age_ms"], 250);
         assert_eq!(json["status"], "fair");
+    }
+
+    #[test]
+    fn server_health_classifies_healthy_targets() {
+        let status = XBondServerHealthStatus::classify(
+            vec![
+                target("8.8.8.8:53", true, Some(12.0)),
+                target("1.1.1.1:443", true, Some(18.0)),
+            ],
+            0,
+            Some(0),
+            1,
+        );
+
+        assert_eq!(status.status, "healthy");
+        assert_eq!(status.success_rate, 1.0);
+        assert_eq!(status.avg_connect_ms, Some(15.0));
+        assert_eq!(status.max_connect_ms, Some(18.0));
+    }
+
+    #[test]
+    fn server_health_classifies_partial_failure_as_degraded() {
+        let status = XBondServerHealthStatus::classify(
+            vec![
+                target("8.8.8.8:53", true, Some(20.0)),
+                target("1.1.1.1:443", false, None),
+            ],
+            0,
+            Some(500),
+            2,
+        );
+
+        assert_eq!(status.status, "degraded");
+        assert_eq!(status.success_rate, 0.5);
+        assert!(status.reason.contains("1/2"));
+    }
+
+    #[test]
+    fn server_health_classifies_high_latency_as_degraded() {
+        let status = XBondServerHealthStatus::classify(
+            vec![
+                target("8.8.8.8:53", true, Some(150.0)),
+                target("1.1.1.1:443", true, Some(170.0)),
+            ],
+            0,
+            Some(0),
+            3,
+        );
+
+        assert_eq!(status.status, "degraded");
+        assert_eq!(status.avg_connect_ms, Some(160.0));
+    }
+
+    #[test]
+    fn server_health_classifies_repeated_full_failure_as_down() {
+        let status = XBondServerHealthStatus::classify(
+            vec![
+                target("8.8.8.8:53", false, None),
+                target("1.1.1.1:443", false, None),
+            ],
+            2,
+            Some(30_000),
+            4,
+        );
+
+        assert_eq!(status.status, "down");
+        assert_eq!(status.success_rate, 0.0);
+        assert_eq!(status.consecutive_failures, 2);
+    }
+
+    #[test]
+    fn server_health_defaults_to_unknown_for_legacy_json() {
+        let status = serde_json::from_str::<XBondRuntimeStatus>(
+            r#"{
+                "running": true,
+                "mode": "anchor-duplicate-1",
+                "redundancy_policy": "balanced"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(status.server_health.status, "unknown");
+        assert_eq!(status.server_recovery.server_health.status, "unknown");
+    }
+
+    fn target(
+        target: &str,
+        success: bool,
+        connect_ms: Option<f64>,
+    ) -> XBondServerHealthTargetStatus {
+        XBondServerHealthTargetStatus {
+            target: target.to_string(),
+            success,
+            connect_ms,
+            error: (!success).then(|| "timeout".to_string()),
+            updated_at_micros: 1,
+        }
     }
 }

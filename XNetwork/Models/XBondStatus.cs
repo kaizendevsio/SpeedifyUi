@@ -79,6 +79,9 @@ public class XBondStatus
     [JsonPropertyName("server_recovery")]
     public XBondServerRecoveryStatus ServerRecovery { get; set; } = new();
 
+    [JsonPropertyName("server_health")]
+    public XBondServerHealthStatus ServerHealth { get; set; } = new();
+
     [JsonPropertyName("recovery")]
     public XBondRecoveryStatus Recovery { get; set; } = new();
 
@@ -335,6 +338,54 @@ public class XBondProcessStatus
     public ulong DecodedFrames { get; set; }
 }
 
+public class XBondServerHealthStatus
+{
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "unknown";
+
+    [JsonPropertyName("reason")]
+    public string Reason { get; set; } = "Server egress health has not collected a sample yet.";
+
+    [JsonPropertyName("success_rate")]
+    public double SuccessRate { get; set; }
+
+    [JsonPropertyName("avg_connect_ms")]
+    public double? AvgConnectMs { get; set; }
+
+    [JsonPropertyName("max_connect_ms")]
+    public double? MaxConnectMs { get; set; }
+
+    [JsonPropertyName("last_success_age_ms")]
+    public ulong? LastSuccessAgeMs { get; set; }
+
+    [JsonPropertyName("consecutive_failures")]
+    public int ConsecutiveFailures { get; set; }
+
+    [JsonPropertyName("updated_at_micros")]
+    public ulong UpdatedAtMicros { get; set; }
+
+    [JsonPropertyName("targets")]
+    public List<XBondServerHealthTargetStatus> Targets { get; set; } = new();
+}
+
+public class XBondServerHealthTargetStatus
+{
+    [JsonPropertyName("target")]
+    public string Target { get; set; } = "";
+
+    [JsonPropertyName("success")]
+    public bool Success { get; set; }
+
+    [JsonPropertyName("connect_ms")]
+    public double? ConnectMs { get; set; }
+
+    [JsonPropertyName("error")]
+    public string? Error { get; set; }
+
+    [JsonPropertyName("updated_at_micros")]
+    public ulong UpdatedAtMicros { get; set; }
+}
+
 public class XBondServerRecoveryStatus
 {
     [JsonPropertyName("reported")]
@@ -348,6 +399,9 @@ public class XBondServerRecoveryStatus
 
     [JsonPropertyName("repair")]
     public XBondRepairStatus Repair { get; set; } = new();
+
+    [JsonPropertyName("server_health")]
+    public XBondServerHealthStatus ServerHealth { get; set; } = new();
 
     [JsonPropertyName("updated_at_micros")]
     public ulong UpdatedAtMicros { get; set; }
