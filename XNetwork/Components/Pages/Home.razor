@@ -9,6 +9,7 @@
 @inject IStarlinkTelemetryService StarlinkTelemetryService
 @inject StarlinkTelemetrySettings StarlinkTelemetrySettings
 @inject LocalDeviceProxyService LocalDeviceProxyService
+@inject IConnectionHealthService ConnectionHealthService
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 
@@ -130,6 +131,7 @@
         <ConnectionSummary
             ConnectionStatus="@ConnectionTitle"
             Latency="@GetLatencyValue()"
+            InternetLatency="@GetInternetLatencyValue()"
             Download="@_snapshot.DownloadMbps"
             Upload="@_snapshot.UploadMbps"
             AnchorDownload="@GetAnchorDownloadMbps()"
@@ -715,6 +717,28 @@
         }
 
         return (int)Math.Round(_snapshot.EffectiveRttMs);
+    }
+
+    private int? GetInternetLatencyValue()
+    {
+        if (!ConnectionHealthService.IsInitialized())
+        {
+            return null;
+        }
+
+        var (_, latency, _, _, _, _, successRate, samples, lastUpdated) =
+            ConnectionHealthService.GetOverallHealth().GetSnapshot();
+
+        if (samples <= 0 ||
+            successRate <= 0 ||
+            latency <= 0 ||
+            latency >= 9_999 ||
+            DateTime.UtcNow - lastUpdated > TimeSpan.FromSeconds(10))
+        {
+            return null;
+        }
+
+        return (int)Math.Round(latency);
     }
 
     private double? GetAnchorDownloadMbps()

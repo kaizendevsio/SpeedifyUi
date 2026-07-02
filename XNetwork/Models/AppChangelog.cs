@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.96";
+    public const string CurrentVersion = "xbond-2026.06.97";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-03",
+            Summary = "Added dashboard internet latency.",
+            Changes =
+            [
+                "The dashboard connection card now shows XBond tunnel latency and internet latency as separate values.",
+                "Internet latency reuses the existing Pi-side rolling ping to 8.8.8.8 through the current default route.",
+                "The tunnel latency remains the XBond heartbeat RTT to Vultr and is still used for tunnel health status."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.96",
             Date = "2026-07-03",
             Summary = "Added Vultr server egress health telemetry.",
             Changes =
