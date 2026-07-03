@@ -9,7 +9,7 @@
      tabindex="@(ShowTrafficDetailsHint ? "0" : null)"
      @onclick="HandleTrafficDetailsRequested"
      @onkeydown="HandleSummaryKeyDown">
-    <div class="p-4">
+    <div class="relative z-10 p-4 pb-5">
         <div class="flex items-center gap-3 mb-3">
             @{
                 var (status, statusColor) = GetConnectionStatus();
@@ -85,8 +85,8 @@
             </div>
         </div>
     </div>
-    <div class="w-full h-12">
-        <canvas id="@_chartId"></canvas>
+    <div class="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-24 opacity-90 sm:h-20">
+        <canvas id="@_chartId" class="h-full w-full"></canvas>
     </div>
 </div>
 
@@ -256,7 +256,7 @@
             ? "cursor-pointer hover:border-cyan-500/50 hover:bg-slate-800/70 focus:outline-none focus:ring-2 focus:ring-cyan-500/60 transition-colors"
             : "";
 
-        return $"bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden {interactiveClass}";
+        return $"relative isolate bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden {interactiveClass}";
     }
 
     private async Task HandleTrafficDetailsRequested()

@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.97";
+    public const string CurrentVersion = "xbond-2026.06.98";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-03",
+            Summary = "Tucked the dashboard sparkline behind the summary metrics.",
+            Changes =
+            [
+                "The dashboard connection card sparkline now renders as a background layer instead of taking its own vertical space.",
+                "The Tunnel, Internet, Download, and Upload metrics remain visible while the card height stays tighter on mobile.",
+                "No tunnel routing, server health, or XBond runtime behavior changed."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.97",
             Date = "2026-07-03",
             Summary = "Added dashboard internet latency.",
             Changes =
