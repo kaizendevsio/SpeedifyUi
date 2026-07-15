@@ -461,6 +461,7 @@ struct PathSendWork {
 #[derive(Debug)]
 struct PathSendReport {
     path_id: u16,
+    socket_generation: u64,
     packet_kind: PacketKind,
     encoded_bytes: u64,
     encode_micros: u64,
@@ -474,14 +475,29 @@ struct PathSendReport {
 #[derive(Debug)]
 struct PathSocketEvent {
     path_id: u16,
+    socket_generation: u64,
     reason: String,
     error: Option<String>,
 }
 
 #[derive(Debug)]
 struct PathSenderHandle {
+    socket_generation: u64,
     tx: mpsc::Sender<PathSendWork>,
     task: JoinHandle<()>,
+}
+
+#[derive(Debug)]
+struct PrimarySendCompletion {
+    path_id: u16,
+    socket_generation: u64,
+    success: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryEnqueueResult {
+    Enqueued,
+    Pending,
 }
 
 #[derive(Debug, Default)]
@@ -592,6 +608,8 @@ struct TunnelCounters {
     inbound_queue_drops: u64,
     duplicate_send_skips: u64,
     fec_send_skips: u64,
+    primary_queue_full_events: u64,
+    supervisor_control_progress_ticks: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1165,8 +1183,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut receivers: HashMap<u16, JoinHandle<()>> = HashMap::new();
     let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
     let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlEnvelope>();
-    let (send_report_tx, mut send_report_rx) = mpsc::unbounded_channel::<PathSendReport>();
+    let send_report_capacity = config
+        .tun_queue_capacity
+        .max(1)
+        .saturating_mul(specs_by_id.len().max(1));
+    let (send_report_tx, mut send_report_rx) =
+        mpsc::channel::<PathSendReport>(send_report_capacity);
     let (socket_event_tx, mut socket_event_rx) = mpsc::unbounded_channel::<PathSocketEvent>();
+    let (primary_send_completion_tx, mut primary_send_completion_rx) =
+        mpsc::channel::<PrimarySendCompletion>(1);
     spawn_control_listener(
         options.control_socket.clone(),
         control_tx,
@@ -1300,6 +1325,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut reorder_tick =
         time::interval(Duration::from_millis(config.reorder_hold_ms.clamp(5, 100)));
     let mut last_throughput_sample = Instant::now();
+    let mut primary_send_pending = false;
+    let mut last_primary_queue_full_reported = 0u64;
+    let mut last_primary_queue_full = None::<(u16, u64)>;
 
     update_tunnel_throughput(
         &mut path_runtime,
@@ -1464,6 +1492,39 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     tun_packet_rx.len(),
                     inbound_rx.len(),
                 )?;
+                counters.supervisor_control_progress_ticks = counters
+                    .supervisor_control_progress_ticks
+                    .saturating_add(1);
+                let queue_full_events_since_last = counters
+                    .primary_queue_full_events
+                    .saturating_sub(last_primary_queue_full_reported);
+                if options.json_events && queue_full_events_since_last > 0 {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "primary-sender-queue-full",
+                            "events_since_last_report": queue_full_events_since_last,
+                            "queue_full_events": counters.primary_queue_full_events,
+                            "primary_send_pending": primary_send_pending,
+                            "path_id": last_primary_queue_full.map(|value| value.0),
+                            "socket_generation": last_primary_queue_full.map(|value| value.1),
+                        })
+                    );
+                }
+                if options.json_events && (primary_send_pending || queue_full_events_since_last > 0) {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "supervisor-control-progress",
+                            "progress_ticks": counters.supervisor_control_progress_ticks,
+                            "primary_send_pending": primary_send_pending,
+                            "primary_queue_full_events": counters.primary_queue_full_events,
+                            "send_report_queue_depth": send_report_rx.len(),
+                            "send_report_queue_capacity": send_report_capacity,
+                        })
+                    );
+                    last_primary_queue_full_reported = counters.primary_queue_full_events;
+                }
             }
 
             _ = reorder_tick.tick() => {
@@ -1641,6 +1702,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             Some(report) = send_report_rx.recv() => {
+                if !socket_generation_is_current(
+                    &path_runtime,
+                    &sockets,
+                    report.path_id,
+                    report.socket_generation,
+                ) {
+                    continue;
+                }
                 if report.encoded {
                     counters.encoded_frames = counters.encoded_frames.saturating_add(1);
                     counters.encode_micros_total = counters
@@ -1684,6 +1753,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             }
 
             Some(event) = socket_event_rx.recv() => {
+                if !socket_generation_is_current(
+                    &path_runtime,
+                    &sockets,
+                    event.path_id,
+                    event.socket_generation,
+                ) {
+                    continue;
+                }
                 record_tunnel_send_failure(&mut path_runtime, event.path_id);
                 mark_path_socket_for_rebind(
                     &mut path_runtime,
@@ -1705,7 +1782,31 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
             }
 
-            Some(packet) = tun_packet_rx.recv() => {
+            Some(completion) = primary_send_completion_rx.recv(), if primary_send_pending => {
+                primary_send_pending = false;
+                if !completion.success
+                    && socket_generation_is_current(
+                        &path_runtime,
+                        &sockets,
+                        completion.path_id,
+                        completion.socket_generation,
+                    )
+                {
+                    record_tunnel_send_failure(&mut path_runtime, completion.path_id);
+                    if options.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "primary-sender-stopped",
+                                "path_id": completion.path_id,
+                                "socket_generation": completion.socket_generation,
+                            })
+                        );
+                    }
+                }
+            }
+
+            Some(packet) = tun_packet_rx.recv(), if !primary_send_pending => {
                 if options
                     .packet_limit
                     .is_some_and(|packet_limit| sequence >= packet_limit)
@@ -1776,12 +1877,27 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         payload: packet_payload.clone(),
                     };
                     let enqueue_result = if transmission.packet_kind == PacketKind::Data {
-                        sender.tx.send(work).await.map_err(|_| {
-                            std::io::Error::new(
-                                ErrorKind::BrokenPipe,
-                                "XBond primary path sender stopped",
-                            )
-                        })
+                        match enqueue_primary_work(
+                            transmission.path_id,
+                            sender.socket_generation,
+                            &sender.tx,
+                            work,
+                            &primary_send_completion_tx,
+                        ) {
+                            Ok(PrimaryEnqueueResult::Enqueued) => Ok(()),
+                            Ok(PrimaryEnqueueResult::Pending) => {
+                                primary_send_pending = true;
+                                counters.primary_queue_full_events = counters
+                                    .primary_queue_full_events
+                                    .saturating_add(1);
+                                last_primary_queue_full = Some((
+                                    transmission.path_id,
+                                    sender.socket_generation,
+                                ));
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
                     } else {
                         match sender.tx.try_send(work) {
                             Ok(()) => Ok(()),
@@ -1965,8 +2081,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         session_id,
                         &sequences,
                         &mut repair,
-                    )
-                    .await?;
+                    )?;
                     continue;
                 }
                 if is_expected_ack(&inbound.frame, session_id, inbound.frame.header.sequence) {
@@ -2125,7 +2240,7 @@ async fn ensure_tunnel_sockets(
     receivers: &mut HashMap<u16, JoinHandle<()>>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     inbound_tx: &mpsc::Sender<InboundTunnelFrame>,
-    send_report_tx: &mpsc::UnboundedSender<PathSendReport>,
+    send_report_tx: &mpsc::Sender<PathSendReport>,
     socket_event_tx: &mpsc::UnboundedSender<PathSocketEvent>,
     key: &XBondKey,
     json_events: bool,
@@ -2200,9 +2315,14 @@ async fn ensure_tunnel_sockets(
             }
 
             if recreate_reason.is_none() && socket_source_matches_bind_addr(socket, &bind_addr) {
+                let socket_generation = path_runtime
+                    .get(path_id)
+                    .map(|runtime| runtime.socket_generation)
+                    .unwrap_or_default();
                 if !senders.contains_key(path_id) {
                     let sender = spawn_tunnel_sender(
                         *path_id,
+                        socket_generation,
                         socket.clone(),
                         key.clone(),
                         config.tun_queue_capacity.max(1),
@@ -2213,6 +2333,7 @@ async fn ensure_tunnel_sockets(
                 if !receivers.contains_key(path_id) {
                     let receiver = spawn_tunnel_receiver(
                         *path_id,
+                        socket_generation,
                         socket.clone(),
                         inbound_tx.clone(),
                         socket_event_tx.clone(),
@@ -2255,9 +2376,14 @@ async fn ensure_tunnel_sockets(
         }
 
         if let Some(socket) = sockets.get(path_id) {
+            let socket_generation = path_runtime
+                .get(path_id)
+                .map(|runtime| runtime.socket_generation)
+                .unwrap_or_default();
             if !senders.contains_key(path_id) {
                 let sender = spawn_tunnel_sender(
                     *path_id,
+                    socket_generation,
                     socket.clone(),
                     key.clone(),
                     config.tun_queue_capacity.max(1),
@@ -2268,6 +2394,7 @@ async fn ensure_tunnel_sockets(
             if !receivers.contains_key(path_id) {
                 let receiver = spawn_tunnel_receiver(
                     *path_id,
+                    socket_generation,
                     socket.clone(),
                     inbound_tx.clone(),
                     socket_event_tx.clone(),
@@ -2325,8 +2452,13 @@ async fn ensure_tunnel_sockets(
         }
 
         let socket = Arc::new(socket);
+        let socket_generation = path_runtime
+            .get(path_id)
+            .map(|runtime| runtime.socket_generation.saturating_add(1))
+            .unwrap_or(1);
         let receiver = spawn_tunnel_receiver(
             *path_id,
+            socket_generation,
             socket.clone(),
             inbound_tx.clone(),
             socket_event_tx.clone(),
@@ -2334,13 +2466,14 @@ async fn ensure_tunnel_sockets(
         );
         let sender = spawn_tunnel_sender(
             *path_id,
+            socket_generation,
             socket.clone(),
             key.clone(),
             config.tun_queue_capacity.max(1),
             send_report_tx.clone(),
         );
         if let Some(runtime) = path_runtime.get_mut(path_id) {
-            runtime.socket_generation = runtime.socket_generation.saturating_add(1);
+            runtime.socket_generation = socket_generation;
             runtime.socket_ifindex = current_ifindex;
             runtime.socket_bind_addr = Some(bind_addr.clone());
             runtime.socket_bind_device = bind_device.map(ToString::to_string);
@@ -2375,12 +2508,56 @@ fn remove_tunnel_path(
     }
 }
 
+fn enqueue_primary_work(
+    path_id: u16,
+    socket_generation: u64,
+    sender: &mpsc::Sender<PathSendWork>,
+    work: PathSendWork,
+    completion_tx: &mpsc::Sender<PrimarySendCompletion>,
+) -> std::io::Result<PrimaryEnqueueResult> {
+    match sender.try_send(work) {
+        Ok(()) => Ok(PrimaryEnqueueResult::Enqueued),
+        Err(mpsc::error::TrySendError::Full(work)) => {
+            let sender = sender.clone();
+            let completion_tx = completion_tx.clone();
+            tokio::spawn(async move {
+                let success = sender.send(work).await.is_ok();
+                let _ = completion_tx
+                    .send(PrimarySendCompletion {
+                        path_id,
+                        socket_generation,
+                        success,
+                    })
+                    .await;
+            });
+            Ok(PrimaryEnqueueResult::Pending)
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+            ErrorKind::BrokenPipe,
+            "XBond primary path sender stopped",
+        )),
+    }
+}
+
+fn socket_generation_is_current(
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    path_id: u16,
+    socket_generation: u64,
+) -> bool {
+    sockets.contains_key(&path_id)
+        && path_runtime
+            .get(&path_id)
+            .is_some_and(|runtime| runtime.socket_generation == socket_generation)
+}
+
 fn spawn_tunnel_sender(
     path_id: u16,
+    socket_generation: u64,
     socket: Arc<UdpSocket>,
     key: XBondKey,
     capacity: usize,
-    report_tx: mpsc::UnboundedSender<PathSendReport>,
+    report_tx: mpsc::Sender<PathSendReport>,
 ) -> PathSenderHandle {
     let (tx, mut rx) = mpsc::channel::<PathSendWork>(capacity.max(1));
     let task = tokio::spawn(async move {
@@ -2400,6 +2577,7 @@ fn spawn_tunnel_sender(
                     match socket.send(&encoded).await {
                         Ok(_) => PathSendReport {
                             path_id,
+                            socket_generation,
                             packet_kind: work.packet_kind,
                             encoded_bytes,
                             encode_micros,
@@ -2411,6 +2589,7 @@ fn spawn_tunnel_sender(
                         },
                         Err(error) => PathSendReport {
                             path_id,
+                            socket_generation,
                             packet_kind: work.packet_kind,
                             encoded_bytes,
                             encode_micros,
@@ -2424,6 +2603,7 @@ fn spawn_tunnel_sender(
                 }
                 Err(error) => PathSendReport {
                     path_id,
+                    socket_generation,
                     packet_kind: work.packet_kind,
                     encoded_bytes: 0,
                     encode_micros,
@@ -2434,14 +2614,21 @@ fn spawn_tunnel_sender(
                     needs_rebind: false,
                 },
             };
-            let _ = report_tx.send(report);
+            if report_tx.send(report).await.is_err() {
+                break;
+            }
         }
     });
-    PathSenderHandle { tx, task }
+    PathSenderHandle {
+        socket_generation,
+        tx,
+        task,
+    }
 }
 
 fn spawn_tunnel_receiver(
     path_id: u16,
+    socket_generation: u64,
     socket: Arc<UdpSocket>,
     inbound_tx: mpsc::Sender<InboundTunnelFrame>,
     socket_event_tx: mpsc::UnboundedSender<PathSocketEvent>,
@@ -2457,6 +2644,7 @@ fn spawn_tunnel_receiver(
                     if socket_error_requires_rebind(&error) {
                         let _ = socket_event_tx.send(PathSocketEvent {
                             path_id,
+                            socket_generation,
                             reason: "udp-recv-enodev".to_string(),
                             error: Some(error.to_string()),
                         });
@@ -2801,7 +2989,7 @@ async fn send_repair_requests_for_return_gaps(
     Ok(())
 }
 
-async fn send_repair_frames_from_client_cache(
+fn send_repair_frames_from_client_cache(
     config: &ClientConfig,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     senders: &HashMap<u16, PathSenderHandle>,
@@ -2825,7 +3013,7 @@ async fn send_repair_frames_from_client_cache(
         }
 
         let send_micros = now_micros();
-        for (index, path_id) in targets.into_iter().enumerate() {
+        for path_id in targets {
             let Some(sender) = senders.get(&path_id) else {
                 repair.cache_misses = repair.cache_misses.saturating_add(1);
                 continue;
@@ -2842,22 +3030,16 @@ async fn send_repair_frames_from_client_cache(
                 header,
                 payload: payload.clone(),
             };
-            let enqueue_result = if index == 0 {
-                sender.tx.send(work).await.map_err(|_| {
-                    std::io::Error::new(ErrorKind::BrokenPipe, "XBond repair path sender stopped")
-                })
-            } else {
-                match sender.tx.try_send(work) {
-                    Ok(()) => Ok(()),
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        repair.queue_drops = repair.queue_drops.saturating_add(1);
-                        continue;
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
-                        ErrorKind::BrokenPipe,
-                        "XBond repair path sender stopped",
-                    )),
+            let enqueue_result = match sender.tx.try_send(work) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    repair.queue_drops = repair.queue_drops.saturating_add(1);
+                    continue;
                 }
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+                    ErrorKind::BrokenPipe,
+                    "XBond repair path sender stopped",
+                )),
             };
             if let Err(_error) = enqueue_result {
                 record_tunnel_send_failure(path_runtime, path_id);
@@ -4402,6 +4584,54 @@ fn monotonic_micros() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn primary_send_work(sequence: u64) -> PathSendWork {
+        PathSendWork {
+            packet_kind: PacketKind::Data,
+            header: XBondHeader::new(PacketKind::Data, 7, sequence, now_micros(), 1),
+            payload: Arc::new(vec![sequence as u8]),
+        }
+    }
+
+    #[tokio::test]
+    async fn saturated_primary_queue_preserves_backpressure_and_control_progress() {
+        let (payload_tx, mut payload_rx) = mpsc::channel(1);
+        payload_tx.try_send(primary_send_work(1)).unwrap();
+        let (completion_tx, mut completion_rx) = mpsc::channel(1);
+
+        let result =
+            enqueue_primary_work(1, 4, &payload_tx, primary_send_work(2), &completion_tx).unwrap();
+
+        assert_eq!(result, PrimaryEnqueueResult::Pending);
+        assert!(
+            time::timeout(Duration::from_millis(10), completion_rx.recv())
+                .await
+                .is_err()
+        );
+
+        let (control_tx, mut control_rx) = mpsc::channel(3);
+        for event in ["control", "heartbeat", "schedule"] {
+            control_tx.send(event).await.unwrap();
+        }
+        for expected in ["control", "heartbeat", "schedule"] {
+            assert_eq!(
+                time::timeout(Duration::from_millis(100), control_rx.recv())
+                    .await
+                    .unwrap(),
+                Some(expected)
+            );
+        }
+
+        assert_eq!(payload_rx.recv().await.unwrap().header.sequence, 1);
+        let completion = time::timeout(Duration::from_millis(100), completion_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(completion.success);
+        assert_eq!(completion.path_id, 1);
+        assert_eq!(completion.socket_generation, 4);
+        assert_eq!(payload_rx.recv().await.unwrap().header.sequence, 2);
+    }
 
     #[test]
     fn runtime_status_json_parses_observed_counters_and_paths() {

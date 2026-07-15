@@ -6,7 +6,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, OnceLock,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, RwLock};
@@ -23,6 +26,8 @@ use xbond_core::{
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_INBOUND_QUEUE_CAPACITY: usize = 4096;
+const CONTROL_QUEUE_CAPACITY: usize = 256;
+const SEND_REPORT_QUEUE_CAPACITY: usize = 256;
 const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const REPAIR_CACHE_CAPACITY: usize = 4096;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
@@ -30,7 +35,9 @@ const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const MAX_REPAIR_REQUESTS: usize = 64;
 const PEER_STALE_AFTER_MICROS: u64 = 15_000_000;
 const RETURN_SCHEDULE_STALE_AFTER_MICROS: u64 = 10_000_000;
+const RETURN_SCHEDULE_GRACE_MICROS: u64 = 5_000_000;
 const MAX_UDP_DATAGRAM_BYTES: usize = 65_535;
+const EXPECTED_UDP_PAYLOAD_BYTES: usize = 2048;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -116,6 +123,12 @@ struct InboundServerFrame {
 }
 
 #[derive(Debug)]
+struct ControlSendWork {
+    encoded: Vec<u8>,
+    peer: SocketAddr,
+}
+
+#[derive(Debug)]
 struct ReturnSendWork {
     packet_kind: PacketKind,
     peer: SocketAddr,
@@ -127,7 +140,6 @@ struct ReturnSendWork {
 struct ReturnSendReport {
     path_id: u16,
     packet_kind: PacketKind,
-    encoded_bytes: u64,
     success: bool,
     peer: SocketAddr,
     error: Option<String>,
@@ -135,7 +147,9 @@ struct ReturnSendReport {
 
 #[derive(Debug)]
 struct ReturnSenderHandle {
-    tx: mpsc::Sender<ReturnSendWork>,
+    control_tx: mpsc::Sender<ReturnSendWork>,
+    data_tx: mpsc::Sender<ReturnSendWork>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,7 +182,22 @@ struct ServerRuntimeStatus {
     ingress_reorder: ServerIngressReorderStatus,
     repair: XBondRepairStatus,
     server_health: XBondServerHealthStatus,
+    control_plane: ServerControlPlaneStatus,
     counters: TunnelCounters,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+struct ServerControlPlaneStatus {
+    prioritized_frames_processed: u64,
+    last_control_progress_at_micros: u64,
+    protocol_acks_queued: u64,
+    schedule_updates_accepted: u64,
+    ingress_payload_queue_drops: u64,
+    primary_return_queue_full: u64,
+    repair_return_queue_full: u64,
+    control_send_queue_full: u64,
+    control_datagrams_sent: u64,
+    control_send_failures: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -403,6 +432,105 @@ impl IngressReorderHoldController {
     }
 }
 
+fn is_prioritized_inbound(kind: PacketKind) -> bool {
+    matches!(
+        kind,
+        PacketKind::Heartbeat | PacketKind::Control | PacketKind::Repair
+    )
+}
+
+async fn dispatch_inbound_frame(
+    control_tx: &mpsc::Sender<InboundServerFrame>,
+    payload_tx: &mpsc::Sender<InboundServerFrame>,
+    inbound: InboundServerFrame,
+    payload_queue_drops: &AtomicU64,
+) -> bool {
+    if is_prioritized_inbound(inbound.frame.header.kind) {
+        return control_tx.send(inbound).await.is_ok();
+    }
+
+    match payload_tx.try_send(inbound) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            payload_queue_drops.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+async fn receive_prioritized_frame(
+    control_rx: &mut mpsc::Receiver<InboundServerFrame>,
+    payload_rx: &mut mpsc::Receiver<InboundServerFrame>,
+) -> Option<InboundServerFrame> {
+    tokio::select! {
+        biased;
+        inbound = control_rx.recv() => match inbound {
+            Some(inbound) => Some(inbound),
+            None => payload_rx.recv().await,
+        },
+        inbound = payload_rx.recv() => match inbound {
+            Some(inbound) => Some(inbound),
+            None => control_rx.recv().await,
+        },
+    }
+}
+
+fn spawn_control_sender(
+    socket: Arc<UdpSocket>,
+    json_events: bool,
+) -> (
+    mpsc::Sender<ControlSendWork>,
+    Arc<AtomicU64>,
+    Arc<AtomicU64>,
+) {
+    let (tx, mut rx) = mpsc::channel::<ControlSendWork>(CONTROL_QUEUE_CAPACITY);
+    let sent = Arc::new(AtomicU64::new(0));
+    let failures = Arc::new(AtomicU64::new(0));
+    let task_sent = sent.clone();
+    let task_failures = failures.clone();
+    tokio::spawn(async move {
+        while let Some(work) = rx.recv().await {
+            match socket.send_to(&work.encoded, work.peer).await {
+                Ok(_) => {
+                    task_sent.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error) => {
+                    task_failures.fetch_add(1, Ordering::Relaxed);
+                    if json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "control-datagram-send-failed",
+                                "peer": work.peer.to_string(),
+                                "error": error.to_string(),
+                            })
+                        );
+                    }
+                }
+            }
+        }
+    });
+    (tx, sent, failures)
+}
+
+fn enqueue_control_datagram(
+    tx: &mpsc::Sender<ControlSendWork>,
+    encoded: Vec<u8>,
+    peer: SocketAddr,
+    control_plane: &mut ServerControlPlaneStatus,
+) -> bool {
+    match tx.try_send(ControlSendWork { encoded, peer }) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            control_plane.control_send_queue_full =
+                control_plane.control_send_queue_full.saturating_add(1);
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -410,6 +538,8 @@ async fn main() -> Result<()> {
     let key = XBondKey::from_passphrase(&key_text);
     let server_health = start_server_health_monitor(&args);
     let socket = Arc::new(bind_udp_socket(&args.bind, args.udp_socket_buffer_bytes).await?);
+    let (control_send_tx, control_datagrams_sent, control_send_failures) =
+        spawn_control_sender(socket.clone(), args.json_events);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let mut tun = match args.tun_name.as_deref() {
         Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
@@ -442,15 +572,21 @@ async fn main() -> Result<()> {
     ));
     let mut status_tick = time::interval(Duration::from_secs(1));
     let mut json_status_event_counter = 0u32;
+    let mut control_plane = ServerControlPlaneStatus::default();
 
-    let (udp_frame_tx, mut udp_frame_rx) =
+    let (control_frame_tx, mut control_frame_rx) =
+        mpsc::channel::<InboundServerFrame>(CONTROL_QUEUE_CAPACITY);
+    let (payload_frame_tx, mut payload_frame_rx) =
         mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
-    let (send_report_tx, mut send_report_rx) = mpsc::unbounded_channel::<ReturnSendReport>();
+    let ingress_payload_queue_drops = Arc::new(AtomicU64::new(0));
+    let (send_report_tx, mut send_report_rx) =
+        mpsc::channel::<ReturnSendReport>(SEND_REPORT_QUEUE_CAPACITY);
     let recv_socket = socket.clone();
     let recv_key = key.clone();
+    let recv_payload_queue_drops = ingress_payload_queue_drops.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
-        let mut payload = Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES);
+        let mut payload = Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES);
         loop {
             let (len, peer) = match recv_socket.recv_from(&mut buf).await {
                 Ok(result) => result,
@@ -464,14 +600,19 @@ async fn main() -> Result<()> {
             else {
                 continue;
             };
-            let frame = XBondFrame::new(
-                header,
-                std::mem::replace(&mut payload, Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES)),
-            );
-            if udp_frame_tx
-                .send(InboundServerFrame { frame, peer })
-                .await
-                .is_err()
+            let frame_payload =
+                std::mem::replace(&mut payload, Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES));
+            let inbound = InboundServerFrame {
+                frame: XBondFrame::new(header, frame_payload),
+                peer,
+            };
+            if !dispatch_inbound_frame(
+                &control_frame_tx,
+                &payload_frame_tx,
+                inbound,
+                &recv_payload_queue_drops,
+            )
+            .await
             {
                 break;
             }
@@ -545,16 +686,97 @@ async fn main() -> Result<()> {
         &repair,
         &server_health_status,
         &hold_controller,
+        control_plane,
     )?;
     loop {
         tokio::select! {
-            Some(inbound) = udp_frame_rx.recv() => {
+            Some(inbound) = receive_prioritized_frame(&mut control_frame_rx, &mut payload_frame_rx) => {
                 let frame = inbound.frame;
                 let peer = inbound.peer;
                 let receive_micros = monotonic_micros();
-                if last_session_id != 0 && frame.header.session_id != last_session_id {
+                if is_prioritized_inbound(frame.header.kind) {
+                    control_plane.prioritized_frames_processed = control_plane
+                        .prioritized_frames_processed
+                        .saturating_add(1);
+                    control_plane.last_control_progress_at_micros = now_micros();
+                }
+
+                if !session_is_current_or_new(last_session_id, frame.header.session_id) {
+                    continue;
+                }
+
+                let should_ack = matches!(
+                    frame.header.kind,
+                    PacketKind::Heartbeat | PacketKind::Control
+                );
+                let outcome = receiver.observe(&frame, now_micros());
+                let ack_sent = should_ack
+                    && matches!(
+                        outcome,
+                        ReceiveOutcome::Accepted | ReceiveOutcome::Duplicate
+                    );
+                if ack_sent {
+                    let reply = build_ack_frame(&frame);
+                    let encoded = reply.encode_sealed(&key)?;
+                    if enqueue_control_datagram(
+                        &control_send_tx,
+                        encoded,
+                        peer,
+                        &mut control_plane,
+                    ) {
+                        control_plane.protocol_acks_queued =
+                            control_plane.protocol_acks_queued.saturating_add(1);
+                    }
+                }
+
+                if args.json_events && args.trace_packets {
+                    print_packet_event(
+                        event_name(outcome),
+                        outcome,
+                        &frame,
+                        &peer.to_string(),
+                        ack_sent,
+                        &receiver,
+                    );
+                }
+
+                if outcome != ReceiveOutcome::Accepted {
+                    if frame.header.kind == PacketKind::Repair {
+                        repair.late_frames = repair.late_frames.saturating_add(1);
+                    }
+                    continue;
+                }
+
+                let session_changed = last_session_id != 0
+                    && frame.header.session_id != last_session_id;
+                let parsed_control = parse_return_control(&frame, receive_micros);
+                if parsed_control.as_ref().is_some_and(|candidate| {
+                    !return_control_update_is_valid(
+                        if session_changed {
+                            None
+                        } else {
+                            return_control.as_ref()
+                        },
+                        candidate,
+                    )
+                }) {
+                    if args.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "return-schedule-rejected",
+                                "session_id": frame.header.session_id,
+                                "schedule_generation": parsed_control.as_ref().map(|control| control.schedule_generation),
+                                "current_schedule_generation": return_control.as_ref().map(|control| control.schedule_generation),
+                            })
+                        );
+                    }
+                    continue;
+                }
+
+                if session_changed {
                     peers.clear();
-                    return_senders.clear();
+                    abort_return_senders(&mut return_senders);
                     return_control = None;
                     resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
                     if hold_controller.reset_to_normal(reorder.stats(), &repair) {
@@ -580,7 +802,7 @@ async fn main() -> Result<()> {
                         },
                     );
                 }
-                if let Some(control) = parse_return_control(&frame, receive_micros) {
+                if let Some(control) = parsed_control {
                     let schedule_changed = return_control.as_ref().is_none_or(|previous| {
                         previous.schedule != control.schedule
                             || previous.policy != control.policy
@@ -604,6 +826,9 @@ async fn main() -> Result<()> {
                         }
                     }
                     return_control = Some(control);
+                    control_plane.schedule_updates_accepted = control_plane
+                        .schedule_updates_accepted
+                        .saturating_add(1);
                     if args.json_events && schedule_changed {
                         println!(
                             "{}",
@@ -642,79 +867,37 @@ async fn main() -> Result<()> {
                         args.ingress_reorder_capacity,
                     );
                     send_server_recovery_status(
-                        &socket,
+                        &control_send_tx,
                         &key,
                         &peers,
                         last_session_id,
                         &mut control_sequence,
                         status,
                         args.json_events,
-                    )
-                    .await?;
+                        &mut control_plane,
+                    )?;
                     last_server_recovery_status_sent = Instant::now();
                 }
 
-                let should_ack = matches!(
-                    frame.header.kind,
-                    PacketKind::Heartbeat | PacketKind::Control
-                );
-                let outcome = receiver.observe(&frame, now_micros());
-                let ack_sent = should_ack
-                    && matches!(
-                        outcome,
-                        ReceiveOutcome::Accepted | ReceiveOutcome::Duplicate
-                    );
-                if ack_sent {
-                    let reply = build_ack_frame(&frame);
-                    let encoded = reply.encode_sealed(&key)?;
-                    if let Err(error) = socket.send_to(&encoded, peer).await {
-                        if args.json_events {
-                            println!(
-                                "{}",
-                                serde_json::json!({
-                                    "event": "ack-send-failed",
-                                    "peer": peer.to_string(),
-                                    "path_id": frame.header.path_id,
-                                    "sequence": frame.header.sequence,
-                                    "error": error.to_string(),
-                                })
-                            );
-                        }
-                    }
-                }
-
-                if args.json_events && args.trace_packets {
-                    print_packet_event(
-                        event_name(outcome),
-                        outcome,
-                        &frame,
-                        &peer.to_string(),
-                        ack_sent,
-                        &receiver,
-                    );
-                }
-
-                if outcome == ReceiveOutcome::Accepted {
-                    if let Some(sequences) = parse_repair_request(&frame) {
-                        repair.requests_received = repair
-                            .requests_received
-                            .saturating_add(sequences.len() as u64);
-                        send_repair_frames_from_server_cache(
-                            &args,
-                            &socket,
-                            &key,
-                            &mut return_senders,
-                            return_control.as_ref(),
-                            &peers,
-                            &mut resend_cache,
-                            last_session_id,
-                            &sequences,
-                            &send_report_tx,
-                            &mut repair,
-                        )
-                        .await?;
-                        continue;
-                    }
+                if let Some(sequences) = parse_repair_request(&frame) {
+                    repair.requests_received = repair
+                        .requests_received
+                        .saturating_add(sequences.len() as u64);
+                    send_repair_frames_from_server_cache(
+                        &args,
+                        &socket,
+                        &key,
+                        &mut return_senders,
+                        return_control.as_ref(),
+                        &peers,
+                        &mut resend_cache,
+                        last_session_id,
+                        &sequences,
+                        &send_report_tx,
+                        &mut repair,
+                        &mut control_plane,
+                    )?;
+                    continue;
                 }
 
                 let mut forwarded_packets = 0u64;
@@ -757,7 +940,7 @@ async fn main() -> Result<()> {
                                     data_packets_forwarded.saturating_add(delivered);
                                 forwarded_packets = forwarded_packets.saturating_add(delivered);
                                 send_repair_requests_for_ingress_gaps(
-                                    &socket,
+                                    &control_send_tx,
                                     &key,
                                     &peers,
                                     last_session_id,
@@ -767,9 +950,8 @@ async fn main() -> Result<()> {
                                     return_control
                                         .as_ref()
                                         .is_some_and(|control| control.recovery_active),
-                                    args.json_events,
-                                )
-                                .await?;
+                                    &mut control_plane,
+                                )?;
                             }
                         } else {
                             non_ipv4_packets_dropped += 1;
@@ -837,12 +1019,6 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                if frame.header.kind == PacketKind::Repair
-                    && matches!(outcome, ReceiveOutcome::Duplicate | ReceiveOutcome::Expired)
-                {
-                    repair.late_frames = repair.late_frames.saturating_add(1);
-                }
-
                 if let Some((header, payload_len)) = trace_tunnel_payload {
                     print_data_event(
                         &header,
@@ -862,7 +1038,6 @@ async fn main() -> Result<()> {
             }
 
             Some(report) = send_report_rx.recv() => {
-                let _ = report.encoded_bytes;
                 if report.success && report.packet_kind == PacketKind::Repair {
                     repair.frames_sent = repair.frames_sent.saturating_add(1);
                 }
@@ -889,7 +1064,7 @@ async fn main() -> Result<()> {
                     )?;
                     data_packets_forwarded = data_packets_forwarded.saturating_add(delivered);
                     send_repair_requests_for_ingress_gaps(
-                        &socket,
+                        &control_send_tx,
                         &key,
                         &peers,
                         last_session_id,
@@ -899,13 +1074,18 @@ async fn main() -> Result<()> {
                         return_control
                             .as_ref()
                             .is_some_and(|control| control.recovery_active),
-                        args.json_events,
-                    )
-                    .await?;
+                        &mut control_plane,
+                    )?;
                 }
             }
 
             _ = status_tick.tick() => {
+                control_plane.ingress_payload_queue_drops =
+                    ingress_payload_queue_drops.load(Ordering::Relaxed);
+                control_plane.control_datagrams_sent =
+                    control_datagrams_sent.load(Ordering::Relaxed);
+                control_plane.control_send_failures =
+                    control_send_failures.load(Ordering::Relaxed);
                 repair.cache_entries = resend_cache.len();
                 let recovery_active = return_control
                     .as_ref()
@@ -942,6 +1122,7 @@ async fn main() -> Result<()> {
                     &repair,
                     &server_health_status,
                     &hold_controller,
+                    control_plane,
                 )?;
                 if args.json_events {
                     json_status_event_counter = json_status_event_counter.saturating_add(1);
@@ -957,6 +1138,7 @@ async fn main() -> Result<()> {
                                     "stats": reorder.stats(),
                                 },
                                 "counters": counters,
+                                "control_plane": control_plane,
                             })
                         );
                     }
@@ -978,15 +1160,15 @@ async fn main() -> Result<()> {
                         args.ingress_reorder_capacity,
                     );
                     send_server_recovery_status(
-                        &socket,
+                        &control_send_tx,
                         &key,
                         &peers,
                         last_session_id,
                         &mut control_sequence,
                         status,
                         args.json_events && args.trace_packets,
-                    )
-                    .await?;
+                        &mut control_plane,
+                    )?;
                     last_server_recovery_status_sent = Instant::now();
                 }
             }
@@ -1039,22 +1221,20 @@ async fn main() -> Result<()> {
                         header,
                         payload: packet_payload.clone(),
                     };
-                    let enqueue_result = if kind == PacketKind::Data {
-                        sender.tx.send(work).await.map_err(|_| {
-                            std::io::Error::new(
-                                ErrorKind::BrokenPipe,
-                                "XBond return path sender stopped",
-                            )
-                        })
-                    } else {
-                        match sender.tx.try_send(work) {
-                            Ok(()) => Ok(()),
-                            Err(mpsc::error::TrySendError::Full(_)) => continue,
-                            Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
-                                ErrorKind::BrokenPipe,
-                                "XBond duplicate return path sender stopped",
-                            )),
+                    let enqueue_result = match sender.data_tx.try_send(work) {
+                        Ok(()) => Ok(()),
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            if kind == PacketKind::Data {
+                                control_plane.primary_return_queue_full = control_plane
+                                    .primary_return_queue_full
+                                    .saturating_add(1);
+                            }
+                            continue;
                         }
+                        Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+                            ErrorKind::BrokenPipe,
+                            "XBond return path sender stopped",
+                        )),
                     };
                     match enqueue_result {
                         Ok(()) => sent_paths += 1,
@@ -1250,52 +1430,77 @@ fn spawn_return_sender(
     socket: Arc<UdpSocket>,
     key: XBondKey,
     capacity: usize,
-    report_tx: mpsc::UnboundedSender<ReturnSendReport>,
+    report_tx: mpsc::Sender<ReturnSendReport>,
 ) -> ReturnSenderHandle {
-    let (tx, mut rx) = mpsc::channel::<ReturnSendWork>(capacity.max(1));
-    tokio::spawn(async move {
+    let (control_tx, mut control_rx) = mpsc::channel::<ReturnSendWork>(CONTROL_QUEUE_CAPACITY);
+    let (data_tx, mut data_rx) = mpsc::channel::<ReturnSendWork>(capacity.max(1));
+    let task = tokio::spawn(async move {
         let mut encoded = Vec::with_capacity(4096);
-        while let Some(work) = rx.recv().await {
+        while let Some(work) = receive_prioritized_return_work(&mut control_rx, &mut data_rx).await
+        {
             let report = match encode_sealed_payload_into(
                 &work.header,
                 work.payload.as_slice(),
                 &key,
                 &mut encoded,
             ) {
-                Ok(()) => {
-                    let encoded_bytes = encoded.len() as u64;
-                    match socket.send_to(&encoded, work.peer).await {
-                        Ok(_) => ReturnSendReport {
-                            path_id,
-                            packet_kind: work.packet_kind,
-                            encoded_bytes,
-                            success: true,
-                            peer: work.peer,
-                            error: None,
-                        },
-                        Err(error) => ReturnSendReport {
-                            path_id,
-                            packet_kind: work.packet_kind,
-                            encoded_bytes,
-                            success: false,
-                            peer: work.peer,
-                            error: Some(error.to_string()),
-                        },
-                    }
-                }
+                Ok(()) => match socket.send_to(&encoded, work.peer).await {
+                    Ok(_) => ReturnSendReport {
+                        path_id,
+                        packet_kind: work.packet_kind,
+                        success: true,
+                        peer: work.peer,
+                        error: None,
+                    },
+                    Err(error) => ReturnSendReport {
+                        path_id,
+                        packet_kind: work.packet_kind,
+                        success: false,
+                        peer: work.peer,
+                        error: Some(error.to_string()),
+                    },
+                },
                 Err(error) => ReturnSendReport {
                     path_id,
                     packet_kind: work.packet_kind,
-                    encoded_bytes: 0,
                     success: false,
                     peer: work.peer,
                     error: Some(error.to_string()),
                 },
             };
-            let _ = report_tx.send(report);
+            if report.packet_kind == PacketKind::Repair || !report.success {
+                let _ = report_tx.try_send(report);
+            }
         }
     });
-    ReturnSenderHandle { tx }
+    ReturnSenderHandle {
+        control_tx,
+        data_tx,
+        task,
+    }
+}
+
+fn abort_return_senders(return_senders: &mut HashMap<u16, ReturnSenderHandle>) {
+    for (_, sender) in return_senders.drain() {
+        sender.task.abort();
+    }
+}
+
+async fn receive_prioritized_return_work(
+    control_rx: &mut mpsc::Receiver<ReturnSendWork>,
+    data_rx: &mut mpsc::Receiver<ReturnSendWork>,
+) -> Option<ReturnSendWork> {
+    tokio::select! {
+        biased;
+        work = control_rx.recv() => match work {
+            Some(work) => Some(work),
+            None => data_rx.recv().await,
+        },
+        work = data_rx.recv() => match work {
+            Some(work) => Some(work),
+            None => control_rx.recv().await,
+        },
+    }
 }
 
 fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
@@ -1459,6 +1664,7 @@ fn write_server_status(
     repair: &XBondRepairStatus,
     server_health: &XBondServerHealthStatus,
     hold_controller: &IngressReorderHoldController,
+    control_plane: ServerControlPlaneStatus,
 ) -> Result<()> {
     if let Some(parent) = args.status_path.parent() {
         std::fs::create_dir_all(parent)
@@ -1498,6 +1704,7 @@ fn write_server_status(
         },
         repair: repair.clone(),
         server_health: server_health.clone(),
+        control_plane,
         counters,
     };
     let json = serde_json::to_vec(&status)?;
@@ -1619,14 +1826,15 @@ fn build_server_recovery_status(
     }
 }
 
-async fn send_server_recovery_status(
-    socket: &UdpSocket,
+fn send_server_recovery_status(
+    control_send_tx: &mpsc::Sender<ControlSendWork>,
     key: &XBondKey,
     peers: &HashMap<u16, PeerState>,
     session_id: u64,
     control_sequence: &mut u64,
     status: XBondServerRecoveryStatus,
     json_events: bool,
+    control_plane: &mut ServerControlPlaneStatus,
 ) -> Result<()> {
     let now = monotonic_micros();
     let peers = fresh_peers(peers, now);
@@ -1650,20 +1858,7 @@ async fn send_server_recovery_status(
             payload.clone(),
         );
         let encoded = frame.encode_sealed(key)?;
-        if let Err(error) = socket.send_to(&encoded, *peer).await {
-            if json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "server-recovery-status-send-failed",
-                        "path_id": path_id,
-                        "peer": peer.to_string(),
-                        "sequence": sequence,
-                        "error": error.to_string(),
-                    })
-                );
-            }
-        }
+        enqueue_control_datagram(control_send_tx, encoded, *peer, control_plane);
     }
 
     if json_events {
@@ -1680,8 +1875,8 @@ async fn send_server_recovery_status(
     Ok(())
 }
 
-async fn send_repair_requests_for_ingress_gaps(
-    socket: &UdpSocket,
+fn send_repair_requests_for_ingress_gaps(
+    control_send_tx: &mpsc::Sender<ControlSendWork>,
     key: &XBondKey,
     peers: &HashMap<u16, PeerState>,
     session_id: u64,
@@ -1689,7 +1884,7 @@ async fn send_repair_requests_for_ingress_gaps(
     reorder: &mut PacketReorderBuffer,
     repair: &mut XBondRepairStatus,
     recovery_active: bool,
-    json_events: bool,
+    control_plane: &mut ServerControlPlaneStatus,
 ) -> Result<()> {
     let now = monotonic_micros();
     let peers = fresh_peers(peers, now);
@@ -1725,27 +1920,13 @@ async fn send_repair_requests_for_ingress_gaps(
             payload.clone(),
         );
         let encoded = frame.encode_sealed(key)?;
-        if let Err(error) = socket.send_to(&encoded, peer).await {
-            if json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "ingress-repair-request-send-failed",
-                        "path_id": path_id,
-                        "peer": peer.to_string(),
-                        "sequence": control_id,
-                        "repair_sequences": sequences,
-                        "error": error.to_string(),
-                    })
-                );
-            }
-        }
+        enqueue_control_datagram(control_send_tx, encoded, peer, control_plane);
     }
 
     Ok(())
 }
 
-async fn send_repair_frames_from_server_cache(
+fn send_repair_frames_from_server_cache(
     args: &Args,
     socket: &Arc<UdpSocket>,
     key: &XBondKey,
@@ -1755,8 +1936,9 @@ async fn send_repair_frames_from_server_cache(
     resend_cache: &mut ResendCache,
     session_id: u64,
     sequences: &[u64],
-    send_report_tx: &mpsc::UnboundedSender<ReturnSendReport>,
+    send_report_tx: &mpsc::Sender<ReturnSendReport>,
     repair: &mut XBondRepairStatus,
+    control_plane: &mut ServerControlPlaneStatus,
 ) -> Result<()> {
     for sequence in sequences.iter().copied().take(MAX_REPAIR_REQUESTS) {
         let now = monotonic_micros();
@@ -1773,8 +1955,8 @@ async fn send_repair_frames_from_server_cache(
         }
 
         let send_micros = now_micros();
-        for (index, (path_id, peer, _kind)) in targets.into_iter().enumerate() {
-            let tx = return_senders
+        for (path_id, peer, _kind) in targets {
+            let control_tx = return_senders
                 .entry(path_id)
                 .or_insert_with(|| {
                     spawn_return_sender(
@@ -1785,7 +1967,7 @@ async fn send_repair_frames_from_server_cache(
                         send_report_tx.clone(),
                     )
                 })
-                .tx
+                .control_tx
                 .clone();
             let mut header = XBondHeader::new(
                 PacketKind::Repair,
@@ -1801,19 +1983,15 @@ async fn send_repair_frames_from_server_cache(
                 header,
                 payload: payload.clone(),
             };
-            if index == 0 {
-                if tx.send(work).await.is_err() {
+            match control_tx.try_send(work) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
                     repair.queue_drops = repair.queue_drops.saturating_add(1);
+                    control_plane.repair_return_queue_full =
+                        control_plane.repair_return_queue_full.saturating_add(1);
                 }
-            } else {
-                match tx.try_send(work) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        repair.queue_drops = repair.queue_drops.saturating_add(1);
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        repair.queue_drops = repair.queue_drops.saturating_add(1);
-                    }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    repair.queue_drops = repair.queue_drops.saturating_add(1);
                 }
             }
         }
@@ -1845,37 +2023,74 @@ fn build_return_control(
     }
 }
 
+fn session_is_current_or_new(current_session_id: u64, candidate_session_id: u64) -> bool {
+    current_session_id == 0 || candidate_session_id >= current_session_id
+}
+
+fn return_control_update_is_valid(
+    current: Option<&ReturnControl>,
+    candidate: &ReturnControl,
+) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+
+    if candidate.schedule_generation != current.schedule_generation {
+        return candidate.schedule_generation > current.schedule_generation;
+    }
+
+    candidate.schedule == current.schedule
+        && candidate.policy == current.policy
+        && candidate.policy_config == current.policy_config
+        && candidate.recovery_active == current.recovery_active
+}
+
 fn select_return_targets(
     control: Option<&ReturnControl>,
     peers: &HashMap<u16, PeerState>,
     packet_len: usize,
     now_micros: u64,
 ) -> Vec<(u16, SocketAddr, PacketKind)> {
-    let mut scheduled = control
-        .filter(|control| !return_schedule_is_stale(control, now_micros))
-        .map(|control| {
-            control
-                .transmission_plans
-                .for_packet_len(
-                    packet_len,
-                    control.policy_config.interactive_packet_threshold_bytes,
-                )
-                .iter()
-                .filter(|transmission| {
-                    matches!(
-                        transmission.packet_kind,
-                        PacketKind::Data | PacketKind::Duplicate
-                    )
-                })
-                .filter_map(|transmission| {
-                    peers
-                        .get(&transmission.path_id)
-                        .filter(|peer| peer_is_fresh(peer, now_micros))
-                        .map(|peer| (transmission.path_id, peer.addr, transmission.packet_kind))
-                })
-                .collect::<Vec<_>>()
+    let Some(control) = control else {
+        return Vec::new();
+    };
+    if return_schedule_grace_expired(control, now_micros) {
+        return Vec::new();
+    }
+
+    let transmissions = control
+        .transmission_plans
+        .for_packet_len(
+            packet_len,
+            control.policy_config.interactive_packet_threshold_bytes,
+        )
+        .iter()
+        .filter(|transmission| {
+            matches!(
+                transmission.packet_kind,
+                PacketKind::Data | PacketKind::Duplicate
+            )
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
+    if return_schedule_is_stale(control, now_micros)
+        && transmissions.iter().any(|transmission| {
+            !peers
+                .get(&transmission.path_id)
+                .is_some_and(|peer| peer_is_fresh(peer, now_micros))
+        })
+    {
+        return Vec::new();
+    }
+
+    let mut scheduled = transmissions
+        .into_iter()
+        .filter_map(|transmission| {
+            peers
+                .get(&transmission.path_id)
+                .filter(|peer| peer_is_fresh(peer, now_micros))
+                .map(|peer| (transmission.path_id, peer.addr, transmission.packet_kind))
+        })
+        .collect::<Vec<_>>();
 
     if !scheduled.is_empty() {
         if !scheduled
@@ -1898,6 +2113,11 @@ fn peer_is_fresh(peer: &PeerState, now_micros: u64) -> bool {
 
 fn return_schedule_is_stale(control: &ReturnControl, now_micros: u64) -> bool {
     now_micros.saturating_sub(control.received_at_micros) > RETURN_SCHEDULE_STALE_AFTER_MICROS
+}
+
+fn return_schedule_grace_expired(control: &ReturnControl, now_micros: u64) -> bool {
+    now_micros.saturating_sub(control.received_at_micros)
+        > RETURN_SCHEDULE_STALE_AFTER_MICROS.saturating_add(RETURN_SCHEDULE_GRACE_MICROS)
 }
 
 fn schedule_age_ms(control: &ReturnControl, now_micros: u64) -> u64 {
@@ -2075,6 +2295,123 @@ mod tests {
         assert!(is_data_like(PacketKind::Repair));
         assert!(!is_data_like(PacketKind::Heartbeat));
         assert!(!is_data_like(PacketKind::Fec));
+    }
+
+    #[tokio::test]
+    async fn prioritized_control_progresses_when_payload_queue_is_saturated() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (payload_tx, mut payload_rx) = mpsc::channel(1);
+        let drops = AtomicU64::new(0);
+        let peer = "192.0.2.1:1000".parse().unwrap();
+        let inbound = |kind, sequence| InboundServerFrame {
+            frame: XBondFrame::new(
+                XBondHeader::new(kind, 1, sequence, now_micros(), 1),
+                vec![0x45],
+            ),
+            peer,
+        };
+
+        assert!(
+            dispatch_inbound_frame(
+                &control_tx,
+                &payload_tx,
+                inbound(PacketKind::Data, 1),
+                &drops,
+            )
+            .await
+        );
+        assert!(
+            dispatch_inbound_frame(
+                &control_tx,
+                &payload_tx,
+                inbound(PacketKind::Data, 2),
+                &drops,
+            )
+            .await
+        );
+        assert!(
+            dispatch_inbound_frame(
+                &control_tx,
+                &payload_tx,
+                inbound(PacketKind::Heartbeat, 3),
+                &drops,
+            )
+            .await
+        );
+
+        let received = time::timeout(
+            Duration::from_millis(50),
+            receive_prioritized_frame(&mut control_rx, &mut payload_rx),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
+        assert_eq!(payload_rx.len(), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn repair_work_precedes_queued_return_payload() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (data_tx, mut data_rx) = mpsc::channel(1);
+        let peer = "192.0.2.1:1000".parse().unwrap();
+        let work = |kind, sequence| ReturnSendWork {
+            packet_kind: kind,
+            peer,
+            header: XBondHeader::new(kind, 1, sequence, now_micros(), 1),
+            payload: Arc::new(vec![0x45]),
+        };
+        data_tx.try_send(work(PacketKind::Data, 1)).unwrap();
+        control_tx.try_send(work(PacketKind::Repair, 2)).unwrap();
+
+        let received = receive_prioritized_return_work(&mut control_rx, &mut data_rx)
+            .await
+            .unwrap();
+        assert_eq!(received.packet_kind, PacketKind::Repair);
+        assert_eq!(data_rx.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn clearing_return_senders_aborts_queued_sender_tasks() {
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _drop_flag = DropFlag(task_dropped);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (data_tx, _data_rx) = mpsc::channel(1);
+        let mut senders = HashMap::from([(
+            1,
+            ReturnSenderHandle {
+                control_tx,
+                data_tx,
+                task,
+            },
+        )]);
+
+        abort_return_senders(&mut senders);
+
+        assert!(senders.is_empty());
+        time::timeout(Duration::from_millis(50), async {
+            while !dropped.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[test]
@@ -2275,6 +2612,64 @@ mod tests {
     }
 
     #[test]
+    fn schedule_generation_rejects_regression_and_conflicting_replay() {
+        let schedule = SchedulePlan {
+            mode: ScheduleMode::AnchorOnly,
+            anchor_path_id: Some(1),
+            data_path_ids: vec![1],
+            duplicate_path_ids: Vec::new(),
+            fec_path_ids: Vec::new(),
+        };
+        let current = build_return_control(
+            7,
+            1,
+            schedule.clone(),
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+        let regressed = build_return_control(
+            6,
+            2,
+            schedule.clone(),
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+        let conflicting = build_return_control(
+            7,
+            3,
+            SchedulePlan {
+                anchor_path_id: Some(2),
+                data_path_ids: vec![2],
+                ..schedule.clone()
+            },
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+        let refresh = build_return_control(
+            7,
+            4,
+            schedule,
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+
+        assert!(!return_control_update_is_valid(Some(&current), &regressed));
+        assert!(!return_control_update_is_valid(
+            Some(&current),
+            &conflicting
+        ));
+        assert!(return_control_update_is_valid(Some(&current), &refresh));
+    }
+
+    #[test]
     fn scheduled_return_targets_follow_client_schedule_order() {
         let peer_3: SocketAddr = "192.0.2.3:3000".parse().unwrap();
         let peer_5: SocketAddr = "192.0.2.5:5000".parse().unwrap();
@@ -2429,7 +2824,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_return_schedule_returns_no_targets() {
+    fn stale_return_schedule_uses_bounded_grace_with_exact_fresh_peers() {
         let peer_1: SocketAddr = "192.0.2.1:1000".parse().unwrap();
         let peer_2: SocketAddr = "192.0.2.2:2000".parse().unwrap();
         let now = RETURN_SCHEDULE_STALE_AFTER_MICROS + 2_000_000;
@@ -2451,6 +2846,41 @@ mod tests {
         );
 
         assert!(return_schedule_is_stale(&control, now));
+        assert!(!return_schedule_grace_expired(&control, now));
+        assert_eq!(
+            select_return_targets(Some(&control), &peers, 1_200, now),
+            vec![
+                (1, peer_1, PacketKind::Data),
+                (2, peer_2, PacketKind::Duplicate),
+            ]
+        );
+
+        let missing_peer = HashMap::from([(1, peer_state(peer_1, now))]);
+        assert!(select_return_targets(Some(&control), &missing_peer, 1_200, now).is_empty());
+    }
+
+    #[test]
+    fn return_schedule_fails_closed_after_grace_even_with_fresh_peers() {
+        let peer: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let now = RETURN_SCHEDULE_STALE_AFTER_MICROS + RETURN_SCHEDULE_GRACE_MICROS + 1;
+        let peers = HashMap::from([(1, peer_state(peer, now))]);
+        let control = build_return_control(
+            7,
+            0,
+            SchedulePlan {
+                mode: ScheduleMode::AnchorOnly,
+                anchor_path_id: Some(1),
+                data_path_ids: vec![1],
+                duplicate_path_ids: Vec::new(),
+                fec_path_ids: Vec::new(),
+            },
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+
+        assert!(return_schedule_grace_expired(&control, now));
         assert!(select_return_targets(Some(&control), &peers, 1_200, now).is_empty());
     }
 
