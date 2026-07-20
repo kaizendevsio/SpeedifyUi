@@ -13,13 +13,23 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.105";
+    public const string CurrentVersion = "xbond-2026.06.106";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Polished Live topology labels.",
+            Changes =
+            [
+                "Moved Live adapter labels clear of their energy gates and removed redundant scene text for a cleaner desktop topology."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.105",
             Date = "2026-07-21",
             Summary = "Introduced the Ulink identity and a cleaner live topology.",
             Changes =

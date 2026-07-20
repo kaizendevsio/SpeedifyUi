@@ -805,9 +805,9 @@ function addSceneLabels(state, cache, paths, compact) {
                 cache,
                 path.name || path.iface || 'Adapter',
                 path.active ? '#f3f3f3' : '#a3a3a3',
-                0.68
+                0.58
             );
-            label.position.copy(node.position).add(new THREE.Vector3(0.62, 0.04, 0));
+            label.position.copy(node.position).add(new THREE.Vector3(1.52, 0.04, 0));
             state.labelGroup.add(label);
         });
     }
@@ -820,11 +820,6 @@ function addSceneLabels(state, cache, paths, compact) {
     serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
     state.labelGroup.add(serverLabel);
 
-    if (!compact) {
-        const localLabel = createTextSprite(THREE, cache, 'Local adapters', '#858585', 0.56);
-        localLabel.position.set(-4.92, 1.94, 0.04);
-        state.labelGroup.add(localLabel);
-    }
 }
 
 function createTextSprite(THREE, cache, text, color, size) {
