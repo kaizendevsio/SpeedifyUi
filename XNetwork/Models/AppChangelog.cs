@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.103";
+    public const string CurrentVersion = "xbond-2026.06.104";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Simplified dashboard tunnel status.",
+            Changes =
+            [
+                "Removed the duplicate recovery badge from the connection summary while keeping recovery state on the XBond tunnel card.",
+                "Removed the redundant XBond active badge.",
+                "Server health now stays hidden while healthy and appears only when degraded, down, or unknown."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.103",
             Date = "2026-07-20",
             Summary = "Tightened XBond runtime accounting and release validation.",
             Changes =

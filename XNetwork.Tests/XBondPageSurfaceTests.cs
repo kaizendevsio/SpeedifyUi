@@ -40,6 +40,20 @@ public class XBondPageSurfaceTests
             content);
     }
 
+    [Fact]
+    public void Dashboard_ShowsOnlyActionableTunnelStatusBadges()
+    {
+        var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));
+        var summary = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Custom", "ConnectionSummary.razor"));
+
+        Assert.DoesNotContain("GetServerBadgeClass", home);
+        Assert.DoesNotContain("XBond active", home);
+        Assert.Contains("_snapshot.EffectiveServerHealthStatus != \"healthy\"", home);
+        Assert.Contains("Recovery @_snapshot.RecoveryHoldMs ms", home);
+        Assert.DoesNotContain("IsRecoveryActive", summary);
+        Assert.DoesNotContain("RecoveryHoldMs", summary);
+    }
+
     private static string FindRepoFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
