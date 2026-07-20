@@ -69,7 +69,7 @@ never relies on a Windows bind path being visible to the remote daemon.
 | --- | --- |
 | `topology-smoke` | Three physical paths, real TUNs, client/server startup, tunnel ping |
 | `healthy-single` | Single-path RTT, loss, throughput, CPU/RSS |
-| `anchor-bad-backup` | Stable path with two impaired backups |
+| `anchor-bad-backup` | Median clean-tunnel versus impaired-tunnel throughput with explicit before/after anchor, backup degradation, and recovery preconditions |
 | `all-intermittent` | Delay, jitter, correlated loss, and reordering on all paths |
 | `heavy-bidirectional` | Saturated upload/download with concurrent tunnel health checks |
 | `silent-blackhole` | Drops only XBond UDP on one path while direct path ICMP remains healthy |
@@ -83,7 +83,7 @@ never relies on a Windows bind path being visible to the remote daemon.
 | `stale-return-schedule` | One-way client-to-server outage, then schedule/data resynchronization |
 | `queue-saturation` | Very small runtime queues plus high parallel TCP load |
 | `mtu-sweep` | DF ping and throughput at TUN MTUs 1200, 1300, 1400, and 1450 |
-| `soak` | Configurable impairment soak with RSS, ping, telemetry, and periodic throughput |
+| `soak` | Configurable impairment soak with runtime-verified repair-cache quiescence before RSS/PSS/anonymous/private-dirty sampling, robust steady-state memory evidence, ping, telemetry, and periodic throughput |
 
 ### Required lab-only runtime hooks
 
@@ -111,9 +111,16 @@ includes:
 - tunnel and physical-path ping/loss/RTT
 - iperf3 upload/download throughput and TCP retransmits where available
 - client/server process CPU and RSS
+- Linux `smaps_rollup` PSS, anonymous, and private-dirty memory where available
 - full client and server status snapshots
 - extracted queue, repair, rebind, socket generation, late, drop, reorder, TUN,
   and FEC telemetry
+- every flattened per-path sender-lane field, including current/peak depth,
+  capacity, age, replacement, and drop counters when emitted by the runtime
+- packet-pool occupancy/capacity/discard telemetry emitted by the runtime
+- reset-aware lifetime-cumulative data, control, and repair sender-lane
+  `total_drops` growth (including rebind-abandoned work), so a socket
+  generation replacement cannot erase earlier drops
 - qdisc statistics for impaired scenarios
 - strict iperf completion/JSON validity and process-group/namespace cleanup
 - cleanup verification for namespaces, processes, and managed qdisc state
@@ -124,6 +131,28 @@ includes:
 Server TUN telemetry includes both current and peak queue depth. Queue capacity
 is retained until the blocking kernel write completes, so these values measure
 actual outstanding write work rather than only channel residency.
+
+Soak memory samples are accepted only after authoritative client
+`process.repair_cache.entries/accounted_bytes` and server
+`control_plane.repair_cache.entries/accounted_bytes` telemetry are all present
+and zero after the cache TTL. Legacy top-level repair-cache counters are
+recorded only as diagnostics and cannot satisfy release quiescence. If either
+side omits an authoritative field or remains non-zero until the verification
+deadline, the lab records failed quiescence evidence and does not read
+`smaps_rollup` for that sample.
+
+The anchor/bad-backup comparison uses a clean XBond tunnel median as its
+performance baseline. Clean paths have deterministic latency tiers and no
+artificial rate ceiling, so path 1 can settle as the preferred healthy anchor
+without the harness dropping its heartbeats under iperf load. A short discarded
+data-plane warmup lets the scheduler establish that preference before clean
+baseline attempt 1. A zero clean baseline is an explicit invalid comparison
+artifact (`comparison_valid=false`, no retained ratio), not a division error.
+Each before/after gate requires eight consecutive unique runtime status
+updates. The post-load gates use a bounded stabilization interval, with backup
+impairments still applied, so path 1 must remain at or below 1% loss, remain
+anchor, and leave recovery before evidence is accepted. Paths 2 and 3 must both
+remain present and measurably degraded around the impaired measurement.
 
 `result.schema.json` documents the stable result envelope. Runtime telemetry is
 kept as an open object so newly added XBond counters are captured without

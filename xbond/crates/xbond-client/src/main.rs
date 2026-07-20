@@ -4,7 +4,6 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -31,9 +30,10 @@ use xbond_core::{
     RedundancyPolicyConfig, ReorderedPacket, RepairPayload, ResendCache, RoleSelectionConfig,
     RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
     SessionHandshakeNonce, XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus,
-    XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
-    XBondRepairStatus, XBondRuntimeStatus, XBondServerRecoveryStatus, XBondStatus, XBondTun,
-    XBondTunnelStatus, XorFecBlock, FLAG_SERVER_TO_CLIENT,
+    XBondFrame, XBondHeader, XBondKey, XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus,
+    XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus,
+    XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    FLAG_SERVER_TO_CLIENT,
 };
 
 #[derive(Debug, Parser)]
@@ -641,6 +641,7 @@ struct PathSenderHandle {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct LaneQueueSnapshot {
     depth: usize,
+    peak_depth: usize,
     capacity: usize,
     oldest_age_ms: u64,
     enqueue_drops: u64,
@@ -648,10 +649,39 @@ struct LaneQueueSnapshot {
     replacements: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LaneQueueLifetime {
+    peak_depth: usize,
+    enqueue_drops: u64,
+    deadline_drops: u64,
+    replacements: u64,
+    queued_at_rebind_snapshot: u64,
+}
+
+impl LaneQueueLifetime {
+    fn harvest(&mut self, snapshot: LaneQueueSnapshot) {
+        self.peak_depth = self.peak_depth.max(snapshot.peak_depth);
+        self.enqueue_drops = self.enqueue_drops.saturating_add(snapshot.enqueue_drops);
+        self.deadline_drops = self.deadline_drops.saturating_add(snapshot.deadline_drops);
+        self.replacements = self.replacements.saturating_add(snapshot.replacements);
+        self.queued_at_rebind_snapshot = self
+            .queued_at_rebind_snapshot
+            .saturating_add(snapshot.depth as u64);
+    }
+
+    fn total_drops(self, current: LaneQueueSnapshot) -> u64 {
+        self.enqueue_drops
+            .saturating_add(current.enqueue_drops)
+            .saturating_add(self.deadline_drops)
+            .saturating_add(current.deadline_drops)
+    }
+}
+
 #[derive(Debug, Default)]
 struct LaneQueueTelemetry {
     capacity: usize,
     queued_at: VecDeque<Instant>,
+    peak_depth: usize,
     enqueue_drops: u64,
     deadline_drops: u64,
     replacements: u64,
@@ -667,6 +697,7 @@ impl LaneQueueTelemetry {
 
     fn record_enqueued(&mut self, queued_at: Instant) {
         self.queued_at.push_back(queued_at);
+        self.peak_depth = self.peak_depth.max(self.queued_at.len());
     }
 
     fn record_dequeued(&mut self, queued_at: Instant) {
@@ -688,6 +719,7 @@ impl LaneQueueTelemetry {
     fn snapshot(&self, now: Instant) -> LaneQueueSnapshot {
         LaneQueueSnapshot {
             depth: self.queued_at.len(),
+            peak_depth: self.peak_depth,
             capacity: self.capacity,
             oldest_age_ms: self
                 .queued_at
@@ -1069,29 +1101,100 @@ enum TunWriterExit {
     TaskFailed(String),
 }
 
-#[derive(Debug, Clone)]
-struct TunPacketBufferReturn {
-    tx: std_mpsc::SyncSender<Vec<u8>>,
-    retained: Arc<AtomicU64>,
-    maximum_capacity: usize,
+#[derive(Debug)]
+struct PacketPoolCounters {
+    fallback_allocations: AtomicU64,
+    discarded: AtomicU64,
 }
 
-impl TunPacketBufferReturn {
-    fn recycle(&self, mut buffer: Vec<u8>) {
-        if buffer.capacity() > self.maximum_capacity {
-            return;
+impl PacketPoolCounters {
+    fn new() -> Self {
+        Self {
+            fallback_allocations: AtomicU64::new(0),
+            discarded: AtomicU64::new(0),
         }
-        buffer.clear();
-        self.retained.fetch_add(1, Ordering::Relaxed);
-        if self.tx.try_send(buffer).is_err() {
-            self.retained.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn record_fallback(&self) {
+        self.fallback_allocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_discard(&self) {
+        self.discarded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn status(&self, retained: usize, capacity: usize) -> XBondPacketPoolStatus {
+        XBondPacketPoolStatus {
+            retained: retained.min(capacity),
+            capacity,
+            fallback_allocations: self.fallback_allocations.load(Ordering::Relaxed),
+            discarded: self.discarded.load(Ordering::Relaxed),
         }
     }
 }
 
 #[derive(Debug)]
+struct TunPacketBufferPoolState {
+    buffers: StdMutex<Vec<Vec<u8>>>,
+    maximum_buffers: usize,
+    maximum_capacity: usize,
+    counters: PacketPoolCounters,
+}
+
+impl TunPacketBufferPoolState {
+    fn recycle(&self, mut buffer: Vec<u8>) {
+        if buffer.capacity() == 0 || buffer.capacity() > self.maximum_capacity {
+            self.counters.record_discard();
+            return;
+        }
+        buffer.clear();
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if buffers.len() < self.maximum_buffers {
+            buffers.push(buffer);
+        } else {
+            self.counters.record_discard();
+        }
+    }
+
+    fn take(&self, packet_capacity: usize) -> Vec<u8> {
+        let buffer = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop();
+        buffer.unwrap_or_else(|| {
+            self.counters.record_fallback();
+            Vec::with_capacity(packet_capacity)
+        })
+    }
+
+    fn status(&self) -> XBondPacketPoolStatus {
+        let retained = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len();
+        self.counters.status(retained, self.maximum_buffers)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TunPacketBufferReturn {
+    state: Arc<TunPacketBufferPoolState>,
+}
+
+impl TunPacketBufferReturn {
+    fn recycle(&self, buffer: Vec<u8>) {
+        self.state.recycle(buffer);
+    }
+}
+
+#[derive(Debug)]
 struct TunPacketBufferPool {
-    rx: std_mpsc::Receiver<Vec<u8>>,
+    state: Arc<TunPacketBufferPoolState>,
     returner: TunPacketBufferReturn,
     packet_capacity: usize,
 }
@@ -1100,28 +1203,21 @@ impl TunPacketBufferPool {
     fn new(maximum_buffers: usize, packet_capacity: usize) -> Self {
         let maximum_buffers = maximum_buffers.max(1);
         let packet_capacity = packet_capacity.max(1);
-        let (tx, rx) = std_mpsc::sync_channel(maximum_buffers);
+        let state = Arc::new(TunPacketBufferPoolState {
+            buffers: StdMutex::new(Vec::with_capacity(maximum_buffers)),
+            maximum_buffers,
+            maximum_capacity: packet_capacity,
+            counters: PacketPoolCounters::new(),
+        });
         Self {
-            rx,
-            returner: TunPacketBufferReturn {
-                tx,
-                retained: Arc::new(AtomicU64::new(0)),
-                maximum_capacity: packet_capacity,
-            },
+            state: state.clone(),
+            returner: TunPacketBufferReturn { state },
             packet_capacity,
         }
     }
 
     fn take(&self) -> Vec<u8> {
-        let mut buffer = match self.rx.try_recv() {
-            Ok(buffer) => {
-                self.returner.retained.fetch_sub(1, Ordering::Relaxed);
-                buffer
-            }
-            Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => {
-                Vec::with_capacity(self.packet_capacity)
-            }
-        };
+        let mut buffer = self.state.take(self.packet_capacity);
         if buffer.capacity() < self.packet_capacity {
             buffer.reserve_exact(self.packet_capacity - buffer.capacity());
         }
@@ -1139,7 +1235,16 @@ impl TunPacketBufferPool {
 
     #[cfg(test)]
     fn retained(&self) -> usize {
-        self.returner.retained.load(Ordering::Relaxed) as usize
+        self.status().retained
+    }
+
+    #[cfg(test)]
+    fn status(&self) -> XBondPacketPoolStatus {
+        self.state.status()
+    }
+
+    fn state(&self) -> Arc<TunPacketBufferPoolState> {
+        self.state.clone()
     }
 }
 
@@ -1182,32 +1287,40 @@ struct ReceiverPayloadPool {
     buffers: Arc<StdMutex<Vec<Vec<u8>>>>,
     maximum_buffers: usize,
     maximum_capacity: usize,
+    counters: Arc<PacketPoolCounters>,
 }
 
 impl ReceiverPayloadPool {
     fn new(maximum_buffers: usize, maximum_capacity: usize) -> Self {
+        let maximum_buffers = maximum_buffers.max(1);
         Self {
             buffers: Arc::new(StdMutex::new(Vec::with_capacity(maximum_buffers))),
-            maximum_buffers: maximum_buffers.max(1),
+            maximum_buffers,
             maximum_capacity: maximum_capacity.max(1),
+            counters: Arc::new(PacketPoolCounters::new()),
         }
     }
 
     fn take(&self, minimum_capacity: usize) -> Vec<u8> {
-        let mut buffers = self
-            .buffers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let index = buffers
-            .iter()
-            .position(|buffer| buffer.capacity() >= minimum_capacity);
-        index
-            .map(|index| buffers.swap_remove(index))
-            .unwrap_or_else(|| Vec::with_capacity(minimum_capacity))
+        let retained = {
+            let mut buffers = self
+                .buffers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            buffers
+                .iter()
+                .position(|buffer| buffer.capacity() >= minimum_capacity)
+                .map(|index| buffers.swap_remove(index))
+        };
+        retained.unwrap_or_else(|| {
+            self.counters.record_fallback();
+            Vec::with_capacity(minimum_capacity)
+        })
     }
 
     fn recycle(&self, mut buffer: Vec<u8>) {
-        if buffer.capacity() > self.maximum_capacity {
+        if buffer.capacity() == 0 || buffer.capacity() > self.maximum_capacity {
+            self.counters.record_discard();
             return;
         }
         buffer.clear();
@@ -1217,15 +1330,23 @@ impl ReceiverPayloadPool {
             .unwrap_or_else(|error| error.into_inner());
         if buffers.len() < self.maximum_buffers {
             buffers.push(buffer);
+        } else {
+            self.counters.record_discard();
         }
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.buffers
+        self.status().retained
+    }
+
+    fn status(&self) -> XBondPacketPoolStatus {
+        let retained = self
+            .buffers
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .len()
+            .len();
+        self.counters.status(retained, self.maximum_buffers)
     }
 }
 
@@ -1283,21 +1404,30 @@ struct TunnelPathRuntime {
     ineffective_rebinds: u32,
     socket_opened_at: Option<Instant>,
     sender_queue_depth: usize,
+    sender_queue_peak_depth: usize,
     sender_queue_capacity: usize,
     sender_data_oldest_age_ms: u64,
     sender_data_enqueue_drops: u64,
     sender_data_deadline_drops: u64,
     sender_control_queue_depth: usize,
+    sender_control_queue_peak_depth: usize,
     sender_control_queue_capacity: usize,
     sender_control_oldest_age_ms: u64,
     sender_control_enqueue_drops: u64,
     sender_control_deadline_drops: u64,
     sender_control_replacements: u64,
     sender_repair_queue_depth: usize,
+    sender_repair_queue_peak_depth: usize,
     sender_repair_queue_capacity: usize,
     sender_repair_oldest_age_ms: u64,
     sender_repair_enqueue_drops: u64,
     sender_repair_deadline_drops: u64,
+    sender_data_queued_at_rebind_snapshot: u64,
+    sender_control_queued_at_rebind_snapshot: u64,
+    sender_repair_queued_at_rebind_snapshot: u64,
+    sender_data_lifetime: LaneQueueLifetime,
+    sender_control_lifetime: LaneQueueLifetime,
+    sender_repair_lifetime: LaneQueueLifetime,
     sender_queue_pressure_score: f64,
     sender_previous_total_drops: u64,
     stale_ack_ticks: u32,
@@ -2132,10 +2262,14 @@ fn spawn_tun_reader(
     tun_packet_tx: mpsc::Sender<PooledTunPacket>,
     pool_capacity: usize,
     fail_after_packets: Option<u64>,
-) -> mpsc::UnboundedReceiver<TunReaderExit> {
+) -> (
+    mpsc::UnboundedReceiver<TunReaderExit>,
+    Arc<TunPacketBufferPoolState>,
+) {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let pool = TunPacketBufferPool::new(pool_capacity, tun_read_mtu);
+    let pool_state = pool.state();
     let task = tokio::task::spawn_blocking(move || {
-        let pool = TunPacketBufferPool::new(pool_capacity, tun_read_mtu);
         let mut packets_read = 0u64;
         loop {
             if should_fail_tun_reader(fail_after_packets, packets_read) {
@@ -2173,7 +2307,7 @@ fn spawn_tun_reader(
         };
         let _ = exit_tx.send(exit);
     });
-    exit_rx
+    (exit_rx, pool_state)
 }
 
 fn should_fail_tun_reader(fail_after_packets: Option<u64>, packets_read: u64) -> bool {
@@ -2314,6 +2448,7 @@ struct FreshAuthenticatedSession {
     synchronization: ClientSynchronizationState,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn begin_fresh_authenticated_session(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     senders: &HashMap<u16, PathSenderHandle>,
@@ -2363,6 +2498,7 @@ fn reset_client_session_runtime(
     inbound_receiver: &mut FrameReceiver,
     return_reorder: &mut PacketReorderBuffer,
     resend_cache: &mut ClientResendCache,
+    repair_cache_status: &mut XBondRepairCacheStatus,
     repair: &mut XBondRepairStatus,
     server_recovery_status: &mut XBondServerRecoveryStatus,
     aggregate_health: &mut TunnelAggregateHealthRuntime,
@@ -2372,6 +2508,20 @@ fn reset_client_session_runtime(
     *inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
     *return_reorder =
         PacketReorderBuffer::with_initial_sequence(8192, config.reorder_hold_ms * 1_000, 1);
+    reset_client_repair_cache(resend_cache, repair_cache_status);
+    *repair = XBondRepairStatus::default();
+    *server_recovery_status = XBondServerRecoveryStatus::default();
+    *aggregate_health = TunnelAggregateHealthRuntime::default();
+    *pending_fec_source = None;
+    for runtime in path_runtime.values_mut() {
+        runtime.pending_heartbeats.clear();
+    }
+}
+
+fn reset_client_repair_cache(
+    resend_cache: &mut ClientResendCache,
+    repair_cache_status: &mut XBondRepairCacheStatus,
+) {
     *resend_cache = ResendCache::new_with_byte_capacity(
         REPAIR_CACHE_CAPACITY,
         recommended_repair_cache_bytes(
@@ -2382,13 +2532,7 @@ fn reset_client_session_runtime(
         ),
         REPAIR_CACHE_TTL_MICROS,
     );
-    *repair = XBondRepairStatus::default();
-    *server_recovery_status = XBondServerRecoveryStatus::default();
-    *aggregate_health = TunnelAggregateHealthRuntime::default();
-    *pending_fec_source = None;
-    for runtime in path_runtime.values_mut() {
-        runtime.pending_heartbeats.clear();
-    }
+    *repair_cache_status = XBondRepairCacheStatus::default();
 }
 
 async fn run_tunnel(options: TunnelOptions) -> Result<()> {
@@ -2446,7 +2590,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         inbound_queue_capacity,
         receiver_scratch_capacity(options.tun_mtu),
     );
-    let mut tun_reader_exit_rx = spawn_tun_reader(
+    let (mut tun_reader_exit_rx, tun_packet_pool_telemetry) = spawn_tun_reader(
         tun_reader,
         tun_name.clone(),
         tun_read_mtu,
@@ -2576,6 +2720,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         REPAIR_CACHE_TTL_MICROS,
     );
     let mut repair = XBondRepairStatus::default();
+    let mut repair_cache_status = XBondRepairCacheStatus::default();
     let mut server_recovery_status = XBondServerRecoveryStatus::default();
     let mut sequence = 0u64;
     let mut control_sequence = 1_000_000_000_000u64;
@@ -2605,6 +2750,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     );
     counters.inbound_queue_drops = inbound_payload_drops.load(Ordering::Relaxed);
     repair.cache_entries = resend_cache.len();
+    refresh_repair_cache_status(
+        &mut resend_cache,
+        &mut repair_cache_status,
+        monotonic_micros(),
+    );
     write_tunnel_runtime_status(
         &config,
         &tun,
@@ -2622,11 +2772,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         current_schedule_generation,
         &return_reorder,
         &repair,
+        &repair_cache_status,
         &server_recovery_status,
         tun_packet_rx.len(),
         tun_write_tx.queue_depth(),
         tun_write_tx.peak_queue_depth(),
         inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+        &tun_packet_pool_telemetry,
+        &receiver_payload_pool,
     )?;
     send_session_open(
         &mut path_runtime,
@@ -2681,6 +2834,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &mut inbound_receiver,
                         &mut return_reorder,
                         &mut resend_cache,
+                        &mut repair_cache_status,
                         &mut repair,
                         &mut server_recovery_status,
                         &mut aggregate_health,
@@ -2767,6 +2921,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     counters.outbound_throughput_bps,
                     monotonic_micros(),
                     &mut counters,
+                );
+                refresh_repair_cache_status(
+                    &mut resend_cache,
+                    &mut repair_cache_status,
+                    monotonic_micros(),
                 );
                 health = tunnel_health(&config, &path_runtime, &sockets);
                 roles = select_path_roles_with_state(
@@ -2900,11 +3059,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     current_schedule_generation,
                     &return_reorder,
                     &repair,
+                    &repair_cache_status,
                     &server_recovery_status,
                     tun_packet_rx.len(),
                     tun_write_tx.queue_depth(),
                     tun_write_tx.peak_queue_depth(),
                     inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+                    &tun_packet_pool_telemetry,
+                    &receiver_payload_pool,
                 )?;
                 counters.supervisor_control_progress_ticks = counters
                     .supervisor_control_progress_ticks
@@ -3139,11 +3301,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     current_schedule_generation,
                     &return_reorder,
                     &repair,
-                        &server_recovery_status,
-                        tun_packet_rx.len(),
-                        tun_write_tx.queue_depth(),
-                        tun_write_tx.peak_queue_depth(),
-                        inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+                    &repair_cache_status,
+                    &server_recovery_status,
+                    tun_packet_rx.len(),
+                    tun_write_tx.queue_depth(),
+                    tun_write_tx.peak_queue_depth(),
+                    inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+                    &tun_packet_pool_telemetry,
+                    &receiver_payload_pool,
                 )?;
                 let _ = envelope.response_tx.send(response);
             }
@@ -3722,6 +3887,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             &mut inbound_receiver,
                             &mut return_reorder,
                             &mut resend_cache,
+                            &mut repair_cache_status,
                             &mut repair,
                             &mut server_recovery_status,
                             &mut aggregate_health,
@@ -3826,11 +3992,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 current_schedule_generation,
                                 &return_reorder,
                                 &repair,
+                                &repair_cache_status,
                                 &server_recovery_status,
                                 tun_packet_rx.len(),
                                 tun_write_tx.queue_depth(),
                                 tun_write_tx.peak_queue_depth(),
                                 inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+                                &tun_packet_pool_telemetry,
+                                &receiver_payload_pool,
                             )?;
                         }
                         XBondControlMessage::RepairRequest { mut sequences } => {
@@ -4134,6 +4303,7 @@ async fn enqueue_reordered_return_packets_with_deadline(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ensure_tunnel_sockets(
     config: &ClientConfig,
     specs_by_id: &HashMap<u16, ProbePathSpec>,
@@ -4153,7 +4323,7 @@ async fn ensure_tunnel_sockets(
         path_runtime.entry(*path_id).or_default();
 
         if !interface_is_live(spec.interface_name.as_deref()) {
-            remove_tunnel_path(*path_id, sockets, senders, receivers);
+            remove_tunnel_path(*path_id, sockets, senders, receivers, path_runtime);
             if let Some(runtime) = path_runtime.get_mut(path_id) {
                 runtime.last_socket_error = Some("interface is not live".to_string());
             }
@@ -4163,7 +4333,7 @@ async fn ensure_tunnel_sockets(
         let bind_addr = match effective_bind_addr_for_spec(&config.server_addr, spec) {
             Ok(bind_addr) => bind_addr,
             Err(error) => {
-                remove_tunnel_path(*path_id, sockets, senders, receivers);
+                remove_tunnel_path(*path_id, sockets, senders, receivers, path_runtime);
                 record_tunnel_send_failure(path_runtime, *path_id);
                 if let Some(runtime) = path_runtime.get_mut(path_id) {
                     runtime.last_socket_error =
@@ -4276,9 +4446,9 @@ async fn ensure_tunnel_sockets(
                 runtime.last_rebind_at_micros = Some(now_micros());
                 runtime.last_socket_error = None;
             }
-            remove_tunnel_path(*path_id, sockets, senders, receivers);
+            remove_tunnel_path(*path_id, sockets, senders, receivers, path_runtime);
         } else if senders.contains_key(path_id) || receivers.contains_key(path_id) {
-            remove_tunnel_path(*path_id, sockets, senders, receivers);
+            remove_tunnel_path(*path_id, sockets, senders, receivers, path_runtime);
         }
 
         if let Some(socket) = sockets.get(path_id) {
@@ -4412,9 +4582,14 @@ fn remove_tunnel_path(
     sockets: &mut HashMap<u16, Arc<UdpSocket>>,
     senders: &mut HashMap<u16, PathSenderHandle>,
     receivers: &mut HashMap<u16, JoinHandle<()>>,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
 ) {
     sockets.remove(&path_id);
     if let Some(sender) = senders.remove(&path_id) {
+        if let Some(runtime) = path_runtime.get_mut(&path_id) {
+            harvest_sender_metrics(runtime, &sender);
+            reset_sender_metrics_for_socket_generation(runtime);
+        }
         sender.task.abort();
     }
     if let Some(receiver) = receivers.remove(&path_id) {
@@ -4642,6 +4817,7 @@ async fn send_udp_with_work_deadline(
         .map_err(|_| ())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tunnel_receiver(
     path_id: u16,
     socket_generation: u64,
@@ -4757,21 +4933,30 @@ fn refresh_sender_queue_metrics(
 ) {
     for runtime in path_runtime.values_mut() {
         runtime.sender_queue_depth = 0;
+        runtime.sender_queue_peak_depth = runtime.sender_data_lifetime.peak_depth;
         runtime.sender_queue_capacity = 0;
         runtime.sender_data_oldest_age_ms = 0;
-        runtime.sender_data_enqueue_drops = 0;
-        runtime.sender_data_deadline_drops = 0;
+        runtime.sender_data_enqueue_drops = runtime.sender_data_lifetime.enqueue_drops;
+        runtime.sender_data_deadline_drops = runtime.sender_data_lifetime.deadline_drops;
+        runtime.sender_data_queued_at_rebind_snapshot =
+            runtime.sender_data_lifetime.queued_at_rebind_snapshot;
         runtime.sender_control_queue_depth = 0;
+        runtime.sender_control_queue_peak_depth = runtime.sender_control_lifetime.peak_depth;
         runtime.sender_control_queue_capacity = 0;
         runtime.sender_control_oldest_age_ms = 0;
-        runtime.sender_control_enqueue_drops = 0;
-        runtime.sender_control_deadline_drops = 0;
-        runtime.sender_control_replacements = 0;
+        runtime.sender_control_enqueue_drops = runtime.sender_control_lifetime.enqueue_drops;
+        runtime.sender_control_deadline_drops = runtime.sender_control_lifetime.deadline_drops;
+        runtime.sender_control_replacements = runtime.sender_control_lifetime.replacements;
+        runtime.sender_control_queued_at_rebind_snapshot =
+            runtime.sender_control_lifetime.queued_at_rebind_snapshot;
         runtime.sender_repair_queue_depth = 0;
+        runtime.sender_repair_queue_peak_depth = runtime.sender_repair_lifetime.peak_depth;
         runtime.sender_repair_queue_capacity = 0;
         runtime.sender_repair_oldest_age_ms = 0;
-        runtime.sender_repair_enqueue_drops = 0;
-        runtime.sender_repair_deadline_drops = 0;
+        runtime.sender_repair_enqueue_drops = runtime.sender_repair_lifetime.enqueue_drops;
+        runtime.sender_repair_deadline_drops = runtime.sender_repair_lifetime.deadline_drops;
+        runtime.sender_repair_queued_at_rebind_snapshot =
+            runtime.sender_repair_lifetime.queued_at_rebind_snapshot;
     }
 
     for (path_id, sender) in senders {
@@ -4782,27 +4967,56 @@ fn refresh_sender_queue_metrics(
         let runtime = path_runtime.entry(*path_id).or_default();
         runtime.sender_queue_capacity = data.capacity;
         runtime.sender_queue_depth = data.depth;
+        runtime.sender_queue_peak_depth =
+            runtime.sender_data_lifetime.peak_depth.max(data.peak_depth);
         runtime.sender_data_oldest_age_ms = data.oldest_age_ms;
-        runtime.sender_data_enqueue_drops = data.enqueue_drops;
-        runtime.sender_data_deadline_drops = data.deadline_drops;
+        runtime.sender_data_enqueue_drops = runtime
+            .sender_data_lifetime
+            .enqueue_drops
+            .saturating_add(data.enqueue_drops);
+        runtime.sender_data_deadline_drops = runtime
+            .sender_data_lifetime
+            .deadline_drops
+            .saturating_add(data.deadline_drops);
         runtime.sender_control_queue_depth = control.depth;
+        runtime.sender_control_queue_peak_depth = runtime
+            .sender_control_lifetime
+            .peak_depth
+            .max(control.peak_depth);
         runtime.sender_control_queue_capacity = control.capacity;
         runtime.sender_control_oldest_age_ms = control.oldest_age_ms;
-        runtime.sender_control_enqueue_drops = control.enqueue_drops;
-        runtime.sender_control_deadline_drops = control.deadline_drops;
-        runtime.sender_control_replacements = control.replacements;
+        runtime.sender_control_enqueue_drops = runtime
+            .sender_control_lifetime
+            .enqueue_drops
+            .saturating_add(control.enqueue_drops);
+        runtime.sender_control_deadline_drops = runtime
+            .sender_control_lifetime
+            .deadline_drops
+            .saturating_add(control.deadline_drops);
+        runtime.sender_control_replacements = runtime
+            .sender_control_lifetime
+            .replacements
+            .saturating_add(control.replacements);
         runtime.sender_repair_queue_depth = repair.depth;
+        runtime.sender_repair_queue_peak_depth = runtime
+            .sender_repair_lifetime
+            .peak_depth
+            .max(repair.peak_depth);
         runtime.sender_repair_queue_capacity = repair.capacity;
         runtime.sender_repair_oldest_age_ms = repair.oldest_age_ms;
-        runtime.sender_repair_enqueue_drops = repair.enqueue_drops;
-        runtime.sender_repair_deadline_drops = repair.deadline_drops;
-        let total_drops = data
+        runtime.sender_repair_enqueue_drops = runtime
+            .sender_repair_lifetime
             .enqueue_drops
-            .saturating_add(data.deadline_drops)
-            .saturating_add(control.enqueue_drops)
-            .saturating_add(control.deadline_drops)
-            .saturating_add(repair.enqueue_drops)
+            .saturating_add(repair.enqueue_drops);
+        runtime.sender_repair_deadline_drops = runtime
+            .sender_repair_lifetime
+            .deadline_drops
             .saturating_add(repair.deadline_drops);
+        let total_drops = runtime
+            .sender_data_lifetime
+            .total_drops(data)
+            .saturating_add(runtime.sender_control_lifetime.total_drops(control))
+            .saturating_add(runtime.sender_repair_lifetime.total_drops(repair));
         let new_drops = total_drops.saturating_sub(runtime.sender_previous_total_drops);
         runtime.sender_previous_total_drops = total_drops;
         runtime.sender_queue_pressure_score = [
@@ -4816,8 +5030,33 @@ fn refresh_sender_queue_metrics(
     }
 }
 
+fn harvest_sender_metrics(runtime: &mut TunnelPathRuntime, sender: &PathSenderHandle) {
+    let now = Instant::now();
+    runtime
+        .sender_data_lifetime
+        .harvest(sender.metrics.snapshot(PathSendLane::Data, now));
+    runtime
+        .sender_control_lifetime
+        .harvest(sender.metrics.snapshot(PathSendLane::Control, now));
+    runtime
+        .sender_repair_lifetime
+        .harvest(sender.metrics.snapshot(PathSendLane::Repair, now));
+}
+
 fn reset_sender_metrics_for_socket_generation(runtime: &mut TunnelPathRuntime) {
-    runtime.sender_previous_total_drops = 0;
+    runtime.sender_previous_total_drops = runtime
+        .sender_data_lifetime
+        .total_drops(LaneQueueSnapshot::default())
+        .saturating_add(
+            runtime
+                .sender_control_lifetime
+                .total_drops(LaneQueueSnapshot::default()),
+        )
+        .saturating_add(
+            runtime
+                .sender_repair_lifetime
+                .total_drops(LaneQueueSnapshot::default()),
+        );
     runtime.sender_queue_pressure_score = 0.0;
 }
 
@@ -4832,27 +5071,43 @@ fn sender_lane_metrics_json(
             let runtime = path_runtime.get(&path_id)?;
             Some(serde_json::json!({
                 "path_id": path_id,
+                "socket_generation": runtime.socket_generation,
                 "data": {
                     "depth": runtime.sender_queue_depth,
+                    "current_depth": runtime.sender_queue_depth,
+                    "peak_depth": runtime.sender_queue_peak_depth,
                     "capacity": runtime.sender_queue_capacity,
                     "oldest_age_ms": runtime.sender_data_oldest_age_ms,
                     "enqueue_drops": runtime.sender_data_enqueue_drops,
                     "deadline_drops": runtime.sender_data_deadline_drops,
+                    "queued_at_rebind_snapshot": runtime.sender_data_queued_at_rebind_snapshot,
+                    "total_drops": runtime.sender_data_enqueue_drops
+                        .saturating_add(runtime.sender_data_deadline_drops),
                 },
                 "control": {
                     "depth": runtime.sender_control_queue_depth,
+                    "current_depth": runtime.sender_control_queue_depth,
+                    "peak_depth": runtime.sender_control_queue_peak_depth,
                     "capacity": runtime.sender_control_queue_capacity,
                     "oldest_age_ms": runtime.sender_control_oldest_age_ms,
                     "enqueue_drops": runtime.sender_control_enqueue_drops,
                     "deadline_drops": runtime.sender_control_deadline_drops,
                     "replacements": runtime.sender_control_replacements,
+                    "queued_at_rebind_snapshot": runtime.sender_control_queued_at_rebind_snapshot,
+                    "total_drops": runtime.sender_control_enqueue_drops
+                        .saturating_add(runtime.sender_control_deadline_drops),
                 },
                 "repair": {
                     "depth": runtime.sender_repair_queue_depth,
+                    "current_depth": runtime.sender_repair_queue_depth,
+                    "peak_depth": runtime.sender_repair_queue_peak_depth,
                     "capacity": runtime.sender_repair_queue_capacity,
                     "oldest_age_ms": runtime.sender_repair_oldest_age_ms,
                     "enqueue_drops": runtime.sender_repair_enqueue_drops,
                     "deadline_drops": runtime.sender_repair_deadline_drops,
+                    "queued_at_rebind_snapshot": runtime.sender_repair_queued_at_rebind_snapshot,
+                    "total_drops": runtime.sender_repair_enqueue_drops
+                        .saturating_add(runtime.sender_repair_deadline_drops),
                 },
             }))
         })
@@ -5305,6 +5560,7 @@ const SESSION_SYNCHRONIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEDULE_CONTROL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const SCHEDULE_SYNCHRONIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 
+#[allow(clippy::too_many_arguments)]
 async fn send_session_open(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     senders: &HashMap<u16, PathSenderHandle>,
@@ -5361,6 +5617,7 @@ async fn send_session_open(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_session_proof(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     senders: &HashMap<u16, PathSenderHandle>,
@@ -5406,6 +5663,7 @@ async fn send_session_proof(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_tunnel_schedule_control(
     config: &ClientConfig,
     schedule: &SchedulePlan,
@@ -5508,6 +5766,7 @@ fn update_return_reorder_hold(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_repair_requests_for_return_gaps(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     senders: &HashMap<u16, PathSenderHandle>,
@@ -5703,6 +5962,37 @@ fn update_repair_cache_budget<P: RepairPayload>(
         .saturating_add(bytes_before.saturating_sub(resend_cache.bytes_len()) as u64);
 }
 
+fn refresh_repair_cache_status<P: RepairPayload>(
+    resend_cache: &mut ResendCache<P>,
+    status: &mut XBondRepairCacheStatus,
+    now_micros: u64,
+) {
+    let entries_before = resend_cache.len();
+    let accounted_bytes_before = resend_cache.accounted_bytes_len();
+    resend_cache.prune(now_micros);
+    status.entries = resend_cache.len();
+    status.accounted_bytes = resend_cache.accounted_bytes_len();
+    status.byte_capacity = resend_cache.byte_capacity();
+    status.prune_runs = status.prune_runs.saturating_add(1);
+    status.last_pruned_at_micros = now_micros;
+    status.last_pruned_entries = entries_before.saturating_sub(status.entries);
+    status.last_pruned_accounted_bytes =
+        accounted_bytes_before.saturating_sub(status.accounted_bytes);
+    status.total_pruned_entries = status
+        .total_pruned_entries
+        .saturating_add(status.last_pruned_entries as u64);
+    status.total_pruned_accounted_bytes = status
+        .total_pruned_accounted_bytes
+        .saturating_add(status.last_pruned_accounted_bytes as u64);
+    status.quiescent = status.entries == 0 && status.accounted_bytes == 0;
+    if status.quiescent {
+        status.quiescent_since_micros = status.quiescent_since_micros.or(Some(now_micros));
+    } else {
+        status.quiescent_since_micros = None;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn send_repair_frames_from_client_cache(
     config: &ClientConfig,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
@@ -5857,6 +6147,7 @@ fn send_tunnel_heartbeats(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_tunnel_aggregate_heartbeat(
     config: &ClientConfig,
     aggregate_health: &mut TunnelAggregateHealthRuntime,
@@ -6239,6 +6530,7 @@ fn update_tunnel_throughput(
     *last_sample = Instant::now();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_tunnel_runtime_status(
     config: &ClientConfig,
     tun: &XBondTun,
@@ -6256,11 +6548,14 @@ fn write_tunnel_runtime_status(
     schedule_generation: u64,
     return_reorder: &PacketReorderBuffer,
     repair: &XBondRepairStatus,
+    repair_cache_status: &XBondRepairCacheStatus,
     server_recovery_status: &XBondServerRecoveryStatus,
     tun_queue_depth: usize,
     tun_write_queue_depth: usize,
     tun_write_queue_peak_depth: usize,
     inbound_queue_depth: usize,
+    tun_packet_pool_state: &TunPacketBufferPoolState,
+    receiver_payload_pool: &ReceiverPayloadPool,
 ) -> Result<()> {
     let paths = roles
         .iter()
@@ -6333,6 +6628,9 @@ fn write_tunnel_runtime_status(
                 tun_write_packets: counters.tun_write_packets,
                 tun_write_queue_micros_total: counters.tun_write_queue_micros_total,
                 tun_write_micros_total: counters.tun_write_micros_total,
+                tun_packet_pool: tun_packet_pool_state.status(),
+                receive_payload_pool: receiver_payload_pool.status(),
+                repair_cache: *repair_cache_status,
             },
             recovery: recovery_status.clone(),
             diagnostic_override: active_override.map(ActiveScheduleOverride::status),
@@ -7073,6 +7371,16 @@ fn write_runtime_status_with_sender_lanes(
     status: XBondRuntimeStatus,
     path_runtime: &HashMap<u16, TunnelPathRuntime>,
 ) -> Result<()> {
+    write_runtime_status_value(
+        config,
+        runtime_status_value_with_sender_lanes(status, path_runtime)?,
+    )
+}
+
+fn runtime_status_value_with_sender_lanes(
+    status: XBondRuntimeStatus,
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(status)?;
     if let Some(object) = value.as_object_mut() {
         object.insert(
@@ -7080,7 +7388,7 @@ fn write_runtime_status_with_sender_lanes(
             serde_json::Value::Array(sender_lane_metrics_json(path_runtime)),
         );
     }
-    write_runtime_status_value(config, value)
+    Ok(value)
 }
 
 fn write_runtime_status_value(config: &ClientConfig, status: serde_json::Value) -> Result<()> {
@@ -7804,16 +8112,22 @@ mod tests {
     }
 
     #[test]
-    fn new_socket_generation_resets_sender_drop_baseline_and_pressure() {
+    fn new_socket_generation_preserves_sender_drop_baseline_and_resets_pressure() {
         let mut runtime = TunnelPathRuntime {
             sender_previous_total_drops: 91,
             sender_queue_pressure_score: 1.0,
+            sender_data_lifetime: LaneQueueLifetime {
+                enqueue_drops: 3,
+                deadline_drops: 2,
+                queued_at_rebind_snapshot: 1,
+                ..LaneQueueLifetime::default()
+            },
             ..TunnelPathRuntime::default()
         };
 
         reset_sender_metrics_for_socket_generation(&mut runtime);
 
-        assert_eq!(runtime.sender_previous_total_drops, 0);
+        assert_eq!(runtime.sender_previous_total_drops, 5);
         assert_eq!(runtime.sender_queue_pressure_score, 0.0);
     }
 
@@ -7945,6 +8259,7 @@ mod tests {
 
         let runtime = path_runtime.get(&1).unwrap();
         assert_eq!(runtime.sender_queue_depth, 2);
+        assert_eq!(runtime.sender_queue_peak_depth, 2);
         assert_eq!(runtime.sender_queue_capacity, 4);
         assert_eq!(sender_queue_pressure(runtime), 0.5);
         assert_eq!(runtime.pending_heartbeats.len(), 1);
@@ -8675,12 +8990,32 @@ paths = []
         let pointer = buffer.as_ptr();
         pool.recycle(buffer);
         assert_eq!(pool.len(), 1);
+        assert_eq!(
+            pool.status(),
+            XBondPacketPoolStatus {
+                retained: 1,
+                capacity: 2,
+                fallback_allocations: 1,
+                discarded: 0,
+            }
+        );
 
         let reused = pool.take(1200);
         assert_eq!(reused.as_ptr(), pointer);
         assert_eq!(pool.len(), 0);
         pool.recycle(Vec::with_capacity(4096));
         assert_eq!(pool.len(), 0);
+        assert_eq!(pool.status().discarded, 1);
+    }
+
+    #[test]
+    fn receiver_payload_pool_never_retains_zero_capacity_buffers() {
+        let pool = ReceiverPayloadPool::new(2, 2048);
+
+        pool.recycle(Vec::new());
+
+        assert_eq!(pool.status().retained, 0);
+        assert_eq!(pool.status().discarded, 1);
     }
 
     #[test]
@@ -8727,6 +9062,8 @@ paths = []
         assert_eq!(pool.retained(), 1);
         drop(second);
         assert_eq!(pool.retained(), 1);
+        assert_eq!(pool.status().capacity, 1);
+        assert_eq!(pool.status().discarded, 1);
 
         let _ = pool.take();
         assert_eq!(pool.retained(), 0);
@@ -8743,7 +9080,70 @@ paths = []
         drop(oversized);
 
         assert_eq!(pool.retained(), 0);
+        assert_eq!(pool.status().discarded, 1);
         assert!(pool.take().capacity() <= 512);
+    }
+
+    #[test]
+    fn tun_packet_pool_never_retains_zero_capacity_buffers() {
+        let pool = TunPacketBufferPool::new(2, 512);
+        drop(PooledTunPacket {
+            buffer: Some(Vec::new()),
+            returner: pool.returner.clone(),
+        });
+
+        assert_eq!(pool.retained(), 0);
+        assert_eq!(pool.status().discarded, 1);
+    }
+
+    #[test]
+    fn runtime_status_keeps_pool_and_sender_lane_depth_telemetry() {
+        let status = XBondRuntimeStatus {
+            process: XBondProcessStatus {
+                tun_packet_pool: XBondPacketPoolStatus {
+                    retained: 2,
+                    capacity: 8,
+                    fallback_allocations: 5,
+                    discarded: 1,
+                },
+                receive_payload_pool: XBondPacketPoolStatus {
+                    retained: 3,
+                    capacity: 16,
+                    fallback_allocations: 6,
+                    discarded: 4,
+                },
+                ..XBondProcessStatus::default()
+            },
+            ..XBondRuntimeStatus::default()
+        };
+        let path_runtime = HashMap::from([(
+            7,
+            TunnelPathRuntime {
+                sender_queue_depth: 2,
+                sender_queue_peak_depth: 5,
+                sender_control_queue_depth: 1,
+                sender_control_queue_peak_depth: 3,
+                sender_repair_queue_depth: 0,
+                sender_repair_queue_peak_depth: 2,
+                ..TunnelPathRuntime::default()
+            },
+        )]);
+
+        let value = runtime_status_value_with_sender_lanes(status, &path_runtime).unwrap();
+
+        assert_eq!(value["process"]["tun_packet_pool"]["retained"], 2);
+        assert_eq!(
+            value["process"]["tun_packet_pool"]["fallback_allocations"],
+            5
+        );
+        assert_eq!(value["process"]["receive_payload_pool"]["discarded"], 4);
+        assert_eq!(value["sender_lanes"][0]["data"]["depth"], 2);
+        assert_eq!(value["sender_lanes"][0]["data"]["current_depth"], 2);
+        assert_eq!(value["sender_lanes"][0]["data"]["peak_depth"], 5);
+        assert_eq!(value["sender_lanes"][0]["control"]["current_depth"], 1);
+        assert_eq!(value["sender_lanes"][0]["control"]["peak_depth"], 3);
+        assert_eq!(value["sender_lanes"][0]["repair"]["current_depth"], 0);
+        assert_eq!(value["sender_lanes"][0]["repair"]["peak_depth"], 2);
     }
 
     #[tokio::test]
@@ -9224,6 +9624,46 @@ paths = []
     }
 
     #[tokio::test]
+    async fn sender_lane_rebind_snapshot_is_not_counted_as_a_proven_drop() {
+        let (data_tx, data_rx) = mpsc::channel(2);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (repair_tx, repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((data_rx, control_rx, repair_rx));
+        });
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 2, task);
+        try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, primary_send_work(1)).unwrap();
+        sender.metrics.record_enqueue_drop(PathSendLane::Repair);
+        sender.metrics.record_deadline_drop(PathSendLane::Control);
+        let mut runtime = TunnelPathRuntime {
+            socket_generation: 1,
+            ..TunnelPathRuntime::default()
+        };
+
+        harvest_sender_metrics(&mut runtime, &sender);
+        reset_sender_metrics_for_socket_generation(&mut runtime);
+        let mut runtimes = HashMap::from([(1, runtime)]);
+        refresh_sender_queue_metrics(&mut runtimes, &HashMap::new());
+
+        let runtime = &runtimes[&1];
+        assert_eq!(runtime.sender_queue_depth, 0);
+        assert_eq!(runtime.sender_queue_peak_depth, 1);
+        assert_eq!(runtime.sender_data_queued_at_rebind_snapshot, 1);
+        assert_eq!(runtime.sender_control_deadline_drops, 1);
+        assert_eq!(runtime.sender_repair_enqueue_drops, 1);
+        assert_eq!(runtime.sender_previous_total_drops, 2);
+        let json = sender_lane_metrics_json(&runtimes);
+        assert_eq!(json[0]["data"]["current_depth"], 0);
+        assert_eq!(json[0]["data"]["peak_depth"], 1);
+        assert_eq!(json[0]["data"]["queued_at_rebind_snapshot"], 1);
+        assert_eq!(json[0]["data"]["total_drops"], 0);
+        assert_eq!(json[0]["control"]["total_drops"], 1);
+        assert_eq!(json[0]["repair"]["total_drops"], 1);
+        sender.task.abort();
+    }
+
+    #[tokio::test]
     async fn send_budget_times_out_a_blocked_operation_before_lane_deadline() {
         let work = primary_send_work(1);
         let budget = udp_send_budget(&work, Instant::now()).unwrap();
@@ -9283,6 +9723,45 @@ paths = []
         assert_eq!(cache.bytes_len(), 0);
         assert_eq!(counters.repair_cache_evictions, 2);
         assert_eq!(counters.repair_cache_evicted_bytes, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn repair_cache_status_explicitly_prunes_and_marks_quiescence() {
+        let mut cache = ResendCache::new(4, 100);
+        cache.insert(1, 1, Arc::new(vec![1, 2, 3]), 1);
+        let accounted_bytes = cache.accounted_bytes_len();
+        let mut status = XBondRepairCacheStatus::default();
+
+        refresh_repair_cache_status(&mut cache, &mut status, 102);
+
+        assert_eq!(status.entries, 0);
+        assert_eq!(status.accounted_bytes, 0);
+        assert_eq!(status.prune_runs, 1);
+        assert_eq!(status.last_pruned_entries, 1);
+        assert_eq!(status.last_pruned_accounted_bytes, accounted_bytes);
+        assert_eq!(status.total_pruned_entries, 1);
+        assert_eq!(status.total_pruned_accounted_bytes, accounted_bytes as u64);
+        assert!(status.quiescent);
+        assert_eq!(status.quiescent_since_micros, Some(102));
+    }
+
+    #[test]
+    fn replacing_client_repair_cache_clears_quiescence_status() {
+        let mut cache: ClientResendCache =
+            ResendCache::new_with_byte_capacity(4, REPAIR_CACHE_MIN_BYTES, REPAIR_CACHE_TTL_MICROS);
+        let mut status = XBondRepairCacheStatus {
+            entries: 4,
+            accounted_bytes: 128,
+            prune_runs: 4,
+            quiescent: true,
+            quiescent_since_micros: Some(42),
+            ..XBondRepairCacheStatus::default()
+        };
+
+        reset_client_repair_cache(&mut cache, &mut status);
+
+        assert_eq!(cache.len(), 0);
+        assert_eq!(status, XBondRepairCacheStatus::default());
     }
 
     #[test]

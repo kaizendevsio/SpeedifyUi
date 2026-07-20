@@ -21,9 +21,10 @@ use xbond_core::{
     PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome,
     RedundancyPolicy, RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache,
     ScheduleControlMessage, SchedulePlan, SessionChallengeOutcome, SessionHandshakeNonce,
-    SessionProofOutcome, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
-    XBondServerHealthStatus, XBondServerHealthTargetStatus, XBondServerIngressReorderStatus,
-    XBondServerRecoveryStatus, XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
+    SessionProofOutcome, XBondControlMessage, XBondFrame, XBondHeader, XBondKey,
+    XBondPacketPoolStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondServerHealthStatus,
+    XBondServerHealthTargetStatus, XBondServerIngressReorderStatus, XBondServerRecoveryStatus,
+    XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -146,11 +147,57 @@ struct Args {
 }
 
 #[derive(Debug)]
+struct PacketPoolTelemetry {
+    fallback_allocations: AtomicU64,
+    discarded: AtomicU64,
+}
+
+impl PacketPoolTelemetry {
+    fn new() -> Self {
+        Self {
+            fallback_allocations: AtomicU64::new(0),
+            discarded: AtomicU64::new(0),
+        }
+    }
+
+    fn record_fallback(&self) {
+        self.fallback_allocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_discard(&self) {
+        self.discarded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn status(&self, retained: usize, capacity: usize) -> XBondPacketPoolStatus {
+        XBondPacketPoolStatus {
+            retained: retained.min(capacity),
+            capacity,
+            fallback_allocations: self.fallback_allocations.load(Ordering::Relaxed),
+            discarded: self.discarded.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PayloadRecycle {
+    tx: mpsc::Sender<Vec<u8>>,
+    telemetry: Arc<PacketPoolTelemetry>,
+}
+
+impl PayloadRecycle {
+    fn status(&self) -> XBondPacketPoolStatus {
+        let capacity = self.tx.max_capacity();
+        let retained = capacity.saturating_sub(self.tx.capacity());
+        self.telemetry.status(retained, capacity)
+    }
+}
+
+#[derive(Debug)]
 struct InboundServerFrame {
     frame: XBondFrame,
     peer: SocketAddr,
     pre_admission_deduplicated: bool,
-    payload_recycle_tx: Option<mpsc::Sender<Vec<u8>>>,
+    payload_recycle: Option<PayloadRecycle>,
 }
 
 impl InboundServerFrame {
@@ -158,20 +205,20 @@ impl InboundServerFrame {
         frame: XBondFrame,
         peer: SocketAddr,
         pre_admission_deduplicated: bool,
-        payload_recycle_tx: Option<mpsc::Sender<Vec<u8>>>,
+        payload_recycle: Option<PayloadRecycle>,
     ) -> Self {
         Self {
             frame,
             peer,
             pre_admission_deduplicated,
-            payload_recycle_tx,
+            payload_recycle,
         }
     }
 
     fn take_payload(&mut self) -> RecyclablePayload {
         RecyclablePayload {
             payload: Some(std::mem::take(&mut self.frame.payload)),
-            payload_recycle_tx: self.payload_recycle_tx.clone(),
+            payload_recycle: self.payload_recycle.clone(),
         }
     }
 }
@@ -180,7 +227,7 @@ impl Drop for InboundServerFrame {
     fn drop(&mut self) {
         if !self.frame.payload.is_empty() || self.frame.payload.capacity() > 0 {
             recycle_payload(
-                self.payload_recycle_tx.as_ref(),
+                self.payload_recycle.as_ref(),
                 std::mem::take(&mut self.frame.payload),
             );
         }
@@ -190,7 +237,7 @@ impl Drop for InboundServerFrame {
 #[derive(Debug)]
 struct RecyclablePayload {
     payload: Option<Vec<u8>>,
-    payload_recycle_tx: Option<mpsc::Sender<Vec<u8>>>,
+    payload_recycle: Option<PayloadRecycle>,
 }
 
 impl RecyclablePayload {
@@ -206,7 +253,7 @@ impl RecyclablePayload {
 impl Drop for RecyclablePayload {
     fn drop(&mut self) {
         if let Some(payload) = self.payload.take() {
-            recycle_payload(self.payload_recycle_tx.as_ref(), payload);
+            recycle_payload(self.payload_recycle.as_ref(), payload);
         }
     }
 }
@@ -756,9 +803,8 @@ struct ServerControlPlaneStatus {
     tun_packets_written: u64,
     tun_write_queue_saturated_drops: u64,
     tun_write_queue_saturation_failures: u64,
-    repair_cache_entries: u64,
-    repair_cache_bytes: u64,
-    repair_cache_byte_capacity: u64,
+    repair_cache: XBondRepairCacheStatus,
+    receive_payload_pool: XBondPacketPoolStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -1055,32 +1101,40 @@ fn schedule_control_version(frame: &XBondFrame) -> (u64, u64) {
     )
 }
 
-fn recycle_payload(
-    payload_recycle_tx: Option<&mpsc::Sender<Vec<u8>>>,
-    mut payload: Vec<u8>,
-) -> bool {
-    let Some(payload_recycle_tx) = payload_recycle_tx else {
+fn recycle_payload(payload_recycle: Option<&PayloadRecycle>, mut payload: Vec<u8>) -> bool {
+    let Some(payload_recycle) = payload_recycle else {
         return false;
     };
-    if payload.capacity() > MAX_POOLED_PAYLOAD_CAPACITY {
+    if payload.capacity() == 0 || payload.capacity() > MAX_POOLED_PAYLOAD_CAPACITY {
+        payload_recycle.telemetry.record_discard();
         return false;
     }
     payload.clear();
-    payload_recycle_tx.try_send(payload).is_ok()
+    if payload_recycle.tx.try_send(payload).is_ok() {
+        true
+    } else {
+        payload_recycle.telemetry.record_discard();
+        false
+    }
 }
 
-fn take_payload_buffer(payload_recycle_rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+fn take_payload_buffer(
+    payload_recycle_rx: &mut mpsc::Receiver<Vec<u8>>,
+    telemetry: &PacketPoolTelemetry,
+) -> Vec<u8> {
     match payload_recycle_rx.try_recv() {
         Ok(mut payload) => {
             payload.clear();
             payload
         }
         Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+            telemetry.record_fallback();
             Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES)
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_inbound_frame(
     critical_control: &BoundedCoalescingQueue<CriticalControlKey>,
     latest_schedule: &BoundedCoalescingQueue<ResponseRouteKey>,
@@ -1370,7 +1424,7 @@ fn spawn_tun_writer(
     mut tun_writer: XBondTun,
     capacity: usize,
     worker_exit_tx: mpsc::Sender<TunWorkerExit>,
-    payload_recycle_tx: mpsc::Sender<Vec<u8>>,
+    payload_recycle: PayloadRecycle,
     fault: TunFaultInjection,
 ) -> TunWriterHandle {
     let capacity = capacity.max(1);
@@ -1398,10 +1452,7 @@ fn spawn_tun_writer(
                     }
                     let started = Instant::now();
                     let write_result = tun_writer.write_packet(&packet.payload);
-                    recycle_payload(
-                        Some(&payload_recycle_tx),
-                        std::mem::take(&mut packet.payload),
-                    );
+                    recycle_payload(Some(&payload_recycle), std::mem::take(&mut packet.payload));
                     if let Err(error) = write_result {
                         worker_telemetry
                             .write_errors
@@ -1815,6 +1866,36 @@ fn new_server_resend_cache(configured_maximum_bytes: usize) -> ResendCache {
     )
 }
 
+fn refresh_server_repair_cache_status(
+    resend_cache: &mut ResendCache,
+    status: &mut XBondRepairCacheStatus,
+    now_micros: u64,
+) {
+    let entries_before = resend_cache.len();
+    let accounted_bytes_before = resend_cache.accounted_bytes_len();
+    resend_cache.prune(now_micros);
+    status.entries = resend_cache.len();
+    status.accounted_bytes = resend_cache.accounted_bytes_len();
+    status.byte_capacity = resend_cache.byte_capacity();
+    status.prune_runs = status.prune_runs.saturating_add(1);
+    status.last_pruned_at_micros = now_micros;
+    status.last_pruned_entries = entries_before.saturating_sub(status.entries);
+    status.last_pruned_accounted_bytes =
+        accounted_bytes_before.saturating_sub(status.accounted_bytes);
+    status.total_pruned_entries = status
+        .total_pruned_entries
+        .saturating_add(status.last_pruned_entries as u64);
+    status.total_pruned_accounted_bytes = status
+        .total_pruned_accounted_bytes
+        .saturating_add(status.last_pruned_accounted_bytes as u64);
+    status.quiescent = status.entries == 0 && status.accounted_bytes == 0;
+    if status.quiescent {
+        status.quiescent_since_micros = status.quiescent_since_micros.or(Some(now_micros));
+    } else {
+        status.quiescent_since_micros = None;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -1889,6 +1970,11 @@ async fn main() -> Result<()> {
         mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
     let (payload_recycle_tx, mut payload_recycle_rx) =
         mpsc::channel::<Vec<u8>>(PAYLOAD_POOL_CAPACITY);
+    let payload_pool_telemetry = Arc::new(PacketPoolTelemetry::new());
+    let payload_recycle = PayloadRecycle {
+        tx: payload_recycle_tx,
+        telemetry: payload_pool_telemetry.clone(),
+    };
     let ingress_payload_queue_drops = Arc::new(AtomicU64::new(0));
     let ingress_repair_queue_drops = Arc::new(AtomicU64::new(0));
     let ingress_control_frames_coalesced = Arc::new(AtomicU64::new(0));
@@ -1910,10 +1996,12 @@ async fn main() -> Result<()> {
     let recv_repair_queue_drops = ingress_repair_queue_drops.clone();
     let recv_control_frames_coalesced = ingress_control_frames_coalesced.clone();
     let recv_duplicates_coalesced = ingress_duplicates_coalesced.clone();
-    let recv_payload_recycle_tx = payload_recycle_tx.clone();
+    let recv_payload_recycle = payload_recycle.clone();
+    let recv_payload_pool_telemetry = payload_pool_telemetry.clone();
     let mut udp_receiver_task = tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
-        let mut payload = take_payload_buffer(&mut payload_recycle_rx);
+        let mut payload =
+            take_payload_buffer(&mut payload_recycle_rx, &recv_payload_pool_telemetry);
         let mut pre_admission_duplicates = DuplicateWindow::new(8192);
         loop {
             let (len, peer) = match recv_socket.recv_from(&mut buf).await {
@@ -1946,13 +2034,15 @@ async fn main() -> Result<()> {
             }
             let frame_session_id = header.session_id;
             let frame_sequence = header.sequence;
-            let frame_payload =
-                std::mem::replace(&mut payload, take_payload_buffer(&mut payload_recycle_rx));
+            let frame_payload = std::mem::replace(
+                &mut payload,
+                take_payload_buffer(&mut payload_recycle_rx, &recv_payload_pool_telemetry),
+            );
             let inbound = InboundServerFrame::new(
                 XBondFrame::new(header, frame_payload),
                 peer,
                 duplicate_class.is_some(),
-                Some(recv_payload_recycle_tx.clone()),
+                Some(recv_payload_recycle.clone()),
             );
             match dispatch_inbound_frame(
                 &recv_critical_control_frames,
@@ -2000,7 +2090,7 @@ async fn main() -> Result<()> {
             tun_ref.try_clone()?,
             args.tun_queue_capacity,
             tun_worker_exit_tx.clone(),
-            payload_recycle_tx.clone(),
+            payload_recycle.clone(),
             tun_fault,
         ))
     } else {
@@ -2055,9 +2145,12 @@ async fn main() -> Result<()> {
         &mut data_packets_forwarded,
     );
     let server_health_status = server_health.read().await.clone();
-    control_plane.repair_cache_entries = resend_cache.len() as u64;
-    control_plane.repair_cache_bytes = resend_cache.accounted_bytes_len() as u64;
-    control_plane.repair_cache_byte_capacity = resend_cache.byte_capacity() as u64;
+    refresh_server_repair_cache_status(
+        &mut resend_cache,
+        &mut control_plane.repair_cache,
+        monotonic_micros(),
+    );
+    control_plane.receive_payload_pool = payload_recycle.status();
     write_server_status(
         &args,
         tun.as_ref(),
@@ -2198,6 +2291,7 @@ async fn main() -> Result<()> {
                                         &mut peers,
                                         &mut return_control,
                                         &mut resend_cache,
+                                        &mut control_plane.repair_cache,
                                         &mut reorder,
                                         &mut fec_recovery,
                                         &mut reorder_session_id,
@@ -2847,6 +2941,7 @@ async fn main() -> Result<()> {
                     control_datagrams_sent.load(Ordering::Relaxed);
                 control_plane.control_send_failures =
                     control_send_failures.load(Ordering::Relaxed);
+                control_plane.receive_payload_pool = payload_recycle.status();
                 sync_tun_writer_telemetry(
                     tun_writer.as_ref(),
                     &mut control_plane,
@@ -2892,6 +2987,7 @@ async fn main() -> Result<()> {
                         &mut peers,
                         &mut return_control,
                         &mut resend_cache,
+                        &mut control_plane.repair_cache,
                         &mut reorder,
                         &mut fec_recovery,
                         &mut reorder_session_id,
@@ -2925,11 +3021,12 @@ async fn main() -> Result<()> {
                     return_payload_bytes_since_budget_update = 0;
                     repair_budget_last_updated = Instant::now();
                 }
-                repair.cache_entries = resend_cache.len();
-                control_plane.repair_cache_entries = resend_cache.len() as u64;
-                control_plane.repair_cache_bytes = resend_cache.accounted_bytes_len() as u64;
-                control_plane.repair_cache_byte_capacity =
-                    resend_cache.byte_capacity() as u64;
+                refresh_server_repair_cache_status(
+                    &mut resend_cache,
+                    &mut control_plane.repair_cache,
+                    monotonic_micros(),
+                );
+                repair.cache_entries = control_plane.repair_cache.entries;
                 let recovery_active = return_control
                     .as_ref()
                     .is_some_and(|control| control.recovery_active);
@@ -3569,6 +3666,7 @@ struct TunnelCounters {
     non_ipv4_packets_dropped: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_server_status(
     args: &Args,
     tun: Option<&XBondTun>,
@@ -3750,6 +3848,7 @@ fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
     (!sequences.is_empty()).then_some(sequences)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_server_recovery_status(
     recovery_active: bool,
     schedule_required: bool,
@@ -3785,6 +3884,7 @@ fn build_server_recovery_status(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_server_recovery_status(
     control_send_tx: &mpsc::Sender<ControlSendWork>,
     key: &XBondKey,
@@ -3835,6 +3935,7 @@ fn send_server_recovery_status(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_repair_requests_for_ingress_gaps(
     control_send_tx: &mpsc::Sender<ControlSendWork>,
     key: &XBondKey,
@@ -3888,6 +3989,7 @@ fn send_repair_requests_for_ingress_gaps(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_repair_frames_from_server_cache(
     args: &Args,
     socket: &Arc<UdpSocket>,
@@ -3993,6 +4095,7 @@ fn clear_session_forwarding_state(
     peers: &mut HashMap<u16, PeerState>,
     return_control: &mut Option<ReturnControl>,
     resend_cache: &mut ResendCache,
+    repair_cache_status: &mut XBondRepairCacheStatus,
     reorder: &mut PacketReorderBuffer,
     fec_recovery: &mut FecRecovery,
     reorder_session_id: &mut u64,
@@ -4009,6 +4112,7 @@ fn clear_session_forwarding_state(
         repair_cache_byte_capacity,
         REPAIR_CACHE_TTL_MICROS,
     );
+    *repair_cache_status = XBondRepairCacheStatus::default();
     reorder.reset();
     *fec_recovery = FecRecovery::new(8192);
     *reorder_session_id = 0;
@@ -4519,6 +4623,13 @@ mod tests {
             requests_sent: 1,
             ..XBondRepairStatus::default()
         };
+        let mut repair_cache_status = XBondRepairCacheStatus {
+            entries: 4,
+            accounted_bytes: 128,
+            quiescent: true,
+            quiescent_since_micros: Some(42),
+            ..XBondRepairCacheStatus::default()
+        };
         let mut pending_primary_return = Some(PendingPrimaryReturn {
             work: ReturnSendWork {
                 packet_kind: PacketKind::Data,
@@ -4544,6 +4655,7 @@ mod tests {
             &mut peers,
             &mut return_control,
             &mut resend_cache,
+            &mut repair_cache_status,
             &mut reorder,
             &mut fec_recovery,
             &mut reorder_session_id,
@@ -4556,6 +4668,7 @@ mod tests {
         assert!(return_control.is_none());
         assert_eq!(resend_cache.len(), 0);
         assert_eq!(resend_cache.byte_capacity(), 16);
+        assert_eq!(repair_cache_status, XBondRepairCacheStatus::default());
         assert_eq!(reorder.stats().pending_depth, 0);
         assert_eq!(reorder_session_id, 0);
         assert_eq!(repair.requests_sent, 0);
@@ -5223,20 +5336,33 @@ mod tests {
     #[test]
     fn payload_pool_reuses_returned_allocation_and_falls_back_when_empty() {
         let (recycle_tx, mut recycle_rx) = mpsc::channel(1);
-        let payload = take_payload_buffer(&mut recycle_rx);
+        let telemetry = Arc::new(PacketPoolTelemetry::new());
+        let recycle = PayloadRecycle {
+            tx: recycle_tx,
+            telemetry: telemetry.clone(),
+        };
+        let payload = take_payload_buffer(&mut recycle_rx, &telemetry);
         let allocation = payload.as_ptr();
 
-        assert!(recycle_payload(Some(&recycle_tx), payload));
-        let reused = take_payload_buffer(&mut recycle_rx);
+        assert!(recycle_payload(Some(&recycle), payload));
+        assert_eq!(recycle.status().retained, 1);
+        let reused = take_payload_buffer(&mut recycle_rx, &telemetry);
         assert_eq!(reused.as_ptr(), allocation);
+        assert_eq!(recycle.status().retained, 0);
 
-        let fallback = take_payload_buffer(&mut recycle_rx);
+        let fallback = take_payload_buffer(&mut recycle_rx, &telemetry);
         assert!(fallback.capacity() >= EXPECTED_UDP_PAYLOAD_BYTES);
+        assert_eq!(recycle.status().fallback_allocations, 2);
     }
 
     #[test]
     fn inbound_frame_drop_returns_accepted_payload_to_pool() {
         let (recycle_tx, mut recycle_rx) = mpsc::channel(1);
+        let telemetry = Arc::new(PacketPoolTelemetry::new());
+        let recycle = PayloadRecycle {
+            tx: recycle_tx,
+            telemetry: telemetry.clone(),
+        };
         let payload = Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES);
         let allocation = payload.as_ptr();
         let inbound = InboundServerFrame::new(
@@ -5246,11 +5372,11 @@ mod tests {
             ),
             "192.0.2.1:1000".parse().unwrap(),
             false,
-            Some(recycle_tx),
+            Some(recycle),
         );
 
         drop(inbound);
-        let recycled = take_payload_buffer(&mut recycle_rx);
+        let recycled = take_payload_buffer(&mut recycle_rx, &telemetry);
 
         assert_eq!(
             recycled.as_ptr(),
@@ -5262,22 +5388,123 @@ mod tests {
     #[test]
     fn payload_pool_caps_retained_capacity_and_never_waits_when_full() {
         let (recycle_tx, mut recycle_rx) = mpsc::channel(1);
+        let telemetry = Arc::new(PacketPoolTelemetry::new());
+        let recycle = PayloadRecycle {
+            tx: recycle_tx,
+            telemetry: telemetry.clone(),
+        };
         assert!(recycle_payload(
-            Some(&recycle_tx),
+            Some(&recycle),
             Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES)
         ));
         assert!(!recycle_payload(
-            Some(&recycle_tx),
+            Some(&recycle),
             Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES)
         ));
         assert!(!recycle_payload(
-            Some(&recycle_tx),
+            Some(&recycle),
             Vec::with_capacity(MAX_POOLED_PAYLOAD_CAPACITY + 1)
         ));
+        assert_eq!(
+            recycle.status(),
+            XBondPacketPoolStatus {
+                retained: 1,
+                capacity: 1,
+                fallback_allocations: 0,
+                discarded: 2,
+            }
+        );
 
         assert_eq!(
-            take_payload_buffer(&mut recycle_rx).capacity(),
+            take_payload_buffer(&mut recycle_rx, &telemetry).capacity(),
             EXPECTED_UDP_PAYLOAD_BYTES
+        );
+        assert_eq!(recycle.status().retained, 0);
+    }
+
+    #[test]
+    fn payload_pool_never_retains_zero_capacity_buffers() {
+        let (recycle_tx, _recycle_rx) = mpsc::channel(1);
+        let telemetry = Arc::new(PacketPoolTelemetry::new());
+        let recycle = PayloadRecycle {
+            tx: recycle_tx,
+            telemetry,
+        };
+
+        assert!(!recycle_payload(Some(&recycle), Vec::new()));
+        assert_eq!(
+            recycle.status(),
+            XBondPacketPoolStatus {
+                retained: 0,
+                capacity: 1,
+                fallback_allocations: 0,
+                discarded: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn server_runtime_status_serializes_receive_payload_pool_telemetry() {
+        let status = ServerRuntimeStatus {
+            running: true,
+            bind: "0.0.0.0:8444".to_string(),
+            tun: Some("xbonds0".to_string()),
+            updated_at_micros: 1,
+            schedule_required: false,
+            schedule_generation: 0,
+            schedule_age_ms: 0,
+            return_schedule: None,
+            ingress_reorder: ServerIngressReorderStatus {
+                current_hold_ms: 50,
+                normal_hold_ms: 50,
+                recovery_hold_ms: 500,
+                recovery_min_hold_ms: 150,
+                recovery_max_hold_ms: 500,
+                adaptive_recovery_hold_enabled: true,
+                adaptive_calm_samples: 0,
+                adaptive_last_adjustment_reason: String::new(),
+                capacity: 8192,
+                stats: ReorderStats::default(),
+            },
+            repair: XBondRepairStatus::default(),
+            server_health: XBondServerHealthStatus::default(),
+            control_plane: ServerControlPlaneStatus {
+                receive_payload_pool: XBondPacketPoolStatus {
+                    retained: 6,
+                    capacity: 32,
+                    fallback_allocations: 2,
+                    discarded: 4,
+                },
+                ..ServerControlPlaneStatus::default()
+            },
+            return_pmtu: ServerReturnPmtuStatus::default(),
+            counters: TunnelCounters {
+                data_packets_received: 0,
+                data_packets_forwarded: 0,
+                fec_packets_received: 0,
+                fec_packets_recovered: 0,
+                invalid_fec_packets_dropped: 0,
+                non_ipv4_packets_dropped: 0,
+            },
+        };
+
+        let value = serde_json::to_value(status).unwrap();
+
+        assert_eq!(
+            value["control_plane"]["receive_payload_pool"]["retained"],
+            6
+        );
+        assert_eq!(
+            value["control_plane"]["receive_payload_pool"]["capacity"],
+            32
+        );
+        assert_eq!(
+            value["control_plane"]["receive_payload_pool"]["fallback_allocations"],
+            2
+        );
+        assert_eq!(
+            value["control_plane"]["receive_payload_pool"]["discarded"],
+            4
         );
     }
 
@@ -5650,6 +5877,27 @@ mod tests {
 
         assert!(cache.bytes_len() <= 10);
         assert!(cache.len() <= 1);
+    }
+
+    #[test]
+    fn server_repair_cache_status_explicitly_prunes_and_marks_quiescence() {
+        let mut cache = ResendCache::new(4, 100);
+        cache.insert(1, 1, Arc::new(vec![1, 2, 3]), 1);
+        let accounted_bytes = cache.accounted_bytes_len();
+        let mut status = XBondRepairCacheStatus::default();
+
+        refresh_server_repair_cache_status(&mut cache, &mut status, 102);
+
+        assert_eq!(status.entries, 0);
+        assert_eq!(status.accounted_bytes, 0);
+        assert_eq!(status.prune_runs, 1);
+        assert_eq!(status.last_pruned_at_micros, 102);
+        assert_eq!(status.last_pruned_entries, 1);
+        assert_eq!(status.last_pruned_accounted_bytes, accounted_bytes);
+        assert_eq!(status.total_pruned_entries, 1);
+        assert_eq!(status.total_pruned_accounted_bytes, accounted_bytes as u64);
+        assert!(status.quiescent);
+        assert_eq!(status.quiescent_since_micros, Some(102));
     }
 
     #[test]

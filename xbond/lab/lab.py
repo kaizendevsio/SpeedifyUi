@@ -41,6 +41,13 @@ RESULTS_DIR = pathlib.Path(os.environ.get("LAB_RESULTS_DIR", "/results"))
 RUN_ROOT = pathlib.Path("/run/xbond-lab")
 LOG_ROOT = pathlib.Path("/tmp/xbond-lab")
 PSK = os.environ.get("XBOND_PSK", "xbond-local-lab-key")
+REPAIR_CACHE_TTL_SECONDS = 3.0
+SOAK_QUIESCENT_DELAY_SECONDS = 3.25
+SOAK_CACHE_QUIESCENCE_TIMEOUT_SECONDS = 6.0
+SOAK_SAMPLE_PERIOD_SECONDS = 5.0
+ANCHOR_STABILITY_REQUIRED_UPDATES = 8
+ANCHOR_STABILITY_TIMEOUT_SECONDS = 45.0
+ANCHOR_STABILITY_POLL_SECONDS = 0.1
 
 
 def utc_now() -> str:
@@ -133,11 +140,14 @@ def telemetry_subset(status: dict[str, Any] | None) -> dict[str, Any]:
         "oldest_age",
         "write_latency",
         "tun_write_micros",
+        "packet_pool",
+        "payload_pool",
     )
     return {
         key: value
         for key, value in flatten(status).items()
-        if any(needle in key.lower() for needle in needles)
+        if key.startswith("sender_lanes[")
+        or any(needle in key.lower() for needle in needles)
     }
 
 
@@ -432,6 +442,97 @@ def trend_summary(
     }
 
 
+def theil_sen_slope_per_minute(
+    timestamps: list[float],
+    values: list[float],
+) -> float | None:
+    if len(values) < 2 or len(values) != len(timestamps):
+        return None
+    slopes = [
+        (values[right] - values[left])
+        / (timestamps[right] - timestamps[left])
+        for left in range(len(values) - 1)
+        for right in range(left + 1, len(values))
+        if timestamps[right] > timestamps[left]
+    ]
+    return float(statistics.median(slopes) * 60) if slopes else None
+
+
+def robust_window_evidence(
+    timestamps: list[float],
+    values: list[float],
+    *,
+    edge_samples: int = 5,
+) -> dict[str, float | int | None]:
+    if len(values) < 2 or len(values) != len(timestamps):
+        return {
+            "sample_count": len(values),
+            "start_at_seconds": None,
+            "end_at_seconds": None,
+            "duration_seconds": None,
+            "theil_sen_slope_kib_per_minute": None,
+            "edge_sample_count": 0,
+            "start_edge_median_kib": None,
+            "end_edge_median_kib": None,
+            "edge_median_growth_kib": None,
+        }
+    width = min(edge_samples, len(values))
+    start_median = float(statistics.median(values[:width]))
+    end_median = float(statistics.median(values[-width:]))
+    return {
+        "sample_count": len(values),
+        "start_at_seconds": float(timestamps[0]),
+        "end_at_seconds": float(timestamps[-1]),
+        "duration_seconds": float(timestamps[-1] - timestamps[0]),
+        "theil_sen_slope_kib_per_minute": theil_sen_slope_per_minute(
+            timestamps,
+            values,
+        ),
+        "edge_sample_count": width,
+        "start_edge_median_kib": start_median,
+        "end_edge_median_kib": end_median,
+        "edge_median_growth_kib": end_median - start_median,
+    }
+
+
+def robust_steady_state_evidence(
+    timestamps: list[float],
+    values: list[float],
+    *,
+    final_window_seconds: float = 600.0,
+) -> dict[str, Any]:
+    if len(values) < 2 or len(values) != len(timestamps):
+        empty = robust_window_evidence([], [])
+        return {
+            "sample_count": len(values),
+            "final_half": empty,
+            "final_10_minutes": empty,
+        }
+    midpoint = timestamps[0] + ((timestamps[-1] - timestamps[0]) / 2)
+    final_half = [
+        (stamp, value)
+        for stamp, value in zip(timestamps, values, strict=True)
+        if stamp >= midpoint
+    ]
+    final_window_start = max(timestamps[0], timestamps[-1] - final_window_seconds)
+    final_window = [
+        (stamp, value)
+        for stamp, value in zip(timestamps, values, strict=True)
+        if stamp >= final_window_start
+    ]
+    return {
+        "sample_count": len(values),
+        "final_half": robust_window_evidence(
+            [item[0] for item in final_half],
+            [item[1] for item in final_half],
+        ),
+        "final_10_minutes": robust_window_evidence(
+            [item[0] for item in final_window],
+            [item[1] for item in final_window],
+        ),
+    }
+
+
 def per_metric_trends(
     samples: list[dict[str, Any]],
     predicate: Callable[[str], bool],
@@ -468,33 +569,122 @@ def per_metric_trends(
 def counter_growth_by_key(
     samples: list[dict[str, Any]],
     predicate: Callable[[str], bool],
-) -> tuple[dict[str, float], bool]:
+) -> tuple[dict[str, float], bool, dict[str, int]]:
     if not samples:
-        return {}, False
-    first = samples[0]
-    last = samples[-1]
+        return {}, False, {}
+
+    sender_counter_pattern = re.compile(
+        r"^sender_lanes\[(?P<index>\d+)\]\."
+        r"(?P<lane>data|control|repair)\.(?P<counter>.+)$"
+    )
+    normalized_samples: list[dict[str, tuple[int | None, float]]] = []
+    identities_complete = True
+    for sample in samples:
+        normalized: dict[str, tuple[int | None, float]] = {}
+        for side in ("client_status", "server_status"):
+            telemetry = sample[side]
+            for key, value in telemetry.items():
+                if not predicate(key) or not isinstance(value, (int, float)):
+                    continue
+                match = sender_counter_pattern.match(key)
+                if match is None:
+                    metric_key = f"{side}:{key}"
+                    identity_value = (None, float(value))
+                else:
+                    prefix = f"sender_lanes[{match.group('index')}]"
+                    path_id = telemetry.get(f"{prefix}.path_id")
+                    socket_generation = telemetry.get(
+                        f"{prefix}.socket_generation"
+                    )
+                    if not isinstance(path_id, (int, float)) or not isinstance(
+                        socket_generation, (int, float)
+                    ):
+                        identities_complete = False
+                        continue
+                    metric_key = (
+                        f"{side}:sender_lanes[path_id={int(path_id)}]."
+                        f"{match.group('lane')}.{match.group('counter')}"
+                    )
+                    identity_value = (int(socket_generation), float(value))
+
+                existing = normalized.get(metric_key)
+                if existing is not None and existing != identity_value:
+                    identities_complete = False
+                    continue
+                normalized[metric_key] = identity_value
+        normalized_samples.append(normalized)
+
     metric_keys = sorted(
         {
-            f"{side}:{key}"
-            for sample in samples
-            for side in ("client_status", "server_status")
-            for key, value in sample[side].items()
-            if predicate(key) and isinstance(value, (int, float))
+            metric_key
+            for sample in normalized_samples
+            for metric_key in sample
         }
     )
     growth: dict[str, float] = {}
-    complete = bool(metric_keys)
+    resets: dict[str, int] = {}
+    complete = bool(metric_keys) and identities_complete
     for metric_key in metric_keys:
-        side, key = metric_key.split(":", 1)
-        before = first[side].get(key)
-        after = last[side].get(key)
-        if not isinstance(before, (int, float)) or not isinstance(
-            after, (int, float)
-        ):
+        values = [
+            sample.get(metric_key)
+            for sample in normalized_samples
+        ]
+        if not all(value is not None for value in values):
             complete = False
             continue
-        growth[metric_key] = max(0.0, float(after) - float(before))
-    return growth, complete
+        identified_values = [
+            value
+            for value in values
+            if value is not None
+        ]
+        total_growth = 0.0
+        reset_count = 0
+        for (previous_generation, previous), (
+            current_generation,
+            current,
+        ) in zip(
+            identified_values,
+            identified_values[1:],
+        ):
+            if current_generation != previous_generation:
+                if current_generation is None or previous_generation is None:
+                    complete = False
+                    continue
+                # Sender counters are scoped to a socket generation. Count the
+                # first observed value in a replacement generation from zero.
+                reset_count += 1
+                total_growth += max(0.0, current)
+            elif current >= previous:
+                total_growth += current - previous
+            else:
+                # A cumulative counter cannot regress within one generation.
+                # Do not invent a reset; invalidate this telemetry series.
+                complete = False
+        growth[metric_key] = total_growth
+        resets[metric_key] = reset_count
+    return growth, complete, resets
+
+
+def is_harmful_drop_counter(key: str) -> bool:
+    lowered = key.lower()
+    if "sender_lanes[" in lowered:
+        return any(
+            lowered.endswith(f".{lane}.total_drops")
+            for lane in ("data", "control", "repair")
+        )
+    return any(
+        marker in lowered
+        for marker in (
+            "inbound_queue_drops",
+            "tun_queue_drops",
+            "all_return_copies_dropped",
+            "tun_write_queue_saturated_drops",
+            "ingress_payload_queue_drops",
+            "control_lane_drops",
+            "repair_lane_drops",
+            "repair.queue_drops",
+        )
+    )
 
 
 def sha256_file(path: pathlib.Path) -> str | None:
@@ -603,7 +793,124 @@ def session_evidence(log_text: str) -> dict[str, Any]:
     }
 
 
-def process_metrics(process: subprocess.Popen[str] | None) -> dict[str, Any]:
+AUTHORITATIVE_REPAIR_CACHE_METRICS = {
+    "client": (
+        "process.repair_cache.entries",
+        "process.repair_cache.accounted_bytes",
+    ),
+    "server": (
+        "control_plane.repair_cache.entries",
+        "control_plane.repair_cache.accounted_bytes",
+    ),
+}
+
+
+def repair_cache_metrics(
+    status: dict[str, Any] | None,
+    *,
+    side: str,
+) -> tuple[dict[str, float], list[str], dict[str, float]]:
+    flattened = flatten(status or {})
+    required = AUTHORITATIVE_REPAIR_CACHE_METRICS[side]
+    metrics = {
+        key: float(flattened[key])
+        for key in required
+        if isinstance(flattened.get(key), (int, float))
+        and not isinstance(flattened.get(key), bool)
+    }
+    missing = [key for key in required if key not in metrics]
+
+    legacy_metrics: dict[str, float] = {}
+    for key, value in flattened.items():
+        lowered = key.lower()
+        is_legacy_entries = lowered.endswith("repair.cache_entries") or lowered.endswith(
+            "repair_cache_entries"
+        )
+        is_legacy_bytes = (
+            lowered.endswith("repair.cache_bytes")
+            or lowered.endswith("repair_cache_bytes")
+        ) and not lowered.endswith("repair_cache_byte_capacity")
+        if (
+            key not in required
+            and (is_legacy_entries or is_legacy_bytes)
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        ):
+            legacy_metrics[key] = float(value)
+    return metrics, missing, legacy_metrics
+
+
+def repair_cache_quiescence_evidence(
+    client_status: dict[str, Any] | None,
+    server_status: dict[str, Any] | None,
+    *,
+    waited_seconds: float,
+) -> dict[str, Any]:
+    sides: dict[str, Any] = {}
+    for side, status in (
+        ("client", client_status),
+        ("server", server_status),
+    ):
+        metrics, missing_metrics, legacy_metrics = repair_cache_metrics(
+            status,
+            side=side,
+        )
+        authoritative_fields_present = not missing_metrics
+        sides[side] = {
+            "telemetry_available": authoritative_fields_present,
+            "authoritative_fields_present": authoritative_fields_present,
+            "metrics": metrics,
+            "missing_metrics": missing_metrics,
+            "legacy_metrics": legacy_metrics,
+            "all_zero": authoritative_fields_present
+            and all(value == 0 for value in metrics.values()),
+        }
+    return {
+        "verified": waited_seconds >= REPAIR_CACHE_TTL_SECONDS
+        and all(
+            side["authoritative_fields_present"] and side["all_zero"]
+            for side in sides.values()
+        ),
+        "waited_seconds": round(waited_seconds, 3),
+        "client": sides["client"],
+        "server": sides["server"],
+    }
+
+
+def wait_for_repair_caches_quiescent(
+    lab: XBondLab,
+    *,
+    activity_finished_at: float,
+    timeout_seconds: float = SOAK_CACHE_QUIESCENCE_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    deadline = time.monotonic() + timeout_seconds
+    latest_client: dict[str, Any] = {}
+    latest_server: dict[str, Any] = {}
+    latest_evidence = repair_cache_quiescence_evidence(
+        latest_client,
+        latest_server,
+        waited_seconds=0.0,
+    )
+    while time.monotonic() < deadline:
+        latest_client = json_file(lab.client_status) or {}
+        latest_server = json_file(lab.server_status) or {}
+        waited_seconds = time.monotonic() - activity_finished_at
+        latest_evidence = repair_cache_quiescence_evidence(
+            latest_client,
+            latest_server,
+            waited_seconds=waited_seconds,
+        )
+        if latest_evidence["verified"]:
+            break
+        time.sleep(0.1)
+    return latest_client, latest_server, latest_evidence
+
+
+def process_metrics(
+    process: subprocess.Popen[str] | None,
+    *,
+    include_memory_rollup: bool = True,
+) -> dict[str, Any]:
     if process is None:
         return {"running": False}
     running = process.poll() is None
@@ -619,6 +926,32 @@ def process_metrics(process: subprocess.Popen[str] | None) -> dict[str, Any]:
             result["rss_kib"] = int(fields[1])
         result["elapsed"] = fields[2]
         result["state"] = fields[3]
+    if not include_memory_rollup:
+        result["memory_rollup_available"] = False
+        result["memory_rollup_blocked"] = "repair-cache-not-quiescent"
+        return result
+    smaps_path = pathlib.Path(f"/proc/{process.pid}/smaps_rollup")
+    rollup_fields = {
+        "Pss": "pss_kib",
+        "Anonymous": "anonymous_kib",
+        "Private_Dirty": "private_dirty_kib",
+    }
+    try:
+        smaps_lines = smaps_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        result["memory_rollup_available"] = False
+    else:
+        for line in smaps_lines:
+            key, separator, remainder = line.partition(":")
+            output_key = rollup_fields.get(key)
+            if not separator or output_key is None:
+                continue
+            fields = remainder.split()
+            if fields and fields[0].isdigit():
+                result[output_key] = int(fields[0])
+        result["memory_rollup_available"] = any(
+            output_key in result for output_key in rollup_fields.values()
+        )
     return result
 
 
@@ -1445,23 +1778,18 @@ class ResultSemanticValidationError(ValueError):
     pass
 
 
-def validate_result_semantics(payload: dict[str, Any]) -> None:
-    if payload.get("scenario") != "soak":
-        return
-
-    measurement = payload["metrics"]["baseline_measurement"]
+def validate_throughput_measurement_semantics(
+    measurement: dict[str, Any],
+    *,
+    label: str,
+) -> None:
     warmup = measurement["warmup"]
     if warmup["valid_complete"]:
         expected_warmup_floor = throughput_floor_mbps(warmup["throughput"])
         if warmup["floor_mbps"] != expected_warmup_floor:
             raise ResultSemanticValidationError(
-                "soak warmup floor_mbps does not match its throughput evidence"
+                f"{label} warmup floor_mbps does not match its throughput evidence"
             )
-
-    if payload.get("status") == "pass" and not warmup["valid_complete"]:
-        raise ResultSemanticValidationError(
-            "a passing soak requires a complete valid warmup"
-        )
 
     if not measurement["complete"]:
         return
@@ -1473,14 +1801,14 @@ def validate_result_semantics(payload: dict[str, Any]) -> None:
         expected_floor = throughput_floor_mbps(attempt["throughput"])
         if attempt["floor_mbps"] != expected_floor:
             raise ResultSemanticValidationError(
-                f"soak baseline attempt {attempt['attempt']} floor_mbps does not "
+                f"{label} attempt {attempt['attempt']} floor_mbps does not "
                 "match its throughput evidence"
             )
 
     required_valid_samples = measurement["required_valid_samples"]
     if len(valid_attempts) != required_valid_samples:
         raise ResultSemanticValidationError(
-            "complete soak baseline does not contain the required valid attempts"
+            f"complete {label} does not contain the required valid attempts"
         )
 
     median_attempt = sorted(
@@ -1492,7 +1820,7 @@ def validate_result_semantics(payload: dict[str, Any]) -> None:
     )[len(valid_attempts) // 2]
     if measurement["selected_attempt"] != median_attempt["attempt"]:
         raise ResultSemanticValidationError(
-            "selected_attempt is not the median valid soak baseline attempt"
+            f"selected_attempt is not the median valid {label} attempt"
         )
     if measurement["selected_median_floor_mbps"] != median_attempt["floor_mbps"]:
         raise ResultSemanticValidationError(
@@ -1504,7 +1832,199 @@ def validate_result_semantics(payload: dict[str, Any]) -> None:
         )
 
 
-def collect_soak_baseline(
+def validate_result_semantics(payload: dict[str, Any]) -> None:
+    scenario = payload.get("scenario")
+    if scenario == "soak":
+        measurement = payload["metrics"]["baseline_measurement"]
+        validate_throughput_measurement_semantics(
+            measurement,
+            label="soak baseline",
+        )
+        if payload.get("status") == "pass" and not measurement["warmup"][
+            "valid_complete"
+        ]:
+            raise ResultSemanticValidationError(
+                "a passing soak requires a complete valid warmup"
+            )
+        samples = payload["metrics"].get("samples", [])
+        verified_samples = []
+        for sample in samples:
+            evidence = sample["repair_cache_quiescence"]
+            expected_metrics = AUTHORITATIVE_REPAIR_CACHE_METRICS
+
+            def side_is_authoritatively_quiescent(
+                side_name: str,
+                side: dict[str, Any],
+            ) -> bool:
+                required = set(expected_metrics[side_name])
+                metrics = side["metrics"]
+                return (
+                    side["telemetry_available"] is True
+                    and side["authoritative_fields_present"] is True
+                    and set(metrics) == required
+                    and side["missing_metrics"] == []
+                    and all(value == 0 for value in metrics.values())
+                    and side["all_zero"] is True
+                )
+
+            expected_verified = (
+                evidence["waited_seconds"] >= REPAIR_CACHE_TTL_SECONDS
+                and side_is_authoritatively_quiescent("client", evidence["client"])
+                and side_is_authoritatively_quiescent("server", evidence["server"])
+            )
+            if evidence["verified"] is not expected_verified:
+                raise ResultSemanticValidationError(
+                    "soak repair-cache quiescence does not match runtime telemetry"
+                )
+            verified_samples.append(expected_verified)
+            if not expected_verified and any(
+                process.get("memory_rollup_available") is True
+                for process in sample.get("processes", {}).values()
+                if isinstance(process, dict)
+            ):
+                raise ResultSemanticValidationError(
+                    "soak sampled smaps before repair caches were quiescent"
+                )
+        expected_all_quiescent = bool(samples) and all(verified_samples)
+        if (
+            payload["metrics"]["quiescent_sample_phase"][
+                "all_samples_cache_quiescent"
+            ]
+            is not expected_all_quiescent
+        ):
+            raise ResultSemanticValidationError(
+                "soak quiescent summary does not match sample evidence"
+            )
+        if payload.get("status") == "pass" and not expected_all_quiescent:
+            raise ResultSemanticValidationError(
+                "a passing soak requires verified repair-cache quiescence"
+            )
+        return
+    if scenario != "anchor-bad-backup":
+        return
+
+    metrics = payload["metrics"]
+    baseline = metrics["clean_tunnel_baseline_measurement"]
+    impaired = metrics["impaired_tunnel_measurement"]
+    validate_throughput_measurement_semantics(
+        baseline,
+        label="clean tunnel baseline",
+    )
+    validate_throughput_measurement_semantics(
+        impaired,
+        label="impaired tunnel measurement",
+    )
+    preconditions = metrics["preconditions"]
+    stage_evidence = (
+        preconditions["clean_tunnel_baseline"],
+        preconditions["clean_tunnel_baseline_after"],
+        preconditions["impaired_tunnel_measurement"],
+        preconditions["impaired_tunnel_measurement_after"],
+    )
+    for evidence in stage_evidence:
+        backups = evidence["backup_paths"]
+        stabilization = evidence["stabilization"]
+        observations = stabilization["observations"]
+        expected_stabilization = anchor_stabilization_summary(
+            observations,
+            required_consecutive_updates=stabilization[
+                "required_consecutive_updates"
+            ],
+            elapsed_seconds=stabilization["elapsed_seconds"],
+            achieved=stabilization["achieved"],
+        )
+        for key in (
+            "observed_unique_updates",
+            "ending_consecutive_valid_updates",
+            "maximum_consecutive_valid_updates",
+        ):
+            if stabilization[key] != expected_stabilization[key]:
+                raise ResultSemanticValidationError(
+                    f"anchor precondition stage {evidence['stage']} has "
+                    f"inconsistent stabilization {key}"
+                )
+        expected_sustained_health = (
+            stabilization["maximum_consecutive_valid_updates"]
+            >= stabilization["required_consecutive_updates"]
+        )
+        if (
+            stabilization["achieved"] is not expected_sustained_health
+            or evidence["checks"]["sustained_health_evidence"]
+            is not expected_sustained_health
+        ):
+            raise ResultSemanticValidationError(
+                f"anchor precondition stage {evidence['stage']} sustained "
+                "health does not match its status generations"
+            )
+        expected_backup_presence = set(backups) == {"2", "3"} and all(
+            backup["present"] for backup in backups.values()
+        )
+        expected_backup_degraded = (
+            not evidence["require_degraded_backups"]
+            or (
+                set(backups) == {"2", "3"}
+                and all(backup["degraded"] for backup in backups.values())
+            )
+        )
+        expected_stage_valid = (
+            not evidence["failures"]
+            and all(evidence["checks"].values())
+            and evidence["anchor_path_id"] == 1
+            and isinstance(evidence["anchor_path_loss_percent"], (int, float))
+            and evidence["anchor_path_loss_percent"] <= 1
+            and evidence["recovery_active"] is False
+            and expected_backup_presence
+            and expected_backup_degraded
+        )
+        if evidence["valid"] is not expected_stage_valid:
+            raise ResultSemanticValidationError(
+                f"anchor precondition stage {evidence['stage']} validity does not "
+                "match its evidence"
+            )
+    expected_preconditions_valid = (
+        not preconditions["failures"]
+        and all(evidence["valid"] for evidence in stage_evidence)
+    )
+    if preconditions["valid"] is not expected_preconditions_valid:
+        raise ResultSemanticValidationError(
+            "anchor aggregate precondition validity does not match stage evidence"
+        )
+    preconditions_valid = preconditions["valid"] is True
+    expected_comparison_valid = (
+        preconditions_valid
+        and baseline["complete"] is True
+        and impaired["complete"] is True
+        and isinstance(baseline["selected_median_floor_mbps"], (int, float))
+        and float(baseline["selected_median_floor_mbps"]) > 0
+    )
+    if metrics["comparison_valid"] is not expected_comparison_valid:
+        raise ResultSemanticValidationError(
+            "anchor comparison_valid does not match preconditions and measurement evidence"
+        )
+    retained_ratio = metrics["throughput_retained_ratio"]
+    if expected_comparison_valid:
+        if metrics["throughput"] != impaired["selected_throughput"]:
+            raise ResultSemanticValidationError(
+                "anchor throughput does not match the selected impaired measurement"
+            )
+        expected_ratio = float(impaired["selected_median_floor_mbps"]) / float(
+            baseline["selected_median_floor_mbps"]
+        )
+        if retained_ratio != expected_ratio:
+            raise ResultSemanticValidationError(
+                "anchor throughput_retained_ratio does not match median evidence"
+            )
+    elif retained_ratio is not None:
+        raise ResultSemanticValidationError(
+            "an invalid anchor comparison must not report a retained ratio"
+        )
+    if payload.get("status") == "pass" and not expected_comparison_valid:
+        raise ResultSemanticValidationError(
+            "a passing anchor comparison requires valid preconditions and measurements"
+        )
+
+
+def collect_throughput_measurement(
     lab: XBondLab,
     *,
     warmup_seconds: int = 2,
@@ -1571,6 +2091,23 @@ def collect_soak_baseline(
         ),
         "selected_throughput": selected["throughput"] if selected else None,
     }
+
+
+def collect_soak_baseline(
+    lab: XBondLab,
+    *,
+    warmup_seconds: int = 2,
+    sample_seconds: int = 3,
+    required_valid_samples: int = 3,
+    max_attempts: int = 5,
+) -> dict[str, Any]:
+    return collect_throughput_measurement(
+        lab,
+        warmup_seconds=warmup_seconds,
+        sample_seconds=sample_seconds,
+        required_valid_samples=required_valid_samples,
+        max_attempts=max_attempts,
+    )
 
 
 def native_path_throughput(
@@ -1847,16 +2384,237 @@ def scenario_healthy_single(lab: XBondLab, result: LabResult, _: int) -> None:
     )
 
 
+def anchor_comparison_preconditions(
+    status: dict[str, Any] | None,
+    *,
+    stage: str,
+    require_degraded_backups: bool = False,
+) -> dict[str, Any]:
+    status = status or {}
+    anchor_path_id = status.get("anchor_path_id")
+    recovery_active = (status.get("recovery") or {}).get("active")
+    anchor_path = next(
+        (
+            path
+            for path in status.get("paths", [])
+            if path.get("path_id") == 1
+        ),
+        {},
+    )
+    loss_rate = anchor_path.get("loss_rate")
+    loss_percent = (
+        float(loss_rate) * 100
+        if isinstance(loss_rate, (int, float))
+        else None
+    )
+    paths_by_id = {
+        path.get("path_id"): path
+        for path in status.get("paths", [])
+        if isinstance(path, dict)
+    }
+    backup_paths: dict[str, dict[str, Any]] = {}
+    for path_id in (2, 3):
+        path = paths_by_id.get(path_id)
+        backup_loss_rate = path.get("loss_rate") if path else None
+        backup_loss_percent = (
+            float(backup_loss_rate) * 100
+            if isinstance(backup_loss_rate, (int, float))
+            else None
+        )
+        role = path.get("role") if path else None
+        degraded = (
+            path is not None
+            and backup_loss_percent is not None
+            and backup_loss_percent > 1
+            and str(role).lower() != "anchor"
+        )
+        backup_paths[str(path_id)] = {
+            "present": path is not None,
+            "loss_percent": backup_loss_percent,
+            "role": role,
+            "degraded": degraded,
+        }
+    checks = {
+        "anchor_loss_available": loss_percent is not None,
+        "anchor_path_loss_within_limit": (
+            loss_percent is not None and loss_percent <= 1
+        ),
+        "correct_anchor_selected": anchor_path_id == 1,
+        "recovery_inactive": recovery_active is False,
+        "backup_paths_present": all(
+            path["present"] for path in backup_paths.values()
+        ),
+        "backup_paths_degraded": (
+            not require_degraded_backups
+            or all(path["degraded"] for path in backup_paths.values())
+        ),
+    }
+    failures = [name for name, passed in checks.items() if not passed]
+    return {
+        "stage": stage,
+        "valid": not failures,
+        "failures": failures,
+        "anchor_path_id": anchor_path_id,
+        "anchor_path_loss_percent": loss_percent,
+        "recovery_active": recovery_active,
+        "require_degraded_backups": require_degraded_backups,
+        "backup_paths": backup_paths,
+        "checks": checks,
+    }
+
+
+def anchor_stabilization_summary(
+    observations: list[dict[str, Any]],
+    *,
+    required_consecutive_updates: int,
+    elapsed_seconds: float,
+    achieved: bool,
+) -> dict[str, Any]:
+    consecutive = 0
+    maximum_consecutive = 0
+    for observation in observations:
+        if observation["valid"]:
+            consecutive += 1
+            maximum_consecutive = max(maximum_consecutive, consecutive)
+        else:
+            consecutive = 0
+    return {
+        "achieved": achieved,
+        "required_consecutive_updates": required_consecutive_updates,
+        "observed_unique_updates": len(observations),
+        "ending_consecutive_valid_updates": consecutive,
+        "maximum_consecutive_valid_updates": maximum_consecutive,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+        "observations": observations,
+    }
+
+
+def wait_for_anchor_preconditions(
+    lab: XBondLab,
+    *,
+    stage: str,
+    require_degraded_backups: bool,
+    timeout: float = ANCHOR_STABILITY_TIMEOUT_SECONDS,
+    required_consecutive_updates: int = ANCHOR_STABILITY_REQUIRED_UPDATES,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    deadline = time.monotonic() + timeout
+    latest_evidence = anchor_comparison_preconditions(
+        json_file(lab.client_status),
+        stage=stage,
+        require_degraded_backups=require_degraded_backups,
+    )
+    observations: list[dict[str, Any]] = []
+    last_status_mtime_ns: int | None = None
+    consecutive_valid_updates = 0
+    achieved = False
+    while time.monotonic() < deadline:
+        status = json_file(lab.client_status)
+        status_mtime_ns = (
+            lab.client_status.stat().st_mtime_ns
+            if status and lab.client_status.exists()
+            else None
+        )
+        if status and status_mtime_ns != last_status_mtime_ns:
+            last_status_mtime_ns = status_mtime_ns
+            latest_evidence = anchor_comparison_preconditions(
+                status,
+                stage=stage,
+                require_degraded_backups=require_degraded_backups,
+            )
+            observations.append(
+                {
+                    "at_seconds": round(time.monotonic() - started, 3),
+                    "status_mtime_ns": status_mtime_ns,
+                    "valid": latest_evidence["valid"],
+                    "anchor_path_id": latest_evidence["anchor_path_id"],
+                    "anchor_path_loss_percent": latest_evidence[
+                        "anchor_path_loss_percent"
+                    ],
+                    "recovery_active": latest_evidence["recovery_active"],
+                    "backup_paths": latest_evidence["backup_paths"],
+                }
+            )
+            consecutive_valid_updates = (
+                consecutive_valid_updates + 1
+                if latest_evidence["valid"]
+                else 0
+            )
+            if consecutive_valid_updates >= required_consecutive_updates:
+                achieved = True
+                break
+        time.sleep(ANCHOR_STABILITY_POLL_SECONDS)
+
+    latest_evidence["stabilization"] = anchor_stabilization_summary(
+        observations,
+        required_consecutive_updates=required_consecutive_updates,
+        elapsed_seconds=time.monotonic() - started,
+        achieved=achieved,
+    )
+    latest_evidence["checks"]["sustained_health_evidence"] = achieved
+    if not achieved and "sustained_health_evidence" not in latest_evidence["failures"]:
+        latest_evidence["failures"].append("sustained_health_evidence")
+    latest_evidence["valid"] = not latest_evidence["failures"]
+    return latest_evidence
+
+
 def scenario_anchor_bad_backup(lab: XBondLab, result: LabResult, _: int) -> None:
     lab.setup_topology()
-    lab.apply_netem(1, "rate 200mbit")
-    stable_anchor_baseline = native_path_throughput(lab)
+    # Give the clean paths deterministic score separation without imposing a
+    # throughput ceiling that can drop path-1 heartbeats under iperf load.
+    lab.apply_netem(1, "delay 1ms limit 10000")
+    lab.apply_netem(2, "delay 20ms limit 10000")
+    lab.apply_netem(3, "delay 40ms limit 10000")
+    stable_anchor_native_baseline = native_path_throughput(lab)
     lab.start_runtime()
-    lab.apply_netem(2, "delay 250ms 80ms distribution normal loss 25%")
-    lab.apply_netem(3, "delay 450ms 150ms distribution normal loss 45%")
-    time.sleep(8)
+    # The idle scheduler retains its first authenticated path until it has
+    # representative data-plane observations. Run a discarded warmup before
+    # the clean gate so path preference is established before baseline data is
+    # collected, rather than letting baseline attempt 1 choose the anchor.
+    scheduler_settling_throughput = basic_throughput(lab, seconds=2)
+    clean_preconditions = wait_for_anchor_preconditions(
+        lab,
+        stage="before-clean-tunnel-baseline",
+        require_degraded_backups=False,
+    )
+    clean_tunnel_baseline = collect_throughput_measurement(lab)
+    clean_postconditions = wait_for_anchor_preconditions(
+        lab,
+        stage="after-clean-tunnel-baseline",
+        require_degraded_backups=False,
+    )
+    lab.apply_netem(
+        2,
+        "delay 250ms 80ms distribution normal loss 25% limit 10000",
+    )
+    lab.apply_netem(
+        3,
+        "delay 450ms 150ms distribution normal loss 45% limit 10000",
+    )
+    impaired_preconditions = wait_for_anchor_preconditions(
+        lab,
+        stage="before-impaired-tunnel-measurement",
+        require_degraded_backups=True,
+    )
     tunnel = lab.tunnel_ping(count=12)
-    throughput = basic_throughput(lab)
+    impaired_tunnel_measurement = collect_throughput_measurement(lab)
+    impaired_postconditions = wait_for_anchor_preconditions(
+        lab,
+        stage="after-impaired-tunnel-measurement",
+        require_degraded_backups=True,
+    )
+    throughput = impaired_tunnel_measurement["selected_throughput"] or {
+        "upload": {
+            "exit_code": -1,
+            "valid_complete_json": False,
+            "mbps": 0.0,
+        },
+        "download": {
+            "exit_code": -1,
+            "valid_complete_json": False,
+            "mbps": 0.0,
+        },
+    }
     runtime = lab.collect_runtime_metrics()
     status = runtime["client_status"] or {}
     anchor_path_id = status.get("anchor_path_id")
@@ -1864,18 +2622,53 @@ def scenario_anchor_bad_backup(lab: XBondLab, result: LabResult, _: int) -> None
         path.get("path_id"): path for path in status.get("paths", [])
         if path.get("path_id") in (2, 3)
     }
-    baseline_floor = min(
-        stable_anchor_baseline["upload"].get("mbps", 0),
-        stable_anchor_baseline["download"].get("mbps", 0),
+    precondition_failures = [
+        f"{evidence['stage']}:{failure}"
+        for evidence in (
+            clean_preconditions,
+            clean_postconditions,
+            impaired_preconditions,
+            impaired_postconditions,
+        )
+        for failure in evidence["failures"]
+    ]
+    preconditions = {
+        "valid": not precondition_failures,
+        "failures": precondition_failures,
+        "clean_tunnel_baseline": clean_preconditions,
+        "clean_tunnel_baseline_after": clean_postconditions,
+        "impaired_tunnel_measurement": impaired_preconditions,
+        "impaired_tunnel_measurement_after": impaired_postconditions,
+    }
+    baseline_floor = (
+        float(clean_tunnel_baseline["selected_median_floor_mbps"])
+        if clean_tunnel_baseline["complete"]
+        else 0.0
     )
-    impaired_floor = min(
-        throughput["upload"].get("mbps", 0),
-        throughput["download"].get("mbps", 0),
+    impaired_floor = (
+        float(impaired_tunnel_measurement["selected_median_floor_mbps"])
+        if impaired_tunnel_measurement["complete"]
+        else 0.0
     )
-    retained_ratio = impaired_floor / baseline_floor if baseline_floor > 0 else 0
+    comparison_valid = (
+        preconditions["valid"]
+        and clean_tunnel_baseline["complete"]
+        and impaired_tunnel_measurement["complete"]
+        and baseline_floor > 0
+    )
+    retained_ratio = (
+        impaired_floor / baseline_floor
+        if comparison_valid and baseline_floor > 0
+        else None
+    )
     result.metrics.update(
         {
-            "stable_anchor_native_baseline": stable_anchor_baseline,
+            "stable_anchor_native_baseline": stable_anchor_native_baseline,
+            "scheduler_settling_throughput": scheduler_settling_throughput,
+            "clean_tunnel_baseline_measurement": clean_tunnel_baseline,
+            "impaired_tunnel_measurement": impaired_tunnel_measurement,
+            "preconditions": preconditions,
+            "comparison_valid": comparison_valid,
             "tunnel_ping": tunnel,
             "throughput": throughput,
             "throughput_retained_ratio": retained_ratio,
@@ -1892,25 +2685,48 @@ def scenario_anchor_bad_backup(lab: XBondLab, result: LabResult, _: int) -> None
         "download_mbps_min": 10,
         "throughput_retained_ratio_min": 0.90,
         "required_anchor_path_id": 1,
+        "anchor_path_loss_percent_max": 1,
+        "recovery_must_be_inactive": True,
+        "comparison_preconditions_required": True,
+        "required_consecutive_status_updates": ANCHOR_STABILITY_REQUIRED_UPDATES,
+        "stabilization_timeout_seconds": ANCHOR_STABILITY_TIMEOUT_SECONDS,
+        "valid_samples_per_measurement": 3,
+        "maximum_attempts_per_measurement": 5,
         "bad_backup_must_not_be_anchor": True,
     }
+    if not comparison_valid:
+        measurement_failures = []
+        if not clean_tunnel_baseline["complete"]:
+            measurement_failures.append("clean-tunnel-baseline-incomplete")
+        if not impaired_tunnel_measurement["complete"]:
+            measurement_failures.append("impaired-tunnel-measurement-incomplete")
+        if clean_tunnel_baseline["complete"] and baseline_floor <= 0:
+            measurement_failures.append("clean-tunnel-baseline-zero")
+        result.reason = "invalid anchor comparison: " + ", ".join(
+            [*precondition_failures, *measurement_failures]
+        )
     result.status = (
         "pass"
-        if tunnel.get("loss_percent", 100) <= 5
+        if comparison_valid
+        and tunnel.get("loss_percent", 100) <= 5
         and tunnel.get("avg_ms", 9999) <= 180
         and min(
             throughput["upload"].get("mbps", 0),
             throughput["download"].get("mbps", 0),
         )
         >= 10
+        and retained_ratio is not None
         and retained_ratio >= 0.90
         and anchor_path_id == 1
+        and set(backup_paths) == {2, 3}
         and all(
-            path.get("role_reason") != "Selected as stable anchor by hysteresis scheduler."
+            str(path.get("role", "")).lower() != "anchor"
             for path in backup_paths.values()
         )
         else "fail"
     )
+    if result.status == "fail" and result.reason is None:
+        result.reason = "anchor-bad-backup acceptance threshold not met"
 
 
 def scenario_all_intermittent(lab: XBondLab, result: LabResult, _: int) -> None:
@@ -3630,75 +4446,114 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         },
     }
     samples: list[dict[str, Any]] = []
-    required_duration = max(1800, duration)
+    short_soak_smoke = os.environ.get("XBOND_LAB_ALLOW_SHORT_SOAK") == "1"
+    required_duration = duration if short_soak_smoke else max(1800, duration)
     client_pid = lab.client.pid if lab.client else None
     server_pid = lab.server.pid if lab.server else None
     soak_started = time.monotonic()
     deadline = soak_started + required_duration
     iteration = 0
     while time.monotonic() < deadline:
+        sample_phase_started = time.monotonic()
+        ping_result = ping(
+            CLIENT_NS,
+            SERVER_TUN_IP,
+            count=10,
+            interface="xbond0",
+            deadline=5,
+            interval=0.1,
+        )
+        throughput_result = (
+            basic_throughput(lab, seconds=3)
+            if iteration % 6 == 0
+            else None
+        )
+        active_probe_finished = time.monotonic()
+        client_status_full, server_status_full, cache_quiescence = (
+            wait_for_repair_caches_quiescent(
+                lab,
+                activity_finished_at=active_probe_finished,
+            )
+        )
+        memory_sample_allowed = cache_quiescence["verified"] is True
+        client_status = telemetry_subset(client_status_full)
+        server_status = telemetry_subset(server_status_full)
+        sampled_at = time.monotonic()
         sample = {
-            "at_seconds": round(time.monotonic() - result.monotonic_start, 1),
+            "at_seconds": round(sampled_at - result.monotonic_start, 3),
+            "soak_elapsed_seconds": round(sampled_at - soak_started, 3),
+            "quiescent_seconds": round(sampled_at - active_probe_finished, 3),
+            "repair_cache_quiescence": cache_quiescence,
             "processes": {
-                "client": process_metrics(lab.client),
-                "server": process_metrics(lab.server),
+                "client": process_metrics(
+                    lab.client,
+                    include_memory_rollup=memory_sample_allowed,
+                ),
+                "server": process_metrics(
+                    lab.server,
+                    include_memory_rollup=memory_sample_allowed,
+                ),
             },
-            "ping": ping(
-                CLIENT_NS,
-                SERVER_TUN_IP,
-                count=10,
-                interface="xbond0",
-                deadline=5,
-                interval=0.1,
-            ),
-            "client_status": telemetry_subset(json_file(lab.client_status)),
-            "server_status": telemetry_subset(json_file(lab.server_status)),
+            "ping": ping_result,
+            "client_status": client_status,
+            "server_status": server_status,
         }
-        if iteration % 6 == 0:
-            sample["throughput"] = basic_throughput(lab, seconds=3)
+        if throughput_result is not None:
+            sample["throughput"] = throughput_result
         samples.append(sample)
         iteration += 1
-        time.sleep(5)
+        next_sample_phase = sample_phase_started + SOAK_SAMPLE_PERIOD_SECONDS
+        if next_sample_phase > time.monotonic():
+            time.sleep(next_sample_phase - time.monotonic())
     actual_duration = time.monotonic() - soak_started
     sample_times = [float(sample["at_seconds"]) for sample in samples]
-    client_rss = [
-        float(sample["processes"]["client"]["rss_kib"])
-        for sample in samples
-        if isinstance(sample["processes"]["client"].get("rss_kib"), int)
-    ]
-    server_rss = [
-        float(sample["processes"]["server"]["rss_kib"])
-        for sample in samples
-        if isinstance(sample["processes"]["server"].get("rss_kib"), int)
-    ]
-    rss_samples_complete = (
-        bool(samples)
-        and len(client_rss) == len(samples)
-        and len(server_rss) == len(samples)
+    memory_metric_names = (
+        "rss_kib",
+        "pss_kib",
+        "anonymous_kib",
+        "private_dirty_kib",
+    )
+    memory_sample_coverage: dict[str, dict[str, float]] = {}
+    memory_trends: dict[str, dict[str, dict[str, Any]]] = {}
+    memory_robust_steady_state: dict[str, dict[str, dict[str, Any]]] = {}
+    for side in ("client", "server"):
+        memory_sample_coverage[side] = {}
+        memory_trends[side] = {}
+        memory_robust_steady_state[side] = {}
+        for metric_name in memory_metric_names:
+            pairs = [
+                (
+                    float(sample["at_seconds"]),
+                    float(sample["processes"][side][metric_name]),
+                )
+                for sample in samples
+                if isinstance(
+                    sample["processes"][side].get(metric_name),
+                    (int, float),
+                )
+            ]
+            metric_times = [item[0] for item in pairs]
+            metric_values = [item[1] for item in pairs]
+            memory_sample_coverage[side][metric_name] = (
+                len(metric_values) / len(samples) if samples else 0.0
+            )
+            memory_trends[side][metric_name] = trend_summary(
+                metric_times,
+                metric_values,
+            )
+            memory_robust_steady_state[side][metric_name] = (
+                robust_steady_state_evidence(metric_times, metric_values)
+            )
+    rss_samples_complete = bool(samples) and all(
+        memory_sample_coverage[side]["rss_kib"] == 1.0
+        for side in ("client", "server")
     )
     rss_trends = {
-        "client": trend_summary(sample_times, client_rss)
-        if rss_samples_complete
-        else trend_summary([], []),
-        "server": trend_summary(sample_times, server_rss)
-        if rss_samples_complete
-        else trend_summary([], []),
+        side: memory_trends[side]["rss_kib"] for side in ("client", "server")
     }
-    steady_state_start = max(1, int(len(samples) * 0.2))
-    steady_state_times = sample_times[steady_state_start:]
-    rss_steady_state_trends = {
-        "client": trend_summary(
-            steady_state_times,
-            client_rss[steady_state_start:],
-        )
-        if rss_samples_complete
-        else trend_summary([], []),
-        "server": trend_summary(
-            steady_state_times,
-            server_rss[steady_state_start:],
-        )
-        if rss_samples_complete
-        else trend_summary([], []),
+    rss_robust_steady_state = {
+        side: memory_robust_steady_state[side]["rss_kib"]
+        for side in ("client", "server")
     }
     ping_loss = [
         sample["ping"].get("loss_percent", 100) for sample in samples
@@ -3826,19 +4681,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         for sample in samples
     )
     counter_predicates: dict[str, Callable[[str], bool]] = {
-        "harmful_drops": lambda key: any(
-            marker in key.lower()
-            for marker in (
-                "inbound_queue_drops",
-                "tun_queue_drops",
-                "all_return_copies_dropped",
-                "tun_write_queue_saturated_drops",
-                "ingress_payload_queue_drops",
-                ".data.enqueue_drops",
-                ".data.deadline_drops",
-                "repair.queue_drops",
-            )
-        ),
+        "harmful_drops": is_harmful_drop_counter,
         "repair_misses": lambda key: key.lower().endswith("repair.cache_misses"),
         "late_duplicates": lambda key: key.lower().endswith("late_duplicates"),
         "rebinds": lambda key: key.lower().endswith("rebind_count"),
@@ -3847,10 +4690,12 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     counter_growth_complete = True
     duration_minutes = max(actual_duration / 60, 1 / 60)
     for category, predicate in counter_predicates.items():
-        growth, complete = counter_growth_by_key(samples, predicate)
+        growth, complete, resets = counter_growth_by_key(samples, predicate)
         total = sum(growth.values())
         counter_growth[category] = {
             "by_key": growth,
+            "counter_resets_by_key": resets,
+            "counter_reset_count": sum(resets.values()),
             "total": total,
             "per_minute": total / duration_minutes,
             "complete": complete,
@@ -3861,10 +4706,31 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             "configured_duration_seconds": duration,
             "actual_duration_seconds": round(actual_duration, 3),
             "samples": samples,
+            "short_soak_smoke": short_soak_smoke,
+            "quiescent_sample_phase": {
+                "repair_cache_ttl_seconds": REPAIR_CACHE_TTL_SECONDS,
+                "quiescent_delay_seconds": SOAK_QUIESCENT_DELAY_SECONDS,
+                "cache_quiescence_timeout_seconds": (
+                    SOAK_CACHE_QUIESCENCE_TIMEOUT_SECONDS
+                ),
+                "target_sample_period_seconds": SOAK_SAMPLE_PERIOD_SECONDS,
+                "all_samples_after_cache_ttl": bool(samples)
+                and all(
+                    sample["quiescent_seconds"] >= REPAIR_CACHE_TTL_SECONDS
+                    for sample in samples
+                ),
+                "all_samples_cache_quiescent": bool(samples)
+                and all(
+                    sample["repair_cache_quiescence"]["verified"]
+                    for sample in samples
+                ),
+            },
             "rss_samples_complete": rss_samples_complete,
             "rss_trends": rss_trends,
-            "rss_steady_state_start_sample": steady_state_start,
-            "rss_steady_state_trends": rss_steady_state_trends,
+            "rss_robust_steady_state": rss_robust_steady_state,
+            "memory_sample_coverage": memory_sample_coverage,
+            "memory_trends": memory_trends,
+            "memory_robust_steady_state": memory_robust_steady_state,
             "max_ping_loss_percent": max(ping_loss, default=100),
             "baseline_measurement": baseline_measurement,
             "baseline_throughput": baseline_throughput,
@@ -3898,8 +4764,13 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         "rss_samples_required_for_every_process_sample": True,
         "rss_peak_growth_kib_max": 32768,
         "rss_end_growth_kib_max": 16384,
-        "rss_slope_kib_per_minute_max": 128,
-        "rss_slope_steady_state_warmup_fraction": 0.2,
+        "rss_final_half_theil_sen_slope_kib_per_minute_max": 128,
+        "rss_final_10_minute_theil_sen_slope_kib_per_minute_max": 128,
+        "rss_final_10_minute_edge_median_growth_kib_max": 2048,
+        "rss_final_window_seconds": 600,
+        "repair_cache_ttl_seconds": REPAIR_CACHE_TTL_SECONDS,
+        "memory_quiescent_delay_seconds": SOAK_QUIESCENT_DELAY_SECONDS,
+        "repair_cache_quiescence_required": True,
         "queue_samples_required": True,
         "each_queue_is_gated_independently": True,
         "queue_end_growth_max": 4,
@@ -3950,10 +4821,30 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             for trend in rss_trends.values()
         )
         and all(
-            trend["slope_per_minute"] is not None
-            and trend["slope_per_minute"] <= 128
-            for trend in rss_steady_state_trends.values()
+            evidence["final_half"]["theil_sen_slope_kib_per_minute"]
+            is not None
+            and evidence["final_half"]["theil_sen_slope_kib_per_minute"]
+            <= 128
+            and evidence["final_10_minutes"][
+                "theil_sen_slope_kib_per_minute"
+            ]
+            is not None
+            and evidence["final_10_minutes"][
+                "theil_sen_slope_kib_per_minute"
+            ]
+            <= 128
+            and evidence["final_10_minutes"]["edge_median_growth_kib"]
+            is not None
+            and evidence["final_10_minutes"]["edge_median_growth_kib"]
+            <= 2048
+            for evidence in rss_robust_steady_state.values()
         )
+        and result.metrics["quiescent_sample_phase"][
+            "all_samples_after_cache_ttl"
+        ]
+        and result.metrics["quiescent_sample_phase"][
+            "all_samples_cache_quiescent"
+        ]
         and queue_samples_complete
         and all(
             trend["end_growth"] is not None
@@ -4123,7 +5014,15 @@ def main() -> int:
     parser.add_argument("scenario", choices=(*SCENARIOS.keys(), "matrix"))
     parser.add_argument("--duration-seconds", type=int, default=1800)
     args = parser.parse_args()
-    if args.scenario in {"soak", "matrix"} and args.duration_seconds < 1800:
+    allow_short_soak = (
+        args.scenario == "soak"
+        and os.environ.get("XBOND_LAB_ALLOW_SHORT_SOAK") == "1"
+    )
+    if (
+        args.scenario in {"soak", "matrix"}
+        and args.duration_seconds < 1800
+        and not allow_short_soak
+    ):
         parser.error("soak and matrix require --duration-seconds >= 1800")
 
     signal.signal(signal.SIGTERM, lambda *_: raise_system_exit())

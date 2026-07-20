@@ -463,6 +463,44 @@ pub struct XBondServerIngressReorderStatus {
     pub stats: ReorderStats,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondPacketPoolStatus {
+    #[serde(default)]
+    pub retained: usize,
+    #[serde(default)]
+    pub capacity: usize,
+    #[serde(default)]
+    pub fallback_allocations: u64,
+    #[serde(default)]
+    pub discarded: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondRepairCacheStatus {
+    #[serde(default)]
+    pub entries: usize,
+    #[serde(default)]
+    pub accounted_bytes: usize,
+    #[serde(default)]
+    pub byte_capacity: usize,
+    #[serde(default)]
+    pub prune_runs: u64,
+    #[serde(default)]
+    pub last_pruned_at_micros: u64,
+    #[serde(default)]
+    pub last_pruned_entries: usize,
+    #[serde(default)]
+    pub last_pruned_accounted_bytes: usize,
+    #[serde(default)]
+    pub total_pruned_entries: u64,
+    #[serde(default)]
+    pub total_pruned_accounted_bytes: u64,
+    #[serde(default)]
+    pub quiescent: bool,
+    #[serde(default)]
+    pub quiescent_since_micros: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondProcessStatus {
     #[serde(default)]
@@ -505,6 +543,12 @@ pub struct XBondProcessStatus {
     pub tun_write_queue_micros_total: u64,
     #[serde(default)]
     pub tun_write_micros_total: u64,
+    #[serde(default)]
+    pub tun_packet_pool: XBondPacketPoolStatus,
+    #[serde(default)]
+    pub receive_payload_pool: XBondPacketPoolStatus,
+    #[serde(default)]
+    pub repair_cache: XBondRepairCacheStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -713,6 +757,65 @@ mod tests {
 
         assert_eq!(status.server_health.status, "unknown");
         assert_eq!(status.server_recovery.server_health.status, "unknown");
+    }
+
+    #[test]
+    fn runtime_status_serializes_packet_pool_telemetry() {
+        let status = XBondRuntimeStatus {
+            process: XBondProcessStatus {
+                tun_packet_pool: XBondPacketPoolStatus {
+                    retained: 7,
+                    capacity: 16,
+                    fallback_allocations: 5,
+                    discarded: 2,
+                },
+                receive_payload_pool: XBondPacketPoolStatus {
+                    retained: 11,
+                    capacity: 32,
+                    fallback_allocations: 6,
+                    discarded: 3,
+                },
+                repair_cache: XBondRepairCacheStatus {
+                    entries: 0,
+                    accounted_bytes: 0,
+                    byte_capacity: 4_096,
+                    prune_runs: 3,
+                    last_pruned_at_micros: 900,
+                    last_pruned_entries: 2,
+                    last_pruned_accounted_bytes: 512,
+                    total_pruned_entries: 7,
+                    total_pruned_accounted_bytes: 1_536,
+                    quiescent: true,
+                    quiescent_since_micros: Some(900),
+                },
+                ..XBondProcessStatus::default()
+            },
+            ..XBondRuntimeStatus::default()
+        };
+
+        let value = serde_json::to_value(status).unwrap();
+
+        assert_eq!(value["process"]["tun_packet_pool"]["retained"], 7);
+        assert_eq!(value["process"]["tun_packet_pool"]["capacity"], 16);
+        assert_eq!(
+            value["process"]["tun_packet_pool"]["fallback_allocations"],
+            5
+        );
+        assert_eq!(value["process"]["tun_packet_pool"]["discarded"], 2);
+        assert_eq!(value["process"]["receive_payload_pool"]["retained"], 11);
+        assert_eq!(value["process"]["receive_payload_pool"]["capacity"], 32);
+        assert_eq!(
+            value["process"]["receive_payload_pool"]["fallback_allocations"],
+            6
+        );
+        assert_eq!(value["process"]["receive_payload_pool"]["discarded"], 3);
+        assert_eq!(value["process"]["repair_cache"]["accounted_bytes"], 0);
+        assert_eq!(value["process"]["repair_cache"]["last_pruned_entries"], 2);
+        assert_eq!(value["process"]["repair_cache"]["quiescent"], true);
+        assert_eq!(
+            value["process"]["repair_cache"]["quiescent_since_micros"],
+            900
+        );
     }
 
     fn target(

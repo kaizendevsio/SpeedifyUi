@@ -88,3 +88,35 @@ Results are written to `xbond/lab/results/` as schema-validated JSON. A scenario
 - The full matrix includes an uninterrupted soak of at least 1,800 seconds.
 - Paired client/server binaries are deployed and all production services and routes are verified.
 - Final independent client, server/protocol, and lab audits have no unresolved high-severity findings.
+
+## Final Candidate Corrections
+
+The release candidate after commit `5c3a93c` closes two false-negative
+acceptance problems found by the first clean matrix without weakening the
+original thresholds:
+
+- The healthy-anchor test now compares a clean XBond baseline with the same
+  XBond path under backup impairment. Native adapter throughput remains
+  informational because comparing an unshaped native path with a deliberately
+  shaped XBond lab path was not a like-for-like retention measurement.
+- Long-run memory acceptance now uses robust post-warmup evidence, including
+  Theil-Sen slopes, final-half and final-ten-minute windows, and edge medians.
+  A single ordinary least-squares slope no longer turns one warmup outlier into
+  a leak result.
+
+Runtime status was extended to make those gates authoritative:
+
+- packet pools expose bounded retained/current/peak occupancy and fallback
+  allocation/discard counters;
+- sender lanes expose current/peak depth, capacity, proven enqueue/deadline
+  drops, socket generation, and rebind snapshots without treating queued work
+  at rebind as confirmed loss;
+- client and server repair caches expose exact live entry counts and accounted
+  retained bytes and reset their quiescence state when a session/cache is
+  replaced.
+
+Focused pre-release reruns passed the corrected anchor scenario twice at
+96.09% and 96.70% retained throughput and showed all four authoritative repair
+cache counters at zero throughout a short soak. These are focused diagnostic
+runs; the committed 1,800-second full matrix remains the release and deployment
+gate.

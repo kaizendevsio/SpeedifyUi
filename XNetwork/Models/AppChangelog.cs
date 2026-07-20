@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.102";
+    public const string CurrentVersion = "xbond-2026.06.103";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-20",
+            Summary = "Tightened XBond runtime accounting and release validation.",
+            Changes =
+            [
+                "Packet-pool and sender-lane telemetry now reports bounded live occupancy, generation-aware drops, and socket-rebind state without adding work to the packet hot path.",
+                "Client and server repair-cache status now exposes authoritative retained entries and accounted bytes for memory and quiescence validation.",
+                "The validation lab compares clean and impaired XBond runs fairly, rejects incomplete samples, and uses robust long-run memory evidence instead of a single noisy slope.",
+                "Anchor impairment tests now require sustained scheduler state, healthy anchor evidence, degraded backups, and clean network-emulation cleanup."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.102",
             Date = "2026-07-20",
             Summary = "Hardened XBond performance, control paths, and automatic recovery.",
             Changes =

@@ -513,6 +513,295 @@
         }
       ],
       "additionalProperties": false
+    },
+    "anchorPreconditionStage": {
+      "type": "object",
+      "required": [
+        "stage",
+        "valid",
+        "failures",
+        "anchor_path_id",
+        "anchor_path_loss_percent",
+        "recovery_active",
+        "require_degraded_backups",
+        "backup_paths",
+        "checks",
+        "stabilization"
+      ],
+      "properties": {
+        "stage": { "type": "string", "minLength": 1 },
+        "valid": { "type": "boolean" },
+        "failures": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "anchor_path_id": { "type": ["integer", "null"] },
+        "anchor_path_loss_percent": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "recovery_active": { "type": ["boolean", "null"] },
+        "require_degraded_backups": { "type": "boolean" },
+        "backup_paths": {
+          "type": "object",
+          "required": ["2", "3"],
+          "properties": {
+            "2": { "$ref": "#/$defs/anchorBackupPathEvidence" },
+            "3": { "$ref": "#/$defs/anchorBackupPathEvidence" }
+          },
+          "additionalProperties": false
+        },
+        "checks": {
+          "type": "object",
+          "required": [
+            "anchor_loss_available",
+            "anchor_path_loss_within_limit",
+            "correct_anchor_selected",
+            "recovery_inactive",
+            "backup_paths_present",
+            "backup_paths_degraded",
+            "sustained_health_evidence"
+          ],
+          "properties": {
+            "anchor_loss_available": { "type": "boolean" },
+            "anchor_path_loss_within_limit": { "type": "boolean" },
+            "correct_anchor_selected": { "type": "boolean" },
+            "recovery_inactive": { "type": "boolean" },
+            "backup_paths_present": { "type": "boolean" },
+            "backup_paths_degraded": { "type": "boolean" },
+            "sustained_health_evidence": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "stabilization": {
+          "$ref": "#/$defs/anchorStabilizationEvidence"
+        }
+      },
+      "additionalProperties": false
+    },
+    "anchorStabilizationEvidence": {
+      "type": "object",
+      "required": [
+        "achieved",
+        "required_consecutive_updates",
+        "observed_unique_updates",
+        "ending_consecutive_valid_updates",
+        "maximum_consecutive_valid_updates",
+        "elapsed_seconds",
+        "observations"
+      ],
+      "properties": {
+        "achieved": { "type": "boolean" },
+        "required_consecutive_updates": { "type": "integer", "minimum": 1 },
+        "observed_unique_updates": { "type": "integer", "minimum": 0 },
+        "ending_consecutive_valid_updates": { "type": "integer", "minimum": 0 },
+        "maximum_consecutive_valid_updates": { "type": "integer", "minimum": 0 },
+        "elapsed_seconds": { "type": "number", "minimum": 0 },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "at_seconds",
+              "status_mtime_ns",
+              "valid",
+              "anchor_path_id",
+              "anchor_path_loss_percent",
+              "recovery_active",
+              "backup_paths"
+            ],
+            "properties": {
+              "at_seconds": { "type": "number", "minimum": 0 },
+              "status_mtime_ns": { "type": "integer", "minimum": 0 },
+              "valid": { "type": "boolean" },
+              "anchor_path_id": { "type": ["integer", "null"] },
+              "anchor_path_loss_percent": {
+                "type": ["number", "null"],
+                "minimum": 0
+              },
+              "recovery_active": { "type": ["boolean", "null"] },
+              "backup_paths": {
+                "type": "object",
+                "required": ["2", "3"],
+                "properties": {
+                  "2": { "$ref": "#/$defs/anchorBackupPathEvidence" },
+                  "3": { "$ref": "#/$defs/anchorBackupPathEvidence" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "anchorBackupPathEvidence": {
+      "type": "object",
+      "required": ["present", "loss_percent", "role", "degraded"],
+      "properties": {
+        "present": { "type": "boolean" },
+        "loss_percent": { "type": ["number", "null"], "minimum": 0 },
+        "role": { "type": ["string", "null"] },
+        "degraded": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "anchorPreconditions": {
+      "type": "object",
+      "required": [
+        "valid",
+        "failures",
+        "clean_tunnel_baseline",
+        "clean_tunnel_baseline_after",
+        "impaired_tunnel_measurement",
+        "impaired_tunnel_measurement_after"
+      ],
+      "properties": {
+        "valid": { "type": "boolean" },
+        "failures": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "clean_tunnel_baseline": {
+          "$ref": "#/$defs/anchorPreconditionStage"
+        },
+        "clean_tunnel_baseline_after": {
+          "$ref": "#/$defs/anchorPreconditionStage"
+        },
+        "impaired_tunnel_measurement": {
+          "$ref": "#/$defs/anchorPreconditionStage"
+        },
+        "impaired_tunnel_measurement_after": {
+          "$ref": "#/$defs/anchorPreconditionStage"
+        }
+      },
+      "additionalProperties": false
+    },
+    "repairCacheQuiescenceSide": {
+      "type": "object",
+      "required": [
+        "telemetry_available",
+        "authoritative_fields_present",
+        "metrics",
+        "missing_metrics",
+        "legacy_metrics",
+        "all_zero"
+      ],
+      "properties": {
+        "telemetry_available": { "type": "boolean" },
+        "authoritative_fields_present": { "type": "boolean" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 }
+        },
+        "missing_metrics": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "legacy_metrics": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 }
+        },
+        "all_zero": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "repairCacheQuiescenceClientSide": {
+      "allOf": [
+        { "$ref": "#/$defs/repairCacheQuiescenceSide" },
+        {
+          "properties": {
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "process.repair_cache.entries": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "process.repair_cache.accounted_bytes": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "repairCacheQuiescenceServerSide": {
+      "allOf": [
+        { "$ref": "#/$defs/repairCacheQuiescenceSide" },
+        {
+          "properties": {
+            "metrics": {
+              "type": "object",
+              "properties": {
+                "control_plane.repair_cache.entries": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "control_plane.repair_cache.accounted_bytes": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
+    "repairCacheQuiescenceEvidence": {
+      "type": "object",
+      "required": ["verified", "waited_seconds", "client", "server"],
+      "properties": {
+        "verified": { "type": "boolean" },
+        "waited_seconds": { "type": "number", "minimum": 0 },
+        "client": { "$ref": "#/$defs/repairCacheQuiescenceClientSide" },
+        "server": { "$ref": "#/$defs/repairCacheQuiescenceServerSide" }
+      },
+      "additionalProperties": false
+    },
+    "robustMemoryWindow": {
+      "type": "object",
+      "required": [
+        "sample_count",
+        "start_at_seconds",
+        "end_at_seconds",
+        "duration_seconds",
+        "theil_sen_slope_kib_per_minute",
+        "edge_sample_count",
+        "start_edge_median_kib",
+        "end_edge_median_kib",
+        "edge_median_growth_kib"
+      ],
+      "properties": {
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "start_at_seconds": { "type": ["number", "null"] },
+        "end_at_seconds": { "type": ["number", "null"] },
+        "duration_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "theil_sen_slope_kib_per_minute": {
+          "type": ["number", "null"]
+        },
+        "edge_sample_count": { "type": "integer", "minimum": 0 },
+        "start_edge_median_kib": { "type": ["number", "null"] },
+        "end_edge_median_kib": { "type": ["number", "null"] },
+        "edge_median_growth_kib": { "type": ["number", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "robustMemoryEvidence": {
+      "type": "object",
+      "required": ["sample_count", "final_half", "final_10_minutes"],
+      "properties": {
+        "sample_count": { "type": "integer", "minimum": 0 },
+        "final_half": { "$ref": "#/$defs/robustMemoryWindow" },
+        "final_10_minutes": { "$ref": "#/$defs/robustMemoryWindow" }
+      },
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -641,6 +930,78 @@
   "allOf": [
     {
       "if": {
+        "properties": { "scenario": { "const": "anchor-bad-backup" } },
+        "required": ["scenario"]
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "required": [
+              "stable_anchor_native_baseline",
+              "clean_tunnel_baseline_measurement",
+              "impaired_tunnel_measurement",
+              "preconditions",
+              "comparison_valid",
+              "throughput",
+              "throughput_retained_ratio"
+            ],
+            "properties": {
+              "stable_anchor_native_baseline": {
+                "$ref": "#/$defs/throughputResult"
+              },
+              "clean_tunnel_baseline_measurement": {
+                "$ref": "#/$defs/baselineMeasurement"
+              },
+              "impaired_tunnel_measurement": {
+                "$ref": "#/$defs/baselineMeasurement"
+              },
+              "preconditions": {
+                "$ref": "#/$defs/anchorPreconditions"
+              },
+              "comparison_valid": { "type": "boolean" },
+              "throughput": { "$ref": "#/$defs/throughputResult" },
+              "throughput_retained_ratio": {
+                "type": ["number", "null"],
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "scenario": { "const": "anchor-bad-backup" },
+          "status": { "const": "pass" }
+        },
+        "required": ["scenario", "status"]
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "properties": {
+              "comparison_valid": { "const": true },
+              "throughput_retained_ratio": { "type": "number" },
+              "preconditions": {
+                "properties": { "valid": { "const": true } },
+                "required": ["valid"]
+              },
+              "clean_tunnel_baseline_measurement": {
+                "properties": { "complete": { "const": true } },
+                "required": ["complete"]
+              },
+              "impaired_tunnel_measurement": {
+                "properties": { "complete": { "const": true } },
+                "required": ["complete"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
         "properties": { "scenario": { "const": "server-process-restart" } },
         "required": ["scenario"]
       },
@@ -706,15 +1067,89 @@
           "metrics": {
             "required": [
               "configured_duration_seconds",
-              "baseline_measurement"
+              "samples",
+              "baseline_measurement",
+              "rss_samples_complete",
+              "rss_trends",
+              "rss_robust_steady_state",
+              "memory_sample_coverage",
+              "memory_trends",
+              "memory_robust_steady_state",
+              "quiescent_sample_phase"
             ],
             "properties": {
               "configured_duration_seconds": {
                 "type": "integer",
-                "minimum": 1800
+                "minimum": 1
+              },
+              "samples": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "repair_cache_quiescence",
+                    "processes"
+                  ],
+                  "properties": {
+                    "repair_cache_quiescence": {
+                      "$ref": "#/$defs/repairCacheQuiescenceEvidence"
+                    },
+                    "processes": { "type": "object" }
+                  }
+                }
               },
               "baseline_measurement": {
                 "$ref": "#/$defs/baselineMeasurement"
+              },
+              "rss_samples_complete": { "type": "boolean" },
+              "rss_trends": {
+                "type": "object",
+                "required": ["client", "server"]
+              },
+              "rss_robust_steady_state": {
+                "type": "object",
+                "required": ["client", "server"],
+                "properties": {
+                  "client": { "$ref": "#/$defs/robustMemoryEvidence" },
+                  "server": { "$ref": "#/$defs/robustMemoryEvidence" }
+                },
+                "additionalProperties": false
+              },
+              "memory_sample_coverage": { "type": "object" },
+              "memory_trends": { "type": "object" },
+              "memory_robust_steady_state": { "type": "object" },
+              "quiescent_sample_phase": {
+                "type": "object",
+                "required": [
+                  "repair_cache_ttl_seconds",
+                  "quiescent_delay_seconds",
+                  "cache_quiescence_timeout_seconds",
+                  "target_sample_period_seconds",
+                  "all_samples_after_cache_ttl",
+                  "all_samples_cache_quiescent"
+                ],
+                "properties": {
+                  "repair_cache_ttl_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "quiescent_delay_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 3
+                  },
+                  "cache_quiescence_timeout_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "target_sample_period_seconds": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "all_samples_after_cache_ttl": { "type": "boolean" },
+                  "all_samples_cache_quiescent": { "type": "boolean" }
+                },
+                "additionalProperties": false
               }
             }
           }
@@ -733,6 +1168,18 @@
         "properties": {
           "metrics": {
             "properties": {
+              "configured_duration_seconds": { "minimum": 1800 },
+              "rss_samples_complete": { "const": true },
+              "quiescent_sample_phase": {
+                "properties": {
+                  "all_samples_after_cache_ttl": { "const": true },
+                  "all_samples_cache_quiescent": { "const": true }
+                },
+                "required": [
+                  "all_samples_after_cache_ttl",
+                  "all_samples_cache_quiescent"
+                ]
+              },
               "baseline_measurement": {
                 "properties": {
                   "complete": { "const": true },
