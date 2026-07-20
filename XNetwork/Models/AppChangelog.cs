@@ -13,13 +13,23 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.106";
+    public const string CurrentVersion = "xbond-2026.06.107";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Tightened the compact Live viewport.",
+            Changes =
+            [
+                "Removed redundant in-scene labels from compact Live view so the topology and lower telemetry HUD remain visually separate."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.106",
             Date = "2026-07-21",
             Summary = "Polished Live topology labels.",
             Changes =

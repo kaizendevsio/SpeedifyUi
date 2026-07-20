@@ -812,13 +812,15 @@ function addSceneLabels(state, cache, paths, compact) {
         });
     }
 
-    const coreLabel = createTextSprite(THREE, cache, 'Ulink Core', '#d8d8d8', compact ? 0.56 : 0.7);
-    coreLabel.position.copy(state.tunnelCore.position).add(new THREE.Vector3(-0.58, -1.55, 0));
-    state.labelGroup.add(coreLabel);
+    if (!compact) {
+        const coreLabel = createTextSprite(THREE, cache, 'Ulink Core', '#d8d8d8', 0.7);
+        coreLabel.position.copy(state.tunnelCore.position).add(new THREE.Vector3(-0.58, -1.55, 0));
+        state.labelGroup.add(coreLabel);
 
-    const serverLabel = createTextSprite(THREE, cache, 'Secure Relay', '#d8d8d8', compact ? 0.52 : 0.68);
-    serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
-    state.labelGroup.add(serverLabel);
+        const serverLabel = createTextSprite(THREE, cache, 'Secure Relay', '#d8d8d8', 0.68);
+        serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
+        state.labelGroup.add(serverLabel);
+    }
 
 }
 
