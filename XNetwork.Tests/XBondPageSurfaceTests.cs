@@ -57,6 +57,38 @@ public class XBondPageSurfaceTests
     }
 
     [Fact]
+    public void Dashboard_UsesStableKeyedFlipCardsWithoutAdapterHeading()
+    {
+        var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));
+        var animation = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "js", "animatedUi.js"));
+
+        Assert.DoesNotContain(">Adapters</h3>", home);
+        Assert.DoesNotContain("GetLivePathCount", home);
+        Assert.Contains("@key=\"path.PathId\"", home);
+        Assert.Contains("data-flip-key=\"@path.PathId\"", home);
+        Assert.Contains("GetOrderedDashboardPaths()", home);
+        Assert.Contains("enableFlipList", home);
+        Assert.Contains("new MutationObserver", animation);
+        Assert.Contains("item.animate", animation);
+        Assert.Contains("cubic-bezier(0.16, 1, 0.3, 1)", animation);
+        Assert.Contains("prefersReducedMotion()", animation);
+    }
+
+    [Fact]
+    public void Dashboard_SignalBarsAnimateInsideStableSlots()
+    {
+        var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));
+        var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
+
+        Assert.Contains("ulink-signal-bar-slot", home);
+        Assert.Contains("ulink-cellular-signal-bar-slot", home);
+        Assert.Contains("--signal-bar-height", home);
+        Assert.Contains("height 420ms cubic-bezier(0.16, 1, 0.3, 1)", styles);
+        Assert.Contains("background-color 420ms ease-out", styles);
+        Assert.Contains("@media (prefers-reduced-motion: reduce)", styles);
+    }
+
+    [Fact]
     public void UserFacingShell_UsesUlinkBrandAndVectorLogo()
     {
         var layout = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Layout", "MainLayout.razor"));

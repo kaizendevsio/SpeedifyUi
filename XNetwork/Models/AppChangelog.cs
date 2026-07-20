@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.107";
+    public const string CurrentVersion = "xbond-2026.06.108";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Smoothed live adapter role changes.",
+            Changes =
+            [
+                "Removed the redundant Adapters heading and live-count pill from the dashboard.",
+                "Added keyed ease-out movement when adapter roles reorder without fading cards or throughput values.",
+                "Animated dashboard and modem signal bars as their measured strength changes."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.107",
             Date = "2026-07-21",
             Summary = "Tightened the compact Live viewport.",
             Changes =

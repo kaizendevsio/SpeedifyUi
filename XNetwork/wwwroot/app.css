@@ -923,6 +923,68 @@ body {
     will-change: background-color, border-color, box-shadow;
 }
 
+.adapter-flip-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    position: relative;
+}
+
+.active-redundant-header {
+    display: flex;
+    min-height: 2.75rem;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    border: 1px solid rgba(163, 163, 163, 0.2);
+    border-radius: 0.75rem;
+    background: rgba(64, 64, 64, 0.2);
+}
+
+.xbond-path-card[data-active="true"] {
+    border-color: rgba(163, 163, 163, 0.3);
+    background-color: rgba(64, 64, 64, 0.32);
+}
+
+.ulink-signal-bar-slot {
+    display: inline-flex;
+    width: 0.375rem;
+    height: 1.5rem;
+    flex: 0 0 0.375rem;
+    align-items: flex-end;
+}
+
+.ulink-cellular-signal-bar-slot {
+    display: inline-flex;
+    width: 0.25rem;
+    height: 0.875rem;
+    flex: 0 0 0.25rem;
+    align-items: flex-end;
+}
+
+.ulink-signal-bar,
+.ulink-cellular-signal-bar {
+    display: block;
+    width: 100%;
+    height: var(--signal-bar-height);
+    max-height: var(--signal-bar-max-height);
+    border-radius: 0.125rem;
+    transform-origin: bottom;
+    transition:
+        height 420ms cubic-bezier(0.16, 1, 0.3, 1),
+        opacity 360ms ease-out,
+        background-color 420ms ease-out;
+    will-change: height, opacity, background-color;
+}
+
+.ulink-signal-bar-active {
+    opacity: 1;
+}
+
+.ulink-signal-bar-inactive {
+    opacity: 0.34;
+}
+
 .connection-summary-pills {
     min-height: 1.5rem;
 }
@@ -984,7 +1046,9 @@ body {
 
     .xbond-path-card,
     .adapter-status-dot,
-    .adapter-status-dot-button {
+    .adapter-status-dot-button,
+    .ulink-signal-bar,
+    .ulink-cellular-signal-bar {
         transition-duration: 1ms !important;
     }
 }
