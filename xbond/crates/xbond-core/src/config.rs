@@ -5,7 +5,6 @@ use crate::scheduler::{RecoveryConfig, RedundancyPolicy, ScheduleMode};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub enabled: bool,
-    pub session_id: u64,
     pub server_addr: String,
     pub mode: ScheduleMode,
     #[serde(default)]
@@ -32,6 +31,8 @@ pub struct ClientConfig {
     pub recovery_enter_degraded_ticks: u32,
     #[serde(default = "default_recovery_exit_clean_ticks")]
     pub recovery_exit_clean_ticks: u32,
+    #[serde(default = "default_recovery_degraded_rtt_ms")]
+    pub recovery_degraded_rtt_ms: f64,
     #[serde(default = "default_recovery_degraded_loss_threshold")]
     pub recovery_degraded_loss_threshold: f64,
     #[serde(default = "default_recovery_degraded_late_threshold")]
@@ -42,6 +43,8 @@ pub struct ClientConfig {
     pub recovery_degraded_stale_ack_ms: u64,
     #[serde(default = "default_recovery_degraded_queue_pressure")]
     pub recovery_degraded_queue_pressure: f64,
+    #[serde(default = "default_recovery_clean_rtt_ms")]
+    pub recovery_clean_rtt_ms: f64,
     #[serde(default = "default_recovery_clean_loss_threshold")]
     pub recovery_clean_loss_threshold: f64,
     #[serde(default = "default_recovery_clean_late_threshold")]
@@ -62,7 +65,6 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            session_id: 1,
             server_addr: "127.0.0.1:8444".to_string(),
             mode: ScheduleMode::AnchorDuplicate1,
             redundancy_policy: RedundancyPolicy::Balanced,
@@ -78,11 +80,13 @@ impl Default for ClientConfig {
             recovery_enabled: default_recovery_enabled(),
             recovery_enter_degraded_ticks: default_recovery_enter_degraded_ticks(),
             recovery_exit_clean_ticks: default_recovery_exit_clean_ticks(),
+            recovery_degraded_rtt_ms: default_recovery_degraded_rtt_ms(),
             recovery_degraded_loss_threshold: default_recovery_degraded_loss_threshold(),
             recovery_degraded_late_threshold: default_recovery_degraded_late_threshold(),
             recovery_degraded_jitter_ms: default_recovery_degraded_jitter_ms(),
             recovery_degraded_stale_ack_ms: default_recovery_degraded_stale_ack_ms(),
             recovery_degraded_queue_pressure: default_recovery_degraded_queue_pressure(),
+            recovery_clean_rtt_ms: default_recovery_clean_rtt_ms(),
             recovery_clean_loss_threshold: default_recovery_clean_loss_threshold(),
             recovery_clean_late_threshold: default_recovery_clean_late_threshold(),
             recovery_clean_jitter_ms: default_recovery_clean_jitter_ms(),
@@ -101,11 +105,13 @@ impl ClientConfig {
             enabled: self.recovery_enabled,
             enter_degraded_ticks: self.recovery_enter_degraded_ticks.max(1),
             exit_clean_ticks: self.recovery_exit_clean_ticks.max(1),
+            degraded_rtt_ms: self.recovery_degraded_rtt_ms.max(0.0),
             degraded_loss_threshold: self.recovery_degraded_loss_threshold.clamp(0.0, 1.0),
             degraded_late_threshold: self.recovery_degraded_late_threshold.clamp(0.0, 1.0),
             degraded_jitter_ms: self.recovery_degraded_jitter_ms.max(0.0),
             degraded_stale_ack_ms: self.recovery_degraded_stale_ack_ms,
             degraded_queue_pressure: self.recovery_degraded_queue_pressure.clamp(0.0, 1.0),
+            clean_rtt_ms: self.recovery_clean_rtt_ms.max(0.0),
             clean_loss_threshold: self.recovery_clean_loss_threshold.clamp(0.0, 1.0),
             clean_late_threshold: self.recovery_clean_late_threshold.clamp(0.0, 1.0),
             clean_jitter_ms: self.recovery_clean_jitter_ms.max(0.0),
@@ -165,6 +171,10 @@ fn default_recovery_exit_clean_ticks() -> u32 {
     20
 }
 
+fn default_recovery_degraded_rtt_ms() -> f64 {
+    180.0
+}
+
 fn default_recovery_degraded_loss_threshold() -> f64 {
     0.08
 }
@@ -174,7 +184,7 @@ fn default_recovery_degraded_late_threshold() -> f64 {
 }
 
 fn default_recovery_degraded_jitter_ms() -> f64 {
-    80.0
+    60.0
 }
 
 fn default_recovery_degraded_stale_ack_ms() -> u64 {
@@ -183,6 +193,10 @@ fn default_recovery_degraded_stale_ack_ms() -> u64 {
 
 fn default_recovery_degraded_queue_pressure() -> f64 {
     0.70
+}
+
+fn default_recovery_clean_rtt_ms() -> f64 {
+    120.0
 }
 
 fn default_recovery_clean_loss_threshold() -> f64 {

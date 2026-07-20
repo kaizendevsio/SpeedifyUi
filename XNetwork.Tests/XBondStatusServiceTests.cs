@@ -7,6 +7,37 @@ namespace XNetwork.Tests;
 public class XBondStatusServiceTests
 {
     [Fact]
+    public async Task GetStatusAsync_PreservesRuntimeStatusFileModificationTime()
+    {
+        var path = Path.GetTempFileName();
+        var modifiedAt = DateTime.UtcNow.AddMinutes(-2);
+        try
+        {
+            await File.WriteAllTextAsync(path, """{"running":true,"tunnel":{"state":"running"}}""");
+            File.SetLastWriteTimeUtc(path, modifiedAt);
+            var settings = new XBondSettings
+            {
+                Enabled = true,
+                RuntimeStatusPath = path
+            };
+            var service = new XBondStatusService(
+                NullLogger<XBondStatusService>.Instance,
+                settings);
+
+            var status = await service.GetStatusAsync();
+
+            Assert.InRange(
+                status.UpdatedAtUtc,
+                modifiedAt.AddSeconds(-1),
+                modifiedAt.AddSeconds(1));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task GetStatusAsync_WhenDisabled_ReturnsSafePrototypeStatus()
     {
         var service = new XBondStatusService(

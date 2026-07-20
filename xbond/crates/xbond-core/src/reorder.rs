@@ -13,6 +13,7 @@ pub struct ReorderedPacket {
 struct PendingPacket {
     path_id: u16,
     payload: Vec<u8>,
+    received_at_micros: u64,
     release_after_micros: u64,
 }
 
@@ -28,6 +29,7 @@ pub struct ReorderStats {
 
 #[derive(Debug)]
 pub struct PacketReorderBuffer {
+    initial_sequence: Option<u64>,
     next_sequence: Option<u64>,
     pending: BTreeMap<u64, PendingPacket>,
     repair_requests: BTreeMap<u64, u64>,
@@ -39,7 +41,20 @@ pub struct PacketReorderBuffer {
 impl PacketReorderBuffer {
     pub fn new(capacity: usize, hold_micros: u64) -> Self {
         Self {
+            initial_sequence: None,
             next_sequence: None,
+            pending: BTreeMap::new(),
+            repair_requests: BTreeMap::new(),
+            capacity: capacity.max(1),
+            hold_micros,
+            stats: ReorderStats::default(),
+        }
+    }
+
+    pub fn with_initial_sequence(capacity: usize, hold_micros: u64, initial_sequence: u64) -> Self {
+        Self {
+            initial_sequence: Some(initial_sequence),
+            next_sequence: Some(initial_sequence),
             pending: BTreeMap::new(),
             repair_requests: BTreeMap::new(),
             capacity: capacity.max(1),
@@ -70,6 +85,7 @@ impl PacketReorderBuffer {
             entry.insert(PendingPacket {
                 path_id,
                 payload,
+                received_at_micros: now_micros,
                 release_after_micros,
             });
             self.stats.held_packets = self.stats.held_packets.saturating_add(1);
@@ -187,10 +203,13 @@ impl PacketReorderBuffer {
 
     pub fn set_hold_micros(&mut self, hold_micros: u64) {
         self.hold_micros = hold_micros;
+        for packet in self.pending.values_mut() {
+            packet.release_after_micros = packet.received_at_micros.saturating_add(hold_micros);
+        }
     }
 
     pub fn reset(&mut self) {
-        self.next_sequence = None;
+        self.next_sequence = self.initial_sequence;
         self.pending.clear();
         self.repair_requests.clear();
         self.stats.pending_depth = 0;
@@ -240,6 +259,35 @@ mod tests {
                 payload: b"eleven".to_vec()
             }]
         );
+    }
+
+    #[test]
+    fn explicit_initial_sequence_waits_for_the_true_first_packet() {
+        let mut buffer = PacketReorderBuffer::with_initial_sequence(16, 25_000, 10);
+
+        assert!(buffer
+            .push(11, 2, b"eleven".to_vec(), 1_000, 100_000)
+            .is_empty());
+        assert_eq!(
+            buffer.push(10, 1, b"ten".to_vec(), 2_000, 100_000),
+            vec![
+                ReorderedPacket {
+                    sequence: 10,
+                    path_id: 1,
+                    payload: b"ten".to_vec(),
+                },
+                ReorderedPacket {
+                    sequence: 11,
+                    path_id: 2,
+                    payload: b"eleven".to_vec(),
+                },
+            ]
+        );
+
+        buffer.reset();
+        assert!(buffer
+            .push(11, 2, b"eleven-again".to_vec(), 3_000, 100_000)
+            .is_empty());
     }
 
     #[test]
@@ -388,6 +436,40 @@ mod tests {
             .is_empty());
         assert!(recovery.drain_ready(60_000).is_empty());
         assert_eq!(recovery.drain_ready(503_000).len(), 1);
+    }
+
+    #[test]
+    fn increasing_hold_time_extends_existing_pending_deadlines() {
+        let mut buffer = PacketReorderBuffer::new(16, 50_000);
+        assert_eq!(
+            buffer.push(1, 1, b"one".to_vec(), 1_000, 1_000_000).len(),
+            1
+        );
+        assert!(buffer
+            .push(3, 2, b"three".to_vec(), 2_000, 1_000_000)
+            .is_empty());
+
+        buffer.set_hold_micros(500_000);
+
+        assert!(buffer.drain_ready(60_000).is_empty());
+        assert_eq!(buffer.drain_ready(503_000).len(), 1);
+    }
+
+    #[test]
+    fn decreasing_hold_time_shortens_existing_pending_deadlines() {
+        let mut buffer = PacketReorderBuffer::new(16, 500_000);
+        assert_eq!(
+            buffer.push(1, 1, b"one".to_vec(), 1_000, 1_000_000).len(),
+            1
+        );
+        assert!(buffer
+            .push(3, 2, b"three".to_vec(), 2_000, 1_000_000)
+            .is_empty());
+
+        buffer.set_hold_micros(50_000);
+
+        assert!(buffer.drain_ready(51_999).is_empty());
+        assert_eq!(buffer.drain_ready(52_000).len(), 1);
     }
 
     #[test]

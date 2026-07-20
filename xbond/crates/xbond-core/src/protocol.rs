@@ -1,9 +1,10 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::crypto::{CryptoError, XBondKey, TAG_LEN};
+use crate::session::SessionHandshakeNonce;
 use crate::status::XBondServerRecoveryStatus;
 
 pub const MAGIC: [u8; 4] = *b"XBND";
@@ -53,8 +54,39 @@ impl TryFrom<u8> for PacketKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "control", rename_all = "kebab-case")]
 pub enum XBondControlMessage {
-    RepairRequest { sequences: Vec<u64> },
-    ServerRecoveryStatus { status: XBondServerRecoveryStatus },
+    SessionOpen {
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+    },
+    SessionChallenge {
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+    },
+    SessionProof {
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+    },
+    SessionAccepted {
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+    },
+    SessionRestartRequired {
+        session_id: u64,
+        reason: String,
+    },
+    ScheduleAccepted {
+        session_id: u64,
+        schedule_generation: u64,
+    },
+    RepairRequest {
+        sequences: Vec<u64>,
+    },
+    ServerRecoveryStatus {
+        status: Box<XBondServerRecoveryStatus>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,16 +328,23 @@ pub enum DuplicateOutcome {
 #[derive(Debug)]
 pub struct DuplicateWindow {
     capacity: usize,
-    order: VecDeque<(u64, u64, u8)>,
-    seen: HashSet<(u64, u64, u8)>,
+    streams: HashMap<(u64, u32), ReplayStream>,
+    observation_count: u64,
+}
+
+#[derive(Debug)]
+struct ReplayStream {
+    highest_sequence: u64,
+    slots: Vec<Option<u64>>,
+    last_observation: u64,
 }
 
 impl DuplicateWindow {
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity: capacity.max(1),
-            order: VecDeque::with_capacity(capacity),
-            seen: HashSet::with_capacity(capacity),
+            streams: HashMap::new(),
+            observation_count: 0,
         }
     }
 
@@ -321,21 +360,61 @@ impl DuplicateWindow {
         &mut self,
         session_id: u64,
         sequence: u64,
-        class: u8,
+        class: u32,
     ) -> DuplicateOutcome {
-        let key = (session_id, sequence, class);
-        if self.seen.contains(&key) {
+        const MAX_REPLAY_STREAMS: usize = 32;
+
+        self.observation_count = self.observation_count.saturating_add(1);
+        let stream_key = (session_id, class);
+        if !self.streams.contains_key(&stream_key) && self.streams.len() >= MAX_REPLAY_STREAMS {
+            if let Some(oldest_key) = self
+                .streams
+                .iter()
+                .min_by_key(|(_, stream)| stream.last_observation)
+                .map(|(key, _)| *key)
+            {
+                self.streams.remove(&oldest_key);
+            }
+        }
+
+        let stream = self
+            .streams
+            .entry(stream_key)
+            .or_insert_with(|| ReplayStream {
+                highest_sequence: sequence,
+                slots: vec![None; self.capacity],
+                last_observation: self.observation_count,
+            });
+        stream.last_observation = self.observation_count;
+
+        if sequence < stream.highest_sequence
+            && stream.highest_sequence.saturating_sub(sequence) >= self.capacity as u64
+        {
             return DuplicateOutcome::Duplicate;
         }
 
-        self.seen.insert(key);
-        self.order.push_back(key);
-        while self.order.len() > self.capacity {
-            if let Some(old) = self.order.pop_front() {
-                self.seen.remove(&old);
-            }
+        if sequence > stream.highest_sequence {
+            stream.highest_sequence = sequence;
         }
+
+        let slot = sequence as usize % self.capacity;
+        if stream.slots[slot] == Some(sequence) {
+            return DuplicateOutcome::Duplicate;
+        }
+        stream.slots[slot] = Some(sequence);
         DuplicateOutcome::FirstArrival
+    }
+
+    pub fn contains_key_class(&self, session_id: u64, sequence: u64, class: u32) -> bool {
+        let Some(stream) = self.streams.get(&(session_id, class)) else {
+            return false;
+        };
+        if sequence < stream.highest_sequence
+            && stream.highest_sequence.saturating_sub(sequence) >= self.capacity as u64
+        {
+            return true;
+        }
+        stream.slots[sequence as usize % self.capacity] == Some(sequence)
     }
 }
 
@@ -355,25 +434,27 @@ pub struct ReceiveStats {
 
 #[derive(Debug)]
 pub struct FrameReceiver {
-    deadline_micros: u64,
     duplicate_window: DuplicateWindow,
     stats: ReceiveStats,
 }
 
 impl FrameReceiver {
-    pub fn new(deadline_micros: u64, duplicate_window_capacity: usize) -> Self {
+    pub fn new(_deadline_micros: u64, duplicate_window_capacity: usize) -> Self {
         Self {
-            deadline_micros,
             duplicate_window: DuplicateWindow::new(duplicate_window_capacity),
             stats: ReceiveStats::default(),
         }
     }
 
-    pub fn observe(&mut self, frame: &XBondFrame, now_micros: u64) -> ReceiveOutcome {
+    pub fn observe(&mut self, frame: &XBondFrame, _now_micros: u64) -> ReceiveOutcome {
         let duplicate_class = match frame.header.kind {
             PacketKind::Data | PacketKind::Duplicate => 0,
             PacketKind::Fec => 1,
-            PacketKind::Heartbeat => 2,
+            // Per-path and aggregate heartbeats use independent sequence
+            // spaces. Aggregate copies share their reserved high prefix so
+            // first-arrival-wins still applies across paths.
+            PacketKind::Heartbeat if frame.header.sequence >> 48 == 0xFFFF => 0x2_0000,
+            PacketKind::Heartbeat => 0x1_0000 | u32::from(frame.header.path_id),
             PacketKind::Control => 3,
             PacketKind::Repair => 4,
         };
@@ -387,12 +468,12 @@ impl FrameReceiver {
             return ReceiveOutcome::Duplicate;
         }
 
-        if frame.header.is_expired(now_micros, self.deadline_micros) {
-            self.stats.late_packets_dropped += 1;
-            return ReceiveOutcome::Expired;
-        }
-
         self.stats.accepted_packets += 1;
+        ReceiveOutcome::Accepted
+    }
+
+    pub fn accept_prechecked(&mut self) -> ReceiveOutcome {
+        self.stats.accepted_packets = self.stats.accepted_packets.saturating_add(1);
         ReceiveOutcome::Accepted
     }
 
@@ -504,19 +585,31 @@ mod tests {
     fn duplicate_window_accepts_first_and_rejects_late_copy() {
         let mut window = DuplicateWindow::new(4);
 
+        assert!(!window.contains_key_class(0, 100, 0));
         assert_eq!(window.observe(100), DuplicateOutcome::FirstArrival);
+        assert!(window.contains_key_class(0, 100, 0));
         assert_eq!(window.observe(100), DuplicateOutcome::Duplicate);
         assert_eq!(window.observe(101), DuplicateOutcome::FirstArrival);
     }
 
     #[test]
-    fn duplicate_window_forgets_old_sequences() {
+    fn duplicate_window_rejects_sequences_older_than_replay_window() {
         let mut window = DuplicateWindow::new(2);
 
         assert_eq!(window.observe(1), DuplicateOutcome::FirstArrival);
         assert_eq!(window.observe(2), DuplicateOutcome::FirstArrival);
         assert_eq!(window.observe(3), DuplicateOutcome::FirstArrival);
-        assert_eq!(window.observe(1), DuplicateOutcome::FirstArrival);
+        assert_eq!(window.observe(1), DuplicateOutcome::Duplicate);
+    }
+
+    #[test]
+    fn duplicate_window_accepts_unseen_out_of_order_sequence_within_window() {
+        let mut window = DuplicateWindow::new(4);
+
+        assert_eq!(window.observe(10), DuplicateOutcome::FirstArrival);
+        assert_eq!(window.observe(12), DuplicateOutcome::FirstArrival);
+        assert_eq!(window.observe(11), DuplicateOutcome::FirstArrival);
+        assert_eq!(window.observe(11), DuplicateOutcome::Duplicate);
     }
 
     #[test]
@@ -555,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_receiver_counts_accepted_duplicate_and_late_packets() {
+    fn frame_receiver_counts_accepted_and_duplicate_packets() {
         let mut receiver = FrameReceiver::new(100, 16);
         let on_time = XBondFrame::new(
             XBondHeader::new(PacketKind::Data, 1, 10, 1_000, 1),
@@ -565,9 +658,9 @@ mod tests {
             XBondHeader::new(PacketKind::Duplicate, 1, 10, 1_000, 2),
             b"second".to_vec(),
         );
-        let late = XBondFrame::new(
+        let skewed_clock = XBondFrame::new(
             XBondHeader::new(PacketKind::Data, 1, 11, 1_000, 2),
-            b"late".to_vec(),
+            b"valid".to_vec(),
         );
 
         assert_eq!(receiver.observe(&on_time, 1_050), ReceiveOutcome::Accepted);
@@ -575,15 +668,72 @@ mod tests {
             receiver.observe(&duplicate, 1_060),
             ReceiveOutcome::Duplicate
         );
-        assert_eq!(receiver.observe(&late, 1_200), ReceiveOutcome::Expired);
+        assert_eq!(
+            receiver.observe(&skewed_clock, 10_000_000),
+            ReceiveOutcome::Accepted
+        );
 
         assert_eq!(
             receiver.stats(),
             ReceiveStats {
-                accepted_packets: 1,
+                accepted_packets: 2,
                 duplicate_packets_dropped: 1,
-                late_packets_dropped: 1,
+                late_packets_dropped: 0,
             }
+        );
+    }
+
+    #[test]
+    fn frame_receiver_keeps_heartbeat_replay_windows_per_path() {
+        let mut receiver = FrameReceiver::new(100, 16);
+        let aggregate = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, (0xFFFFu64 << 48) | 1, 1_000, 2),
+            Vec::new(),
+        );
+        let aggregate_copy = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, (0xFFFFu64 << 48) | 1, 1_000, 1),
+            Vec::new(),
+        );
+        let path_one = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, (1u64 << 48) | 1, 1_001, 1),
+            Vec::new(),
+        );
+        let path_two = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, (2u64 << 48) | 1, 1_002, 2),
+            Vec::new(),
+        );
+
+        assert_eq!(
+            receiver.observe(&aggregate, 1_000),
+            ReceiveOutcome::Accepted
+        );
+        assert_eq!(
+            receiver.observe(&aggregate_copy, 1_000),
+            ReceiveOutcome::Duplicate
+        );
+        assert_eq!(receiver.observe(&path_one, 1_001), ReceiveOutcome::Accepted);
+        assert_eq!(receiver.observe(&path_two, 1_002), ReceiveOutcome::Accepted);
+        assert_eq!(
+            receiver.observe(&path_one, 1_003),
+            ReceiveOutcome::Duplicate
+        );
+        assert_eq!(
+            receiver.observe(&aggregate, 1_004),
+            ReceiveOutcome::Duplicate
+        );
+    }
+
+    #[test]
+    fn receiver_does_not_use_peer_wall_clock_for_acceptance() {
+        let mut receiver = FrameReceiver::new(100, 16);
+        let peer_clock_far_behind = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 1, 10, 1_000, 1),
+            b"valid".to_vec(),
+        );
+
+        assert_eq!(
+            receiver.observe(&peer_clock_far_behind, 9_000_000_000),
+            ReceiveOutcome::Accepted
         );
     }
 
@@ -629,6 +779,43 @@ mod tests {
         let decoded = serde_json::from_slice::<XBondControlMessage>(&json).unwrap();
 
         assert_eq!(decoded, message);
+    }
+
+    #[test]
+    fn session_and_schedule_control_messages_round_trip() {
+        for message in [
+            XBondControlMessage::SessionOpen {
+                session_id: 42,
+                request_nonce: [1; 16],
+            },
+            XBondControlMessage::SessionChallenge {
+                session_id: 42,
+                request_nonce: [1; 16],
+                challenge: [2; 16],
+            },
+            XBondControlMessage::SessionProof {
+                session_id: 42,
+                request_nonce: [1; 16],
+                challenge: [2; 16],
+            },
+            XBondControlMessage::SessionAccepted {
+                session_id: 42,
+                request_nonce: [1; 16],
+                challenge: [2; 16],
+            },
+            XBondControlMessage::SessionRestartRequired {
+                session_id: 42,
+                reason: "schedule synchronization timed out".to_string(),
+            },
+            XBondControlMessage::ScheduleAccepted {
+                session_id: 42,
+                schedule_generation: 7,
+            },
+        ] {
+            let json = serde_json::to_vec(&message).unwrap();
+            let decoded = serde_json::from_slice::<XBondControlMessage>(&json).unwrap();
+            assert_eq!(decoded, message);
+        }
     }
 
     #[test]

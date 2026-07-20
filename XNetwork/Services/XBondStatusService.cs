@@ -19,11 +19,17 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
     }
 
     public static XBondStatus ParseRuntimeStatusJson(string json, XBondSettings settings)
+        => ParseRuntimeStatusJson(json, settings, DateTime.UtcNow);
+
+    public static XBondStatus ParseRuntimeStatusJson(
+        string json,
+        XBondSettings settings,
+        DateTime updatedAtUtc)
     {
         var runtime = JsonSerializer.Deserialize<XBondRuntimeStatusDocument>(json, JsonOptions)
             ?? throw new JsonException("XBond runtime status JSON was empty");
 
-        return FromRuntimeStatus(runtime, settings);
+        return FromRuntimeStatus(runtime, settings, updatedAtUtc);
     }
 
     public async Task<XBondStatus> GetStatusAsync(CancellationToken cancellationToken = default)
@@ -39,7 +45,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
                 ? "/run/xbond/client-status.json"
                 : settings.RuntimeStatusPath;
             var json = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-            return ParseRuntimeStatusJson(json, settings);
+            var updatedAtUtc = File.GetLastWriteTimeUtc(path);
+            return ParseRuntimeStatusJson(json, settings, updatedAtUtc);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -48,7 +55,10 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         }
     }
 
-    private static XBondStatus FromRuntimeStatus(XBondRuntimeStatusDocument runtime, XBondSettings settings)
+    private static XBondStatus FromRuntimeStatus(
+        XBondRuntimeStatusDocument runtime,
+        XBondSettings settings,
+        DateTime updatedAtUtc)
     {
         var mode = string.IsNullOrWhiteSpace(runtime.Mode) ? settings.ScheduleMode : runtime.Mode;
         var paths = SelectPathRoles(runtime.Paths, settings.MaxActiveBackups);
@@ -91,7 +101,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             Message = string.IsNullOrWhiteSpace(runtime.Message)
                 ? "XBond runtime status loaded."
                 : runtime.Message,
-            UpdatedAtUtc = DateTime.UtcNow
+            UpdatedAtUtc = updatedAtUtc
         };
     }
 

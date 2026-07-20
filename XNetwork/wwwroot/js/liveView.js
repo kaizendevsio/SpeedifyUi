@@ -2,6 +2,19 @@ const scenes = new WeakMap();
 
 let threeModulePromise;
 
+const LIVE_COLORS = {
+    bgFog: 0x161616,
+    neutralBright: 0xe6e6e6,
+    neutral: 0xbdbdbd,
+    neutralDim: 0x7a7a7a,
+    neutralSoft: 0x9a9a9a,
+    success: 0x86efac,
+    warning: 0xfde68a,
+    orange: 0xfdba74,
+    danger: 0xfca5a5,
+    white: 0xffffff
+};
+
 export async function initialize(element, dotNetReference) {
     if (!element) {
         return;
@@ -151,7 +164,7 @@ function setupThreeScene(state, THREE) {
     element.replaceChildren(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x07090d, 0.035);
+    scene.fog = new THREE.FogExp2(LIVE_COLORS.bgFog, 0.035);
 
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
 
@@ -162,10 +175,10 @@ function setupThreeScene(state, THREE) {
     const labelGroup = new THREE.Group();
     scene.add(fieldGroup, beamGroup, packetGroup, pathGroup, labelGroup);
 
-    const ambient = new THREE.AmbientLight(0x5f7f9f, 0.45);
-    const coreLight = new THREE.PointLight(0x22d3ee, 50, 10);
+    const ambient = new THREE.AmbientLight(LIVE_COLORS.neutral, 0.45);
+    const coreLight = new THREE.PointLight(LIVE_COLORS.neutralBright, 42, 10);
     coreLight.position.set(0, 0.2, 0);
-    const rimLight = new THREE.PointLight(0xf472b6, 28, 12);
+    const rimLight = new THREE.PointLight(LIVE_COLORS.neutralSoft, 20, 12);
     rimLight.position.set(-4.5, 1.8, -1.5);
     scene.add(ambient, coreLight, rimLight);
 
@@ -337,15 +350,15 @@ function createEnergyCore(THREE, glowTexture) {
     const core = new THREE.Group();
     core.name = 'XBond energy core';
 
-    const glow = createGlowSprite(THREE, glowTexture, 0x22c55e, 1.02, 1.72);
+    const glow = createGlowSprite(THREE, glowTexture, LIVE_COLORS.success, 1.02, 1.72);
     glow.userData.role = 'core-glow';
     core.add(glow);
 
     const rings = [];
     const ringSpecs = [
-        { radius: 0.26, tube: 0.012, color: 0x9fffe3, opacity: 0.92, rotation: [Math.PI / 2, 0, 0] },
-        { radius: 0.46, tube: 0.012, color: 0x22d3ee, opacity: 0.7, rotation: [1.1, 0.35, 0.12] },
-        { radius: 0.66, tube: 0.009, color: 0x60a5fa, opacity: 0.45, rotation: [0.75, -0.58, 0.2] }
+        { radius: 0.26, tube: 0.012, color: LIVE_COLORS.neutralBright, opacity: 0.82, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 0.46, tube: 0.012, color: LIVE_COLORS.neutral, opacity: 0.58, rotation: [1.1, 0.35, 0.12] },
+        { radius: 0.66, tube: 0.009, color: LIVE_COLORS.neutralDim, opacity: 0.36, rotation: [0.75, -0.58, 0.2] }
     ];
 
     ringSpecs.forEach((spec, index) => {
@@ -392,7 +405,7 @@ function createEnergyCore(THREE, glowTexture) {
         const shieldRing = new THREE.Mesh(
             new THREE.TorusGeometry(spec.radius, spec.tube, 8, 192),
             new THREE.MeshBasicMaterial({
-                color: index === 2 ? 0xf472b6 : 0x22d3ee,
+                color: index === 2 ? LIVE_COLORS.neutralDim : LIVE_COLORS.neutral,
                 transparent: true,
                 opacity: spec.opacity,
                 blending: THREE.AdditiveBlending,
@@ -420,11 +433,11 @@ function createSatelliteEndpoint(THREE, glowTexture) {
     satellite.rotation.z = -0.08;
     satellite.rotation.x = 0.08;
 
-    const glow = createGlowSprite(THREE, glowTexture, 0x60a5fa, 0.68, 1.64);
+    const glow = createGlowSprite(THREE, glowTexture, LIVE_COLORS.neutral, 0.62, 1.64);
     satellite.add(glow);
 
     const bodyMaterial = new THREE.MeshBasicMaterial({
-        color: 0xb7e7ff,
+        color: LIVE_COLORS.neutralBright,
         transparent: true,
         opacity: 0.88,
         blending: THREE.AdditiveBlending,
@@ -432,7 +445,7 @@ function createSatelliteEndpoint(THREE, glowTexture) {
         depthTest: false
     });
     const panelMaterial = new THREE.MeshBasicMaterial({
-        color: 0x2563eb,
+        color: LIVE_COLORS.neutralSoft,
         transparent: true,
         opacity: 0.58,
         blending: THREE.AdditiveBlending,
@@ -440,7 +453,7 @@ function createSatelliteEndpoint(THREE, glowTexture) {
         depthTest: false
     });
     const signalMaterial = new THREE.LineBasicMaterial({
-        color: 0x60a5fa,
+        color: LIVE_COLORS.neutral,
         transparent: true,
         opacity: 0.58,
         blending: THREE.AdditiveBlending,
@@ -560,7 +573,7 @@ function createEnergyField(THREE) {
         positions[i * 3 + 1] = -1.7 + Math.random() * 3.4;
         positions[i * 3 + 2] = Math.sin(angle) * radius * 0.55 - 1.2;
 
-        color.setHex(i % 5 === 0 ? 0xf472b6 : i % 3 === 0 ? 0x22c55e : 0x22d3ee);
+        color.setHex(i % 5 === 0 ? LIVE_COLORS.neutralDim : i % 3 === 0 ? LIVE_COLORS.neutral : LIVE_COLORS.neutralSoft);
         colors[i * 3] = color.r;
         colors[i * 3 + 1] = color.g;
         colors[i * 3 + 2] = color.b;
@@ -598,7 +611,7 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     if (selected) {
         const selectedHalo = new THREE.Mesh(
             new THREE.TorusGeometry(0.58, 0.012, 8, 128),
-            getBasicMaterial(cache, THREE, 0x3794ff, 0.92)
+            getBasicMaterial(cache, THREE, LIVE_COLORS.neutralBright, 0.86)
         );
         selectedHalo.rotation.x = Math.PI / 2;
         selectedHalo.userData.spin = 1.4;
@@ -795,7 +808,7 @@ function addSceneLabels(state, cache, paths, compact) {
                 THREE,
                 cache,
                 path.name || path.iface || 'Adapter',
-                path.active ? '#f8fafc' : '#a8b3c2',
+                path.active ? '#f3f3f3' : '#a3a3a3',
                 0.68
             );
             label.position.copy(node.position).add(new THREE.Vector3(0.62, 0.04, 0));
@@ -803,11 +816,11 @@ function addSceneLabels(state, cache, paths, compact) {
         });
     }
 
-    const coreLabel = createTextSprite(THREE, cache, 'XBond Core', '#b7e7ff', compact ? 0.56 : 0.7);
+    const coreLabel = createTextSprite(THREE, cache, 'XBond Core', '#d8d8d8', compact ? 0.56 : 0.7);
     coreLabel.position.copy(state.tunnelCore.position).add(new THREE.Vector3(-0.58, -1.55, 0));
     state.labelGroup.add(coreLabel);
 
-    const serverLabel = createTextSprite(THREE, cache, 'Satellite Relay', '#b7e7ff', compact ? 0.52 : 0.68);
+    const serverLabel = createTextSprite(THREE, cache, 'Satellite Relay', '#d8d8d8', compact ? 0.52 : 0.68);
     serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
     state.labelGroup.add(serverLabel);
 
@@ -861,7 +874,7 @@ function addCoreToServerStreams(state, cache, paths) {
         0.16,
         99
     );
-    addEnergyBeam(state, cache, conduitPoints, 0x22d3ee, { active: true, anchor: true, up: true });
+    addEnergyBeam(state, cache, conduitPoints, LIVE_COLORS.neutralBright, { active: true, anchor: true, up: true });
 
     paths.forEach((path, index) => {
         const color = getPathColor({ ...path, active: true });
@@ -995,16 +1008,16 @@ function setEnergyCoreColor(core, color, recovery) {
     }
 
     core.userData.rings?.forEach((ring, index) => {
-        ring.material.color.setHex(index === 3 && recovery ? 0xfb923c : color);
+        ring.material.color.setHex(index === 3 && recovery ? LIVE_COLORS.orange : color);
         ring.material.opacity = Math.min(0.92, ring.userData.baseOpacity + (recovery ? 0.18 : 0));
     });
 
     if (core.userData.pulse?.material) {
-        core.userData.pulse.material.color.setHex(recovery ? 0xfb923c : 0xffffff);
+        core.userData.pulse.material.color.setHex(recovery ? LIVE_COLORS.orange : LIVE_COLORS.white);
     }
 
     core.userData.shieldRings?.forEach((ring, index) => {
-        ring.material.color.setHex(recovery ? 0xfb923c : index === 2 ? 0xf472b6 : color);
+        ring.material.color.setHex(recovery ? LIVE_COLORS.orange : index === 2 ? LIVE_COLORS.neutralDim : color);
         ring.material.opacity = Math.min(0.46, ring.userData.baseOpacity + (recovery ? 0.16 : 0));
     });
 }
@@ -1317,40 +1330,40 @@ function sampleArc(points, t) {
 
 function getPathColor(path) {
     if (!path.up || path.status === 'down') {
-        return 0xef4444;
+        return LIVE_COLORS.danger;
     }
 
     if (path.cooldown || path.status === 'warn') {
-        return 0xf59e0b;
+        return LIVE_COLORS.orange;
     }
 
     if (path.anchor) {
-        return 0xfb923c;
+        return LIVE_COLORS.neutralBright;
     }
 
     if (path.active) {
-        return 0xf472b6;
+        return LIVE_COLORS.neutral;
     }
 
-    return 0x22d3ee;
+    return LIVE_COLORS.neutralDim;
 }
 
 function getHealthColor(data) {
     const loss = Number(data?.loss || 0);
     const rtt = Number(data?.rtt || 0);
     if (!data?.running || loss >= 25 || rtt >= 300) {
-        return 0xef4444;
+        return LIVE_COLORS.danger;
     }
 
     if (loss >= 10 || rtt >= 180 || data?.recovery) {
-        return 0xfb923c;
+        return LIVE_COLORS.orange;
     }
 
     if (loss >= 2 || rtt >= 120) {
-        return 0xfacc15;
+        return LIVE_COLORS.warning;
     }
 
-    return 0x22c55e;
+    return LIVE_COLORS.success;
 }
 
 function getBasicMaterial(cache, THREE, color, opacity) {
@@ -1465,8 +1478,8 @@ function drawFallback(state) {
 
     ctx.clearRect(0, 0, width, height);
     const gradient = ctx.createRadialGradient(centerX, centerY, 20, centerX, centerY, width * 0.7);
-    gradient.addColorStop(0, 'rgba(34, 211, 238, 0.16)');
-    gradient.addColorStop(1, 'rgba(2, 6, 23, 0)');
+    gradient.addColorStop(0, 'rgba(255, 255, 255, 0.08)');
+    gradient.addColorStop(1, 'rgba(32, 32, 32, 0)');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
@@ -1508,14 +1521,14 @@ function drawFallback(state) {
         ctx.stroke();
     }
 
-    drawGlow(ctx, serverX, serverY, 34 + Math.sin(time * 2) * 3, '#60a5fa');
-    ctx.strokeStyle = '#60a5fa';
-    ctx.fillStyle = 'rgba(183, 231, 255, 0.82)';
+    drawGlow(ctx, serverX, serverY, 34 + Math.sin(time * 2) * 3, '#bdbdbd');
+    ctx.strokeStyle = '#d8d8d8';
+    ctx.fillStyle = 'rgba(216, 216, 216, 0.78)';
     ctx.globalAlpha = 0.78;
     ctx.lineWidth = 3;
     ctx.fillRect(serverX - 16, serverY - 11, 32, 22);
     ctx.strokeRect(serverX - 16, serverY - 11, 32, 22);
-    ctx.fillStyle = 'rgba(37, 99, 235, 0.58)';
+    ctx.fillStyle = 'rgba(154, 154, 154, 0.58)';
     ctx.fillRect(serverX - 62, serverY - 15, 38, 30);
     ctx.fillRect(serverX + 24, serverY - 15, 38, 30);
     ctx.beginPath();

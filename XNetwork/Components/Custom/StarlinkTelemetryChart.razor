@@ -29,7 +29,7 @@
     [Parameter] public string Title { get; set; } = string.Empty;
     [Parameter] public string Metric { get; set; } = string.Empty;
     [Parameter] public string Unit { get; set; } = string.Empty;
-    [Parameter] public string Stroke { get; set; } = "#22d3ee";
+    [Parameter] public string Stroke { get; set; } = "#d8d8d8";
 
     private IReadOnlyList<double> Values => Samples
         .Select(GetMetricValue)
@@ -50,8 +50,8 @@
 
     private string ValueClass => Metric switch
     {
-        "download" => "text-cyan-200",
-        "upload" => "text-pink-200",
+        "download" => "text-slate-100",
+        "upload" => "text-slate-200",
         "obstruction" => "text-amber-200",
         _ => "text-white"
     };

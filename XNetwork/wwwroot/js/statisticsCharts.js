@@ -7,22 +7,31 @@ let maxDataPoints = 30; // Number of historical data points to show on charts
 const DASHBOARD_DATA_POINTS = 30;
 const LIVE_CHART_ANIMATION_DURATION = 240;
 const ACTUAL_CONNECTION_ID = '__actual_connection';
-const ACTUAL_CONNECTION_COLOR = '#34d399';
+const ACTUAL_CONNECTION_COLOR = '#e5e5e5';
 const DASHBOARD_CHART_PREFIX = 'dashboard-chart-';
+const DASHBOARD_TUNNEL_COLOR = '#e5e5e5';
+const DASHBOARD_ANCHOR_COLOR = 'rgba(190, 190, 190, 0.78)';
+const DASHBOARD_BACKUP_COLOR = 'rgba(150, 150, 150, 0.72)';
+const DASHBOARD_FILL_COLOR = 'rgba(229, 229, 229, 0.08)';
 
 // Dark theme colors
-const GRID_COLOR = 'rgba(255, 255, 255, 0.1)';
-const FONT_COLOR = '#94a3b8'; // slate-400
+const GRID_COLOR = 'rgba(255, 255, 255, 0.08)';
+const FONT_COLOR = '#a3a3a3';
 
-// Default colors for chart lines (updated for dark theme)
+// Muted pastel series colors for Analytics. Dashboard sparklines stay monochrome.
 const lineColors = [
-    '#22d3ee',  // cyan-400
-    '#f472b6',  // pink-400
-    '#f59e0b',  // amber-400
-    '#38bdf8',  // sky-400
-    '#a855f7',  // purple-400
-    '#fb923c'   // orange-400
+    '#a7f3d0',
+    '#fde68a',
+    '#fdba74',
+    '#fca5a5',
+    '#c4b5fd',
+    '#bae6fd'
 ];
+
+function getSeriesDash(index) {
+    const dashStyles = [[], [6, 4], [2, 5], [10, 4, 2, 4], [4, 2], [8, 3]];
+    return dashStyles[index % dashStyles.length];
+}
 
 export function setMaxDataPoints(value) {
     const parsed = Number(value);
@@ -207,7 +216,7 @@ export function initializeOrUpdateChart(chartId, yAxisLabel, AdapterIds, adapter
             data: [],
             borderColor: color,
             backgroundColor: color,
-            borderDash: isActualConnection ? [6, 4] : [],
+            borderDash: isActualConnection ? [6, 4] : getSeriesDash(index),
             tension: 0.3, // Smooth bezier curves without exaggerated endpoint motion
             cubicInterpolationMode: 'monotone', // Smooth interpolation
             pointRadius: 0,
@@ -504,8 +513,8 @@ export function initializeDashboardSparkline(chartId) {
                     {
                         label: 'Tunnel download',
                         data: emptySparklineData.map(point => ({ ...point })),
-                        borderColor: '#22d3ee', // cyan-400
-                        backgroundColor: 'rgba(34, 211, 238, 0.1)',
+                        borderColor: DASHBOARD_TUNNEL_COLOR,
+                        backgroundColor: DASHBOARD_FILL_COLOR,
                         tension: 0.4, // Smooth bezier curves
                         cubicInterpolationMode: 'monotone', // Smooth interpolation
                         fill: true,
@@ -517,12 +526,13 @@ export function initializeDashboardSparkline(chartId) {
                     {
                         label: 'Anchor download',
                         data: emptySparklineData.map(point => ({ ...point })),
-                        borderColor: 'rgba(251, 146, 60, 0.62)', // orange-400
-                        backgroundColor: 'rgba(251, 146, 60, 0)',
+                        borderColor: DASHBOARD_ANCHOR_COLOR,
+                        backgroundColor: 'rgba(190, 190, 190, 0)',
                         tension: 0.4,
                         cubicInterpolationMode: 'monotone',
                         fill: false,
                         borderWidth: 1.75,
+                        borderDash: [6, 5],
                         pointRadius: 0,
                         pointHoverRadius: 0,
                         spanGaps: true
@@ -530,12 +540,13 @@ export function initializeDashboardSparkline(chartId) {
                     {
                         label: 'Backup download',
                         data: emptySparklineData.map(point => ({ ...point })),
-                        borderColor: 'rgba(244, 114, 182, 0.56)', // pink-400
-                        backgroundColor: 'rgba(244, 114, 182, 0)',
+                        borderColor: DASHBOARD_BACKUP_COLOR,
+                        backgroundColor: 'rgba(150, 150, 150, 0)',
                         tension: 0.4,
                         cubicInterpolationMode: 'monotone',
                         fill: false,
                         borderWidth: 1.75,
+                        borderDash: [2, 5],
                         pointRadius: 0,
                         pointHoverRadius: 0,
                         spanGaps: true

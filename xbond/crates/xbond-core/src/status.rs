@@ -495,6 +495,12 @@ pub struct XBondProcessStatus {
     pub duplicate_send_skips: u64,
     #[serde(default)]
     pub fec_send_skips: u64,
+    #[serde(default)]
+    pub tun_write_packets: u64,
+    #[serde(default)]
+    pub tun_write_queue_micros_total: u64,
+    #[serde(default)]
+    pub tun_write_micros_total: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

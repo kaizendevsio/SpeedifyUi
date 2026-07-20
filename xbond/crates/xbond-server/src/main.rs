@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpStream, UdpSocket};
@@ -16,10 +16,12 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time;
 use xbond_core::{
     build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into,
-    is_ipv4_packet, precompute_transmission_plans, FrameReceiver, PacketKind, PacketReorderBuffer,
-    PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache, ScheduleControlMessage,
-    SchedulePlan, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
+    is_ipv4_packet, precompute_transmission_plans, recommended_repair_cache_bytes,
+    AuthenticatedSessionTracker, DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind,
+    PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome,
+    RedundancyPolicy, RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache,
+    ScheduleControlMessage, SchedulePlan, SessionChallengeOutcome, SessionHandshakeNonce,
+    SessionProofOutcome, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
     XBondServerHealthStatus, XBondServerHealthTargetStatus, XBondServerIngressReorderStatus,
     XBondServerRecoveryStatus, XBondTun, XorFecBlock,
 };
@@ -28,16 +30,29 @@ const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_INBOUND_QUEUE_CAPACITY: usize = 4096;
 const CONTROL_QUEUE_CAPACITY: usize = 256;
 const SEND_REPORT_QUEUE_CAPACITY: usize = 256;
+const TUN_WORKER_EXIT_QUEUE_CAPACITY: usize = 4;
 const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const REPAIR_CACHE_CAPACITY: usize = 4096;
+const DEFAULT_REPAIR_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const MIN_REPAIR_CACHE_BYTES: usize = 1024 * 1024;
+const INITIAL_REPAIR_CACHE_BITS_PER_SECOND: u64 = 20_000_000;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const MAX_REPAIR_REQUESTS: usize = 64;
+const PRE_RECOVERY_REPAIR_PENDING_THRESHOLD: usize = 4;
+const PRE_RECOVERY_REPAIR_INTERVAL_MICROS: u64 = 250_000;
+const PRE_RECOVERY_REPAIR_MAX_PER_REQUEST: usize = 4;
+const PRE_RECOVERY_REPAIR_MAX_PER_SECOND: usize = 8;
 const PEER_STALE_AFTER_MICROS: u64 = 15_000_000;
 const RETURN_SCHEDULE_STALE_AFTER_MICROS: u64 = 10_000_000;
 const RETURN_SCHEDULE_GRACE_MICROS: u64 = 5_000_000;
 const MAX_UDP_DATAGRAM_BYTES: usize = 65_535;
 const EXPECTED_UDP_PAYLOAD_BYTES: usize = 2048;
+const RETIRED_SESSION_CAPACITY: usize = 64;
+const TUN_WRITE_ENQUEUE_DEADLINE: Duration = Duration::from_millis(250);
+const PRIMARY_RETURN_QUEUE_DEADLINE: Duration = Duration::from_millis(250);
+const PRIMARY_RETURN_SEND_DEADLINE: Duration = Duration::from_millis(250);
+const PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES: u32 = 3;
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-server")]
@@ -97,6 +112,18 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_UDP_SOCKET_BUFFER_BYTES)]
     udp_socket_buffer_bytes: usize,
 
+    #[arg(long, default_value_t = DEFAULT_REPAIR_CACHE_BYTES)]
+    repair_cache_bytes: usize,
+
+    #[arg(long, hide = true, default_value_t = 0)]
+    fault_tun_write_delay_ms: u64,
+
+    #[arg(long, hide = true, default_value_t = 0)]
+    fault_tun_write_fail_after_packets: u64,
+
+    #[arg(long, hide = true, default_value_t = 0)]
+    fault_tun_read_fail_after_packets: u64,
+
     #[arg(long, default_value_t = true, action = ArgAction::Set)]
     server_health_enabled: bool,
 
@@ -120,6 +147,14 @@ struct Args {
 struct InboundServerFrame {
     frame: XBondFrame,
     peer: SocketAddr,
+    pre_admission_deduplicated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundDispatchOutcome {
+    Queued,
+    Dropped,
+    Closed,
 }
 
 #[derive(Debug)]
@@ -134,6 +169,7 @@ struct ReturnSendWork {
     peer: SocketAddr,
     header: XBondHeader,
     payload: Arc<Vec<u8>>,
+    deadline: Instant,
 }
 
 #[derive(Debug)]
@@ -143,6 +179,28 @@ struct ReturnSendReport {
     success: bool,
     peer: SocketAddr,
     error: Option<String>,
+    emsgsize: bool,
+    deadline_expired: bool,
+    force_restart: bool,
+    attempted_datagram_bytes: usize,
+}
+
+#[derive(Debug)]
+enum BoundedDatagramSendError {
+    Io(std::io::Error),
+    DeadlineExpired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrimaryReturnReserveError {
+    Closed,
+    DeadlineExpired,
+}
+
+#[derive(Debug)]
+struct PendingPrimaryReturn {
+    work: ReturnSendWork,
+    alternate_copy_accepted: bool,
 }
 
 #[derive(Debug)]
@@ -150,6 +208,200 @@ struct ReturnSenderHandle {
     control_tx: mpsc::Sender<ReturnSendWork>,
     data_tx: mpsc::Sender<ReturnSendWork>,
     task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug)]
+struct TunWriteBatch {
+    packets: Vec<ReorderedPacket>,
+    enqueued_at_micros: u64,
+}
+
+#[derive(Debug)]
+struct TunWorkerExit {
+    worker: &'static str,
+    reason: String,
+}
+
+#[derive(Debug, Default)]
+struct TunWriterTelemetry {
+    queue_depth: AtomicU64,
+    max_queue_depth: AtomicU64,
+    oldest_enqueued_at_micros: AtomicU64,
+    queued_at_micros: Mutex<VecDeque<u64>>,
+    last_write_latency_micros: AtomicU64,
+    max_write_latency_micros: AtomicU64,
+    write_errors: AtomicU64,
+    packets_written: AtomicU64,
+    repair_packets_written: AtomicU64,
+    saturation_failures: AtomicU64,
+}
+
+impl TunWriterTelemetry {
+    fn try_reserve_packets(
+        &self,
+        packet_count: usize,
+        capacity: usize,
+        enqueued_at_micros: u64,
+    ) -> bool {
+        let packet_count = packet_count as u64;
+        let capacity = capacity as u64;
+        let reservation =
+            self.queue_depth
+                .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                    current
+                        .checked_add(packet_count)
+                        .filter(|next| *next <= capacity)
+                });
+        let Ok(previous_depth) = reservation else {
+            return false;
+        };
+        self.max_queue_depth.fetch_max(
+            previous_depth.saturating_add(packet_count),
+            Ordering::Relaxed,
+        );
+
+        let mut queued = self
+            .queued_at_micros
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queued.extend(std::iter::repeat_n(
+            enqueued_at_micros,
+            packet_count as usize,
+        ));
+        self.oldest_enqueued_at_micros.store(
+            queued.front().copied().unwrap_or_default(),
+            Ordering::Relaxed,
+        );
+        true
+    }
+
+    fn release_packets(&self, packet_count: usize, expected_enqueued_at_micros: u64) {
+        let mut queued = self
+            .queued_at_micros
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for _ in 0..packet_count {
+            let dequeued = queued.pop_front();
+            debug_assert_eq!(dequeued, Some(expected_enqueued_at_micros));
+        }
+        self.queue_depth
+            .fetch_sub(packet_count as u64, Ordering::AcqRel);
+        self.oldest_enqueued_at_micros.store(
+            queued.front().copied().unwrap_or_default(),
+            Ordering::Relaxed,
+        );
+    }
+}
+
+#[derive(Debug)]
+struct TunWriterHandle {
+    tx: mpsc::Sender<TunWriteBatch>,
+    telemetry: Arc<TunWriterTelemetry>,
+    capacity: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TunEnqueueOutcome {
+    enqueued: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TunFaultInjection {
+    write_delay_ms: u64,
+    write_fail_after_packets: u64,
+    read_fail_after_packets: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IngressRepairLimiter {
+    window_started_micros: u64,
+    sent_in_window: usize,
+}
+
+impl Default for IngressRepairLimiter {
+    fn default() -> Self {
+        Self {
+            window_started_micros: 0,
+            sent_in_window: 0,
+        }
+    }
+}
+
+impl IngressRepairLimiter {
+    fn allowance(&mut self, now_micros: u64, recovery_active: bool) -> usize {
+        if recovery_active {
+            return MAX_REPAIR_REQUESTS;
+        }
+        if self.window_started_micros == 0
+            || now_micros.saturating_sub(self.window_started_micros) >= 1_000_000
+        {
+            self.window_started_micros = now_micros;
+            self.sent_in_window = 0;
+        }
+        PRE_RECOVERY_REPAIR_MAX_PER_SECOND
+            .saturating_sub(self.sent_in_window)
+            .min(PRE_RECOVERY_REPAIR_MAX_PER_REQUEST)
+    }
+
+    fn record(&mut self, count: usize, recovery_active: bool) {
+        if !recovery_active {
+            self.sent_in_window = self.sent_in_window.saturating_add(count);
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn ingress_repair_request_parameters(
+    limiter: &mut IngressRepairLimiter,
+    now_micros: u64,
+    recovery_active: bool,
+    pending_depth: usize,
+) -> Option<(u64, usize)> {
+    if !recovery_active && pending_depth < PRE_RECOVERY_REPAIR_PENDING_THRESHOLD {
+        return None;
+    }
+    let allowance = limiter.allowance(now_micros, recovery_active);
+    (allowance > 0).then_some((
+        if recovery_active {
+            REPAIR_REQUEST_INTERVAL_MICROS
+        } else {
+            PRE_RECOVERY_REPAIR_INTERVAL_MICROS
+        },
+        allowance,
+    ))
+}
+
+fn injected_tun_failure(after_packets: u64, processed_packets: u64) -> bool {
+    after_packets > 0 && processed_packets >= after_packets
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+struct ServerReturnPmtuStatus {
+    emsgsize_errors: u64,
+    emsgsize_errors_by_path: HashMap<u16, u64>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct ReturnCopyEnqueueAccounting {
+    selected: usize,
+    accepted: usize,
+}
+
+impl ReturnCopyEnqueueAccounting {
+    fn selected(&mut self) {
+        self.selected = self.selected.saturating_add(1);
+    }
+
+    fn accepted(&mut self) {
+        self.accepted = self.accepted.saturating_add(1);
+    }
+
+    fn all_copies_dropped(self, primary_pending: bool) -> bool {
+        !primary_pending && (self.selected == 0 || self.accepted == 0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +421,123 @@ struct ReturnControl {
     transmission_plans: PacketTransmissionPlans,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerSessionOpenDecision {
+    AcceptedNew,
+    AcceptedCurrent,
+    RestartRequired,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerSessionHandshakeControl {
+    Open {
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+    },
+    Proof {
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+    },
+}
+
+#[derive(Debug)]
+struct ServerSessionGate {
+    tracker: AuthenticatedSessionTracker,
+    forwarding_active: bool,
+}
+
+impl ServerSessionGate {
+    fn new() -> Self {
+        Self {
+            tracker: AuthenticatedSessionTracker::new(RETIRED_SESSION_CAPACITY),
+            forwarding_active: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn current(&self) -> Option<u64> {
+        self.tracker.current()
+    }
+
+    fn accepts(&self, session_id: u64) -> bool {
+        self.forwarding_active && self.tracker.accepts(session_id)
+    }
+
+    fn restart_required_for(&self, session_id: u64) -> bool {
+        !self.forwarding_active
+            && (self.tracker.current().is_none() || self.tracker.current() == Some(session_id))
+    }
+
+    fn issue_challenge(
+        &mut self,
+        header_session_id: u64,
+        control_session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        fresh_challenge: SessionHandshakeNonce,
+        now_micros: u64,
+    ) -> Option<SessionHandshakeNonce> {
+        if header_session_id != control_session_id {
+            return None;
+        }
+
+        match self.tracker.issue_challenge(
+            control_session_id,
+            request_nonce,
+            fresh_challenge,
+            now_micros,
+        ) {
+            SessionChallengeOutcome::Issued { challenge }
+            | SessionChallengeOutcome::Existing { challenge } => Some(challenge),
+            SessionChallengeOutcome::RejectedZeroSession
+            | SessionChallengeOutcome::RejectedZeroRequestNonce
+            | SessionChallengeOutcome::RejectedZeroChallenge
+            | SessionChallengeOutcome::RejectedRetiredSession => None,
+        }
+    }
+
+    fn prove(
+        &mut self,
+        header_session_id: u64,
+        control_session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+        now_micros: u64,
+    ) -> ServerSessionOpenDecision {
+        if header_session_id != control_session_id {
+            return ServerSessionOpenDecision::Rejected;
+        }
+
+        match self
+            .tracker
+            .consume_proof(control_session_id, request_nonce, challenge, now_micros)
+        {
+            SessionProofOutcome::Opened => {
+                self.forwarding_active = true;
+                ServerSessionOpenDecision::AcceptedNew
+            }
+            SessionProofOutcome::AlreadyCurrent if self.forwarding_active => {
+                ServerSessionOpenDecision::AcceptedCurrent
+            }
+            SessionProofOutcome::AlreadyCurrent => ServerSessionOpenDecision::RestartRequired,
+            SessionProofOutcome::RejectedZeroSession
+            | SessionProofOutcome::RejectedZeroRequestNonce
+            | SessionProofOutcome::RejectedZeroChallenge
+            | SessionProofOutcome::RejectedMissingChallenge
+            | SessionProofOutcome::RejectedMismatchedChallenge
+            | SessionProofOutcome::RejectedExpiredChallenge
+            | SessionProofOutcome::RejectedRetiredSession => ServerSessionOpenDecision::Rejected,
+        }
+    }
+
+    fn require_restart(&mut self) -> Option<u64> {
+        let session_id = self.tracker.current()?;
+        self.forwarding_active = false;
+        Some(session_id)
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ServerRuntimeStatus {
     running: bool,
@@ -183,6 +552,7 @@ struct ServerRuntimeStatus {
     repair: XBondRepairStatus,
     server_health: XBondServerHealthStatus,
     control_plane: ServerControlPlaneStatus,
+    return_pmtu: ServerReturnPmtuStatus,
     counters: TunnelCounters,
 }
 
@@ -193,11 +563,30 @@ struct ServerControlPlaneStatus {
     protocol_acks_queued: u64,
     schedule_updates_accepted: u64,
     ingress_payload_queue_drops: u64,
+    ingress_duplicates_coalesced: u64,
     primary_return_queue_full: u64,
+    primary_return_enqueued: u64,
+    primary_return_enqueue_deadline_expiries: u64,
+    primary_return_send_deadline_expiries: u64,
+    primary_return_forced_restarts: u64,
+    all_return_copies_dropped: u64,
     repair_return_queue_full: u64,
     control_send_queue_full: u64,
     control_datagrams_sent: u64,
     control_send_failures: u64,
+    tun_write_queue_depth: u64,
+    tun_write_queue_peak_depth: u64,
+    tun_write_queue_capacity: u64,
+    tun_write_oldest_age_ms: u64,
+    tun_write_latency_micros: u64,
+    tun_write_max_latency_micros: u64,
+    tun_write_errors: u64,
+    tun_packets_written: u64,
+    tun_write_queue_saturated_drops: u64,
+    tun_write_queue_saturation_failures: u64,
+    repair_cache_entries: u64,
+    repair_cache_bytes: u64,
+    repair_cache_byte_capacity: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -444,18 +833,30 @@ async fn dispatch_inbound_frame(
     payload_tx: &mpsc::Sender<InboundServerFrame>,
     inbound: InboundServerFrame,
     payload_queue_drops: &AtomicU64,
-) -> bool {
+) -> InboundDispatchOutcome {
     if is_prioritized_inbound(inbound.frame.header.kind) {
-        return control_tx.send(inbound).await.is_ok();
+        return if control_tx.send(inbound).await.is_ok() {
+            InboundDispatchOutcome::Queued
+        } else {
+            InboundDispatchOutcome::Closed
+        };
     }
 
     match payload_tx.try_send(inbound) {
-        Ok(()) => true,
+        Ok(()) => InboundDispatchOutcome::Queued,
         Err(mpsc::error::TrySendError::Full(_)) => {
             payload_queue_drops.fetch_add(1, Ordering::Relaxed);
-            true
+            InboundDispatchOutcome::Dropped
         }
-        Err(mpsc::error::TrySendError::Closed(_)) => false,
+        Err(mpsc::error::TrySendError::Closed(_)) => InboundDispatchOutcome::Closed,
+    }
+}
+
+fn pre_admission_duplicate_class(kind: PacketKind) -> Option<u32> {
+    match kind {
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Repair => Some(0),
+        PacketKind::Fec => Some(1),
+        PacketKind::Heartbeat | PacketKind::Control => None,
     }
 }
 
@@ -531,6 +932,465 @@ fn enqueue_control_datagram(
     }
 }
 
+fn enqueue_control_message(
+    tx: &mpsc::Sender<ControlSendWork>,
+    key: &XBondKey,
+    peer: SocketAddr,
+    session_id: u64,
+    control_sequence: &mut u64,
+    message: &XBondControlMessage,
+    control_plane: &mut ServerControlPlaneStatus,
+) -> Result<bool> {
+    *control_sequence = control_sequence.saturating_add(1);
+    let frame = XBondFrame::new(
+        XBondHeader::new(
+            PacketKind::Control,
+            session_id,
+            *control_sequence,
+            now_micros(),
+            0,
+        ),
+        serde_json::to_vec(message)?,
+    );
+    Ok(enqueue_control_datagram(
+        tx,
+        frame.encode_sealed(key)?,
+        peer,
+        control_plane,
+    ))
+}
+
+fn enqueue_control_message_to_peers(
+    tx: &mpsc::Sender<ControlSendWork>,
+    key: &XBondKey,
+    peers: &HashMap<u16, PeerState>,
+    session_id: u64,
+    control_sequence: &mut u64,
+    message: &XBondControlMessage,
+    control_plane: &mut ServerControlPlaneStatus,
+) -> Result<usize> {
+    let mut queued = 0usize;
+    for (_, peer) in fresh_peers(peers, monotonic_micros()) {
+        queued += usize::from(enqueue_control_message(
+            tx,
+            key,
+            peer,
+            session_id,
+            control_sequence,
+            message,
+            control_plane,
+        )?);
+    }
+    Ok(queued)
+}
+
+fn spawn_tun_reader(
+    mut tun_reader: XBondTun,
+    tun_packet_tx: mpsc::Sender<Vec<u8>>,
+    tun_mtu: usize,
+    worker_exit_tx: mpsc::Sender<TunWorkerExit>,
+    fault: TunFaultInjection,
+) {
+    let tun_name = tun_reader.name().to_string();
+    let task = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+        let mut buf = vec![0u8; tun_mtu];
+        let mut packets_read = 0u64;
+        loop {
+            if injected_tun_failure(fault.read_fail_after_packets, packets_read) {
+                return Err(format!(
+                    "injected TUN reader failure after {packets_read} packets"
+                ));
+            }
+            match tun_reader.read_packet(&mut buf) {
+                Ok(len) => {
+                    packets_read = packets_read.saturating_add(1);
+                    if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
+                        return Err("server tunnel stopped accepting TUN packets".to_string());
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        let reason = match task.await {
+            Ok(Ok(())) => "TUN reader exited unexpectedly".to_string(),
+            Ok(Err(error)) => error,
+            Err(error) => format!("blocking TUN reader task failed: {error}"),
+        };
+        let _ = worker_exit_tx
+            .send(TunWorkerExit {
+                worker: "reader",
+                reason: format!("{tun_name}: {reason}"),
+            })
+            .await;
+    });
+}
+
+fn spawn_tun_writer(
+    mut tun_writer: XBondTun,
+    capacity: usize,
+    worker_exit_tx: mpsc::Sender<TunWorkerExit>,
+    fault: TunFaultInjection,
+) -> TunWriterHandle {
+    let capacity = capacity.max(1);
+    let (tx, mut rx) = mpsc::channel::<TunWriteBatch>(capacity);
+    let telemetry = Arc::new(TunWriterTelemetry::default());
+    let worker_telemetry = telemetry.clone();
+    let tun_name = tun_writer.name().to_string();
+    let task = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+        let mut packets_written = 0u64;
+        while let Some(batch) = rx.blocking_recv() {
+            let packet_count = batch.packets.len();
+            let enqueued_at_micros = batch.enqueued_at_micros;
+            let write_result = (|| -> std::result::Result<(), String> {
+                for packet in batch.packets {
+                    if injected_tun_failure(fault.write_fail_after_packets, packets_written) {
+                        worker_telemetry
+                            .write_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Err(format!(
+                            "injected TUN writer failure after {packets_written} packets"
+                        ));
+                    }
+                    if fault.write_delay_ms > 0 {
+                        std::thread::sleep(Duration::from_millis(fault.write_delay_ms));
+                    }
+                    let started = Instant::now();
+                    if let Err(error) = tun_writer.write_packet(&packet.payload) {
+                        worker_telemetry
+                            .write_errors
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Err(error.to_string());
+                    }
+
+                    let latency_micros =
+                        started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                    worker_telemetry
+                        .last_write_latency_micros
+                        .store(latency_micros, Ordering::Relaxed);
+                    worker_telemetry
+                        .max_write_latency_micros
+                        .fetch_max(latency_micros, Ordering::Relaxed);
+                    worker_telemetry
+                        .packets_written
+                        .fetch_add(1, Ordering::Relaxed);
+                    packets_written = packets_written.saturating_add(1);
+                    if packet.path_id == u16::MAX {
+                        worker_telemetry
+                            .repair_packets_written
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Ok(())
+            })();
+            worker_telemetry.release_packets(packet_count, enqueued_at_micros);
+            write_result?;
+        }
+        Err("TUN writer queue closed unexpectedly".to_string())
+    });
+
+    tokio::spawn(async move {
+        let reason = match task.await {
+            Ok(Ok(())) => "TUN writer exited unexpectedly".to_string(),
+            Ok(Err(error)) => error,
+            Err(error) => format!("blocking TUN writer task failed: {error}"),
+        };
+        let _ = worker_exit_tx
+            .send(TunWorkerExit {
+                worker: "writer",
+                reason: format!("{tun_name}: {reason}"),
+            })
+            .await;
+    });
+
+    TunWriterHandle {
+        tx,
+        telemetry,
+        capacity,
+    }
+}
+
+async fn enqueue_tun_packets_with_deadline(
+    writer: &TunWriterHandle,
+    packets: Vec<ReorderedPacket>,
+    enqueue_deadline: Duration,
+) -> Result<TunEnqueueOutcome> {
+    if packets.is_empty() {
+        return Ok(TunEnqueueOutcome::default());
+    }
+    let packet_count = packets.len();
+    let deadline = Instant::now() + enqueue_deadline;
+    let enqueued_at_micros = loop {
+        let enqueued_at_micros = monotonic_micros();
+        if writer
+            .telemetry
+            .try_reserve_packets(packet_count, writer.capacity, enqueued_at_micros)
+        {
+            break enqueued_at_micros;
+        }
+        if writer.tx.is_closed() {
+            return Err(anyhow::anyhow!("XBond server TUN writer stopped"));
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            writer
+                .telemetry
+                .saturation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(anyhow::anyhow!(
+                "XBond server TUN writer remained saturated and could not atomically admit {packet_count} packets within {} ms; terminating the tunnel for a clean restart",
+                enqueue_deadline.as_millis()
+            ));
+        }
+
+        time::sleep(remaining.min(Duration::from_millis(2))).await;
+    };
+
+    match writer.tx.try_send(TunWriteBatch {
+        packets,
+        enqueued_at_micros,
+    }) {
+        Ok(()) => Ok(TunEnqueueOutcome {
+            enqueued: packet_count as u64,
+        }),
+        Err(mpsc::error::TrySendError::Closed(batch)) => {
+            writer
+                .telemetry
+                .release_packets(batch.packets.len(), batch.enqueued_at_micros);
+            Err(anyhow::anyhow!("XBond server TUN writer stopped"))
+        }
+        Err(mpsc::error::TrySendError::Full(batch)) => {
+            writer
+                .telemetry
+                .release_packets(batch.packets.len(), batch.enqueued_at_micros);
+            writer
+                .telemetry
+                .saturation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            Err(anyhow::anyhow!(
+                "XBond server TUN writer batch queue is full despite reserved packet capacity; terminating the tunnel for a clean restart"
+            ))
+        }
+    }
+}
+
+async fn enqueue_tun_packets(
+    writer: &TunWriterHandle,
+    packets: Vec<ReorderedPacket>,
+) -> Result<TunEnqueueOutcome> {
+    enqueue_tun_packets_with_deadline(writer, packets, TUN_WRITE_ENQUEUE_DEADLINE).await
+}
+
+fn sync_tun_writer_telemetry(
+    writer: Option<&TunWriterHandle>,
+    control_plane: &mut ServerControlPlaneStatus,
+    repair: &mut XBondRepairStatus,
+    data_packets_forwarded: &mut u64,
+) {
+    let Some(writer) = writer else {
+        return;
+    };
+    let telemetry = &writer.telemetry;
+    let now = monotonic_micros();
+    let oldest = telemetry.oldest_enqueued_at_micros.load(Ordering::Relaxed);
+    control_plane.tun_write_queue_depth = telemetry.queue_depth.load(Ordering::Relaxed);
+    control_plane.tun_write_queue_peak_depth = telemetry.max_queue_depth.load(Ordering::Relaxed);
+    control_plane.tun_write_queue_capacity = writer.capacity as u64;
+    control_plane.tun_write_oldest_age_ms = if oldest == 0 {
+        0
+    } else {
+        now.saturating_sub(oldest) / 1_000
+    };
+    control_plane.tun_write_latency_micros =
+        telemetry.last_write_latency_micros.load(Ordering::Relaxed);
+    control_plane.tun_write_max_latency_micros =
+        telemetry.max_write_latency_micros.load(Ordering::Relaxed);
+    control_plane.tun_write_errors = telemetry.write_errors.load(Ordering::Relaxed);
+    control_plane.tun_packets_written = telemetry.packets_written.load(Ordering::Relaxed);
+    control_plane.tun_write_queue_saturated_drops = 0;
+    control_plane.tun_write_queue_saturation_failures =
+        telemetry.saturation_failures.load(Ordering::Relaxed);
+    *data_packets_forwarded = control_plane.tun_packets_written;
+    repair.frames_delivered = telemetry.repair_packets_written.load(Ordering::Relaxed);
+}
+
+fn is_emsgsize(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(90) | Some(10040))
+        || error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("message too long")
+}
+
+fn record_return_pmtu_error(
+    status: &mut ServerReturnPmtuStatus,
+    report: &ReturnSendReport,
+) -> bool {
+    if !report.emsgsize {
+        return false;
+    }
+    status.emsgsize_errors = status.emsgsize_errors.saturating_add(1);
+    let count = status
+        .emsgsize_errors_by_path
+        .entry(report.path_id)
+        .or_default();
+    *count = count.saturating_add(1);
+    true
+}
+
+async fn send_datagram_before_deadline(
+    socket: &UdpSocket,
+    encoded: &[u8],
+    peer: SocketAddr,
+    deadline: Instant,
+) -> std::result::Result<usize, BoundedDatagramSendError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(BoundedDatagramSendError::DeadlineExpired);
+    }
+    match time::timeout(remaining, socket.send_to(encoded, peer)).await {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(error)) => Err(BoundedDatagramSendError::Io(error)),
+        Err(_) => Err(BoundedDatagramSendError::DeadlineExpired),
+    }
+}
+
+async fn reserve_primary_return_slot(
+    tx: mpsc::Sender<ReturnSendWork>,
+    deadline: Instant,
+) -> std::result::Result<mpsc::OwnedPermit<ReturnSendWork>, PrimaryReturnReserveError> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(PrimaryReturnReserveError::DeadlineExpired);
+    }
+    match time::timeout(remaining, tx.reserve_owned()).await {
+        Ok(Ok(permit)) => Ok(permit),
+        Ok(Err(_)) => Err(PrimaryReturnReserveError::Closed),
+        Err(_) => Err(PrimaryReturnReserveError::DeadlineExpired),
+    }
+}
+
+fn spawn_primary_return_sender(
+    socket: Arc<UdpSocket>,
+    key: XBondKey,
+    capacity: usize,
+    report_tx: mpsc::Sender<ReturnSendReport>,
+) -> mpsc::Sender<ReturnSendWork> {
+    let (tx, mut rx) = mpsc::channel::<ReturnSendWork>(capacity.max(1));
+    tokio::spawn(async move {
+        let mut encoded = Vec::with_capacity(4096);
+        let mut consecutive_deadline_expiries = 0u32;
+        while let Some(work) = rx.recv().await {
+            let report = match encode_sealed_payload_into(
+                &work.header,
+                work.payload.as_slice(),
+                &key,
+                &mut encoded,
+            ) {
+                Ok(()) => {
+                    let attempted_datagram_bytes = encoded.len();
+                    match send_datagram_before_deadline(&socket, &encoded, work.peer, work.deadline)
+                        .await
+                    {
+                        Ok(_) => {
+                            consecutive_deadline_expiries = 0;
+                            ReturnSendReport {
+                                path_id: work.header.path_id,
+                                packet_kind: work.packet_kind,
+                                success: true,
+                                peer: work.peer,
+                                error: None,
+                                emsgsize: false,
+                                deadline_expired: false,
+                                force_restart: false,
+                                attempted_datagram_bytes,
+                            }
+                        }
+                        Err(BoundedDatagramSendError::Io(error)) => {
+                            consecutive_deadline_expiries = 0;
+                            ReturnSendReport {
+                                path_id: work.header.path_id,
+                                packet_kind: work.packet_kind,
+                                success: false,
+                                peer: work.peer,
+                                error: Some(error.to_string()),
+                                emsgsize: is_emsgsize(&error),
+                                deadline_expired: false,
+                                force_restart: false,
+                                attempted_datagram_bytes,
+                            }
+                        }
+                        Err(BoundedDatagramSendError::DeadlineExpired) => {
+                            consecutive_deadline_expiries =
+                                consecutive_deadline_expiries.saturating_add(1);
+                            ReturnSendReport {
+                                path_id: work.header.path_id,
+                                packet_kind: work.packet_kind,
+                                success: false,
+                                peer: work.peer,
+                                error: Some(format!(
+                                    "primary return UDP send exceeded its {} ms deadline",
+                                    PRIMARY_RETURN_SEND_DEADLINE.as_millis()
+                                )),
+                                emsgsize: false,
+                                deadline_expired: true,
+                                force_restart: consecutive_deadline_expiries
+                                    >= PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES,
+                                attempted_datagram_bytes,
+                            }
+                        }
+                    }
+                }
+                Err(error) => ReturnSendReport {
+                    path_id: work.header.path_id,
+                    packet_kind: work.packet_kind,
+                    success: false,
+                    peer: work.peer,
+                    error: Some(error.to_string()),
+                    emsgsize: false,
+                    deadline_expired: false,
+                    force_restart: false,
+                    attempted_datagram_bytes: 0,
+                },
+            };
+            if !report.success {
+                if report_tx.send(report).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    tx
+}
+
+fn recommended_server_repair_cache_bytes(
+    observed_bits_per_second: u64,
+    configured_maximum_bytes: usize,
+) -> usize {
+    let maximum_bytes = configured_maximum_bytes.max(1);
+    recommended_repair_cache_bytes(
+        observed_bits_per_second,
+        REPAIR_CACHE_TTL_MICROS,
+        MIN_REPAIR_CACHE_BYTES.min(maximum_bytes),
+        maximum_bytes,
+    )
+}
+
+fn new_server_resend_cache(configured_maximum_bytes: usize) -> ResendCache {
+    ResendCache::new_with_byte_capacity(
+        REPAIR_CACHE_CAPACITY,
+        recommended_server_repair_cache_bytes(
+            INITIAL_REPAIR_CACHE_BITS_PER_SECOND,
+            configured_maximum_bytes,
+        ),
+        REPAIR_CACHE_TTL_MICROS,
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -541,7 +1401,7 @@ async fn main() -> Result<()> {
     let (control_send_tx, control_datagrams_sent, control_send_failures) =
         spawn_control_sender(socket.clone(), args.json_events);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
-    let mut tun = match args.tun_name.as_deref() {
+    let tun = match args.tun_name.as_deref() {
         Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
         None => None,
     };
@@ -555,17 +1415,26 @@ async fn main() -> Result<()> {
     let mut invalid_fec_packets_dropped = 0u64;
     let mut non_ipv4_packets_dropped = 0u64;
     let mut fec_recovery = FecRecovery::new(8192);
-    let mut reorder =
-        PacketReorderBuffer::new(args.ingress_reorder_capacity, current_ingress_hold_micros);
+    let mut reorder = PacketReorderBuffer::with_initial_sequence(
+        args.ingress_reorder_capacity,
+        current_ingress_hold_micros,
+        1,
+    );
     let mut peers: HashMap<u16, PeerState> = HashMap::new();
     let mut return_senders: HashMap<u16, ReturnSenderHandle> = HashMap::new();
     let mut return_control: Option<ReturnControl> = None;
-    let mut resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
+    let mut resend_cache = new_server_resend_cache(args.repair_cache_bytes);
     let mut repair = XBondRepairStatus::default();
+    let mut ingress_repair_limiter = IngressRepairLimiter::default();
+    let mut return_pmtu = ServerReturnPmtuStatus::default();
+    let mut return_payload_bytes_since_budget_update = 0u64;
+    let mut repair_budget_last_updated = Instant::now();
     let mut reverse_sequence = initial_reverse_sequence();
-    let mut control_sequence = 2_000_000_000_000u64;
+    let mut control_sequence = initial_control_sequence();
     let mut last_server_recovery_status_sent = Instant::now();
     let mut last_session_id = 0u64;
+    let mut session_gate = ServerSessionGate::new();
+    let mut last_restart_required_sent: Option<Instant> = None;
     let mut reorder_session_id = 0u64;
     let mut reorder_tick = time::interval(Duration::from_millis(
         args.realtime_deadline_ms.clamp(5, 50),
@@ -573,20 +1442,36 @@ async fn main() -> Result<()> {
     let mut status_tick = time::interval(Duration::from_secs(1));
     let mut json_status_event_counter = 0u32;
     let mut control_plane = ServerControlPlaneStatus::default();
+    let mut pending_primary_return: Option<PendingPrimaryReturn> = None;
+    let mut consecutive_primary_return_enqueue_expiries = 0u32;
+    let tun_fault = TunFaultInjection {
+        write_delay_ms: args.fault_tun_write_delay_ms,
+        write_fail_after_packets: args.fault_tun_write_fail_after_packets,
+        read_fail_after_packets: args.fault_tun_read_fail_after_packets,
+    };
 
     let (control_frame_tx, mut control_frame_rx) =
         mpsc::channel::<InboundServerFrame>(CONTROL_QUEUE_CAPACITY);
     let (payload_frame_tx, mut payload_frame_rx) =
         mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
     let ingress_payload_queue_drops = Arc::new(AtomicU64::new(0));
+    let ingress_duplicates_coalesced = Arc::new(AtomicU64::new(0));
     let (send_report_tx, mut send_report_rx) =
         mpsc::channel::<ReturnSendReport>(SEND_REPORT_QUEUE_CAPACITY);
+    let primary_return_tx = spawn_primary_return_sender(
+        socket.clone(),
+        key.clone(),
+        args.tun_queue_capacity.max(1),
+        send_report_tx.clone(),
+    );
     let recv_socket = socket.clone();
     let recv_key = key.clone();
     let recv_payload_queue_drops = ingress_payload_queue_drops.clone();
-    tokio::spawn(async move {
+    let recv_duplicates_coalesced = ingress_duplicates_coalesced.clone();
+    let mut udp_receiver_task = tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
         let mut payload = Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES);
+        let mut pre_admission_duplicates = DuplicateWindow::new(8192);
         loop {
             let (len, peer) = match recv_socket.recv_from(&mut buf).await {
                 Ok(result) => result,
@@ -600,13 +1485,28 @@ async fn main() -> Result<()> {
             else {
                 continue;
             };
+            let duplicate_class = pre_admission_duplicate_class(header.kind);
+            if duplicate_class.is_some_and(|class| {
+                pre_admission_duplicates.contains_key_class(
+                    header.session_id,
+                    header.sequence,
+                    class,
+                )
+            }) {
+                recv_duplicates_coalesced.fetch_add(1, Ordering::Relaxed);
+                payload.clear();
+                continue;
+            }
+            let frame_session_id = header.session_id;
+            let frame_sequence = header.sequence;
             let frame_payload =
                 std::mem::replace(&mut payload, Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES));
             let inbound = InboundServerFrame {
                 frame: XBondFrame::new(header, frame_payload),
                 peer,
+                pre_admission_deduplicated: duplicate_class.is_some(),
             };
-            if !dispatch_inbound_frame(
+            match dispatch_inbound_frame(
                 &control_frame_tx,
                 &payload_frame_tx,
                 inbound,
@@ -614,34 +1514,47 @@ async fn main() -> Result<()> {
             )
             .await
             {
-                break;
+                InboundDispatchOutcome::Queued => {
+                    if let Some(class) = duplicate_class {
+                        debug_assert_eq!(
+                            pre_admission_duplicates.observe_key_class(
+                                frame_session_id,
+                                frame_sequence,
+                                class,
+                            ),
+                            DuplicateOutcome::FirstArrival,
+                        );
+                    }
+                }
+                InboundDispatchOutcome::Dropped => {}
+                InboundDispatchOutcome::Closed => break,
             }
         }
     });
 
+    let (tun_worker_exit_tx, mut tun_worker_exit_rx) =
+        mpsc::channel::<TunWorkerExit>(TUN_WORKER_EXIT_QUEUE_CAPACITY);
     let (tun_packet_tx, mut tun_packet_rx) =
         mpsc::channel::<Vec<u8>>(args.tun_queue_capacity.max(1));
+    let tun_writer = if let Some(tun_ref) = &tun {
+        Some(spawn_tun_writer(
+            tun_ref.try_clone()?,
+            args.tun_queue_capacity,
+            tun_worker_exit_tx.clone(),
+            tun_fault,
+        ))
+    } else {
+        None
+    };
     if let Some(tun_ref) = &tun {
-        let mut tun_reader = tun_ref.try_clone()?;
-        let tun_name = tun_ref.name().to_string();
         let tun_mtu = usize::from(args.tun_mtu).max(2048);
-        tokio::task::spawn_blocking(move || {
-            let mut buf = vec![0u8; tun_mtu];
-            loop {
-                match tun_reader.read_packet(&mut buf) {
-                    Ok(len) => {
-                        if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                    Err(error) => {
-                        eprintln!("xbond server TUN reader for {tun_name} stopped: {error}");
-                        break;
-                    }
-                }
-            }
-        });
+        spawn_tun_reader(
+            tun_ref.try_clone()?,
+            tun_packet_tx,
+            tun_mtu,
+            tun_worker_exit_tx.clone(),
+            tun_fault,
+        );
     } else {
         drop(tun_packet_tx);
     }
@@ -664,12 +1577,27 @@ async fn main() -> Result<()> {
                 "server_health_interval_seconds": args.server_health_interval_seconds,
                 "server_health_timeout_ms": args.server_health_timeout_ms,
                 "server_health_targets": &args.server_health_targets,
+                "repair_cache_byte_capacity": resend_cache.byte_capacity(),
+                "fault_injection": {
+                    "tun_write_delay_ms": args.fault_tun_write_delay_ms,
+                    "tun_write_fail_after_packets": args.fault_tun_write_fail_after_packets,
+                    "tun_read_fail_after_packets": args.fault_tun_read_fail_after_packets,
+                },
             })
         );
     } else {
         println!("xbond-server listening on {}", args.bind);
     }
+    sync_tun_writer_telemetry(
+        tun_writer.as_ref(),
+        &mut control_plane,
+        &mut repair,
+        &mut data_packets_forwarded,
+    );
     let server_health_status = server_health.read().await.clone();
+    control_plane.repair_cache_entries = resend_cache.len() as u64;
+    control_plane.repair_cache_bytes = resend_cache.bytes_len() as u64;
+    control_plane.repair_cache_byte_capacity = resend_cache.byte_capacity() as u64;
     write_server_status(
         &args,
         tun.as_ref(),
@@ -687,10 +1615,30 @@ async fn main() -> Result<()> {
         &server_health_status,
         &hold_controller,
         control_plane,
+        &return_pmtu,
     )?;
     loop {
         tokio::select! {
+            receiver_result = &mut udp_receiver_task => {
+                return Err(anyhow::anyhow!(
+                    "XBond server UDP receiver stopped unexpectedly: {}",
+                    receiver_result
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "receiver task exited".to_string())
+                ));
+            }
+
+            Some(exit) = tun_worker_exit_rx.recv() => {
+                return Err(anyhow::anyhow!(
+                    "XBond server TUN {} worker failed; terminating tunnel cleanly: {}",
+                    exit.worker,
+                    exit.reason
+                ));
+            }
+
             Some(inbound) = receive_prioritized_frame(&mut control_frame_rx, &mut payload_frame_rx) => {
+                let pre_admission_deduplicated = inbound.pre_admission_deduplicated;
                 let frame = inbound.frame;
                 let peer = inbound.peer;
                 let receive_micros = monotonic_micros();
@@ -701,7 +1649,189 @@ async fn main() -> Result<()> {
                     control_plane.last_control_progress_at_micros = now_micros();
                 }
 
-                if !session_is_current_or_new(last_session_id, frame.header.session_id) {
+                if let Some(handshake) = parse_session_handshake(&frame) {
+                    match handshake {
+                        ServerSessionHandshakeControl::Open {
+                            session_id,
+                            request_nonce,
+                        } => {
+                            let fresh_challenge = random_handshake_nonce()?;
+                            if let Some(challenge) = session_gate.issue_challenge(
+                                frame.header.session_id,
+                                session_id,
+                                request_nonce,
+                                fresh_challenge,
+                                receive_micros,
+                            ) {
+                                let response = XBondControlMessage::SessionChallenge {
+                                    session_id,
+                                    request_nonce,
+                                    challenge,
+                                };
+                                enqueue_control_message(
+                                    &control_send_tx,
+                                    &key,
+                                    peer,
+                                    session_id,
+                                    &mut control_sequence,
+                                    &response,
+                                    &mut control_plane,
+                                )?;
+                            } else if args.json_events {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "session-challenge-rejected",
+                                        "header_session_id": frame.header.session_id,
+                                        "control_session_id": session_id,
+                                        "peer": peer.to_string(),
+                                    })
+                                );
+                            }
+                        }
+                        ServerSessionHandshakeControl::Proof {
+                            session_id,
+                            request_nonce,
+                            challenge,
+                        } => {
+                            let decision = session_gate.prove(
+                                frame.header.session_id,
+                                session_id,
+                                request_nonce,
+                                challenge,
+                                receive_micros,
+                            );
+                            match decision {
+                                ServerSessionOpenDecision::AcceptedNew => {
+                                    last_restart_required_sent = None;
+                                    abort_return_senders(&mut return_senders);
+                                    clear_session_forwarding_state(
+                                        &mut receiver,
+                                        args.realtime_deadline_ms * 1_000,
+                                        &mut peers,
+                                        &mut return_control,
+                                        &mut resend_cache,
+                                        &mut reorder,
+                                        &mut fec_recovery,
+                                        &mut reorder_session_id,
+                                        &mut repair,
+                                        &mut pending_primary_return,
+                                    );
+                                    ingress_repair_limiter.reset();
+                                    reorder_session_id = session_id;
+                                    last_session_id = session_id;
+                                    reverse_sequence = initial_reverse_sequence();
+                                    if hold_controller.reset_to_normal(reorder.stats(), &repair) {
+                                        current_ingress_hold_micros =
+                                            hold_controller.current_hold_micros();
+                                        reorder.set_hold_micros(current_ingress_hold_micros);
+                                    }
+                                    let accepted = XBondControlMessage::SessionAccepted {
+                                        session_id,
+                                        request_nonce,
+                                        challenge,
+                                    };
+                                    enqueue_control_message(
+                                        &control_send_tx,
+                                        &key,
+                                        peer,
+                                        session_id,
+                                        &mut control_sequence,
+                                        &accepted,
+                                        &mut control_plane,
+                                    )?;
+                                    if args.json_events {
+                                        println!(
+                                            "{}",
+                                            serde_json::json!({
+                                                "event": "session-opened",
+                                                "session_id": session_id,
+                                                "peer": peer.to_string(),
+                                            })
+                                        );
+                                    }
+                                }
+                                ServerSessionOpenDecision::AcceptedCurrent => {
+                                    let accepted = XBondControlMessage::SessionAccepted {
+                                        session_id,
+                                        request_nonce,
+                                        challenge,
+                                    };
+                                    enqueue_control_message(
+                                        &control_send_tx,
+                                        &key,
+                                        peer,
+                                        session_id,
+                                        &mut control_sequence,
+                                        &accepted,
+                                        &mut control_plane,
+                                    )?;
+                                }
+                                ServerSessionOpenDecision::RestartRequired => {
+                                    let restart = XBondControlMessage::SessionRestartRequired {
+                                        session_id,
+                                        reason: "This session was closed after its return schedule expired; open a new random session epoch.".to_string(),
+                                    };
+                                    enqueue_control_message(
+                                        &control_send_tx,
+                                        &key,
+                                        peer,
+                                        session_id,
+                                        &mut control_sequence,
+                                        &restart,
+                                        &mut control_plane,
+                                    )?;
+                                }
+                                ServerSessionOpenDecision::Rejected => {
+                                    if args.json_events {
+                                        println!(
+                                            "{}",
+                                            serde_json::json!({
+                                                "event": "session-proof-rejected",
+                                                "header_session_id": frame.header.session_id,
+                                                "control_session_id": session_id,
+                                                "peer": peer.to_string(),
+                                            })
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                if !session_gate.accepts(frame.header.session_id) {
+                    let restart_repeat_due = last_restart_required_sent
+                        .is_none_or(|sent_at| sent_at.elapsed() >= Duration::from_secs(1));
+                    if restart_repeat_due
+                        && session_gate.restart_required_for(frame.header.session_id)
+                    {
+                        let restart = XBondControlMessage::SessionRestartRequired {
+                            session_id: frame.header.session_id,
+                            reason: "The server no longer has active forwarding state for this session; open a new random session epoch.".to_string(),
+                        };
+                        enqueue_control_message(
+                            &control_send_tx,
+                            &key,
+                            peer,
+                            frame.header.session_id,
+                            &mut control_sequence,
+                            &restart,
+                            &mut control_plane,
+                        )?;
+                        last_restart_required_sent = Some(Instant::now());
+                        if args.json_events {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "session-restart-required-repeated",
+                                    "session_id": frame.header.session_id,
+                                    "peer": peer.to_string(),
+                                })
+                            );
+                        }
+                    }
                     continue;
                 }
 
@@ -709,7 +1839,11 @@ async fn main() -> Result<()> {
                     frame.header.kind,
                     PacketKind::Heartbeat | PacketKind::Control
                 );
-                let outcome = receiver.observe(&frame, now_micros());
+                let outcome = if pre_admission_deduplicated {
+                    receiver.accept_prechecked()
+                } else {
+                    receiver.observe(&frame, now_micros())
+                };
                 let ack_sent = should_ack
                     && matches!(
                         outcome,
@@ -747,16 +1881,11 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                let session_changed = last_session_id != 0
-                    && frame.header.session_id != last_session_id;
+                let schedule_ack_generation = parse_schedule_control_generation(&frame);
                 let parsed_control = parse_return_control(&frame, receive_micros);
                 if parsed_control.as_ref().is_some_and(|candidate| {
                     !return_control_update_is_valid(
-                        if session_changed {
-                            None
-                        } else {
-                            return_control.as_ref()
-                        },
+                        return_control.as_ref(),
                         candidate,
                     )
                 }) {
@@ -774,17 +1903,6 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                if session_changed {
-                    peers.clear();
-                    abort_return_senders(&mut return_senders);
-                    return_control = None;
-                    resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
-                    if hold_controller.reset_to_normal(reorder.stats(), &repair) {
-                        current_ingress_hold_micros = hold_controller.current_hold_micros();
-                        reorder.set_hold_micros(current_ingress_hold_micros);
-                    }
-                }
-                last_session_id = frame.header.session_id;
                 expire_stale_peers(&mut peers, receive_micros);
                 if is_tunnel_payload(frame.header.kind)
                     && reorder_session_id != frame.header.session_id
@@ -829,6 +1947,21 @@ async fn main() -> Result<()> {
                     control_plane.schedule_updates_accepted = control_plane
                         .schedule_updates_accepted
                         .saturating_add(1);
+                    if let Some(schedule_generation) = schedule_ack_generation {
+                        let accepted = XBondControlMessage::ScheduleAccepted {
+                            session_id: last_session_id,
+                            schedule_generation,
+                        };
+                        enqueue_control_message(
+                            &control_send_tx,
+                            &key,
+                            peer,
+                            last_session_id,
+                            &mut control_sequence,
+                            &accepted,
+                            &mut control_plane,
+                        )?;
+                    }
                     if args.json_events && schedule_changed {
                         println!(
                             "{}",
@@ -923,7 +2056,7 @@ async fn main() -> Result<()> {
                     };
                     if fec_recovery.mark_delivered(header.session_id, header.sequence) {
                         if is_ipv4_packet(&payload) {
-                            if let Some(tun) = &mut tun {
+                            if let Some(tun_writer) = &tun_writer {
                                 let ready = reorder.push(
                                     header.sequence,
                                     if header.kind == PacketKind::Repair {
@@ -935,10 +2068,11 @@ async fn main() -> Result<()> {
                                     monotonic_micros(),
                                     0,
                                 );
-                                let delivered = write_reordered_packets(tun, ready, &mut repair)?;
+                                let delivered = enqueue_tun_packets(tun_writer, ready).await?;
                                 data_packets_forwarded =
-                                    data_packets_forwarded.saturating_add(delivered);
-                                forwarded_packets = forwarded_packets.saturating_add(delivered);
+                                    data_packets_forwarded.saturating_add(delivered.enqueued);
+                                forwarded_packets =
+                                    forwarded_packets.saturating_add(delivered.enqueued);
                                 send_repair_requests_for_ingress_gaps(
                                     &control_send_tx,
                                     &key,
@@ -950,6 +2084,7 @@ async fn main() -> Result<()> {
                                     return_control
                                         .as_ref()
                                         .is_some_and(|control| control.recovery_active),
+                                    &mut ingress_repair_limiter,
                                     &mut control_plane,
                                 )?;
                             }
@@ -964,7 +2099,7 @@ async fn main() -> Result<()> {
                             continue;
                         }
                         if is_ipv4_packet(&recovered.payload) {
-                            if let Some(tun) = &mut tun {
+                            if let Some(tun_writer) = &tun_writer {
                                 let ready = reorder.push(
                                     recovered.sequence,
                                     0,
@@ -972,10 +2107,11 @@ async fn main() -> Result<()> {
                                     monotonic_micros(),
                                     0,
                                 );
-                                let delivered = write_reordered_packets(tun, ready, &mut repair)?;
+                                let delivered = enqueue_tun_packets(tun_writer, ready).await?;
                                 data_packets_forwarded =
-                                    data_packets_forwarded.saturating_add(delivered);
-                                forwarded_packets = forwarded_packets.saturating_add(delivered);
+                                    data_packets_forwarded.saturating_add(delivered.enqueued);
+                                forwarded_packets =
+                                    forwarded_packets.saturating_add(delivered.enqueued);
                             }
                             fec_packets_recovered += 1;
                         } else {
@@ -993,7 +2129,7 @@ async fn main() -> Result<()> {
                                     continue;
                                 }
                                 if is_ipv4_packet(&recovered.payload) {
-                                    if let Some(tun) = &mut tun {
+                                    if let Some(tun_writer) = &tun_writer {
                                         let ready = reorder.push(
                                             recovered.sequence,
                                             0,
@@ -1001,10 +2137,13 @@ async fn main() -> Result<()> {
                                             monotonic_micros(),
                                             0,
                                         );
-                                        let delivered = write_reordered_packets(tun, ready, &mut repair)?;
+                                        let delivered =
+                                            enqueue_tun_packets(tun_writer, ready).await?;
                                         data_packets_forwarded =
-                                            data_packets_forwarded.saturating_add(delivered);
-                                        forwarded_packets = forwarded_packets.saturating_add(delivered);
+                                            data_packets_forwarded
+                                                .saturating_add(delivered.enqueued);
+                                        forwarded_packets = forwarded_packets
+                                            .saturating_add(delivered.enqueued);
                                     }
                                     fec_packets_recovered += 1;
                                 } else {
@@ -1041,6 +2180,31 @@ async fn main() -> Result<()> {
                 if report.success && report.packet_kind == PacketKind::Repair {
                     repair.frames_sent = repair.frames_sent.saturating_add(1);
                 }
+                if report.deadline_expired && report.packet_kind == PacketKind::Data {
+                    control_plane.primary_return_send_deadline_expiries = control_plane
+                        .primary_return_send_deadline_expiries
+                        .saturating_add(1);
+                }
+                let pmtu_error = record_return_pmtu_error(&mut return_pmtu, &report);
+                if pmtu_error && args.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "server-return-pmtu-error",
+                            "peer": report.peer.to_string(),
+                            "path_id": report.path_id,
+                            "packet_kind": report.packet_kind,
+                            "attempted_datagram_bytes": report.attempted_datagram_bytes,
+                            "tun_mtu": args.tun_mtu,
+                            "emsgsize_errors": return_pmtu.emsgsize_errors,
+                            "path_emsgsize_errors": return_pmtu
+                                .emsgsize_errors_by_path
+                                .get(&report.path_id)
+                                .copied()
+                                .unwrap_or_default(),
+                        })
+                    );
+                }
                 if !report.success && args.json_events {
                     println!(
                         "{}",
@@ -1053,16 +2217,78 @@ async fn main() -> Result<()> {
                         })
                     );
                 }
+                if report.force_restart {
+                    control_plane.primary_return_forced_restarts = control_plane
+                        .primary_return_forced_restarts
+                        .saturating_add(1);
+                    return Err(anyhow::anyhow!(
+                        "XBond primary return UDP sends exceeded their deadline {} consecutive times; terminating for a clean session restart",
+                        PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES
+                    ));
+                }
+            }
+
+            permit = reserve_primary_return_slot(
+                primary_return_tx.clone(),
+                pending_primary_return
+                    .as_ref()
+                    .map(|pending| pending.work.deadline)
+                    .unwrap_or_else(Instant::now),
+            ), if pending_primary_return.is_some() => {
+                match permit {
+                    Ok(permit) => {
+                        let mut pending = pending_primary_return
+                            .take()
+                            .expect("primary return work must exist while reserve branch is enabled");
+                        pending.work.deadline = Instant::now() + PRIMARY_RETURN_SEND_DEADLINE;
+                        permit.send(pending.work);
+                        control_plane.primary_return_enqueued =
+                            control_plane.primary_return_enqueued.saturating_add(1);
+                        consecutive_primary_return_enqueue_expiries = 0;
+                    }
+                    Err(PrimaryReturnReserveError::Closed) => {
+                        return Err(anyhow::anyhow!(
+                            "XBond primary return sender stopped during backpressure"
+                        ));
+                    }
+                    Err(PrimaryReturnReserveError::DeadlineExpired) => {
+                        let pending = pending_primary_return
+                            .take()
+                            .expect("expired primary return work must still be pending");
+                        control_plane.primary_return_enqueue_deadline_expiries = control_plane
+                            .primary_return_enqueue_deadline_expiries
+                            .saturating_add(1);
+                        if !pending.alternate_copy_accepted {
+                            control_plane.all_return_copies_dropped = control_plane
+                                .all_return_copies_dropped
+                                .saturating_add(1);
+                        }
+                        consecutive_primary_return_enqueue_expiries =
+                            consecutive_primary_return_enqueue_expiries.saturating_add(1);
+                        if consecutive_primary_return_enqueue_expiries
+                            >= PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES
+                        {
+                            control_plane.primary_return_forced_restarts = control_plane
+                                .primary_return_forced_restarts
+                                .saturating_add(1);
+                            return Err(anyhow::anyhow!(
+                                "XBond primary return queue remained saturated for {} consecutive packets; terminating for a clean session restart",
+                                PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES
+                            ));
+                        }
+                    }
+                }
             }
 
             _ = reorder_tick.tick() => {
-                if let Some(tun) = &mut tun {
-                    let delivered = write_reordered_packets(
-                        tun,
+                if let Some(tun_writer) = &tun_writer {
+                    let delivered = enqueue_tun_packets(
+                        tun_writer,
                         reorder.drain_ready(monotonic_micros()),
-                        &mut repair,
-                    )?;
-                    data_packets_forwarded = data_packets_forwarded.saturating_add(delivered);
+                    )
+                    .await?;
+                    data_packets_forwarded =
+                        data_packets_forwarded.saturating_add(delivered.enqueued);
                     send_repair_requests_for_ingress_gaps(
                         &control_send_tx,
                         &key,
@@ -1074,6 +2300,7 @@ async fn main() -> Result<()> {
                         return_control
                             .as_ref()
                             .is_some_and(|control| control.recovery_active),
+                        &mut ingress_repair_limiter,
                         &mut control_plane,
                     )?;
                 }
@@ -1082,11 +2309,94 @@ async fn main() -> Result<()> {
             _ = status_tick.tick() => {
                 control_plane.ingress_payload_queue_drops =
                     ingress_payload_queue_drops.load(Ordering::Relaxed);
+                control_plane.ingress_duplicates_coalesced =
+                    ingress_duplicates_coalesced.load(Ordering::Relaxed);
                 control_plane.control_datagrams_sent =
                     control_datagrams_sent.load(Ordering::Relaxed);
                 control_plane.control_send_failures =
                     control_send_failures.load(Ordering::Relaxed);
+                sync_tun_writer_telemetry(
+                    tun_writer.as_ref(),
+                    &mut control_plane,
+                    &mut repair,
+                    &mut data_packets_forwarded,
+                );
+                let schedule_expired = return_control
+                    .as_ref()
+                    .is_some_and(|control| {
+                        return_schedule_grace_expired(control, monotonic_micros())
+                    });
+                if schedule_expired {
+                    if let Some(expired_session_id) = session_gate.require_restart() {
+                        let restart = XBondControlMessage::SessionRestartRequired {
+                            session_id: expired_session_id,
+                            reason: "The authoritative return schedule expired beyond its grace period; open a new random session epoch.".to_string(),
+                        };
+                        enqueue_control_message_to_peers(
+                            &control_send_tx,
+                            &key,
+                            &peers,
+                            expired_session_id,
+                            &mut control_sequence,
+                            &restart,
+                            &mut control_plane,
+                        )?;
+                        last_restart_required_sent = Some(Instant::now());
+                        if args.json_events {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "session-restart-required",
+                                    "session_id": expired_session_id,
+                                    "reason": "return schedule expired beyond grace",
+                                })
+                            );
+                        }
+                    }
+                    abort_return_senders(&mut return_senders);
+                    clear_session_forwarding_state(
+                        &mut receiver,
+                        args.realtime_deadline_ms * 1_000,
+                        &mut peers,
+                        &mut return_control,
+                        &mut resend_cache,
+                        &mut reorder,
+                        &mut fec_recovery,
+                        &mut reorder_session_id,
+                        &mut repair,
+                        &mut pending_primary_return,
+                    );
+                    ingress_repair_limiter.reset();
+                    last_session_id = 0;
+                    if hold_controller.reset_to_normal(reorder.stats(), &repair) {
+                        current_ingress_hold_micros = hold_controller.current_hold_micros();
+                        reorder.set_hold_micros(current_ingress_hold_micros);
+                    }
+                }
+                let repair_budget_elapsed = repair_budget_last_updated.elapsed();
+                if repair_budget_elapsed >= Duration::from_secs(1) {
+                    if return_payload_bytes_since_budget_update > 0 {
+                        let elapsed_micros = repair_budget_elapsed.as_micros().max(1);
+                        let observed_bits_per_second = u64::try_from(
+                            u128::from(return_payload_bytes_since_budget_update)
+                                .saturating_mul(8_000_000)
+                                .saturating_div(elapsed_micros),
+                        )
+                        .unwrap_or(u64::MAX);
+                        let byte_capacity = recommended_server_repair_cache_bytes(
+                            observed_bits_per_second,
+                            args.repair_cache_bytes,
+                        );
+                        resend_cache.set_byte_capacity(byte_capacity, monotonic_micros());
+                    }
+                    return_payload_bytes_since_budget_update = 0;
+                    repair_budget_last_updated = Instant::now();
+                }
                 repair.cache_entries = resend_cache.len();
+                control_plane.repair_cache_entries = resend_cache.len() as u64;
+                control_plane.repair_cache_bytes = resend_cache.bytes_len() as u64;
+                control_plane.repair_cache_byte_capacity =
+                    resend_cache.byte_capacity() as u64;
                 let recovery_active = return_control
                     .as_ref()
                     .is_some_and(|control| control.recovery_active);
@@ -1123,6 +2433,7 @@ async fn main() -> Result<()> {
                     &server_health_status,
                     &hold_controller,
                     control_plane,
+                    &return_pmtu,
                 )?;
                 if args.json_events {
                     json_status_event_counter = json_status_event_counter.saturating_add(1);
@@ -1139,6 +2450,7 @@ async fn main() -> Result<()> {
                                 },
                                 "counters": counters,
                                 "control_plane": control_plane,
+                                "return_pmtu": &return_pmtu,
                             })
                         );
                     }
@@ -1173,11 +2485,13 @@ async fn main() -> Result<()> {
                 }
             }
 
-            Some(packet) = tun_packet_rx.recv() => {
+            Some(packet) = tun_packet_rx.recv(), if pending_primary_return.is_none() => {
                 if !is_ipv4_packet(&packet) || peers.is_empty() || last_session_id == 0 {
                     continue;
                 }
 
+                return_payload_bytes_since_budget_update =
+                    return_payload_bytes_since_budget_update.saturating_add(packet.len() as u64);
                 let packet_payload = Arc::new(packet);
                 reverse_sequence += 1;
                 resend_cache.insert(
@@ -1195,18 +2509,10 @@ async fn main() -> Result<()> {
                     monotonic_micros(),
                 );
                 let mut sent_paths = 0usize;
+                let mut enqueue_accounting = ReturnCopyEnqueueAccounting::default();
+                let mut deferred_primary_work = None;
                 for (path_id, peer, kind) in return_targets {
-                    let sender = return_senders
-                        .entry(path_id)
-                        .or_insert_with(|| {
-                            spawn_return_sender(
-                                path_id,
-                                socket.clone(),
-                                key.clone(),
-                                args.tun_queue_capacity.max(1),
-                                send_report_tx.clone(),
-                            )
-                        });
+                    enqueue_accounting.selected();
                     let mut header = XBondHeader::new(
                         kind,
                         last_session_id,
@@ -1220,24 +2526,59 @@ async fn main() -> Result<()> {
                         peer,
                         header,
                         payload: packet_payload.clone(),
+                        deadline: Instant::now() + PRIMARY_RETURN_QUEUE_DEADLINE,
                     };
-                    let enqueue_result = match sender.data_tx.try_send(work) {
-                        Ok(()) => Ok(()),
-                        Err(mpsc::error::TrySendError::Full(_)) => {
-                            if kind == PacketKind::Data {
+                    let enqueue_result = if kind == PacketKind::Data {
+                        match primary_return_tx.try_send(work) {
+                            Ok(()) => {
+                                control_plane.primary_return_enqueued =
+                                    control_plane.primary_return_enqueued.saturating_add(1);
+                                Ok(())
+                            }
+                            Err(mpsc::error::TrySendError::Full(work)) => {
                                 control_plane.primary_return_queue_full = control_plane
                                     .primary_return_queue_full
                                     .saturating_add(1);
+                                deferred_primary_work = Some(work);
+                                continue;
                             }
-                            continue;
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                return Err(anyhow::anyhow!(
+                                    "XBond primary return sender stopped"
+                                ));
+                            }
                         }
-                        Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
-                            ErrorKind::BrokenPipe,
-                            "XBond return path sender stopped",
-                        )),
+                    } else {
+                        let sender = return_senders
+                            .entry(path_id)
+                            .or_insert_with(|| {
+                                spawn_return_sender(
+                                    path_id,
+                                    socket.clone(),
+                                    key.clone(),
+                                    args.tun_queue_capacity.max(1),
+                                    send_report_tx.clone(),
+                                )
+                            });
+                        match sender.data_tx.try_send(work) {
+                            Ok(()) => Ok(()),
+                            Err(mpsc::error::TrySendError::Full(_)) => continue,
+                            Err(mpsc::error::TrySendError::Closed(_)) => Err(
+                                std::io::Error::new(
+                                    ErrorKind::BrokenPipe,
+                                    "XBond return path sender stopped",
+                                ),
+                            ),
+                        }
                     };
                     match enqueue_result {
-                        Ok(()) => sent_paths += 1,
+                        Ok(()) => {
+                            sent_paths += 1;
+                            enqueue_accounting.accepted();
+                            if kind == PacketKind::Data {
+                                consecutive_primary_return_enqueue_expiries = 0;
+                            }
+                        }
                         Err(error) => {
                             if args.json_events {
                                 println!(
@@ -1253,6 +2594,18 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+                }
+                let primary_deferred = deferred_primary_work.is_some();
+                if let Some(work) = deferred_primary_work {
+                    pending_primary_return = Some(PendingPrimaryReturn {
+                        work,
+                        alternate_copy_accepted: enqueue_accounting.accepted > 0,
+                    });
+                }
+                if enqueue_accounting.all_copies_dropped(primary_deferred) {
+                    control_plane.all_return_copies_dropped = control_plane
+                        .all_return_copies_dropped
+                        .saturating_add(1);
                 }
 
                 if args.json_events && args.trace_packets {
@@ -1444,28 +2797,56 @@ fn spawn_return_sender(
                 &key,
                 &mut encoded,
             ) {
-                Ok(()) => match socket.send_to(&encoded, work.peer).await {
-                    Ok(_) => ReturnSendReport {
-                        path_id,
-                        packet_kind: work.packet_kind,
-                        success: true,
-                        peer: work.peer,
-                        error: None,
-                    },
-                    Err(error) => ReturnSendReport {
-                        path_id,
-                        packet_kind: work.packet_kind,
-                        success: false,
-                        peer: work.peer,
-                        error: Some(error.to_string()),
-                    },
-                },
+                Ok(()) => {
+                    let attempted_datagram_bytes = encoded.len();
+                    match send_datagram_before_deadline(&socket, &encoded, work.peer, work.deadline)
+                        .await
+                    {
+                        Ok(_) => ReturnSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            success: true,
+                            peer: work.peer,
+                            error: None,
+                            emsgsize: false,
+                            deadline_expired: false,
+                            force_restart: false,
+                            attempted_datagram_bytes,
+                        },
+                        Err(BoundedDatagramSendError::Io(error)) => ReturnSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            success: false,
+                            peer: work.peer,
+                            error: Some(error.to_string()),
+                            emsgsize: is_emsgsize(&error),
+                            deadline_expired: false,
+                            force_restart: false,
+                            attempted_datagram_bytes,
+                        },
+                        Err(BoundedDatagramSendError::DeadlineExpired) => ReturnSendReport {
+                            path_id,
+                            packet_kind: work.packet_kind,
+                            success: false,
+                            peer: work.peer,
+                            error: Some("return path UDP send deadline expired".to_string()),
+                            emsgsize: false,
+                            deadline_expired: true,
+                            force_restart: false,
+                            attempted_datagram_bytes,
+                        },
+                    }
+                }
                 Err(error) => ReturnSendReport {
                     path_id,
                     packet_kind: work.packet_kind,
                     success: false,
                     peer: work.peer,
                     error: Some(error.to_string()),
+                    emsgsize: false,
+                    deadline_expired: false,
+                    force_restart: false,
+                    attempted_datagram_bytes: 0,
                 },
             };
             if report.packet_kind == PacketKind::Repair || !report.success {
@@ -1665,6 +3046,7 @@ fn write_server_status(
     server_health: &XBondServerHealthStatus,
     hold_controller: &IngressReorderHoldController,
     control_plane: ServerControlPlaneStatus,
+    return_pmtu: &ServerReturnPmtuStatus,
 ) -> Result<()> {
     if let Some(parent) = args.status_path.parent() {
         std::fs::create_dir_all(parent)
@@ -1705,6 +3087,7 @@ fn write_server_status(
         repair: repair.clone(),
         server_health: server_health.clone(),
         control_plane,
+        return_pmtu: return_pmtu.clone(),
         counters,
     };
     let json = serde_json::to_vec(&status)?;
@@ -1719,7 +3102,7 @@ fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
             frame.header.session_id,
             frame.header.sequence,
             frame.header.send_micros,
-            0,
+            frame.header.path_id,
         ),
         b"ack".to_vec(),
     )
@@ -1745,6 +3128,40 @@ fn is_tunnel_payload(kind: PacketKind) -> bool {
         kind,
         PacketKind::Data | PacketKind::Duplicate | PacketKind::Repair | PacketKind::Fec
     )
+}
+
+fn parse_session_handshake(frame: &XBondFrame) -> Option<ServerSessionHandshakeControl> {
+    if frame.header.kind != PacketKind::Control {
+        return None;
+    }
+    match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
+        XBondControlMessage::SessionOpen {
+            session_id,
+            request_nonce,
+        } => Some(ServerSessionHandshakeControl::Open {
+            session_id,
+            request_nonce,
+        }),
+        XBondControlMessage::SessionProof {
+            session_id,
+            request_nonce,
+            challenge,
+        } => Some(ServerSessionHandshakeControl::Proof {
+            session_id,
+            request_nonce,
+            challenge,
+        }),
+        _ => None,
+    }
+}
+
+fn parse_schedule_control_generation(frame: &XBondFrame) -> Option<u64> {
+    if frame.header.kind != PacketKind::Control {
+        return None;
+    }
+    serde_json::from_slice::<ScheduleControlMessage>(&frame.payload)
+        .ok()
+        .map(|control| control.schedule_generation)
 }
 
 fn parse_return_control(frame: &XBondFrame, received_at_micros: u64) -> Option<ReturnControl> {
@@ -1783,7 +3200,13 @@ fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
 
     let mut sequences = match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
         XBondControlMessage::RepairRequest { sequences } => sequences,
-        XBondControlMessage::ServerRecoveryStatus { .. } => return None,
+        XBondControlMessage::SessionOpen { .. }
+        | XBondControlMessage::SessionChallenge { .. }
+        | XBondControlMessage::SessionProof { .. }
+        | XBondControlMessage::SessionAccepted { .. }
+        | XBondControlMessage::SessionRestartRequired { .. }
+        | XBondControlMessage::ScheduleAccepted { .. }
+        | XBondControlMessage::ServerRecoveryStatus { .. } => return None,
     };
     sequences.sort_unstable();
     sequences.dedup();
@@ -1844,7 +3267,9 @@ fn send_server_recovery_status(
 
     *control_sequence = control_sequence.saturating_add(1);
     let sequence = *control_sequence;
-    let payload = serde_json::to_vec(&XBondControlMessage::ServerRecoveryStatus { status })?;
+    let payload = serde_json::to_vec(&XBondControlMessage::ServerRecoveryStatus {
+        status: Box::new(status),
+    })?;
 
     for (path_id, peer) in &peers {
         let frame = XBondFrame::new(
@@ -1884,22 +3309,25 @@ fn send_repair_requests_for_ingress_gaps(
     reorder: &mut PacketReorderBuffer,
     repair: &mut XBondRepairStatus,
     recovery_active: bool,
+    limiter: &mut IngressRepairLimiter,
     control_plane: &mut ServerControlPlaneStatus,
 ) -> Result<()> {
     let now = monotonic_micros();
     let peers = fresh_peers(peers, now);
-    if !recovery_active || peers.is_empty() || session_id == 0 {
+    if peers.is_empty() || session_id == 0 {
         return Ok(());
     }
 
-    let sequences = reorder.repair_requests(
-        monotonic_micros(),
-        REPAIR_REQUEST_INTERVAL_MICROS,
-        MAX_REPAIR_REQUESTS,
-    );
+    let Some((request_interval_micros, request_limit)) =
+        ingress_repair_request_parameters(limiter, now, recovery_active, reorder.pending_len())
+    else {
+        return Ok(());
+    };
+    let sequences = reorder.repair_requests(now, request_interval_micros, request_limit);
     if sequences.is_empty() {
         return Ok(());
     }
+    limiter.record(sequences.len(), recovery_active);
 
     *control_sequence = control_sequence.saturating_add(1);
     let control_id = *control_sequence;
@@ -1982,6 +3410,7 @@ fn send_repair_frames_from_server_cache(
                 peer,
                 header,
                 payload: payload.clone(),
+                deadline: Instant::now() + PRIMARY_RETURN_SEND_DEADLINE,
             };
             match control_tx.try_send(work) {
                 Ok(()) => {}
@@ -2023,8 +3452,33 @@ fn build_return_control(
     }
 }
 
-fn session_is_current_or_new(current_session_id: u64, candidate_session_id: u64) -> bool {
-    current_session_id == 0 || candidate_session_id >= current_session_id
+#[allow(clippy::too_many_arguments)]
+fn clear_session_forwarding_state(
+    receiver: &mut FrameReceiver,
+    realtime_deadline_micros: u64,
+    peers: &mut HashMap<u16, PeerState>,
+    return_control: &mut Option<ReturnControl>,
+    resend_cache: &mut ResendCache,
+    reorder: &mut PacketReorderBuffer,
+    fec_recovery: &mut FecRecovery,
+    reorder_session_id: &mut u64,
+    repair: &mut XBondRepairStatus,
+    pending_primary_return: &mut Option<PendingPrimaryReturn>,
+) {
+    *receiver = FrameReceiver::new(realtime_deadline_micros, 8192);
+    peers.clear();
+    *return_control = None;
+    let repair_cache_byte_capacity = resend_cache.byte_capacity();
+    *resend_cache = ResendCache::new_with_byte_capacity(
+        REPAIR_CACHE_CAPACITY,
+        repair_cache_byte_capacity,
+        REPAIR_CACHE_TTL_MICROS,
+    );
+    reorder.reset();
+    *fec_recovery = FecRecovery::new(8192);
+    *reorder_session_id = 0;
+    *repair = XBondRepairStatus::default();
+    *pending_primary_return = None;
 }
 
 fn return_control_update_is_valid(
@@ -2072,16 +3526,6 @@ fn select_return_targets(
             )
         })
         .collect::<Vec<_>>();
-    if return_schedule_is_stale(control, now_micros)
-        && transmissions.iter().any(|transmission| {
-            !peers
-                .get(&transmission.path_id)
-                .is_some_and(|peer| peer_is_fresh(peer, now_micros))
-        })
-    {
-        return Vec::new();
-    }
-
     let mut scheduled = transmissions
         .into_iter()
         .filter_map(|transmission| {
@@ -2152,29 +3596,6 @@ fn fresh_peers(peers: &HashMap<u16, PeerState>, now_micros: u64) -> Vec<(u16, So
 
 fn expire_stale_peers(peers: &mut HashMap<u16, PeerState>, now_micros: u64) {
     peers.retain(|_, peer| peer_is_fresh(peer, now_micros));
-}
-
-fn write_reordered_packets(
-    tun: &mut XBondTun,
-    packets: Vec<ReorderedPacket>,
-    repair: &mut XBondRepairStatus,
-) -> Result<u64> {
-    let mut delivered = 0u64;
-    for packet in packets {
-        if let Err(error) = tun.write_packet(&packet.payload) {
-            eprintln!(
-                "xbond server failed to write packet to XBond TUN {}: {error}",
-                tun.name()
-            );
-            continue;
-        }
-        delivered += 1;
-        if packet.path_id == u16::MAX {
-            repair.frames_delivered = repair.frames_delivered.saturating_add(1);
-        }
-    }
-
-    Ok(delivered)
 }
 
 fn print_packet_event(
@@ -2253,14 +3674,69 @@ fn monotonic_micros() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
+fn initial_control_sequence() -> u64 {
+    control_sequence_epoch(now_micros())
+}
+
+fn control_sequence_epoch(unix_micros: u64) -> u64 {
+    // Leave ample sequence space between process starts so a restarted server's
+    // authenticated controls remain ahead of the client's existing replay window.
+    unix_micros.saturating_mul(1_024).max(2_000_000_000_000)
+}
+
+fn random_handshake_nonce() -> Result<SessionHandshakeNonce> {
+    loop {
+        let mut nonce = [0_u8; 16];
+        getrandom::getrandom(&mut nonce).map_err(|error| {
+            anyhow::anyhow!("generate authenticated session handshake nonce: {error}")
+        })?;
+        if nonce.iter().any(|byte| *byte != 0) {
+            return Ok(nonce);
+        }
+    }
+}
+
 fn initial_reverse_sequence() -> u64 {
-    now_micros()
+    0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use xbond_core::ScheduleMode;
+
+    fn nonce(value: u8) -> SessionHandshakeNonce {
+        [value; 16]
+    }
+
+    #[test]
+    fn restarted_server_control_epoch_advances_with_wall_clock() {
+        let previous = control_sequence_epoch(1_700_000_000_000_000);
+        let restarted = control_sequence_epoch(1_700_000_000_001_000);
+
+        assert!(restarted > previous);
+        assert!(restarted.saturating_sub(previous) > 8192);
+    }
+
+    fn open_session(
+        gate: &mut ServerSessionGate,
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+        now_micros: u64,
+    ) -> ServerSessionOpenDecision {
+        assert_eq!(
+            gate.issue_challenge(session_id, session_id, request_nonce, challenge, now_micros,),
+            Some(challenge)
+        );
+        gate.prove(
+            session_id,
+            session_id,
+            request_nonce,
+            challenge,
+            now_micros + 1,
+        )
+    }
 
     #[test]
     fn ack_preserves_heartbeat_or_control_kind() {
@@ -2270,6 +3746,7 @@ mod tests {
 
             assert_eq!(ack.header.kind, kind);
             assert_eq!(ack.header.sequence, frame.header.sequence);
+            assert_eq!(ack.header.path_id, frame.header.path_id);
             assert_eq!(ack.payload, b"ack");
         }
     }
@@ -2286,6 +3763,192 @@ mod tests {
         assert!(XBondFrame::decode(&encoded).is_ok());
         assert!(!encoded.windows(9).any(|window| window == b"heartbeat"));
         assert_eq!(XBondFrame::decode_sealed(&encoded, &key).unwrap(), frame);
+    }
+
+    #[test]
+    fn authenticated_session_accepts_lower_random_epoch_and_rejects_captured_proof() {
+        let mut gate = ServerSessionGate::new();
+
+        assert_eq!(
+            open_session(&mut gate, 9_000, nonce(1), nonce(2), 10),
+            ServerSessionOpenDecision::AcceptedNew
+        );
+        assert_eq!(
+            open_session(&mut gate, 42, nonce(3), nonce(4), 20),
+            ServerSessionOpenDecision::AcceptedNew
+        );
+        assert_eq!(gate.current(), Some(42));
+        assert!(gate.accepts(42));
+        assert!(!gate.accepts(9_000));
+
+        assert_eq!(
+            gate.issue_challenge(9_000, 9_000, nonce(1), nonce(9), 30),
+            None
+        );
+        assert_eq!(
+            gate.prove(9_000, 9_000, nonce(1), nonce(2), 31),
+            ServerSessionOpenDecision::Rejected
+        );
+        assert_eq!(gate.current(), Some(42));
+    }
+
+    #[test]
+    fn current_session_open_is_idempotent_until_restart_is_required() {
+        let mut gate = ServerSessionGate::new();
+
+        assert_eq!(
+            open_session(&mut gate, 42, nonce(1), nonce(2), 10),
+            ServerSessionOpenDecision::AcceptedNew
+        );
+        assert_eq!(
+            open_session(&mut gate, 42, nonce(3), nonce(4), 20),
+            ServerSessionOpenDecision::AcceptedCurrent
+        );
+        assert_eq!(gate.require_restart(), Some(42));
+        assert!(!gate.accepts(42));
+        assert!(gate.restart_required_for(42));
+        assert!(!gate.restart_required_for(7));
+        assert_eq!(
+            open_session(&mut gate, 42, nonce(5), nonce(6), 30),
+            ServerSessionOpenDecision::RestartRequired
+        );
+        assert_eq!(
+            open_session(&mut gate, 7, nonce(7), nonce(8), 40),
+            ServerSessionOpenDecision::AcceptedNew
+        );
+        assert!(gate.accepts(7));
+        assert!(!gate.restart_required_for(7));
+    }
+
+    #[test]
+    fn fresh_server_requests_restart_for_an_authenticated_unknown_session() {
+        let gate = ServerSessionGate::new();
+
+        assert!(!gate.accepts(42));
+        assert!(gate.restart_required_for(42));
+    }
+
+    #[test]
+    fn session_open_requires_matching_authenticated_header_epoch() {
+        let mut gate = ServerSessionGate::new();
+        assert_eq!(gate.issue_challenge(42, 7, nonce(1), nonce(2), 10), None);
+        assert_eq!(
+            gate.prove(42, 7, nonce(1), nonce(2), 11),
+            ServerSessionOpenDecision::Rejected
+        );
+        assert_eq!(gate.current(), None);
+    }
+
+    #[test]
+    fn opening_new_session_clears_forwarding_state() {
+        let mut receiver = FrameReceiver::new(1_000_000, 16);
+        let accepted = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 9, 1, now_micros(), 1),
+            vec![0x45],
+        );
+        assert_eq!(
+            receiver.observe(&accepted, now_micros()),
+            ReceiveOutcome::Accepted
+        );
+        let peer: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let mut peers = HashMap::from([(1, peer_state(peer, monotonic_micros()))]);
+        let mut return_control = Some(build_return_control(
+            3,
+            monotonic_micros(),
+            SchedulePlan {
+                mode: ScheduleMode::AnchorOnly,
+                anchor_path_id: Some(1),
+                data_path_ids: vec![1],
+                duplicate_path_ids: Vec::new(),
+                fec_path_ids: Vec::new(),
+            },
+            RedundancyPolicy::Balanced,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        ));
+        let mut resend_cache = ResendCache::new_with_byte_capacity(8, 16, 1_000_000);
+        resend_cache.insert(9, 1, Arc::new(vec![0x45]), monotonic_micros());
+        let mut reorder = PacketReorderBuffer::new(8, 50_000);
+        reorder.push(2, 1, vec![0x45], monotonic_micros(), 0);
+        let mut fec_recovery = FecRecovery::new(8);
+        let mut reorder_session_id = 9;
+        let mut repair = XBondRepairStatus {
+            requests_sent: 1,
+            ..XBondRepairStatus::default()
+        };
+        let mut pending_primary_return = Some(PendingPrimaryReturn {
+            work: ReturnSendWork {
+                packet_kind: PacketKind::Data,
+                peer,
+                header: XBondHeader::new(PacketKind::Data, 9, 1, now_micros(), 1),
+                payload: Arc::new(vec![0x45]),
+                deadline: Instant::now() + PRIMARY_RETURN_QUEUE_DEADLINE,
+            },
+            alternate_copy_accepted: false,
+        });
+
+        clear_session_forwarding_state(
+            &mut receiver,
+            1_000_000,
+            &mut peers,
+            &mut return_control,
+            &mut resend_cache,
+            &mut reorder,
+            &mut fec_recovery,
+            &mut reorder_session_id,
+            &mut repair,
+            &mut pending_primary_return,
+        );
+
+        assert!(peers.is_empty());
+        assert!(return_control.is_none());
+        assert_eq!(resend_cache.len(), 0);
+        assert_eq!(resend_cache.byte_capacity(), 16);
+        assert_eq!(reorder.stats().pending_depth, 0);
+        assert_eq!(reorder_session_id, 0);
+        assert_eq!(repair.requests_sent, 0);
+        assert!(pending_primary_return.is_none());
+        assert_eq!(receiver.stats().accepted_packets, 0);
+    }
+
+    #[tokio::test]
+    async fn schedule_acceptance_and_restart_messages_are_explicit_control_frames() {
+        let key = XBondKey::from_passphrase("test-key");
+        let peer: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut sequence = 10;
+        let mut telemetry = ServerControlPlaneStatus::default();
+
+        for message in [
+            XBondControlMessage::ScheduleAccepted {
+                session_id: 42,
+                schedule_generation: 7,
+            },
+            XBondControlMessage::SessionRestartRequired {
+                session_id: 42,
+                reason: "schedule expired".to_string(),
+            },
+        ] {
+            assert!(enqueue_control_message(
+                &tx,
+                &key,
+                peer,
+                42,
+                &mut sequence,
+                &message,
+                &mut telemetry,
+            )
+            .unwrap());
+            let work = rx.recv().await.unwrap();
+            let frame = XBondFrame::decode_sealed(&work.encoded, &key).unwrap();
+            assert_eq!(frame.header.kind, PacketKind::Control);
+            assert_eq!(frame.header.session_id, 42);
+            assert_eq!(
+                serde_json::from_slice::<XBondControlMessage>(&frame.payload).unwrap(),
+                message
+            );
+        }
     }
 
     #[test]
@@ -2309,34 +3972,38 @@ mod tests {
                 vec![0x45],
             ),
             peer,
+            pre_admission_deduplicated: false,
         };
 
-        assert!(
+        assert_eq!(
             dispatch_inbound_frame(
                 &control_tx,
                 &payload_tx,
                 inbound(PacketKind::Data, 1),
                 &drops,
             )
-            .await
+            .await,
+            InboundDispatchOutcome::Queued,
         );
-        assert!(
+        assert_eq!(
             dispatch_inbound_frame(
                 &control_tx,
                 &payload_tx,
                 inbound(PacketKind::Data, 2),
                 &drops,
             )
-            .await
+            .await,
+            InboundDispatchOutcome::Dropped,
         );
-        assert!(
+        assert_eq!(
             dispatch_inbound_frame(
                 &control_tx,
                 &payload_tx,
                 inbound(PacketKind::Heartbeat, 3),
                 &drops,
             )
-            .await
+            .await,
+            InboundDispatchOutcome::Queued,
         );
 
         let received = time::timeout(
@@ -2351,6 +4018,19 @@ mod tests {
         assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
+    #[test]
+    fn pre_admission_deduplication_coalesces_data_duplicate_and_repair() {
+        assert_eq!(pre_admission_duplicate_class(PacketKind::Data), Some(0));
+        assert_eq!(
+            pre_admission_duplicate_class(PacketKind::Duplicate),
+            Some(0)
+        );
+        assert_eq!(pre_admission_duplicate_class(PacketKind::Repair), Some(0));
+        assert_eq!(pre_admission_duplicate_class(PacketKind::Fec), Some(1));
+        assert_eq!(pre_admission_duplicate_class(PacketKind::Heartbeat), None);
+        assert_eq!(pre_admission_duplicate_class(PacketKind::Control), None);
+    }
+
     #[tokio::test]
     async fn repair_work_precedes_queued_return_payload() {
         let (control_tx, mut control_rx) = mpsc::channel(1);
@@ -2361,6 +4041,7 @@ mod tests {
             peer,
             header: XBondHeader::new(kind, 1, sequence, now_micros(), 1),
             payload: Arc::new(vec![0x45]),
+            deadline: Instant::now() + PRIMARY_RETURN_SEND_DEADLINE,
         };
         data_tx.try_send(work(PacketKind::Data, 1)).unwrap();
         control_tx.try_send(work(PacketKind::Repair, 2)).unwrap();
@@ -2370,6 +4051,348 @@ mod tests {
             .unwrap();
         assert_eq!(received.packet_kind, PacketKind::Repair);
         assert_eq!(data_rx.len(), 1);
+    }
+
+    #[test]
+    fn all_return_copies_dropped_is_counted_when_no_target_exists() {
+        let accounting = ReturnCopyEnqueueAccounting::default();
+
+        assert!(accounting.all_copies_dropped(false));
+    }
+
+    #[test]
+    fn all_return_copies_dropped_is_counted_when_every_queue_rejects_packet() {
+        let mut accounting = ReturnCopyEnqueueAccounting::default();
+        accounting.selected();
+        accounting.selected();
+
+        assert!(accounting.all_copies_dropped(false));
+    }
+
+    #[test]
+    fn accepting_any_return_copy_prevents_all_copies_dropped_count() {
+        let mut accounting = ReturnCopyEnqueueAccounting::default();
+        accounting.selected();
+        accounting.selected();
+        accounting.accepted();
+
+        assert!(!accounting.all_copies_dropped(false));
+    }
+
+    #[test]
+    fn pending_primary_backpressure_prevents_false_all_copies_dropped_count() {
+        let mut accounting = ReturnCopyEnqueueAccounting::default();
+        accounting.selected();
+
+        assert!(!accounting.all_copies_dropped(true));
+    }
+
+    #[tokio::test]
+    async fn primary_return_reserve_has_a_bounded_deadline() {
+        let (tx, _rx) = mpsc::channel(1);
+        let peer = "192.0.2.1:1000".parse().unwrap();
+        tx.send(ReturnSendWork {
+            packet_kind: PacketKind::Data,
+            peer,
+            header: XBondHeader::new(PacketKind::Data, 1, 1, now_micros(), 1),
+            payload: Arc::new(vec![0x45]),
+            deadline: Instant::now() + PRIMARY_RETURN_SEND_DEADLINE,
+        })
+        .await
+        .unwrap();
+
+        let error = reserve_primary_return_slot(tx, Instant::now() + Duration::from_millis(10))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, PrimaryReturnReserveError::DeadlineExpired);
+    }
+
+    #[tokio::test]
+    async fn repeated_primary_return_send_deadlines_request_clean_restart() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let (report_tx, mut report_rx) = mpsc::channel(8);
+        let sender = spawn_primary_return_sender(
+            socket,
+            XBondKey::from_passphrase("test-key"),
+            4,
+            report_tx,
+        );
+        let expired = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
+
+        for sequence in 1..=PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES {
+            sender
+                .send(ReturnSendWork {
+                    packet_kind: PacketKind::Data,
+                    peer,
+                    header: XBondHeader::new(
+                        PacketKind::Data,
+                        1,
+                        u64::from(sequence),
+                        now_micros(),
+                        1,
+                    ),
+                    payload: Arc::new(vec![0x45]),
+                    deadline: expired,
+                })
+                .await
+                .unwrap();
+        }
+
+        for index in 1..=PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES {
+            let report = time::timeout(Duration::from_millis(100), report_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(report.deadline_expired);
+            assert_eq!(
+                report.force_restart,
+                index == PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tun_writer_queue_admits_a_reordered_batch_atomically() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let telemetry = Arc::new(TunWriterTelemetry::default());
+        let writer = TunWriterHandle {
+            tx,
+            telemetry: telemetry.clone(),
+            capacity: 2,
+        };
+        let packet = |sequence| ReorderedPacket {
+            sequence,
+            path_id: 1,
+            payload: vec![0x45],
+        };
+
+        assert_eq!(
+            enqueue_tun_packets_with_deadline(
+                &writer,
+                vec![packet(1), packet(2)],
+                Duration::from_millis(100),
+            )
+            .await
+            .unwrap(),
+            TunEnqueueOutcome { enqueued: 2 }
+        );
+        let batch = rx.recv().await.unwrap();
+        assert_eq!(
+            batch
+                .packets
+                .iter()
+                .map(|packet| packet.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        telemetry.release_packets(batch.packets.len(), batch.enqueued_at_micros);
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.max_queue_depth.load(Ordering::Relaxed), 2);
+        assert_eq!(telemetry.saturation_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn tun_writer_transient_saturation_waits_for_atomic_capacity() {
+        let (tun_tx, mut tun_rx) = mpsc::channel(2);
+        let telemetry = Arc::new(TunWriterTelemetry::default());
+        let writer = TunWriterHandle {
+            tx: tun_tx,
+            telemetry: telemetry.clone(),
+            capacity: 1,
+        };
+        let packet = |sequence| ReorderedPacket {
+            sequence,
+            path_id: 1,
+            payload: vec![0x45],
+        };
+        enqueue_tun_packets_with_deadline(&writer, vec![packet(1)], Duration::from_millis(100))
+            .await
+            .unwrap();
+
+        let release_telemetry = telemetry.clone();
+        let releaser = tokio::spawn(async move {
+            time::sleep(Duration::from_millis(15)).await;
+            let batch = tun_rx.recv().await.unwrap();
+            release_telemetry.release_packets(batch.packets.len(), batch.enqueued_at_micros);
+            let batch = tun_rx.recv().await.unwrap();
+            release_telemetry.release_packets(batch.packets.len(), batch.enqueued_at_micros);
+        });
+
+        let started = Instant::now();
+        enqueue_tun_packets_with_deadline(&writer, vec![packet(2)], Duration::from_millis(100))
+            .await
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(10));
+        assert!(started.elapsed() < Duration::from_millis(100));
+        releaser.await.unwrap();
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.saturation_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn tun_writer_sustained_saturation_is_a_fatal_explicit_failure() {
+        let (tun_tx, _tun_rx) = mpsc::channel(1);
+        let telemetry = Arc::new(TunWriterTelemetry::default());
+        let writer = TunWriterHandle {
+            tx: tun_tx,
+            telemetry: telemetry.clone(),
+            capacity: 1,
+        };
+        let packet = |sequence| ReorderedPacket {
+            sequence,
+            path_id: 1,
+            payload: vec![0x45],
+        };
+        enqueue_tun_packets_with_deadline(&writer, vec![packet(1)], Duration::from_millis(20))
+            .await
+            .unwrap();
+        let started = Instant::now();
+        let error =
+            enqueue_tun_packets_with_deadline(&writer, vec![packet(2)], Duration::from_millis(10))
+                .await
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("terminating the tunnel for a clean restart"));
+        assert!(started.elapsed() >= Duration::from_millis(8));
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 1);
+        assert_eq!(telemetry.saturation_failures.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn tun_writer_oldest_age_tracks_the_actual_queue_head() {
+        let telemetry = TunWriterTelemetry::default();
+
+        assert!(telemetry.try_reserve_packets(2, 4, 100));
+        assert!(telemetry.try_reserve_packets(1, 4, 250));
+        assert_eq!(
+            telemetry.oldest_enqueued_at_micros.load(Ordering::Relaxed),
+            100
+        );
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 3);
+
+        telemetry.release_packets(2, 100);
+        assert_eq!(
+            telemetry.oldest_enqueued_at_micros.load(Ordering::Relaxed),
+            250
+        );
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 1);
+
+        telemetry.release_packets(1, 250);
+        assert_eq!(
+            telemetry.oldest_enqueued_at_micros.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn tun_fault_injection_is_inert_by_default_and_deterministic_when_enabled() {
+        let fault = TunFaultInjection::default();
+
+        assert!(!injected_tun_failure(
+            fault.write_fail_after_packets,
+            u64::MAX
+        ));
+        assert!(!injected_tun_failure(
+            fault.read_fail_after_packets,
+            u64::MAX
+        ));
+        assert!(!injected_tun_failure(3, 2));
+        assert!(injected_tun_failure(3, 3));
+        assert!(injected_tun_failure(3, 4));
+    }
+
+    #[test]
+    fn server_repair_cache_is_byte_bounded_and_uses_recommended_budget() {
+        let maximum = 2 * 1024 * 1024;
+        let mut cache = new_server_resend_cache(maximum);
+        let expected =
+            recommended_server_repair_cache_bytes(INITIAL_REPAIR_CACHE_BITS_PER_SECOND, maximum);
+
+        assert_eq!(cache.byte_capacity(), expected);
+        cache.set_byte_capacity(10, 0);
+        cache.insert(1, 1, Arc::new(vec![0; 8]), 1);
+        cache.insert(1, 2, Arc::new(vec![0; 8]), 2);
+
+        assert!(cache.bytes_len() <= 10);
+        assert!(cache.len() <= 1);
+    }
+
+    #[test]
+    fn pre_recovery_gap_repairs_are_thresholded_and_rate_limited() {
+        let mut limiter = IngressRepairLimiter::default();
+
+        assert_eq!(
+            ingress_repair_request_parameters(&mut limiter, 1, false, 3),
+            None
+        );
+        assert_eq!(
+            ingress_repair_request_parameters(&mut limiter, 1, false, 4),
+            Some((
+                PRE_RECOVERY_REPAIR_INTERVAL_MICROS,
+                PRE_RECOVERY_REPAIR_MAX_PER_REQUEST
+            ))
+        );
+        limiter.record(PRE_RECOVERY_REPAIR_MAX_PER_REQUEST, false);
+        assert_eq!(
+            ingress_repair_request_parameters(&mut limiter, 2, false, 4),
+            Some((
+                PRE_RECOVERY_REPAIR_INTERVAL_MICROS,
+                PRE_RECOVERY_REPAIR_MAX_PER_REQUEST
+            ))
+        );
+        limiter.record(PRE_RECOVERY_REPAIR_MAX_PER_REQUEST, false);
+        assert_eq!(
+            ingress_repair_request_parameters(&mut limiter, 3, false, 4),
+            None
+        );
+        assert_eq!(
+            ingress_repair_request_parameters(&mut limiter, 1_000_001, false, 4),
+            Some((
+                PRE_RECOVERY_REPAIR_INTERVAL_MICROS,
+                PRE_RECOVERY_REPAIR_MAX_PER_REQUEST
+            ))
+        );
+    }
+
+    #[test]
+    fn recovery_gap_repairs_keep_the_existing_larger_allowance() {
+        let mut limiter = IngressRepairLimiter::default();
+
+        assert_eq!(
+            ingress_repair_request_parameters(&mut limiter, 1, true, 1),
+            Some((REPAIR_REQUEST_INTERVAL_MICROS, MAX_REPAIR_REQUESTS))
+        );
+    }
+
+    #[test]
+    fn emsgsize_detection_and_per_path_accounting_are_explicit() {
+        assert!(is_emsgsize(&std::io::Error::from_raw_os_error(90)));
+        assert!(is_emsgsize(&std::io::Error::from_raw_os_error(10040)));
+        assert!(!is_emsgsize(&std::io::Error::from_raw_os_error(111)));
+
+        let report = ReturnSendReport {
+            path_id: 7,
+            packet_kind: PacketKind::Data,
+            success: false,
+            peer: "192.0.2.1:1000".parse().unwrap(),
+            error: Some("message too long".to_string()),
+            emsgsize: true,
+            deadline_expired: false,
+            force_restart: false,
+            attempted_datagram_bytes: 1500,
+        };
+        let mut status = ServerReturnPmtuStatus::default();
+
+        assert!(record_return_pmtu_error(&mut status, &report));
+        assert!(record_return_pmtu_error(&mut status, &report));
+        assert_eq!(status.emsgsize_errors, 2);
+        assert_eq!(status.emsgsize_errors_by_path.get(&7), Some(&2));
     }
 
     #[tokio::test]
@@ -2428,13 +4451,8 @@ mod tests {
     }
 
     #[test]
-    fn reverse_sequence_starts_from_current_time_to_avoid_restart_rewinds() {
-        let before = now_micros();
-        let sequence = initial_reverse_sequence();
-        let after = now_micros();
-
-        assert!(sequence >= before);
-        assert!(sequence <= after);
+    fn reverse_sequence_starts_before_first_data_packet() {
+        assert_eq!(initial_reverse_sequence(), 0);
     }
 
     #[test]
@@ -2856,7 +4874,43 @@ mod tests {
         );
 
         let missing_peer = HashMap::from([(1, peer_state(peer_1, now))]);
-        assert!(select_return_targets(Some(&control), &missing_peer, 1_200, now).is_empty());
+        assert_eq!(
+            select_return_targets(Some(&control), &missing_peer, 1_200, now),
+            vec![(1, peer_1, PacketKind::Data)]
+        );
+    }
+
+    #[test]
+    fn stale_return_schedule_promotes_the_only_fresh_scheduled_backup_to_primary() {
+        let stale_anchor: SocketAddr = "192.0.2.1:1000".parse().unwrap();
+        let fresh_backup: SocketAddr = "192.0.2.2:2000".parse().unwrap();
+        let now = 30_000_000;
+        let peers = HashMap::from([
+            (1, peer_state(stale_anchor, 0)),
+            (2, peer_state(fresh_backup, now)),
+        ]);
+        let control = build_return_control(
+            7,
+            now.saturating_sub(RETURN_SCHEDULE_STALE_AFTER_MICROS + 2_000_000),
+            SchedulePlan {
+                mode: ScheduleMode::AnchorDuplicate1,
+                anchor_path_id: Some(1),
+                data_path_ids: vec![1],
+                duplicate_path_ids: vec![2],
+                fec_path_ids: Vec::new(),
+            },
+            RedundancyPolicy::Reliable,
+            RedundancyPolicyConfig::default(),
+            Vec::new(),
+            false,
+        );
+
+        assert!(return_schedule_is_stale(&control, now));
+        assert!(!return_schedule_grace_expired(&control, now));
+        assert_eq!(
+            select_return_targets(Some(&control), &peers, 1_200, now),
+            vec![(2, fresh_backup, PacketKind::Data)]
+        );
     }
 
     #[test]

@@ -265,9 +265,9 @@
         }
 
         <section class="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Latency" Metric="latency" Unit="ms" Stroke="#22d3ee" />
+            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Latency" Metric="latency" Unit="ms" Stroke="#d8d8d8" />
             <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Downlink" Metric="download" Unit="Mbps" Stroke="#38bdf8" />
-            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Uplink" Metric="upload" Unit="Mbps" Stroke="#f472b6" />
+            <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Uplink" Metric="upload" Unit="Mbps" Stroke="#a3a3a3" />
             <StarlinkTelemetryChart Samples="@starlinkHistory" Title="Obstruction" Metric="obstruction" Unit="%" Stroke="#f59e0b" />
         </section>
 
@@ -960,10 +960,10 @@
 
         if (path.LossPercent >= 2 || path.RttMs >= 120)
         {
-            return "bg-cyan-400";
+            return "bg-yellow-300";
         }
 
-        return path.IsActive ? "bg-emerald-400" : "bg-cyan-400";
+        return path.IsActive ? "bg-emerald-300" : "bg-slate-400";
     }
 
     private static string GetF50SignalBarClass(XBondPathStatsSnapshot path, int index)

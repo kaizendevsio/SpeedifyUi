@@ -13,13 +13,49 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.98";
+    public const string CurrentVersion = "xbond-2026.06.101";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-20",
+            Summary = "Hardened XBond recovery, session handling, and bounded packet queues.",
+            Changes =
+            [
+                "Client and server now fail closed on saturated TUN batches instead of stalling the tunnel supervisor one packet at a time.",
+                "Authenticated server restarts trigger a clean client session replacement, and replay protection now covers control and ACK frames.",
+                "Repeated ineffective path rebinds escalate to a clean tunnel session restart, while harmful recovery paths are pruned unless they provide measurable duplicate value."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.100",
+            Date = "2026-07-12",
+            Summary = "Added guarded automatic recovery for a stalled XBond client.",
+            Changes =
+            [
+                "A configurable watchdog now compares logical tunnel health with interface-bound probes from each configured physical XBond path.",
+                "The client service restarts only after a sustained tunnel/physical mismatch, with cooldown, post-restart grace, and hourly restart limits.",
+                "Settings now show watchdog evidence, direct path probe results, current mismatch count, and a manual check action."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.99",
+            Date = "2026-07-03",
+            Summary = "Moved XNetwork to a monochrome dark theme.",
+            Changes =
+            [
+                "App chrome, cards, controls, modals, and the Live view now use neutral dark-gray surfaces with light-gray text.",
+                "Dashboard sparklines are monochrome and distinguish tunnel, anchor, and backup paths with solid, dashed, and dotted strokes.",
+                "Analytics charts now use a muted pastel palette while adapter and health states keep soft semantic colors."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.98",
             Date = "2026-07-03",
             Summary = "Tucked the dashboard sparkline behind the summary metrics.",
             Changes =

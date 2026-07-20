@@ -62,6 +62,16 @@ builder.Services.AddSingleton<XBondClientConfigService>();
 builder.Services.AddSingleton<XBondScopedRouteService>();
 builder.Services.AddSingleton<XBondSpeedTestService>();
 builder.Services.AddSingleton<XBondMssClampService>();
+builder.Services.AddSingleton<XBondClientWatchdogSettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("XBondClientWatchdog").Get<XBondClientWatchdogSettings>() ?? new XBondClientWatchdogSettings();
+    sp.GetRequiredService<XBondClientWatchdogSettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<XBondPhysicalPathProbeService>();
+builder.Services.AddSingleton<XBondClientWatchdogService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<XBondClientWatchdogService>());
 
 builder.Services.AddSingleton<LocalDeviceProxySettingsStore>();
 builder.Services.AddSingleton(sp =>

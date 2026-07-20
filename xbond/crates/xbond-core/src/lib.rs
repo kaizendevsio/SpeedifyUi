@@ -7,6 +7,7 @@ pub mod protocol;
 pub mod reorder;
 pub mod repair;
 pub mod scheduler;
+pub mod session;
 pub mod status;
 pub mod tun;
 
@@ -27,13 +28,17 @@ pub use protocol::{
     ReceiveOutcome, ReceiveStats, XBondControlMessage, XBondFrame, XBondHeader,
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
-pub use repair::ResendCache;
+pub use repair::{recommended_repair_cache_bytes, ResendCache};
 pub use scheduler::{
     build_schedule, build_transmission_plan, build_transmission_plan_for_packet,
     expand_schedule_for_recovery, precompute_transmission_plans, stabilize_recovery_schedule,
     update_recovery_state, PacketTransmissionPlans, RecoveryConfig, RecoveryScheduleStabilityState,
     RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig,
     ScheduleControlMessage, ScheduleMode, SchedulePlan, ScheduledTransmission,
+};
+pub use session::{
+    AuthenticatedSessionTracker, SessionChallengeOutcome, SessionHandshakeNonce,
+    SessionProofOutcome,
 };
 pub use status::{
     PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondPathStatus,

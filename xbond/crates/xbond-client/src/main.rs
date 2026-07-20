@@ -3,7 +3,8 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
@@ -15,22 +16,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 use tokio::task::JoinHandle;
 use tokio::time;
 use xbond_core::{
     build_schedule, decode_sealed_payload_into, default_udp_socket_buffer_bytes,
     encode_sealed_payload_into, expand_schedule_for_recovery, is_ipv4_packet,
-    precompute_transmission_plans, select_path_roles, select_path_roles_with_state,
-    stabilize_recovery_schedule, update_recovery_state, ClientConfig, FrameReceiver, PacketKind,
-    PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, PathIsolationStatus,
-    ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig, RecoveryScheduleStabilityState,
-    RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
-    ResendCache, RoleSelectionConfig, RoleSelectionState, RouteVerification,
-    ScheduleControlMessage, ScheduleMode, SchedulePlan, XBondControlMessage,
-    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRepairStatus, XBondRuntimeStatus,
-    XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    precompute_transmission_plans, recommended_repair_cache_bytes, select_path_roles,
+    select_path_roles_with_state, stabilize_recovery_schedule, update_recovery_state, ClientConfig,
+    FrameReceiver, PacketKind, PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot,
+    PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig,
+    RecoveryScheduleStabilityState, RecoveryState, RecoveryStatus, RedundancyPolicy,
+    RedundancyPolicyConfig, ReorderedPacket, ResendCache, RoleSelectionConfig, RoleSelectionState,
+    RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan, SessionHandshakeNonce,
+    XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader,
+    XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRepairStatus,
+    XBondRuntimeStatus, XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus,
+    XorFecBlock,
 };
 
 #[derive(Debug, Parser)]
@@ -116,6 +118,10 @@ enum Command {
         trace_packets: bool,
         #[arg(long, default_value = "/run/xbond/client-control.sock")]
         control_socket: PathBuf,
+        #[arg(long, hide = true)]
+        lab_fail_tun_read_after_packets: Option<u64>,
+        #[arg(long, default_value_t = 0, hide = true)]
+        lab_tun_write_delay_ms: u64,
     },
     Override {
         #[command(subcommand)]
@@ -194,7 +200,7 @@ async fn main() -> Result<()> {
                 bind,
                 bind_device: interface,
                 path_id,
-                session_id: session_id.unwrap_or_else(now_micros),
+                session_id: resolve_session_id(session_id)?,
                 count,
                 interval_ms,
                 timeout_ms,
@@ -224,7 +230,7 @@ async fn main() -> Result<()> {
                 server,
                 path_ids,
                 binds,
-                session_id: session_id.unwrap_or_else(now_micros),
+                session_id: resolve_session_id(session_id)?,
                 count,
                 interval_ms,
                 timeout_ms,
@@ -247,6 +253,8 @@ async fn main() -> Result<()> {
             json_events,
             trace_packets,
             control_socket,
+            lab_fail_tun_read_after_packets,
+            lab_tun_write_delay_ms,
         } => {
             run_tunnel(TunnelOptions {
                 config,
@@ -258,6 +266,8 @@ async fn main() -> Result<()> {
                 json_events,
                 trace_packets,
                 control_socket,
+                lab_fail_tun_read_after_packets,
+                lab_tun_write_delay_ms,
             })
             .await?;
         }
@@ -313,6 +323,8 @@ struct TunnelOptions {
     json_events: bool,
     trace_packets: bool,
     control_socket: PathBuf,
+    lab_fail_tun_read_after_packets: Option<u64>,
+    lab_tun_write_delay_ms: u64,
 }
 
 async fn run_override_command(action: OverrideCommand) -> Result<()> {
@@ -451,11 +463,106 @@ struct InboundTunnelFrame {
     frame: XBondFrame,
 }
 
+#[derive(Clone)]
+struct InboundTunnelQueues {
+    control_tx: mpsc::Sender<InboundTunnelFrame>,
+    payload_tx: mpsc::Sender<InboundTunnelFrame>,
+    payload_drops: Arc<AtomicU64>,
+}
+
+const INBOUND_CONTROL_QUEUE_CAPACITY: usize = 256;
+const OPERATOR_CONTROL_QUEUE_CAPACITY: usize = 32;
+const SOCKET_EVENT_QUEUE_CAPACITY: usize = 64;
+
+fn is_prioritized_client_inbound(kind: PacketKind) -> bool {
+    matches!(kind, PacketKind::Heartbeat | PacketKind::Control)
+}
+
+async fn receive_prioritized_tunnel_frame(
+    control_rx: &mut mpsc::Receiver<InboundTunnelFrame>,
+    payload_rx: &mut mpsc::Receiver<InboundTunnelFrame>,
+) -> Option<InboundTunnelFrame> {
+    tokio::select! {
+        biased;
+        inbound = control_rx.recv() => match inbound {
+            Some(inbound) => Some(inbound),
+            None => payload_rx.recv().await,
+        },
+        inbound = payload_rx.recv() => match inbound {
+            Some(inbound) => Some(inbound),
+            None => control_rx.recv().await,
+        },
+    }
+}
+
+fn inbound_queue_depth(
+    control_rx: &mpsc::Receiver<InboundTunnelFrame>,
+    payload_rx: &mpsc::Receiver<InboundTunnelFrame>,
+) -> usize {
+    control_rx.len().saturating_add(payload_rx.len())
+}
+
 #[derive(Debug)]
 struct PathSendWork {
     packet_kind: PacketKind,
     header: XBondHeader,
     payload: Arc<Vec<u8>>,
+    queued_at: Instant,
+    deadline: Instant,
+    lane: PathSendLane,
+}
+
+impl PathSendWork {
+    fn data(packet_kind: PacketKind, header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+        Self {
+            packet_kind,
+            header,
+            payload,
+            queued_at: Instant::now(),
+            deadline: Instant::now() + DATA_LANE_DEADLINE,
+            lane: PathSendLane::Data,
+        }
+    }
+
+    fn control(packet_kind: PacketKind, header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+        Self {
+            packet_kind,
+            header,
+            payload,
+            queued_at: Instant::now(),
+            deadline: Instant::now() + CONTROL_LANE_DEADLINE,
+            lane: PathSendLane::Control,
+        }
+    }
+
+    fn repair(header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+        Self {
+            packet_kind: PacketKind::Repair,
+            header,
+            payload,
+            queued_at: Instant::now(),
+            deadline: Instant::now() + REPAIR_LANE_DEADLINE,
+            lane: PathSendLane::Repair,
+        }
+    }
+
+    fn repair_control(header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+        Self {
+            packet_kind: PacketKind::Control,
+            header,
+            payload,
+            queued_at: Instant::now(),
+            deadline: Instant::now() + REPAIR_LANE_DEADLINE,
+            lane: PathSendLane::Repair,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathSendLane {
+    Control,
+    Repair,
+    Data,
 }
 
 #[derive(Debug)]
@@ -464,12 +571,11 @@ struct PathSendReport {
     socket_generation: u64,
     packet_kind: PacketKind,
     encoded_bytes: u64,
-    encode_micros: u64,
-    encoded: bool,
-    success: bool,
     error: Option<String>,
     raw_os_error: Option<i32>,
     needs_rebind: bool,
+    message_too_large: bool,
+    lane: PathSendLane,
 }
 
 #[derive(Debug)]
@@ -480,11 +586,475 @@ struct PathSocketEvent {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TunReaderExit {
+    PacketQueueClosed,
+    ReadFailed(String),
+    TaskFailed(String),
+}
+
+#[derive(Debug)]
+struct SilentBlackholeProbeResult {
+    path_id: u16,
+    socket_generation: u64,
+    reachable: bool,
+    error: Option<String>,
+}
+
 #[derive(Debug)]
 struct PathSenderHandle {
     socket_generation: u64,
-    tx: mpsc::Sender<PathSendWork>,
+    data_tx: mpsc::Sender<PathSendWork>,
+    control_tx: mpsc::Sender<PathSendWork>,
+    repair_tx: mpsc::Sender<PathSendWork>,
+    latest_control: Arc<LatestControlSlot>,
+    metrics: Arc<PathSenderMetrics>,
     task: JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+struct LaneQueueSnapshot {
+    depth: usize,
+    capacity: usize,
+    oldest_age_ms: u64,
+    enqueue_drops: u64,
+    deadline_drops: u64,
+}
+
+#[derive(Debug, Default)]
+struct LaneQueueTelemetry {
+    capacity: usize,
+    queued_at: VecDeque<Instant>,
+    enqueue_drops: u64,
+    deadline_drops: u64,
+}
+
+impl LaneQueueTelemetry {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            ..Self::default()
+        }
+    }
+
+    fn record_enqueued(&mut self, queued_at: Instant) {
+        self.queued_at.push_back(queued_at);
+    }
+
+    fn record_dequeued(&mut self, queued_at: Instant) {
+        if self.queued_at.front().copied() == Some(queued_at) {
+            self.queued_at.pop_front();
+            return;
+        }
+        if let Some(index) = self.queued_at.iter().position(|value| *value == queued_at) {
+            self.queued_at.remove(index);
+        }
+    }
+
+    fn record_replaced(&mut self, old_queued_at: Instant, new_queued_at: Instant) {
+        self.record_dequeued(old_queued_at);
+        self.enqueue_drops = self.enqueue_drops.saturating_add(1);
+        self.record_enqueued(new_queued_at);
+    }
+
+    fn snapshot(&self, now: Instant) -> LaneQueueSnapshot {
+        LaneQueueSnapshot {
+            depth: self.queued_at.len(),
+            capacity: self.capacity,
+            oldest_age_ms: self
+                .queued_at
+                .front()
+                .map(|queued_at| {
+                    now.saturating_duration_since(*queued_at)
+                        .as_millis()
+                        .min(u128::from(u64::MAX)) as u64
+                })
+                .unwrap_or_default(),
+            enqueue_drops: self.enqueue_drops,
+            deadline_drops: self.deadline_drops,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PathSenderMetrics {
+    control: StdMutex<LaneQueueTelemetry>,
+    repair: StdMutex<LaneQueueTelemetry>,
+    data: StdMutex<LaneQueueTelemetry>,
+    completions: PathSenderCompletionCounters,
+}
+
+#[derive(Debug, Default)]
+struct PathSenderCompletionCounters {
+    encoded_frames: AtomicU64,
+    encode_micros: AtomicU64,
+    successful_bytes: AtomicU64,
+    data_packets: AtomicU64,
+    duplicate_packets: AtomicU64,
+    fec_packets: AtomicU64,
+    repair_packets: AtomicU64,
+    sender_deadline_drops: AtomicU64,
+    repair_deadline_drops: AtomicU64,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PathSenderCompletionSnapshot {
+    encoded_frames: u64,
+    encode_micros: u64,
+    successful_bytes: u64,
+    data_packets: u64,
+    duplicate_packets: u64,
+    fec_packets: u64,
+    repair_packets: u64,
+    sender_deadline_drops: u64,
+    repair_deadline_drops: u64,
+}
+
+impl PathSenderCompletionCounters {
+    fn record_encoded(&self, encode_micros: u64) {
+        self.encoded_frames.fetch_add(1, Ordering::Relaxed);
+        self.encode_micros
+            .fetch_add(encode_micros, Ordering::Relaxed);
+    }
+
+    fn record_success(&self, packet_kind: PacketKind, encoded_bytes: u64) {
+        self.successful_bytes
+            .fetch_add(encoded_bytes, Ordering::Relaxed);
+        let counter = match packet_kind {
+            PacketKind::Data => &self.data_packets,
+            PacketKind::Duplicate => &self.duplicate_packets,
+            PacketKind::Fec => &self.fec_packets,
+            PacketKind::Repair => &self.repair_packets,
+            _ => return,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_deadline_drop(&self, lane: PathSendLane) {
+        self.sender_deadline_drops.fetch_add(1, Ordering::Relaxed);
+        if lane == PathSendLane::Repair {
+            self.repair_deadline_drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn take(&self) -> PathSenderCompletionSnapshot {
+        PathSenderCompletionSnapshot {
+            encoded_frames: self.encoded_frames.swap(0, Ordering::Relaxed),
+            encode_micros: self.encode_micros.swap(0, Ordering::Relaxed),
+            successful_bytes: self.successful_bytes.swap(0, Ordering::Relaxed),
+            data_packets: self.data_packets.swap(0, Ordering::Relaxed),
+            duplicate_packets: self.duplicate_packets.swap(0, Ordering::Relaxed),
+            fec_packets: self.fec_packets.swap(0, Ordering::Relaxed),
+            repair_packets: self.repair_packets.swap(0, Ordering::Relaxed),
+            sender_deadline_drops: self.sender_deadline_drops.swap(0, Ordering::Relaxed),
+            repair_deadline_drops: self.repair_deadline_drops.swap(0, Ordering::Relaxed),
+        }
+    }
+}
+
+impl PathSenderMetrics {
+    fn new(data_capacity: usize) -> Self {
+        Self {
+            control: StdMutex::new(LaneQueueTelemetry::new(
+                CONTROL_LANE_QUEUE_CAPACITY.saturating_add(1),
+            )),
+            repair: StdMutex::new(LaneQueueTelemetry::new(REPAIR_LANE_QUEUE_CAPACITY)),
+            data: StdMutex::new(LaneQueueTelemetry::new(data_capacity.max(1))),
+            completions: PathSenderCompletionCounters::default(),
+        }
+    }
+
+    fn lane(&self, lane: PathSendLane) -> &StdMutex<LaneQueueTelemetry> {
+        match lane {
+            PathSendLane::Control => &self.control,
+            PathSendLane::Repair => &self.repair,
+            PathSendLane::Data => &self.data,
+        }
+    }
+
+    fn record_enqueued(&self, work: &PathSendWork) {
+        self.record_enqueued_at(work.lane, work.queued_at);
+    }
+
+    fn record_enqueued_at(&self, lane: PathSendLane, queued_at: Instant) {
+        self.lane(lane)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record_enqueued(queued_at);
+    }
+
+    fn record_dequeued(&self, work: &PathSendWork) {
+        self.lane(work.lane)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record_dequeued(work.queued_at);
+    }
+
+    fn record_enqueue_drop(&self, lane: PathSendLane) {
+        let mut telemetry = self
+            .lane(lane)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        telemetry.enqueue_drops = telemetry.enqueue_drops.saturating_add(1);
+    }
+
+    fn record_deadline_drop(&self, lane: PathSendLane) {
+        let mut telemetry = self
+            .lane(lane)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        telemetry.deadline_drops = telemetry.deadline_drops.saturating_add(1);
+    }
+
+    fn record_sender_deadline_drop(&self, lane: PathSendLane) {
+        self.record_deadline_drop(lane);
+        self.completions.record_deadline_drop(lane);
+    }
+
+    fn record_latest_replacement(&self, old: &PathSendWork, new: &PathSendWork) {
+        self.lane(PathSendLane::Control)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record_replaced(old.queued_at, new.queued_at);
+    }
+
+    fn snapshot(&self, lane: PathSendLane, now: Instant) -> LaneQueueSnapshot {
+        self.lane(lane)
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot(now)
+    }
+
+    fn record_encoded(&self, encode_micros: u64) {
+        self.completions.record_encoded(encode_micros);
+    }
+
+    fn record_success(&self, packet_kind: PacketKind, encoded_bytes: u64) {
+        self.completions.record_success(packet_kind, encoded_bytes);
+    }
+
+    fn take_completions(&self) -> PathSenderCompletionSnapshot {
+        self.completions.take()
+    }
+}
+
+#[derive(Debug)]
+struct LatestControlSlot {
+    work: StdMutex<Option<PathSendWork>>,
+    notify: Notify,
+    metrics: Arc<PathSenderMetrics>,
+}
+
+impl LatestControlSlot {
+    fn new(metrics: Arc<PathSenderMetrics>) -> Self {
+        Self {
+            work: StdMutex::new(None),
+            notify: Notify::new(),
+            metrics,
+        }
+    }
+
+    fn replace(&self, work: PathSendWork) -> bool {
+        let mut slot = self.work.lock().unwrap_or_else(|error| error.into_inner());
+        let replaced = if let Some(previous) = slot.as_ref() {
+            self.metrics.record_latest_replacement(previous, &work);
+            true
+        } else {
+            self.metrics.record_enqueued(&work);
+            false
+        };
+        *slot = Some(work);
+        drop(slot);
+        self.notify.notify_one();
+        replaced
+    }
+
+    async fn recv(&self) -> PathSendWork {
+        loop {
+            let notified = self.notify.notified();
+            if let Some(work) = self
+                .work
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take()
+            {
+                return work;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TunWriteBatch {
+    packets: Vec<ReorderedPacket>,
+    queued_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct TunWriterHandle {
+    tx: mpsc::Sender<TunWriteBatch>,
+    queued_packets: Arc<AtomicU64>,
+    capacity: usize,
+}
+
+impl TunWriterHandle {
+    fn queue_depth(&self) -> usize {
+        self.queued_packets.load(Ordering::Relaxed) as usize
+    }
+
+    fn try_reserve_packets(&self, packet_count: usize) -> bool {
+        let packet_count = packet_count as u64;
+        let capacity = self.capacity as u64;
+        self.queued_packets
+            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
+                current
+                    .checked_add(packet_count)
+                    .filter(|next| *next <= capacity)
+            })
+            .is_ok()
+    }
+
+    fn release_packets(&self, packet_count: usize) {
+        self.queued_packets
+            .fetch_sub(packet_count as u64, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug, Default)]
+struct TunWriterMetrics {
+    packets: AtomicU64,
+    payload_bytes: AtomicU64,
+    queue_delay_micros: AtomicU64,
+    write_micros: AtomicU64,
+    failures: AtomicU64,
+    repair_frames: AtomicU64,
+    path_bytes: HashMap<u16, AtomicU64>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct TunWriterMetricsSnapshot {
+    packets: u64,
+    payload_bytes: u64,
+    queue_delay_micros: u64,
+    write_micros: u64,
+    failures: u64,
+    repair_frames: u64,
+    path_bytes: HashMap<u16, u64>,
+}
+
+impl TunWriterMetrics {
+    fn for_paths(path_ids: impl IntoIterator<Item = u16>) -> Self {
+        Self {
+            path_bytes: path_ids
+                .into_iter()
+                .map(|path_id| (path_id, AtomicU64::new(0)))
+                .collect(),
+            ..Self::default()
+        }
+    }
+
+    fn record_success(
+        &self,
+        path_id: u16,
+        payload_len: usize,
+        queue_delay_micros: u64,
+        write_micros: u64,
+    ) {
+        self.packets.fetch_add(1, Ordering::Relaxed);
+        self.payload_bytes
+            .fetch_add(payload_len as u64, Ordering::Relaxed);
+        self.queue_delay_micros
+            .fetch_add(queue_delay_micros, Ordering::Relaxed);
+        self.write_micros.fetch_add(write_micros, Ordering::Relaxed);
+        if path_id == u16::MAX {
+            self.repair_frames.fetch_add(1, Ordering::Relaxed);
+        } else if let Some(path_bytes) = self.path_bytes.get(&path_id) {
+            path_bytes.fetch_add(payload_len as u64, Ordering::Relaxed);
+        }
+    }
+
+    fn record_failure(&self) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn take_snapshot(&self) -> TunWriterMetricsSnapshot {
+        TunWriterMetricsSnapshot {
+            packets: self.packets.swap(0, Ordering::Relaxed),
+            payload_bytes: self.payload_bytes.swap(0, Ordering::Relaxed),
+            queue_delay_micros: self.queue_delay_micros.swap(0, Ordering::Relaxed),
+            write_micros: self.write_micros.swap(0, Ordering::Relaxed),
+            failures: self.failures.swap(0, Ordering::Relaxed),
+            repair_frames: self.repair_frames.swap(0, Ordering::Relaxed),
+            path_bytes: self
+                .path_bytes
+                .iter()
+                .filter_map(|(path_id, bytes)| {
+                    let bytes = bytes.swap(0, Ordering::Relaxed);
+                    (bytes > 0).then_some((*path_id, bytes))
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TunWriterExit {
+    QueueClosed,
+    WriteFailed(String),
+    TaskFailed(String),
+}
+
+#[derive(Debug, Clone)]
+struct ReceiverPayloadPool {
+    buffers: Arc<StdMutex<Vec<Vec<u8>>>>,
+    maximum_buffers: usize,
+    maximum_capacity: usize,
+}
+
+impl ReceiverPayloadPool {
+    fn new(maximum_buffers: usize, maximum_capacity: usize) -> Self {
+        Self {
+            buffers: Arc::new(StdMutex::new(Vec::with_capacity(maximum_buffers))),
+            maximum_buffers: maximum_buffers.max(1),
+            maximum_capacity: maximum_capacity.max(1),
+        }
+    }
+
+    fn take(&self, minimum_capacity: usize) -> Vec<u8> {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let index = buffers
+            .iter()
+            .position(|buffer| buffer.capacity() >= minimum_capacity);
+        index
+            .map(|index| buffers.swap_remove(index))
+            .unwrap_or_else(|| Vec::with_capacity(minimum_capacity))
+    }
+
+    fn recycle(&self, mut buffer: Vec<u8>) {
+        if buffer.capacity() > self.maximum_capacity {
+            return;
+        }
+        buffer.clear();
+        let mut buffers = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if buffers.len() < self.maximum_buffers {
+            buffers.push(buffer);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.buffers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
 }
 
 #[derive(Debug)]
@@ -537,6 +1107,28 @@ struct TunnelPathRuntime {
     force_rebind_reason: Option<String>,
     force_rebind_bypass_rate_limit: bool,
     last_rebind_attempt: Option<Instant>,
+    ineffective_rebinds: u32,
+    socket_opened_at: Option<Instant>,
+    sender_queue_depth: usize,
+    sender_queue_capacity: usize,
+    sender_data_oldest_age_ms: u64,
+    sender_data_enqueue_drops: u64,
+    sender_data_deadline_drops: u64,
+    sender_control_queue_depth: usize,
+    sender_control_queue_capacity: usize,
+    sender_control_oldest_age_ms: u64,
+    sender_control_enqueue_drops: u64,
+    sender_control_deadline_drops: u64,
+    sender_repair_queue_depth: usize,
+    sender_repair_queue_capacity: usize,
+    sender_repair_oldest_age_ms: u64,
+    sender_repair_enqueue_drops: u64,
+    sender_repair_deadline_drops: u64,
+    stale_ack_ticks: u32,
+    direct_probe_in_flight: bool,
+    last_direct_probe_at: Option<Instant>,
+    pmtu_error_count: u64,
+    last_pmtu_encoded_bytes: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -610,7 +1202,30 @@ struct TunnelCounters {
     fec_send_skips: u64,
     primary_queue_full_events: u64,
     supervisor_control_progress_ticks: u64,
+    tun_write_queue_drops: u64,
+    tun_write_failures: u64,
+    tun_write_packets: u64,
+    tun_write_queue_micros_total: u64,
+    tun_write_micros_total: u64,
+    control_lane_drops: u64,
+    control_lane_coalesced: u64,
+    repair_lane_drops: u64,
+    sender_deadline_drops: u64,
+    pmtu_errors: u64,
+    repair_cache_evictions: u64,
+    repair_cache_evicted_bytes: u64,
 }
+
+#[derive(Debug, Clone)]
+struct PendingFecSource {
+    sequence: u64,
+    payload: Arc<Vec<u8>>,
+    schedule_generation: u64,
+    policy: RedundancyPolicy,
+    recovery_active: bool,
+}
+
+type ConsecutiveFecPair = (u64, Arc<Vec<u8>>, Arc<Vec<u8>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
@@ -678,6 +1293,172 @@ struct ScheduleControlSignature {
     schedule: SchedulePlan,
     redundancy_policy: RedundancyPolicy,
     recovery_active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SynchronizationControlOutcome {
+    Ignored,
+    SessionChallenge {
+        request_nonce: SessionHandshakeNonce,
+        challenge: SessionHandshakeNonce,
+    },
+    SessionAccepted,
+    ScheduleAccepted,
+    RestartRequired(String),
+}
+
+#[derive(Debug)]
+struct ClientSynchronizationState {
+    session_id: u64,
+    request_nonce: SessionHandshakeNonce,
+    challenge: Option<SessionHandshakeNonce>,
+    started_at: Instant,
+    last_session_open_sent_at: Option<Instant>,
+    session_accepted_at: Option<Instant>,
+    expected_schedule_generation: u64,
+    accepted_schedule_generation: Option<u64>,
+    schedule_unsynchronized_since: Option<Instant>,
+}
+
+impl ClientSynchronizationState {
+    fn new(
+        session_id: u64,
+        request_nonce: SessionHandshakeNonce,
+        schedule_generation: u64,
+        now: Instant,
+    ) -> Self {
+        Self {
+            session_id,
+            request_nonce,
+            challenge: None,
+            started_at: now,
+            last_session_open_sent_at: None,
+            session_accepted_at: None,
+            expected_schedule_generation: schedule_generation,
+            accepted_schedule_generation: None,
+            schedule_unsynchronized_since: None,
+        }
+    }
+
+    fn session_accepted(&self) -> bool {
+        self.session_accepted_at.is_some()
+    }
+
+    fn data_plane_ready(&self) -> bool {
+        self.session_accepted()
+            && self.accepted_schedule_generation == Some(self.expected_schedule_generation)
+    }
+
+    fn should_send_session_open(&self, now: Instant) -> bool {
+        !self.session_accepted()
+            && self.last_session_open_sent_at.is_none_or(|sent_at| {
+                now.saturating_duration_since(sent_at) >= SESSION_OPEN_RETRY_INTERVAL
+            })
+    }
+
+    fn record_session_open_sent(&mut self, now: Instant) {
+        self.last_session_open_sent_at = Some(now);
+    }
+
+    fn request_nonce(&self) -> SessionHandshakeNonce {
+        self.request_nonce
+    }
+
+    fn require_schedule(&mut self, schedule_generation: u64, now: Instant) {
+        self.expected_schedule_generation = schedule_generation;
+        if self.accepted_schedule_generation != Some(schedule_generation) {
+            self.accepted_schedule_generation = None;
+            if self.session_accepted() {
+                self.schedule_unsynchronized_since.get_or_insert(now);
+            }
+        }
+    }
+
+    fn mark_schedule_unsynchronized(&mut self, now: Instant) {
+        self.accepted_schedule_generation = None;
+        if self.session_accepted() {
+            self.schedule_unsynchronized_since.get_or_insert(now);
+        }
+    }
+
+    fn apply_control(
+        &mut self,
+        control: &XBondControlMessage,
+        now: Instant,
+    ) -> SynchronizationControlOutcome {
+        match control {
+            XBondControlMessage::SessionChallenge {
+                session_id,
+                request_nonce,
+                challenge,
+            } if !self.session_accepted()
+                && *session_id == self.session_id
+                && *request_nonce == self.request_nonce
+                && challenge.iter().any(|byte| *byte != 0) =>
+            {
+                self.challenge = Some(*challenge);
+                SynchronizationControlOutcome::SessionChallenge {
+                    request_nonce: *request_nonce,
+                    challenge: *challenge,
+                }
+            }
+            XBondControlMessage::SessionAccepted {
+                session_id,
+                request_nonce,
+                challenge,
+            } if *session_id == self.session_id
+                && *request_nonce == self.request_nonce
+                && self.challenge == Some(*challenge) =>
+            {
+                if self.session_accepted_at.is_none() {
+                    self.session_accepted_at = Some(now);
+                    self.schedule_unsynchronized_since.get_or_insert(now);
+                    return SynchronizationControlOutcome::SessionAccepted;
+                }
+                SynchronizationControlOutcome::Ignored
+            }
+            XBondControlMessage::ScheduleAccepted {
+                session_id,
+                schedule_generation,
+            } if *session_id == self.session_id
+                && self.session_accepted()
+                && *schedule_generation == self.expected_schedule_generation =>
+            {
+                self.accepted_schedule_generation = Some(*schedule_generation);
+                self.schedule_unsynchronized_since = None;
+                SynchronizationControlOutcome::ScheduleAccepted
+            }
+            XBondControlMessage::SessionRestartRequired { session_id, reason }
+                if *session_id == self.session_id && self.session_accepted() =>
+            {
+                SynchronizationControlOutcome::RestartRequired(reason.clone())
+            }
+            _ => SynchronizationControlOutcome::Ignored,
+        }
+    }
+
+    fn synchronization_error(&self, now: Instant) -> Option<String> {
+        if !self.session_accepted()
+            && now.saturating_duration_since(self.started_at) >= SESSION_SYNCHRONIZATION_TIMEOUT
+        {
+            return Some(format!(
+                "XBond session {} was not accepted within {} seconds",
+                self.session_id,
+                SESSION_SYNCHRONIZATION_TIMEOUT.as_secs()
+            ));
+        }
+
+        let schedule_started = self.schedule_unsynchronized_since?;
+        (now.saturating_duration_since(schedule_started) >= SCHEDULE_SYNCHRONIZATION_TIMEOUT).then(
+            || {
+                format!(
+                    "XBond schedule generation {} was not accepted within {} seconds",
+                    self.expected_schedule_generation,
+                    SCHEDULE_SYNCHRONIZATION_TIMEOUT.as_secs()
+                )
+            },
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1067,7 +1848,7 @@ fn server_needs_schedule(
 #[cfg(unix)]
 fn spawn_control_listener(
     socket_path: PathBuf,
-    control_tx: mpsc::UnboundedSender<ControlEnvelope>,
+    control_tx: mpsc::Sender<ControlEnvelope>,
     json_events: bool,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
@@ -1129,7 +1910,7 @@ fn spawn_control_listener(
 #[cfg(unix)]
 async fn handle_control_stream(
     stream: UnixStream,
-    control_tx: mpsc::UnboundedSender<ControlEnvelope>,
+    control_tx: mpsc::Sender<ControlEnvelope>,
 ) -> Result<()> {
     let mut reader = BufReader::new(stream);
     let mut request_json = String::new();
@@ -1145,6 +1926,7 @@ async fn handle_control_stream(
             request,
             response_tx,
         })
+        .await
         .map_err(|_| anyhow::anyhow!("XBond tunnel control loop is not available"))?;
     let response = response_rx
         .await
@@ -1160,10 +1942,267 @@ async fn handle_control_stream(
 #[cfg(not(unix))]
 fn spawn_control_listener(
     _socket_path: PathBuf,
-    _control_tx: mpsc::UnboundedSender<ControlEnvelope>,
+    _control_tx: mpsc::Sender<ControlEnvelope>,
     _json_events: bool,
 ) -> Result<()> {
     Ok(())
+}
+
+fn spawn_tun_reader(
+    mut tun_reader: XBondTun,
+    tun_name: String,
+    tun_read_mtu: usize,
+    tun_packet_tx: mpsc::Sender<Vec<u8>>,
+    fail_after_packets: Option<u64>,
+) -> mpsc::UnboundedReceiver<TunReaderExit> {
+    let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let task = tokio::task::spawn_blocking(move || {
+        let mut buf = vec![0u8; tun_read_mtu];
+        let mut packets_read = 0u64;
+        loop {
+            if should_fail_tun_reader(fail_after_packets, packets_read) {
+                return TunReaderExit::ReadFailed(format!(
+                    "XBond TUN reader for {tun_name} stopped by lab failure injection after \
+                     {packets_read} packets"
+                ));
+            }
+            match tun_reader.read_packet(&mut buf) {
+                Ok(len) => {
+                    packets_read = packets_read.saturating_add(1);
+                    if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
+                        return TunReaderExit::PacketQueueClosed;
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    return TunReaderExit::ReadFailed(format!(
+                        "XBond TUN reader for {tun_name} stopped: {error}"
+                    ));
+                }
+            }
+        }
+    });
+    tokio::spawn(async move {
+        let exit = match task.await {
+            Ok(exit) => exit,
+            Err(error) => TunReaderExit::TaskFailed(format!(
+                "XBond TUN reader task stopped unexpectedly: {error}"
+            )),
+        };
+        let _ = exit_tx.send(exit);
+    });
+    exit_rx
+}
+
+fn should_fail_tun_reader(fail_after_packets: Option<u64>, packets_read: u64) -> bool {
+    fail_after_packets.is_some_and(|limit| packets_read >= limit)
+}
+
+fn tun_reader_exit_error(exit: TunReaderExit) -> anyhow::Error {
+    match exit {
+        TunReaderExit::PacketQueueClosed => {
+            anyhow::anyhow!("XBond TUN reader stopped because its packet queue closed")
+        }
+        TunReaderExit::ReadFailed(message) | TunReaderExit::TaskFailed(message) => {
+            anyhow::anyhow!(message)
+        }
+    }
+}
+
+fn spawn_tun_writer(
+    mut tun_writer: XBondTun,
+    tun_name: String,
+    capacity: usize,
+    lab_write_delay: Duration,
+    payload_pool: ReceiverPayloadPool,
+    metrics: Arc<TunWriterMetrics>,
+) -> (TunWriterHandle, mpsc::UnboundedReceiver<TunWriterExit>) {
+    let bounded_capacity = capacity.max(1);
+    let (work_tx, mut work_rx) = mpsc::channel::<TunWriteBatch>(bounded_capacity);
+    let queued_packets = Arc::new(AtomicU64::new(0));
+    let worker_queued_packets = queued_packets.clone();
+    let (exit_tx, exit_rx) = mpsc::unbounded_channel();
+    let task = tokio::task::spawn_blocking(move || {
+        while let Some(batch) = work_rx.blocking_recv() {
+            worker_queued_packets.fetch_sub(batch.packets.len() as u64, Ordering::AcqRel);
+            let queue_delay_micros = batch
+                .queued_at
+                .elapsed()
+                .as_micros()
+                .min(u128::from(u64::MAX)) as u64;
+            for packet in batch.packets {
+                if !lab_write_delay.is_zero() {
+                    std::thread::sleep(lab_write_delay);
+                }
+                let write_started = Instant::now();
+                let result = tun_writer.write_packet(&packet.payload);
+                let write_micros = write_started
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64;
+                if result.is_ok() {
+                    metrics.record_success(
+                        packet.path_id,
+                        packet.payload.len(),
+                        queue_delay_micros,
+                        write_micros,
+                    );
+                } else {
+                    metrics.record_failure();
+                }
+                payload_pool.recycle(packet.payload);
+                if let Err(error) = result {
+                    return TunWriterExit::WriteFailed(format!(
+                        "XBond TUN writer for {tun_name} stopped: {error}"
+                    ));
+                }
+            }
+        }
+        TunWriterExit::QueueClosed
+    });
+    tokio::spawn(async move {
+        let exit = match task.await {
+            Ok(exit) => exit,
+            Err(error) => TunWriterExit::TaskFailed(format!(
+                "XBond TUN writer task stopped unexpectedly: {error}"
+            )),
+        };
+        let _ = exit_tx.send(exit);
+    });
+    (
+        TunWriterHandle {
+            tx: work_tx,
+            queued_packets,
+            capacity: bounded_capacity,
+        },
+        exit_rx,
+    )
+}
+
+fn tun_writer_exit_error(exit: TunWriterExit) -> anyhow::Error {
+    match exit {
+        TunWriterExit::QueueClosed => {
+            anyhow::anyhow!("XBond TUN writer stopped because its packet queue closed")
+        }
+        TunWriterExit::WriteFailed(message) | TunWriterExit::TaskFailed(message) => {
+            anyhow::anyhow!(message)
+        }
+    }
+}
+
+fn apply_tun_writer_metrics(
+    metrics: &TunWriterMetrics,
+    counters: &mut TunnelCounters,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    repair: &mut XBondRepairStatus,
+) {
+    let snapshot = metrics.take_snapshot();
+    counters.tun_write_packets = counters.tun_write_packets.saturating_add(snapshot.packets);
+    counters.tun_write_queue_micros_total = counters
+        .tun_write_queue_micros_total
+        .saturating_add(snapshot.queue_delay_micros);
+    counters.tun_write_micros_total = counters
+        .tun_write_micros_total
+        .saturating_add(snapshot.write_micros);
+    counters.tun_write_failures = counters
+        .tun_write_failures
+        .saturating_add(snapshot.failures);
+    counters.data_packets_received = counters
+        .data_packets_received
+        .saturating_add(snapshot.packets);
+    counters.data_bytes_received = counters
+        .data_bytes_received
+        .saturating_add(snapshot.payload_bytes);
+    repair.frames_delivered = repair
+        .frames_delivered
+        .saturating_add(snapshot.repair_frames);
+    for (path_id, bytes) in snapshot.path_bytes {
+        let runtime = path_runtime.entry(path_id).or_default();
+        runtime.bytes_received = runtime.bytes_received.saturating_add(bytes);
+    }
+}
+
+#[derive(Debug)]
+struct FreshAuthenticatedSession {
+    session_id: u64,
+    synchronization: ClientSynchronizationState,
+}
+
+async fn begin_fresh_authenticated_session(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    senders: &HashMap<u16, PathSenderHandle>,
+    schedule_generation: u64,
+    control_sequence: &mut u64,
+    counters: &mut TunnelCounters,
+    json_events: bool,
+    trace_packets: bool,
+    reason: &str,
+) -> Result<FreshAuthenticatedSession> {
+    let session_id = resolve_session_id(None)?;
+    let request_nonce = resolve_session_handshake_nonce()?;
+    let now = Instant::now();
+    let mut synchronization =
+        ClientSynchronizationState::new(session_id, request_nonce, schedule_generation, now);
+    send_session_open(
+        path_runtime,
+        senders,
+        session_id,
+        request_nonce,
+        control_sequence,
+        counters,
+        json_events,
+        trace_packets,
+    )
+    .await?;
+    synchronization.record_session_open_sent(Instant::now());
+    if json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "fresh-session-open-sent",
+                "session_id": session_id,
+                "reason": reason,
+            })
+        );
+    }
+    Ok(FreshAuthenticatedSession {
+        session_id,
+        synchronization,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reset_client_session_runtime(
+    config: &ClientConfig,
+    inbound_receiver: &mut FrameReceiver,
+    return_reorder: &mut PacketReorderBuffer,
+    resend_cache: &mut ResendCache,
+    repair: &mut XBondRepairStatus,
+    server_recovery_status: &mut XBondServerRecoveryStatus,
+    aggregate_health: &mut TunnelAggregateHealthRuntime,
+    pending_fec_source: &mut Option<PendingFecSource>,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+) {
+    *inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
+    *return_reorder =
+        PacketReorderBuffer::with_initial_sequence(8192, config.reorder_hold_ms * 1_000, 1);
+    *resend_cache = ResendCache::new_with_byte_capacity(
+        REPAIR_CACHE_CAPACITY,
+        recommended_repair_cache_bytes(
+            0,
+            REPAIR_CACHE_TTL_MICROS,
+            REPAIR_CACHE_MIN_BYTES,
+            REPAIR_CACHE_MAX_BYTES,
+        ),
+        REPAIR_CACHE_TTL_MICROS,
+    );
+    *repair = XBondRepairStatus::default();
+    *server_recovery_status = XBondServerRecoveryStatus::default();
+    *aggregate_health = TunnelAggregateHealthRuntime::default();
+    *pending_fec_source = None;
+    for runtime in path_runtime.values_mut() {
+        runtime.pending_heartbeats.clear();
+    }
 }
 
 async fn run_tunnel(options: TunnelOptions) -> Result<()> {
@@ -1171,7 +2210,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
-    let session_id = options.session_id.unwrap_or_else(now_micros);
+    let automatic_session_rotation = options.session_id.is_none();
+    let mut session_id = resolve_session_id(options.session_id)?;
 
     let specs = select_probe_paths(&config, &[], &[])?;
     let specs_by_id = specs
@@ -1182,14 +2222,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut senders: HashMap<u16, PathSenderHandle> = HashMap::new();
     let mut receivers: HashMap<u16, JoinHandle<()>> = HashMap::new();
     let mut path_runtime: HashMap<u16, TunnelPathRuntime> = HashMap::new();
-    let (control_tx, mut control_rx) = mpsc::unbounded_channel::<ControlEnvelope>();
+    let (control_tx, mut control_rx) =
+        mpsc::channel::<ControlEnvelope>(OPERATOR_CONTROL_QUEUE_CAPACITY);
     let send_report_capacity = config
         .tun_queue_capacity
         .max(1)
         .saturating_mul(specs_by_id.len().max(1));
     let (send_report_tx, mut send_report_rx) =
         mpsc::channel::<PathSendReport>(send_report_capacity);
-    let (socket_event_tx, mut socket_event_rx) = mpsc::unbounded_channel::<PathSocketEvent>();
+    let (socket_event_tx, mut socket_event_rx) =
+        mpsc::channel::<PathSocketEvent>(SOCKET_EVENT_QUEUE_CAPACITY);
     let (primary_send_completion_tx, mut primary_send_completion_rx) =
         mpsc::channel::<PrimarySendCompletion>(1);
     spawn_control_listener(
@@ -1198,7 +2240,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         options.json_events,
     )?;
 
-    let mut tun = XBondTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
+    let tun = XBondTun::open(&options.tun_name, options.tun_mtu).with_context(|| {
         format!(
             "failed to open XBond TUN {}; run as root or grant CAP_NET_ADMIN",
             options.tun_name
@@ -1207,31 +2249,47 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let tun_reader = tun
         .try_clone()
         .with_context(|| format!("failed to clone XBond TUN {} for packet reader", tun.name()))?;
+    let tun_writer = tun
+        .try_clone()
+        .with_context(|| format!("failed to clone XBond TUN {} for packet writer", tun.name()))?;
     let tun_queue_capacity = config.tun_queue_capacity.max(1);
     let inbound_queue_capacity = config.inbound_queue_capacity.max(1);
     let (tun_packet_tx, mut tun_packet_rx) = mpsc::channel::<Vec<u8>>(tun_queue_capacity);
     let tun_name = tun.name().to_string();
     let tun_read_mtu = usize::from(options.tun_mtu).max(2048);
-    tokio::task::spawn_blocking(move || {
-        let mut tun_reader = tun_reader;
-        let mut buf = vec![0u8; tun_read_mtu];
-        loop {
-            match tun_reader.read_packet(&mut buf) {
-                Ok(len) => {
-                    if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
-                        break;
-                    }
-                }
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    eprintln!("xbond XBond TUN reader for {tun_name} stopped: {error}");
-                    break;
-                }
-            }
-        }
-    });
+    let receiver_payload_pool = ReceiverPayloadPool::new(
+        inbound_queue_capacity,
+        receiver_scratch_capacity(options.tun_mtu),
+    );
+    let mut tun_reader_exit_rx = spawn_tun_reader(
+        tun_reader,
+        tun_name.clone(),
+        tun_read_mtu,
+        tun_packet_tx,
+        options.lab_fail_tun_read_after_packets,
+    );
+    let tun_writer_metrics = Arc::new(TunWriterMetrics::for_paths(specs_by_id.keys().copied()));
+    let (tun_write_tx, mut tun_writer_exit_rx) = spawn_tun_writer(
+        tun_writer,
+        tun_name,
+        inbound_queue_capacity,
+        Duration::from_millis(options.lab_tun_write_delay_ms),
+        receiver_payload_pool.clone(),
+        tun_writer_metrics.clone(),
+    );
 
-    let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundTunnelFrame>(inbound_queue_capacity);
+    let (inbound_control_tx, mut inbound_control_rx) =
+        mpsc::channel::<InboundTunnelFrame>(INBOUND_CONTROL_QUEUE_CAPACITY);
+    let (inbound_payload_tx, mut inbound_payload_rx) =
+        mpsc::channel::<InboundTunnelFrame>(inbound_queue_capacity);
+    let inbound_payload_drops = Arc::new(AtomicU64::new(0));
+    let inbound_queues = InboundTunnelQueues {
+        control_tx: inbound_control_tx,
+        payload_tx: inbound_payload_tx,
+        payload_drops: inbound_payload_drops.clone(),
+    };
+    let (silent_probe_result_tx, mut silent_probe_result_rx) =
+        mpsc::channel::<SilentBlackholeProbeResult>(specs_by_id.len().max(1));
     ensure_tunnel_sockets(
         &config,
         &specs_by_id,
@@ -1239,13 +2297,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &mut senders,
         &mut receivers,
         &mut path_runtime,
-        &inbound_tx,
+        &inbound_queues,
         &send_report_tx,
         &socket_event_tx,
         &key,
+        options.tun_mtu,
+        &receiver_payload_pool,
         options.json_events,
     )
     .await?;
+    refresh_sender_queue_metrics(&mut path_runtime, &senders);
     let policy_config = RedundancyPolicyConfig {
         interactive_packet_threshold_bytes: config.interactive_packet_threshold_bytes,
         duplicate_loss_threshold: config.duplicate_loss_threshold,
@@ -1313,14 +2374,33 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
     let mut counters = TunnelCounters::default();
     let mut aggregate_health = TunnelAggregateHealthRuntime::default();
-    let mut pending_fec_source: Option<(u64, Arc<Vec<u8>>)> = None;
+    let mut pending_fec_source: Option<PendingFecSource> = None;
     let mut inbound_receiver = FrameReceiver::new(config.realtime_deadline_ms * 1_000, 8192);
-    let mut return_reorder = PacketReorderBuffer::new(8192, config.reorder_hold_ms * 1_000);
-    let mut resend_cache = ResendCache::new(REPAIR_CACHE_CAPACITY, REPAIR_CACHE_TTL_MICROS);
+    let mut return_reorder =
+        PacketReorderBuffer::with_initial_sequence(8192, config.reorder_hold_ms * 1_000, 1);
+    let initial_repair_cache_bytes = recommended_repair_cache_bytes(
+        0,
+        REPAIR_CACHE_TTL_MICROS,
+        REPAIR_CACHE_MIN_BYTES,
+        REPAIR_CACHE_MAX_BYTES,
+    );
+    let mut resend_cache = ResendCache::new_with_byte_capacity(
+        REPAIR_CACHE_CAPACITY,
+        initial_repair_cache_bytes,
+        REPAIR_CACHE_TTL_MICROS,
+    );
     let mut repair = XBondRepairStatus::default();
     let mut server_recovery_status = XBondServerRecoveryStatus::default();
     let mut sequence = 0u64;
     let mut control_sequence = 1_000_000_000_000u64;
+    let session_request_nonce = resolve_session_handshake_nonce()?;
+    let synchronization_started_at = Instant::now();
+    let mut synchronization = ClientSynchronizationState::new(
+        session_id,
+        session_request_nonce,
+        current_schedule_generation,
+        synchronization_started_at,
+    );
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
     let mut reorder_tick =
         time::interval(Duration::from_millis(config.reorder_hold_ms.clamp(5, 100)));
@@ -1334,6 +2414,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &mut counters,
         &mut last_throughput_sample,
     );
+    counters.inbound_queue_drops = inbound_payload_drops.load(Ordering::Relaxed);
     repair.cache_entries = resend_cache.len();
     write_tunnel_runtime_status(
         &config,
@@ -1341,6 +2422,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         options.tun_mtu,
         &counters,
         &roles,
+        &path_runtime,
         &schedule,
         effective_mode,
         effective_policy,
@@ -1353,23 +2435,20 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &repair,
         &server_recovery_status,
         tun_packet_rx.len(),
-        inbound_rx.len(),
+        inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
     )?;
-    send_tunnel_schedule_control(
-        &config,
-        &schedule,
-        transmission_policy,
+    send_session_open(
         &mut path_runtime,
-        &sockets,
-        &key,
+        &senders,
         session_id,
+        synchronization.request_nonce(),
         &mut control_sequence,
-        current_schedule_generation,
-        recovery_status.active,
+        &mut counters,
         options.json_events,
         options.trace_packets,
     )
     .await?;
+    synchronization.record_session_open_sent(Instant::now());
     last_control_signature = Some(schedule_control_signature(
         &schedule,
         transmission_policy,
@@ -1380,6 +2459,14 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     loop {
         tokio::select! {
             _ = scheduler_tick.tick() => {
+                apply_tun_writer_metrics(
+                    &tun_writer_metrics,
+                    &mut counters,
+                    &mut path_runtime,
+                    &mut repair,
+                );
+                counters.inbound_queue_drops =
+                    inbound_payload_drops.load(Ordering::Relaxed);
                 ensure_tunnel_sockets(
                     &config,
                     &specs_by_id,
@@ -1387,24 +2474,112 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut senders,
                     &mut receivers,
                     &mut path_runtime,
-                    &inbound_tx,
+                    &inbound_queues,
                     &send_report_tx,
                     &socket_event_tx,
                     &key,
+                    options.tun_mtu,
+                    &receiver_payload_pool,
                     options.json_events,
                 ).await?;
-                send_tunnel_heartbeats(
-                    &config,
+                let synchronization_now = Instant::now();
+                if let Some(error) = synchronization.synchronization_error(synchronization_now) {
+                    if !automatic_session_rotation {
+                        bail!(
+                            "{error}; automatic session rotation is disabled because --session-id was supplied"
+                        );
+                    }
+                    let previous_session_id = session_id;
+                    reset_client_session_runtime(
+                        &config,
+                        &mut inbound_receiver,
+                        &mut return_reorder,
+                        &mut resend_cache,
+                        &mut repair,
+                        &mut server_recovery_status,
+                        &mut aggregate_health,
+                        &mut pending_fec_source,
+                        &mut path_runtime,
+                    );
+                    sequence = 0;
+                    primary_send_pending = false;
+                    last_primary_queue_full = None;
+                    let fresh = begin_fresh_authenticated_session(
+                        &mut path_runtime,
+                        &senders,
+                        current_schedule_generation,
+                        &mut control_sequence,
+                        &mut counters,
+                        options.json_events,
+                        options.trace_packets,
+                        &error,
+                    )
+                    .await?;
+                    session_id = fresh.session_id;
+                    synchronization = fresh.synchronization;
+                    last_control_signature = None;
+                    last_control_sent_at = synchronization_now;
+                    if options.json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "session-reconnected",
+                                "previous_session_id": previous_session_id,
+                                "session_id": session_id,
+                                "reason": error,
+                            })
+                        );
+                    }
+                    continue;
+                }
+                if synchronization.should_send_session_open(synchronization_now) {
+                    send_session_open(
+                        &mut path_runtime,
+                        &senders,
+                        session_id,
+                        synchronization.request_nonce(),
+                        &mut control_sequence,
+                        &mut counters,
+                        options.json_events,
+                        options.trace_packets,
+                    )
+                    .await?;
+                    synchronization.record_session_open_sent(synchronization_now);
+                }
+                if synchronization.session_accepted() {
+                    send_tunnel_heartbeats(
+                        &config,
+                        &mut path_runtime,
+                        &senders,
+                        session_id,
+                        &mut counters,
+                        options.json_events,
+                    )?;
+                }
+                drain_sender_completions(
+                    &senders,
                     &mut path_runtime,
+                    &mut counters,
+                    &mut repair,
+                );
+                refresh_sender_queue_metrics(&mut path_runtime, &senders);
+                schedule_silent_blackhole_probes(
+                    &config,
+                    &specs_by_id,
                     &sockets,
-                    &key,
-                    session_id,
-                    options.json_events,
-                ).await?;
+                    &mut path_runtime,
+                    &silent_probe_result_tx,
+                );
                 update_tunnel_throughput(
                     &mut path_runtime,
                     &mut counters,
                     &mut last_throughput_sample,
+                );
+                update_repair_cache_budget(
+                    &mut resend_cache,
+                    counters.outbound_throughput_bps,
+                    monotonic_micros(),
+                    &mut counters,
                 );
                 health = tunnel_health(&config, &path_runtime, &sockets);
                 roles = select_path_roles_with_state(
@@ -1417,6 +2592,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_mode_and_policy(&config, &mut active_override);
                 recovery_status =
                     update_recovery_state(&mut recovery_state, effective_policy, &health, recovery_config);
+                update_return_reorder_hold(
+                    &mut return_reorder,
+                    config.reorder_hold_ms,
+                    &recovery_status,
+                    &server_recovery_status,
+                );
                 schedule = build_effective_schedule(
                     effective_mode,
                     &roles,
@@ -1434,26 +2615,67 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
-                send_tunnel_aggregate_heartbeat(
-                    &config,
-                    &mut aggregate_health,
-                    &mut path_runtime,
-                    &sockets,
-                    &transmission_plans,
-                    &key,
-                    session_id,
-                    options.json_events,
-                ).await?;
+                if synchronization.data_plane_ready() {
+                    send_tunnel_aggregate_heartbeat(
+                        &config,
+                        &mut aggregate_health,
+                        &mut path_runtime,
+                        &sockets,
+                        &senders,
+                        &transmission_plans,
+                        session_id,
+                        &mut counters,
+                        options.json_events,
+                    )?;
+                }
                 repair.cache_entries = resend_cache.len();
+                if options.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "client-dataplane-internal-metrics",
+                            "tun_write_queue_depth": tun_write_tx.queue_depth(),
+                            "tun_write_queue_capacity": tun_write_tx.capacity,
+                            "tun_write_queue_drops": counters.tun_write_queue_drops,
+                            "tun_write_failures": counters.tun_write_failures,
+                            "control_lane_drops": counters.control_lane_drops,
+                            "control_lane_coalesced": counters.control_lane_coalesced,
+                            "repair_lane_drops": counters.repair_lane_drops,
+                            "sender_deadline_drops": counters.sender_deadline_drops,
+                            "sender_lanes": sender_lane_metrics_json(&path_runtime),
+                            "pmtu_errors": counters.pmtu_errors,
+                            "repair_cache_entries": resend_cache.len(),
+                            "repair_cache_bytes": resend_cache.bytes_len(),
+                            "repair_cache_byte_capacity": resend_cache.byte_capacity(),
+                            "repair_cache_packet_capacity": resend_cache.packet_capacity(),
+                            "repair_cache_evictions": counters.repair_cache_evictions,
+                            "repair_cache_evicted_bytes": counters.repair_cache_evicted_bytes,
+                        })
+                    );
+                }
                 let control_signature =
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
                 let schedule_changed = last_control_signature.as_ref() != Some(&control_signature);
                 if schedule_changed {
                     current_schedule_generation = current_schedule_generation.saturating_add(1);
+                    synchronization.require_schedule(
+                        current_schedule_generation,
+                        synchronization_now,
+                    );
+                    last_control_signature = Some(control_signature.clone());
+                    pending_fec_source = None;
                 }
-                if schedule_changed
-                    || server_needs_schedule(&server_recovery_status, current_schedule_generation)
-                    || last_control_sent_at.elapsed() >= Duration::from_secs(5)
+                let schedule_unacknowledged = !synchronization.data_plane_ready();
+                if synchronization.session_accepted()
+                    && (schedule_changed
+                        || server_needs_schedule(
+                            &server_recovery_status,
+                            current_schedule_generation,
+                        )
+                        || (schedule_unacknowledged
+                            && last_control_sent_at.elapsed()
+                                >= SCHEDULE_CONTROL_RETRY_INTERVAL)
+                        || last_control_sent_at.elapsed() >= Duration::from_secs(5))
                 {
                     send_tunnel_schedule_control(
                         &config,
@@ -1461,14 +2683,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         transmission_policy,
                         &mut path_runtime,
                         &sockets,
-                        &key,
+                        &senders,
                         session_id,
                         &mut control_sequence,
                         current_schedule_generation,
                         recovery_status.active,
+                        &mut counters,
                         options.json_events,
                         options.trace_packets,
-                    ).await?;
+                    )?;
                     last_control_signature = Some(control_signature);
                     last_control_sent_at = Instant::now();
                 }
@@ -1478,6 +2701,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     options.tun_mtu,
                     &counters,
                     &roles,
+                    &path_runtime,
                     &schedule,
                     effective_mode,
                     effective_policy,
@@ -1490,7 +2714,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &repair,
                     &server_recovery_status,
                     tun_packet_rx.len(),
-                    inbound_rx.len(),
+                    inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                 )?;
                 counters.supervisor_control_progress_ticks = counters
                     .supervisor_control_progress_ticks
@@ -1529,24 +2753,25 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
             _ = reorder_tick.tick() => {
                 let ready = return_reorder.drain_ready(monotonic_micros());
-                write_reordered_return_packets(
-                    &mut tun,
+                enqueue_reordered_return_packets(
+                    &tun_write_tx,
                     ready,
-                    &mut path_runtime,
                     &mut counters,
-                    &mut repair,
-                )?;
+                    options.json_events,
+                )
+                .await?;
                 send_repair_requests_for_return_gaps(
                     &mut path_runtime,
-                    &sockets,
-                    &key,
+                    &senders,
                     session_id,
                     &mut control_sequence,
                     &mut return_reorder,
                     &mut repair,
                     recovery_status.active,
+                    aggregate_health.loss_rate,
+                    &mut counters,
                     options.json_events,
-                ).await?;
+                )?;
             }
 
             Some(envelope) = control_rx.recv() => {
@@ -1569,10 +2794,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                     &mut senders,
                                     &mut receivers,
                                     &mut path_runtime,
-                                    &inbound_tx,
+                                    &inbound_queues,
                                     &send_report_tx,
                                     &socket_event_tx,
                                     &key,
+                                    options.tun_mtu,
+                                    &receiver_payload_pool,
                                     options.json_events,
                                 ).await {
                                     Ok(()) if sockets.contains_key(&resolved_path_id) => {
@@ -1629,6 +2856,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_mode_and_policy(&config, &mut active_override);
                 recovery_status =
                     update_recovery_state(&mut recovery_state, effective_policy, &health, recovery_config);
+                update_return_reorder_hold(
+                    &mut return_reorder,
+                    config.reorder_hold_ms,
+                    &recovery_status,
+                    &server_recovery_status,
+                );
                 schedule = build_effective_schedule(
                     effective_mode,
                     &roles,
@@ -1651,22 +2884,29 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     schedule_control_signature(&schedule, transmission_policy, recovery_status.active);
                 if last_control_signature.as_ref() != Some(&control_signature) {
                     current_schedule_generation = current_schedule_generation.saturating_add(1);
+                    synchronization.require_schedule(
+                        current_schedule_generation,
+                        Instant::now(),
+                    );
+                    last_control_signature = Some(control_signature.clone());
+                    pending_fec_source = None;
                 }
-                if response.ok {
+                if response.ok && synchronization.session_accepted() {
                     match send_tunnel_schedule_control(
                         &config,
                         &schedule,
                         transmission_policy,
                         &mut path_runtime,
                         &sockets,
-                        &key,
+                        &senders,
                         session_id,
                         &mut control_sequence,
                         current_schedule_generation,
                         recovery_status.active,
+                        &mut counters,
                         options.json_events,
                         options.trace_packets,
-                    ).await {
+                    ) {
                         Ok(()) => {
                             last_control_signature = Some(control_signature);
                             last_control_sent_at = Instant::now();
@@ -1684,6 +2924,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     options.tun_mtu,
                     &counters,
                     &roles,
+                    &path_runtime,
                     &schedule,
                     effective_mode,
                     effective_policy,
@@ -1696,7 +2937,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &repair,
                     &server_recovery_status,
                     tun_packet_rx.len(),
-                    inbound_rx.len(),
+                    inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                 )?;
                 let _ = envelope.response_tx.send(response);
             }
@@ -1710,45 +2951,52 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 ) {
                     continue;
                 }
-                if report.encoded {
-                    counters.encoded_frames = counters.encoded_frames.saturating_add(1);
-                    counters.encode_micros_total = counters
-                        .encode_micros_total
-                        .saturating_add(report.encode_micros);
+                record_tunnel_send_failure(&mut path_runtime, report.path_id);
+                if report.message_too_large {
+                    counters.pmtu_errors = counters.pmtu_errors.saturating_add(1);
+                    let runtime = path_runtime.entry(report.path_id).or_default();
+                    runtime.pmtu_error_count = runtime.pmtu_error_count.saturating_add(1);
+                    runtime.last_pmtu_encoded_bytes = Some(report.encoded_bytes);
                 }
-                if report.success {
-                    record_tunnel_send_report_success(
+                if report.needs_rebind {
+                    mark_path_socket_for_rebind(
                         &mut path_runtime,
                         report.path_id,
-                        report.packet_kind,
-                        report.encoded_bytes,
-                        &mut counters,
-                        &mut repair,
+                        "udp-send-enodev",
+                        report.error.clone(),
+                        false,
                     );
-                } else {
-                    record_tunnel_send_failure(&mut path_runtime, report.path_id);
-                    if report.needs_rebind {
-                        mark_path_socket_for_rebind(
-                            &mut path_runtime,
-                            report.path_id,
-                            "udp-send-enodev",
-                            report.error.clone(),
-                            false,
-                        );
-                    }
-                    if options.json_events {
-                        println!(
-                            "{}",
-                            serde_json::json!({
-                                "event": "path-sender-send-failed",
-                                "path_id": report.path_id,
-                                "packet_kind": report.packet_kind,
-                                "error": report.error.unwrap_or_else(|| "unknown send failure".to_string()),
-                                "raw_os_error": report.raw_os_error,
-                                "needs_rebind": report.needs_rebind,
-                            })
-                        );
-                    }
+                }
+                if options.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "path-sender-send-failed",
+                            "path_id": report.path_id,
+                            "packet_kind": report.packet_kind,
+                            "error": report.error.unwrap_or_else(|| "unknown send failure".to_string()),
+                            "raw_os_error": report.raw_os_error,
+                            "needs_rebind": report.needs_rebind,
+                            "message_too_large": report.message_too_large,
+                            "encoded_bytes": report.encoded_bytes,
+                            "configured_tun_mtu": options.tun_mtu,
+                            "lane": format!("{:?}", report.lane).to_lowercase(),
+                        })
+                    );
+                }
+                if report.message_too_large && options.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "path-pmtu-message-too-large",
+                            "path_id": report.path_id,
+                            "packet_kind": report.packet_kind,
+                            "encoded_bytes": report.encoded_bytes,
+                            "configured_tun_mtu": options.tun_mtu,
+                            "raw_os_error": report.raw_os_error,
+                            "automatic_mtu_change": false,
+                        })
+                    );
                 }
             }
 
@@ -1782,6 +3030,78 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
             }
 
+            Some(result) = silent_probe_result_rx.recv() => {
+                let threshold = silent_blackhole_stale_threshold(&config);
+                let (should_rebind, ineffective_rebinds, should_restart_session) =
+                    if socket_generation_is_current(
+                    &path_runtime,
+                    &sockets,
+                    result.path_id,
+                    result.socket_generation,
+                ) {
+                    let runtime = path_runtime.entry(result.path_id).or_default();
+                    runtime.direct_probe_in_flight = false;
+                    let should_rebind =
+                        result.reachable && path_is_silent_blackhole_candidate(runtime, threshold);
+                    let should_restart_session =
+                        should_rebind && record_ineffective_rebind(runtime);
+                    (
+                        should_rebind,
+                        runtime.ineffective_rebinds,
+                        should_restart_session,
+                    )
+                } else {
+                    (false, 0, false)
+                };
+
+                if should_rebind {
+                    if should_restart_session {
+                        bail!(
+                            "path {} remained a confirmed silent UDP blackhole after {} socket \
+                             rebind attempts; restarting the authenticated XBond session instead \
+                             of repeating ineffective local rebinds",
+                            result.path_id,
+                            ineffective_rebinds
+                        );
+                    }
+                    mark_path_socket_for_rebind(
+                        &mut path_runtime,
+                        result.path_id,
+                        "silent-udp-blackhole-direct-probe-ok",
+                        None,
+                        false,
+                    );
+                } else if let Some(error) = result.error.as_ref() {
+                    if let Some(runtime) = path_runtime.get_mut(&result.path_id) {
+                        runtime.last_rebind_error =
+                            Some(format!("silent-blackhole direct probe failed: {error}"));
+                    }
+                }
+
+                if options.json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "silent-blackhole-direct-probe",
+                            "path_id": result.path_id,
+                            "socket_generation": result.socket_generation,
+                            "reachable": result.reachable,
+                            "rebind_requested": should_rebind,
+                            "ineffective_rebinds": ineffective_rebinds,
+                            "error": result.error,
+                        })
+                    );
+                }
+            }
+
+            Some(exit) = tun_reader_exit_rx.recv() => {
+                return Err(tun_reader_exit_error(exit));
+            }
+
+            Some(exit) = tun_writer_exit_rx.recv() => {
+                return Err(tun_writer_exit_error(exit));
+            }
+
             Some(completion) = primary_send_completion_rx.recv(), if primary_send_pending => {
                 primary_send_pending = false;
                 if !completion.success
@@ -1806,7 +3126,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
             }
 
-            Some(packet) = tun_packet_rx.recv(), if !primary_send_pending => {
+            Some(packet) = tun_packet_rx.recv(), if synchronization.data_plane_ready() && !primary_send_pending => {
                 if options
                     .packet_limit
                     .is_some_and(|packet_limit| sequence >= packet_limit)
@@ -1834,6 +3154,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 );
 
                 if packet_transmissions.is_empty() {
+                    pending_fec_source = None;
                     if options.json_events && options.trace_packets {
                         println!(
                             "{}",
@@ -1847,12 +3168,28 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
 
                 sequence += 1;
+                let cache_entries_before = resend_cache.len();
+                let cache_bytes_before = resend_cache.bytes_len();
                 resend_cache.insert(
                     session_id,
                     sequence,
                     packet_payload.clone(),
                     monotonic_micros(),
                 );
+                counters.repair_cache_evictions = counters
+                    .repair_cache_evictions
+                    .saturating_add(
+                        cache_entries_before
+                            .saturating_add(1)
+                            .saturating_sub(resend_cache.len()) as u64,
+                    );
+                counters.repair_cache_evicted_bytes = counters
+                    .repair_cache_evicted_bytes
+                    .saturating_add(
+                        cache_bytes_before
+                            .saturating_add(packet_payload.len())
+                            .saturating_sub(resend_cache.bytes_len()) as u64,
+                    );
                 counters.data_bytes_sent = counters
                     .data_bytes_sent
                     .saturating_add(packet_payload.len() as u64);
@@ -1871,16 +3208,16 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         send_micros,
                         transmission.path_id,
                     );
-                    let work = PathSendWork {
-                        packet_kind: transmission.packet_kind,
+                    let work = PathSendWork::data(
+                        transmission.packet_kind,
                         header,
-                        payload: packet_payload.clone(),
-                    };
+                        packet_payload.clone(),
+                    );
                     let enqueue_result = if transmission.packet_kind == PacketKind::Data {
                         match enqueue_primary_work(
                             transmission.path_id,
                             sender.socket_generation,
-                            &sender.tx,
+                            sender,
                             work,
                             &primary_send_completion_tx,
                         ) {
@@ -1899,9 +3236,10 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             Err(error) => Err(error),
                         }
                     } else {
-                        match sender.tx.try_send(work) {
+                        match try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, work) {
                             Ok(()) => Ok(()),
                             Err(mpsc::error::TrySendError::Full(_)) => {
+                                sender.metrics.record_enqueue_drop(PathSendLane::Data);
                                 counters.duplicate_send_skips =
                                     counters.duplicate_send_skips.saturating_add(1);
                                 continue;
@@ -1932,20 +3270,29 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     }
                 }
 
-                let fec_transmissions = packet_transmissions
+                let fec_eligible = packet_transmissions
                     .iter()
-                    .filter(|transmission| transmission.packet_kind == PacketKind::Fec);
-                if packet_transmissions
-                    .iter()
-                    .any(|transmission| transmission.packet_kind == PacketKind::Fec)
+                    .any(|transmission| transmission.packet_kind == PacketKind::Fec);
+                if let Some((base_sequence, first_payload, second_payload)) =
+                    advance_pending_fec_source(
+                        &mut pending_fec_source,
+                        sequence,
+                        packet_payload.clone(),
+                        fec_eligible,
+                        current_schedule_generation,
+                        effective_policy,
+                        recovery_status.active,
+                    )
                 {
-                    if let Some((base_sequence, first_payload)) = pending_fec_source.take() {
                         let fec_payload = Arc::new(XorFecBlock::encode(
                             base_sequence,
                             first_payload.as_slice(),
-                            packet_payload.as_slice(),
+                            second_payload.as_slice(),
                         )?);
-                        for transmission in fec_transmissions {
+                        for transmission in packet_transmissions
+                            .iter()
+                            .filter(|transmission| transmission.packet_kind == PacketKind::Fec)
+                        {
                             let Some(sender) = senders.get(&transmission.path_id) else {
                                 counters.fec_packets_skipped += 1;
                                 counters.fec_send_skips =
@@ -1959,13 +3306,18 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 send_micros,
                                 transmission.path_id,
                             );
-                            match sender.tx.try_send(PathSendWork {
-                                packet_kind: PacketKind::Fec,
-                                header,
-                                payload: fec_payload.clone(),
-                            }) {
+                            match try_enqueue_sender_lane(
+                                &sender.data_tx,
+                                &sender.metrics,
+                                PathSendWork::data(
+                                    PacketKind::Fec,
+                                    header,
+                                    fec_payload.clone(),
+                                ),
+                            ) {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {
+                                    sender.metrics.record_enqueue_drop(PathSendLane::Data);
                                     counters.fec_packets_skipped += 1;
                                     counters.fec_send_skips =
                                         counters.fec_send_skips.saturating_add(1);
@@ -1989,9 +3341,6 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 }
                             }
                         }
-                    } else {
-                        pending_fec_source = Some((sequence, packet_payload.clone()));
-                    }
                 }
 
                 if options.json_events && options.trace_packets {
@@ -2012,76 +3361,284 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
             }
 
-            Some(inbound) = inbound_rx.recv() => {
+            Some(mut inbound) = receive_prioritized_tunnel_frame(
+                &mut inbound_control_rx,
+                &mut inbound_payload_rx,
+            ) => {
                 counters.decoded_frames = counters.decoded_frames.saturating_add(1);
-                if let Some(status) = parse_server_recovery_status(&inbound.frame) {
-                    server_recovery_status = status;
-                    if server_needs_schedule(&server_recovery_status, current_schedule_generation)
-                    {
+                if inbound.frame.header.session_id != session_id {
+                    if options.json_events && options.trace_packets {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "stale-session-frame-ignored",
+                                "expected_session_id": session_id,
+                                "frame_session_id": inbound.frame.header.session_id,
+                                "sequence": inbound.frame.header.sequence,
+                                "kind": inbound.frame.header.kind,
+                                "path_id": inbound.path_id,
+                            })
+                        );
+                    }
+                    receiver_payload_pool.recycle(inbound.frame.payload);
+                    continue;
+                }
+                match inbound_receiver.observe(&inbound.frame, now_micros()) {
+                    ReceiveOutcome::Accepted => {}
+                    ReceiveOutcome::Duplicate => {
+                        if is_data_like(inbound.frame.header.kind) {
+                            let runtime = path_runtime.entry(inbound.path_id).or_default();
+                            runtime.duplicate_bytes_received = runtime
+                                .duplicate_bytes_received
+                                .saturating_add(inbound.frame.payload.len() as u64);
+                            runtime.duplicate_late_packets =
+                                runtime.duplicate_late_packets.saturating_add(1);
+                        }
+                        counters.duplicate_packets_dropped =
+                            counters.duplicate_packets_dropped.saturating_add(1);
+                        if inbound.frame.header.kind == PacketKind::Repair {
+                            repair.late_frames = repair.late_frames.saturating_add(1);
+                        }
+                        receiver_payload_pool.recycle(inbound.frame.payload);
+                        continue;
+                    }
+                    ReceiveOutcome::Expired => {
+                        if is_data_like(inbound.frame.header.kind) {
+                            let runtime = path_runtime.entry(inbound.path_id).or_default();
+                            runtime.duplicate_bytes_received = runtime
+                                .duplicate_bytes_received
+                                .saturating_add(inbound.frame.payload.len() as u64);
+                            runtime.duplicate_late_packets =
+                                runtime.duplicate_late_packets.saturating_add(1);
+                        }
+                        counters.late_packets_dropped =
+                            counters.late_packets_dropped.saturating_add(1);
+                        if inbound.frame.header.kind == PacketKind::Repair {
+                            repair.late_frames = repair.late_frames.saturating_add(1);
+                        }
+                        receiver_payload_pool.recycle(inbound.frame.payload);
+                        continue;
+                    }
+                }
+                if let Some(control) = parse_control_message(&inbound.frame) {
+                    let synchronization_now = Instant::now();
+                    let mut restart_reason = None;
+                    match synchronization.apply_control(&control, synchronization_now) {
+                        SynchronizationControlOutcome::RestartRequired(reason) => {
+                            restart_reason = Some(reason);
+                        }
+                        SynchronizationControlOutcome::SessionChallenge {
+                            request_nonce,
+                            challenge,
+                        } => {
+                            send_session_proof(
+                                &mut path_runtime,
+                                &senders,
+                                session_id,
+                                request_nonce,
+                                challenge,
+                                &mut control_sequence,
+                                &mut counters,
+                                options.json_events,
+                            )
+                            .await?;
+                        }
+                        SynchronizationControlOutcome::SessionAccepted => {
+                            synchronization.require_schedule(
+                                current_schedule_generation,
+                                synchronization_now,
+                            );
+                            send_tunnel_schedule_control(
+                                &config,
+                                &schedule,
+                                transmission_policy,
+                                &mut path_runtime,
+                                &sockets,
+                                &senders,
+                                session_id,
+                                &mut control_sequence,
+                                current_schedule_generation,
+                                recovery_status.active,
+                                &mut counters,
+                                options.json_events,
+                                options.trace_packets,
+                            )?;
+                            last_control_sent_at = synchronization_now;
+                            if options.json_events {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "session-accepted",
+                                        "session_id": session_id,
+                                    })
+                                );
+                            }
+                        }
+                        SynchronizationControlOutcome::ScheduleAccepted => {
+                            if options.json_events {
+                                println!(
+                                    "{}",
+                                    serde_json::json!({
+                                        "event": "schedule-accepted",
+                                        "session_id": session_id,
+                                        "schedule_generation": current_schedule_generation,
+                                    })
+                                );
+                            }
+                        }
+                        SynchronizationControlOutcome::Ignored => {}
+                    }
+
+                    if let Some(reason) = restart_reason {
+                        if !automatic_session_rotation {
+                            bail!(
+                                "XBond server requested restart of fixed authenticated session {session_id}: {reason}"
+                            );
+                        }
+                        let previous_session_id = session_id;
+                        receiver_payload_pool.recycle(inbound.frame.payload);
+                        reset_client_session_runtime(
+                            &config,
+                            &mut inbound_receiver,
+                            &mut return_reorder,
+                            &mut resend_cache,
+                            &mut repair,
+                            &mut server_recovery_status,
+                            &mut aggregate_health,
+                            &mut pending_fec_source,
+                            &mut path_runtime,
+                        );
+                        sequence = 0;
+                        primary_send_pending = false;
+                        last_primary_queue_full = None;
+                        let fresh = begin_fresh_authenticated_session(
+                            &mut path_runtime,
+                            &senders,
+                            current_schedule_generation,
+                            &mut control_sequence,
+                            &mut counters,
+                            options.json_events,
+                            options.trace_packets,
+                            &reason,
+                        )
+                        .await?;
+                        session_id = fresh.session_id;
+                        synchronization = fresh.synchronization;
+                        last_control_signature = None;
+                        last_control_sent_at = synchronization_now;
                         if options.json_events {
                             println!(
                                 "{}",
                                 serde_json::json!({
-                                    "event": "server-schedule-required",
-                                    "current_schedule_generation": current_schedule_generation,
-                                    "server_schedule_generation": server_recovery_status.schedule_generation,
-                                    "server_schedule_required": server_recovery_status.schedule_required,
-                                    "server_schedule_age_ms": server_recovery_status.schedule_age_ms,
+                                    "event": "session-reconnected",
+                                    "previous_session_id": previous_session_id,
+                                    "session_id": session_id,
+                                    "reason": reason,
                                 })
                             );
                         }
-                        send_tunnel_schedule_control(
-                            &config,
-                            &schedule,
-                            transmission_policy,
-                            &mut path_runtime,
-                            &sockets,
-                            &key,
-                            session_id,
-                            &mut control_sequence,
-                            current_schedule_generation,
-                            recovery_status.active,
-                            options.json_events,
-                            options.trace_packets,
-                        ).await?;
-                        last_control_sent_at = Instant::now();
+                        continue;
                     }
-                    write_tunnel_runtime_status(
-                        &config,
-                        &tun,
-                        options.tun_mtu,
-                        &counters,
-                        &roles,
-                        &schedule,
-                        effective_mode,
-                        effective_policy,
-                        &recovery_status,
-                        &aggregate_health,
-                        active_override.as_ref(),
-                        role_state.schedule_change_count,
-                        current_schedule_generation,
-                        &return_reorder,
-                        &repair,
-                        &server_recovery_status,
-                        tun_packet_rx.len(),
-                        inbound_rx.len(),
-                    )?;
-                    continue;
-                }
-                if let Some(sequences) = parse_repair_request(&inbound.frame) {
-                    repair.requests_received = repair
-                        .requests_received
-                        .saturating_add(sequences.len() as u64);
-                    send_repair_frames_from_client_cache(
-                        &config,
-                        &mut path_runtime,
-                        &senders,
-                        &transmission_plans,
-                        &mut resend_cache,
-                        session_id,
-                        &sequences,
-                        &mut repair,
-                    )?;
+
+                    match control {
+                        XBondControlMessage::ServerRecoveryStatus { status } => {
+                            let mut status = *status;
+                            status.reported = true;
+                            server_recovery_status = status;
+                            update_return_reorder_hold(
+                                &mut return_reorder,
+                                config.reorder_hold_ms,
+                                &recovery_status,
+                                &server_recovery_status,
+                            );
+                            if synchronization.session_accepted()
+                                && server_needs_schedule(
+                                    &server_recovery_status,
+                                    current_schedule_generation,
+                                )
+                            {
+                                synchronization
+                                    .mark_schedule_unsynchronized(synchronization_now);
+                                if options.json_events {
+                                    println!(
+                                        "{}",
+                                        serde_json::json!({
+                                            "event": "server-schedule-required",
+                                            "current_schedule_generation": current_schedule_generation,
+                                            "server_schedule_generation": server_recovery_status.schedule_generation,
+                                            "server_schedule_required": server_recovery_status.schedule_required,
+                                            "server_schedule_age_ms": server_recovery_status.schedule_age_ms,
+                                        })
+                                    );
+                                }
+                                send_tunnel_schedule_control(
+                                    &config,
+                                    &schedule,
+                                    transmission_policy,
+                                    &mut path_runtime,
+                                    &sockets,
+                                    &senders,
+                                    session_id,
+                                    &mut control_sequence,
+                                    current_schedule_generation,
+                                    recovery_status.active,
+                                    &mut counters,
+                                    options.json_events,
+                                    options.trace_packets,
+                                )?;
+                                last_control_sent_at = synchronization_now;
+                            }
+                            write_tunnel_runtime_status(
+                                &config,
+                                &tun,
+                                options.tun_mtu,
+                                &counters,
+                                &roles,
+                                &path_runtime,
+                                &schedule,
+                                effective_mode,
+                                effective_policy,
+                                &recovery_status,
+                                &aggregate_health,
+                                active_override.as_ref(),
+                                role_state.schedule_change_count,
+                                current_schedule_generation,
+                                &return_reorder,
+                                &repair,
+                                &server_recovery_status,
+                                tun_packet_rx.len(),
+                                inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+                            )?;
+                        }
+                        XBondControlMessage::RepairRequest { mut sequences } => {
+                            sequences.sort_unstable();
+                            sequences.dedup();
+                            sequences.truncate(MAX_REPAIR_REQUESTS);
+                            if !sequences.is_empty() {
+                                repair.requests_received = repair
+                                    .requests_received
+                                    .saturating_add(sequences.len() as u64);
+                                send_repair_frames_from_client_cache(
+                                    &config,
+                                    &mut path_runtime,
+                                    &senders,
+                                    &transmission_plans,
+                                    &mut resend_cache,
+                                    session_id,
+                                    &sequences,
+                                    &mut repair,
+                                    &mut counters,
+                                )?;
+                            }
+                        }
+                        XBondControlMessage::SessionOpen { .. }
+                        | XBondControlMessage::SessionChallenge { .. }
+                        | XBondControlMessage::SessionProof { .. }
+                        | XBondControlMessage::SessionAccepted { .. }
+                        | XBondControlMessage::SessionRestartRequired { .. }
+                        | XBondControlMessage::ScheduleAccepted { .. } => {}
+                    }
+                    receiver_payload_pool.recycle(inbound.frame.payload);
                     continue;
                 }
                 if is_expected_ack(&inbound.frame, session_id, inbound.frame.header.sequence) {
@@ -2104,93 +3661,65 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             })
                         );
                     }
+                    receiver_payload_pool.recycle(inbound.frame.payload);
                     continue;
                 }
 
-                let outcome = inbound_receiver.observe(&inbound.frame, now_micros());
-                match outcome {
-                    ReceiveOutcome::Accepted if is_data_like(inbound.frame.header.kind) => {
-                        if inbound.frame.header.kind == PacketKind::Duplicate {
-                            let runtime = path_runtime.entry(inbound.path_id).or_default();
-                            runtime.duplicate_useful_packets =
-                                runtime.duplicate_useful_packets.saturating_add(1);
-                        }
-                        if is_ipv4_packet(&inbound.frame.payload) {
-                            let sequence = inbound.frame.header.sequence;
-                            let path_id = if inbound.frame.header.kind == PacketKind::Repair {
-                                u16::MAX
-                            } else {
-                                inbound.path_id
-                            };
-                            let payload_len = inbound.frame.payload.len();
-                            let ready = return_reorder.push(
-                                sequence,
-                                path_id,
-                                inbound.frame.payload,
-                                monotonic_micros(),
-                                0,
+                if is_data_like(inbound.frame.header.kind) {
+                    if inbound.frame.header.kind == PacketKind::Duplicate {
+                        let runtime = path_runtime.entry(inbound.path_id).or_default();
+                        runtime.duplicate_useful_packets =
+                            runtime.duplicate_useful_packets.saturating_add(1);
+                    }
+                    if is_ipv4_packet(&inbound.frame.payload) {
+                        let sequence = inbound.frame.header.sequence;
+                        let path_id = if inbound.frame.header.kind == PacketKind::Repair {
+                            u16::MAX
+                        } else {
+                            inbound.path_id
+                        };
+                        let payload_len = inbound.frame.payload.len();
+                        let payload = std::mem::take(&mut inbound.frame.payload);
+                        let ready = return_reorder.push(
+                            sequence,
+                            path_id,
+                            payload,
+                            monotonic_micros(),
+                            0,
+                        );
+                        enqueue_reordered_return_packets(
+                            &tun_write_tx,
+                            ready,
+                            &mut counters,
+                            options.json_events,
+                        )
+                        .await?;
+                        send_repair_requests_for_return_gaps(
+                            &mut path_runtime,
+                            &senders,
+                            session_id,
+                            &mut control_sequence,
+                            &mut return_reorder,
+                            &mut repair,
+                            recovery_status.active,
+                            aggregate_health.loss_rate,
+                            &mut counters,
+                            options.json_events,
+                        )?;
+                        if options.json_events && options.trace_packets {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "packet-received",
+                                    "sequence": sequence,
+                                    "bytes": payload_len,
+                                    "data_packets_received": counters.data_packets_received,
+                                })
                             );
-                            write_reordered_return_packets(
-                                &mut tun,
-                                ready,
-                                &mut path_runtime,
-                                &mut counters,
-                                &mut repair,
-                            )?;
-                            send_repair_requests_for_return_gaps(
-                                &mut path_runtime,
-                                &sockets,
-                                &key,
-                                session_id,
-                                &mut control_sequence,
-                                &mut return_reorder,
-                                &mut repair,
-                                recovery_status.active,
-                                options.json_events,
-                            ).await?;
-                            if options.json_events && options.trace_packets {
-                                println!(
-                                    "{}",
-                                    serde_json::json!({
-                                        "event": "packet-received",
-                                        "sequence": sequence,
-                                        "bytes": payload_len,
-                                        "data_packets_received": counters.data_packets_received,
-                                    })
-                                );
-                            }
                         }
                     }
-                    ReceiveOutcome::Duplicate => {
-                        if is_data_like(inbound.frame.header.kind) {
-                            let runtime = path_runtime.entry(inbound.path_id).or_default();
-                            runtime.duplicate_bytes_received = runtime
-                                .duplicate_bytes_received
-                                .saturating_add(inbound.frame.payload.len() as u64);
-                            runtime.duplicate_late_packets =
-                                runtime.duplicate_late_packets.saturating_add(1);
-                        }
-                        counters.duplicate_packets_dropped += 1;
-                        if inbound.frame.header.kind == PacketKind::Repair {
-                            repair.late_frames = repair.late_frames.saturating_add(1);
-                        }
-                    }
-                    ReceiveOutcome::Expired => {
-                        if is_data_like(inbound.frame.header.kind) {
-                            let runtime = path_runtime.entry(inbound.path_id).or_default();
-                            runtime.duplicate_bytes_received = runtime
-                                .duplicate_bytes_received
-                                .saturating_add(inbound.frame.payload.len() as u64);
-                            runtime.duplicate_late_packets =
-                                runtime.duplicate_late_packets.saturating_add(1);
-                        }
-                        counters.late_packets_dropped += 1;
-                        if inbound.frame.header.kind == PacketKind::Repair {
-                            repair.late_frames = repair.late_frames.saturating_add(1);
-                        }
-                    }
-                    _ => {}
                 }
+                receiver_payload_pool.recycle(inbound.frame.payload);
             }
 
             else => break,
@@ -2200,36 +3729,118 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     Ok(())
 }
 
-fn write_reordered_return_packets(
-    tun: &mut XBondTun,
-    packets: Vec<ReorderedPacket>,
-    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    counters: &mut TunnelCounters,
-    repair: &mut XBondRepairStatus,
-) -> Result<()> {
-    for packet in packets {
-        if let Err(error) = tun.write_packet(&packet.payload) {
-            eprintln!(
-                "xbond client failed to write return packet to XBond TUN {}: {error}",
-                tun.name()
-            );
-            continue;
-        }
-        counters.data_packets_received += 1;
-        counters.data_bytes_received = counters
-            .data_bytes_received
-            .saturating_add(packet.payload.len() as u64);
-        if packet.path_id == u16::MAX {
-            repair.frames_delivered = repair.frames_delivered.saturating_add(1);
-        } else {
-            let runtime = path_runtime.entry(packet.path_id).or_default();
-            runtime.bytes_received = runtime
-                .bytes_received
-                .saturating_add(packet.payload.len() as u64);
+fn advance_pending_fec_source(
+    pending: &mut Option<PendingFecSource>,
+    sequence: u64,
+    payload: Arc<Vec<u8>>,
+    fec_eligible: bool,
+    schedule_generation: u64,
+    policy: RedundancyPolicy,
+    recovery_active: bool,
+) -> Option<ConsecutiveFecPair> {
+    if !fec_eligible {
+        *pending = None;
+        return None;
+    }
+
+    let previous = pending.take();
+    if let Some(previous) = previous {
+        let same_context = previous.schedule_generation == schedule_generation
+            && previous.policy == policy
+            && previous.recovery_active == recovery_active;
+        if same_context && previous.sequence.checked_add(1) == Some(sequence) {
+            return Some((previous.sequence, previous.payload, payload));
         }
     }
 
-    Ok(())
+    *pending = Some(PendingFecSource {
+        sequence,
+        payload,
+        schedule_generation,
+        policy,
+        recovery_active,
+    });
+    None
+}
+
+async fn enqueue_reordered_return_packets(
+    tun_write_tx: &TunWriterHandle,
+    packets: Vec<ReorderedPacket>,
+    counters: &mut TunnelCounters,
+    json_events: bool,
+) -> Result<()> {
+    enqueue_reordered_return_packets_with_deadline(
+        tun_write_tx,
+        packets,
+        counters,
+        json_events,
+        TUN_WRITE_ENQUEUE_DEADLINE,
+    )
+    .await
+}
+
+async fn enqueue_reordered_return_packets_with_deadline(
+    tun_write_tx: &TunWriterHandle,
+    packets: Vec<ReorderedPacket>,
+    counters: &mut TunnelCounters,
+    json_events: bool,
+    enqueue_deadline: Duration,
+) -> Result<()> {
+    if packets.is_empty() {
+        return Ok(());
+    }
+    let packet_count = packets.len();
+    let payload_bytes = packets
+        .iter()
+        .map(|packet| packet.payload.len())
+        .sum::<usize>();
+    if !tun_write_tx.try_reserve_packets(packet_count) {
+        counters.tun_write_queue_drops = counters
+            .tun_write_queue_drops
+            .saturating_add(packet_count as u64);
+        bail!(
+            "XBond TUN writer cannot atomically admit {packet_count} reordered packets within its \
+             {}-packet capacity; reconnecting immediately instead of stalling the control loop \
+             for up to {} ms per packet",
+            tun_write_tx.capacity,
+            enqueue_deadline.as_millis()
+        );
+    }
+
+    let batch = TunWriteBatch {
+        packets,
+        queued_at: Instant::now(),
+    };
+    match tun_write_tx.tx.try_send(batch) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(batch)) => {
+            tun_write_tx.release_packets(batch.packets.len());
+            bail!("XBond TUN writer queue closed unexpectedly")
+        }
+        Err(mpsc::error::TrySendError::Full(batch)) => {
+            tun_write_tx.release_packets(batch.packets.len());
+            counters.tun_write_queue_drops = counters
+                .tun_write_queue_drops
+                .saturating_add(batch.packets.len() as u64);
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "tun-writer-primary-backpressure",
+                        "packets": batch.packets.len(),
+                        "bytes": payload_bytes,
+                        "queue_capacity": tun_write_tx.capacity,
+                        "queue_depth": tun_write_tx.queue_depth(),
+                        "deadline_ms": enqueue_deadline.as_millis(),
+                    })
+                );
+            }
+            bail!(
+                "XBond TUN writer batch queue is full; reconnecting immediately instead of \
+                 stalling the control loop or dropping unique reordered packets"
+            )
+        }
+    }
 }
 
 async fn ensure_tunnel_sockets(
@@ -2239,10 +3850,12 @@ async fn ensure_tunnel_sockets(
     senders: &mut HashMap<u16, PathSenderHandle>,
     receivers: &mut HashMap<u16, JoinHandle<()>>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    inbound_tx: &mpsc::Sender<InboundTunnelFrame>,
+    inbound_queues: &InboundTunnelQueues,
     send_report_tx: &mpsc::Sender<PathSendReport>,
-    socket_event_tx: &mpsc::UnboundedSender<PathSocketEvent>,
+    socket_event_tx: &mpsc::Sender<PathSocketEvent>,
     key: &XBondKey,
+    tun_mtu: u16,
+    receiver_payload_pool: &ReceiverPayloadPool,
     json_events: bool,
 ) -> Result<()> {
     for (path_id, spec) in specs_by_id {
@@ -2335,9 +3948,11 @@ async fn ensure_tunnel_sockets(
                         *path_id,
                         socket_generation,
                         socket.clone(),
-                        inbound_tx.clone(),
+                        inbound_queues.clone(),
                         socket_event_tx.clone(),
                         key.clone(),
+                        tun_mtu,
+                        receiver_payload_pool.clone(),
                     );
                     receivers.insert(*path_id, receiver);
                 }
@@ -2396,9 +4011,11 @@ async fn ensure_tunnel_sockets(
                     *path_id,
                     socket_generation,
                     socket.clone(),
-                    inbound_tx.clone(),
+                    inbound_queues.clone(),
                     socket_event_tx.clone(),
                     key.clone(),
+                    tun_mtu,
+                    receiver_payload_pool.clone(),
                 );
                 receivers.insert(*path_id, receiver);
             }
@@ -2460,9 +4077,11 @@ async fn ensure_tunnel_sockets(
             *path_id,
             socket_generation,
             socket.clone(),
-            inbound_tx.clone(),
+            inbound_queues.clone(),
             socket_event_tx.clone(),
             key.clone(),
+            tun_mtu,
+            receiver_payload_pool.clone(),
         );
         let sender = spawn_tunnel_sender(
             *path_id,
@@ -2477,10 +4096,13 @@ async fn ensure_tunnel_sockets(
             runtime.socket_ifindex = current_ifindex;
             runtime.socket_bind_addr = Some(bind_addr.clone());
             runtime.socket_bind_device = bind_device.map(ToString::to_string);
+            runtime.socket_opened_at = Some(Instant::now());
             runtime.last_socket_error = None;
             runtime.last_rebind_error = None;
             runtime.force_rebind_reason = None;
             runtime.force_rebind_bypass_rate_limit = false;
+            runtime.stale_ack_ticks = 0;
+            runtime.direct_probe_in_flight = false;
             if runtime.last_rebind_reason.is_some() {
                 runtime.rebind_count = runtime.rebind_count.saturating_add(1);
             }
@@ -2508,20 +4130,58 @@ fn remove_tunnel_path(
     }
 }
 
+fn try_enqueue_sender_lane(
+    sender: &mpsc::Sender<PathSendWork>,
+    metrics: &PathSenderMetrics,
+    work: PathSendWork,
+) -> std::result::Result<(), mpsc::error::TrySendError<PathSendWork>> {
+    let lane = work.lane;
+    let queued_at = work.queued_at;
+    match sender.try_reserve() {
+        Ok(permit) => {
+            metrics.record_enqueued_at(lane, queued_at);
+            permit.send(work);
+            Ok(())
+        }
+        Err(mpsc::error::TrySendError::Full(())) => Err(mpsc::error::TrySendError::Full(work)),
+        Err(mpsc::error::TrySendError::Closed(())) => Err(mpsc::error::TrySendError::Closed(work)),
+    }
+}
+
 fn enqueue_primary_work(
     path_id: u16,
     socket_generation: u64,
-    sender: &mpsc::Sender<PathSendWork>,
+    sender: &PathSenderHandle,
     work: PathSendWork,
     completion_tx: &mpsc::Sender<PrimarySendCompletion>,
 ) -> std::io::Result<PrimaryEnqueueResult> {
-    match sender.try_send(work) {
+    match try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, work) {
         Ok(()) => Ok(PrimaryEnqueueResult::Enqueued),
         Err(mpsc::error::TrySendError::Full(work)) => {
-            let sender = sender.clone();
+            let data_tx = sender.data_tx.clone();
+            let metrics = sender.metrics.clone();
             let completion_tx = completion_tx.clone();
             tokio::spawn(async move {
-                let success = sender.send(work).await.is_ok();
+                let lane = work.lane;
+                let queued_at = work.queued_at;
+                let success = match work.deadline.checked_duration_since(Instant::now()) {
+                    Some(remaining) => match time::timeout(remaining, data_tx.reserve()).await {
+                        Ok(Ok(permit)) => {
+                            metrics.record_enqueued_at(lane, queued_at);
+                            permit.send(work);
+                            true
+                        }
+                        Ok(Err(_)) => false,
+                        Err(_) => {
+                            metrics.record_deadline_drop(lane);
+                            false
+                        }
+                    },
+                    None => {
+                        metrics.record_deadline_drop(lane);
+                        false
+                    }
+                };
                 let _ = completion_tx
                     .send(PrimarySendCompletion {
                         path_id,
@@ -2559,10 +4219,32 @@ fn spawn_tunnel_sender(
     capacity: usize,
     report_tx: mpsc::Sender<PathSendReport>,
 ) -> PathSenderHandle {
-    let (tx, mut rx) = mpsc::channel::<PathSendWork>(capacity.max(1));
+    let data_capacity = capacity.max(1);
+    let (data_tx, mut data_rx) = mpsc::channel::<PathSendWork>(data_capacity);
+    let (control_tx, mut control_rx) = mpsc::channel::<PathSendWork>(CONTROL_LANE_QUEUE_CAPACITY);
+    let (repair_tx, mut repair_rx) = mpsc::channel::<PathSendWork>(REPAIR_LANE_QUEUE_CAPACITY);
+    let metrics = Arc::new(PathSenderMetrics::new(data_capacity));
+    let latest_control = Arc::new(LatestControlSlot::new(metrics.clone()));
+    let task_metrics = metrics.clone();
+    let task_latest_control = latest_control.clone();
     let task = tokio::spawn(async move {
         let mut encoded = Vec::with_capacity(4096);
-        while let Some(work) = rx.recv().await {
+        loop {
+            let work = receive_next_path_send_work(
+                &mut control_rx,
+                &task_latest_control,
+                &mut repair_rx,
+                &mut data_rx,
+            )
+            .await;
+            let Some(work) = work else {
+                break;
+            };
+            task_metrics.record_dequeued(&work);
+            if path_send_work_deadline_expired(&work, Instant::now()) {
+                task_metrics.record_sender_deadline_drop(work.lane);
+                continue;
+            }
             let started = Instant::now();
             let encode_result = encode_sealed_payload_into(
                 &work.header,
@@ -2574,31 +4256,30 @@ fn spawn_tunnel_sender(
             let report = match encode_result {
                 Ok(()) => {
                     let encoded_bytes = encoded.len() as u64;
-                    match socket.send(&encoded).await {
-                        Ok(_) => PathSendReport {
-                            path_id,
-                            socket_generation,
-                            packet_kind: work.packet_kind,
-                            encoded_bytes,
-                            encode_micros,
-                            encoded: true,
-                            success: true,
-                            error: None,
-                            raw_os_error: None,
-                            needs_rebind: false,
-                        },
-                        Err(error) => PathSendReport {
-                            path_id,
-                            socket_generation,
-                            packet_kind: work.packet_kind,
-                            encoded_bytes,
-                            encode_micros,
-                            encoded: true,
-                            success: false,
-                            needs_rebind: socket_error_requires_rebind(&error),
-                            raw_os_error: error.raw_os_error(),
-                            error: Some(error.to_string()),
-                        },
+                    task_metrics.record_encoded(encode_micros);
+                    match send_udp_with_work_deadline(&socket, &encoded, &work).await {
+                        Ok(Ok(_)) => {
+                            task_metrics.record_success(work.packet_kind, encoded_bytes);
+                            continue;
+                        }
+                        Ok(Err(error)) => {
+                            let raw_os_error = error.raw_os_error();
+                            PathSendReport {
+                                path_id,
+                                socket_generation,
+                                packet_kind: work.packet_kind,
+                                encoded_bytes,
+                                needs_rebind: socket_error_requires_rebind(&error),
+                                message_too_large: is_message_too_large_error(raw_os_error),
+                                raw_os_error,
+                                error: Some(error.to_string()),
+                                lane: work.lane,
+                            }
+                        }
+                        Err(()) => {
+                            task_metrics.record_sender_deadline_drop(work.lane);
+                            continue;
+                        }
                     }
                 }
                 Err(error) => PathSendReport {
@@ -2606,12 +4287,11 @@ fn spawn_tunnel_sender(
                     socket_generation,
                     packet_kind: work.packet_kind,
                     encoded_bytes: 0,
-                    encode_micros,
-                    encoded: false,
-                    success: false,
                     error: Some(error.to_string()),
                     raw_os_error: None,
                     needs_rebind: false,
+                    message_too_large: false,
+                    lane: work.lane,
                 },
             };
             if report_tx.send(report).await.is_err() {
@@ -2621,33 +4301,82 @@ fn spawn_tunnel_sender(
     });
     PathSenderHandle {
         socket_generation,
-        tx,
+        data_tx,
+        control_tx,
+        repair_tx,
+        latest_control,
+        metrics,
         task,
     }
+}
+
+async fn receive_next_path_send_work(
+    control_rx: &mut mpsc::Receiver<PathSendWork>,
+    latest_control: &LatestControlSlot,
+    repair_rx: &mut mpsc::Receiver<PathSendWork>,
+    data_rx: &mut mpsc::Receiver<PathSendWork>,
+) -> Option<PathSendWork> {
+    tokio::select! {
+        biased;
+        work = control_rx.recv() => work,
+        work = latest_control.recv() => Some(work),
+        work = repair_rx.recv() => work,
+        work = data_rx.recv() => work,
+        else => None,
+    }
+}
+
+fn path_send_work_deadline_expired(work: &PathSendWork, now: Instant) -> bool {
+    now >= work.deadline
+}
+
+fn udp_send_budget(work: &PathSendWork, now: Instant) -> Option<Duration> {
+    work.deadline
+        .checked_duration_since(now)
+        .map(|remaining| remaining.min(MAX_SOCKET_SEND_BLOCK))
+        .filter(|remaining| !remaining.is_zero())
+}
+
+async fn send_udp_with_work_deadline(
+    socket: &UdpSocket,
+    encoded: &[u8],
+    work: &PathSendWork,
+) -> std::result::Result<std::io::Result<usize>, ()> {
+    let Some(budget) = udp_send_budget(work, Instant::now()) else {
+        return Err(());
+    };
+    time::timeout(budget, socket.send(encoded))
+        .await
+        .map_err(|_| ())
 }
 
 fn spawn_tunnel_receiver(
     path_id: u16,
     socket_generation: u64,
     socket: Arc<UdpSocket>,
-    inbound_tx: mpsc::Sender<InboundTunnelFrame>,
-    socket_event_tx: mpsc::UnboundedSender<PathSocketEvent>,
+    inbound_queues: InboundTunnelQueues,
+    socket_event_tx: mpsc::Sender<PathSocketEvent>,
     key: XBondKey,
+    tun_mtu: u16,
+    payload_pool: ReceiverPayloadPool,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
-        let mut payload = Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES);
+        let scratch_capacity = receiver_scratch_capacity(tun_mtu);
+        let mut payload = Vec::with_capacity(scratch_capacity);
         loop {
             let len = match socket.recv(&mut buf).await {
                 Ok(len) => len,
                 Err(error) => {
                     if socket_error_requires_rebind(&error) {
-                        let _ = socket_event_tx.send(PathSocketEvent {
-                            path_id,
-                            socket_generation,
-                            reason: "udp-recv-enodev".to_string(),
-                            error: Some(error.to_string()),
-                        });
+                        let _ = socket_event_tx
+                            .send(PathSocketEvent {
+                                path_id,
+                                socket_generation,
+                                reason: "udp-recv-enodev".to_string(),
+                                error: Some(error.to_string()),
+                            })
+                            .await;
                     }
                     eprintln!("xbond path receiver for path {path_id} hit UDP recv error: {error}");
                     time::sleep(Duration::from_millis(50)).await;
@@ -2657,19 +4386,164 @@ fn spawn_tunnel_receiver(
             let Ok(header) = decode_sealed_payload_into(&buf[..len], &key, &mut payload) else {
                 continue;
             };
-            let frame = XBondFrame::new(
-                header,
-                std::mem::replace(&mut payload, Vec::with_capacity(MAX_UDP_DATAGRAM_BYTES)),
-            );
-            if inbound_tx
-                .send(InboundTunnelFrame { path_id, frame })
-                .await
-                .is_err()
-            {
-                break;
+            let Some(queued_payload) =
+                copy_bounded_receiver_payload(header.kind, &payload, tun_mtu, &payload_pool)
+            else {
+                payload.clear();
+                if payload.capacity() > scratch_capacity.saturating_mul(2) {
+                    payload = Vec::with_capacity(scratch_capacity);
+                }
+                continue;
+            };
+            payload.clear();
+            if payload.capacity() > scratch_capacity.saturating_mul(2) {
+                payload = Vec::with_capacity(scratch_capacity);
+            }
+            let prioritized = is_prioritized_client_inbound(header.kind);
+            let inbound = InboundTunnelFrame {
+                path_id,
+                frame: XBondFrame::new(header, queued_payload),
+            };
+            if prioritized {
+                if inbound_queues.control_tx.send(inbound).await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            match inbound_queues.payload_tx.try_send(inbound) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(inbound)) => {
+                    inbound_queues.payload_drops.fetch_add(1, Ordering::Relaxed);
+                    payload_pool.recycle(inbound.frame.payload);
+                }
+                Err(mpsc::error::TrySendError::Closed(inbound)) => {
+                    payload_pool.recycle(inbound.frame.payload);
+                    break;
+                }
             }
         }
     })
+}
+
+fn receiver_scratch_capacity(tun_mtu: u16) -> usize {
+    usize::from(tun_mtu)
+        .saturating_add(RECEIVER_FRAME_OVERHEAD_ALLOWANCE)
+        .max(2048)
+}
+
+fn maximum_queued_payload_bytes(kind: PacketKind, tun_mtu: u16) -> usize {
+    match kind {
+        PacketKind::Control => MAX_CONTROL_PAYLOAD_BYTES,
+        PacketKind::Heartbeat => MAX_HEARTBEAT_PAYLOAD_BYTES,
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Repair | PacketKind::Fec => {
+            receiver_scratch_capacity(tun_mtu)
+        }
+    }
+}
+
+fn copy_bounded_receiver_payload(
+    kind: PacketKind,
+    payload: &[u8],
+    tun_mtu: u16,
+    payload_pool: &ReceiverPayloadPool,
+) -> Option<Vec<u8>> {
+    (payload.len() <= maximum_queued_payload_bytes(kind, tun_mtu)).then(|| {
+        let mut queued = payload_pool.take(payload.len());
+        queued.clear();
+        queued.extend_from_slice(payload);
+        queued
+    })
+}
+
+fn refresh_sender_queue_metrics(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    senders: &HashMap<u16, PathSenderHandle>,
+) {
+    for runtime in path_runtime.values_mut() {
+        runtime.sender_queue_depth = 0;
+        runtime.sender_queue_capacity = 0;
+        runtime.sender_data_oldest_age_ms = 0;
+        runtime.sender_data_enqueue_drops = 0;
+        runtime.sender_data_deadline_drops = 0;
+        runtime.sender_control_queue_depth = 0;
+        runtime.sender_control_queue_capacity = 0;
+        runtime.sender_control_oldest_age_ms = 0;
+        runtime.sender_control_enqueue_drops = 0;
+        runtime.sender_control_deadline_drops = 0;
+        runtime.sender_repair_queue_depth = 0;
+        runtime.sender_repair_queue_capacity = 0;
+        runtime.sender_repair_oldest_age_ms = 0;
+        runtime.sender_repair_enqueue_drops = 0;
+        runtime.sender_repair_deadline_drops = 0;
+    }
+
+    for (path_id, sender) in senders {
+        let now = Instant::now();
+        let data = sender.metrics.snapshot(PathSendLane::Data, now);
+        let control = sender.metrics.snapshot(PathSendLane::Control, now);
+        let repair = sender.metrics.snapshot(PathSendLane::Repair, now);
+        let runtime = path_runtime.entry(*path_id).or_default();
+        runtime.sender_queue_capacity = data.capacity;
+        runtime.sender_queue_depth = data.depth;
+        runtime.sender_data_oldest_age_ms = data.oldest_age_ms;
+        runtime.sender_data_enqueue_drops = data.enqueue_drops;
+        runtime.sender_data_deadline_drops = data.deadline_drops;
+        runtime.sender_control_queue_depth = control.depth;
+        runtime.sender_control_queue_capacity = control.capacity;
+        runtime.sender_control_oldest_age_ms = control.oldest_age_ms;
+        runtime.sender_control_enqueue_drops = control.enqueue_drops;
+        runtime.sender_control_deadline_drops = control.deadline_drops;
+        runtime.sender_repair_queue_depth = repair.depth;
+        runtime.sender_repair_queue_capacity = repair.capacity;
+        runtime.sender_repair_oldest_age_ms = repair.oldest_age_ms;
+        runtime.sender_repair_enqueue_drops = repair.enqueue_drops;
+        runtime.sender_repair_deadline_drops = repair.deadline_drops;
+    }
+}
+
+fn sender_lane_metrics_json(
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+) -> Vec<serde_json::Value> {
+    let mut path_ids = path_runtime.keys().copied().collect::<Vec<_>>();
+    path_ids.sort_unstable();
+    path_ids
+        .into_iter()
+        .filter_map(|path_id| {
+            let runtime = path_runtime.get(&path_id)?;
+            Some(serde_json::json!({
+                "path_id": path_id,
+                "data": {
+                    "depth": runtime.sender_queue_depth,
+                    "capacity": runtime.sender_queue_capacity,
+                    "oldest_age_ms": runtime.sender_data_oldest_age_ms,
+                    "enqueue_drops": runtime.sender_data_enqueue_drops,
+                    "deadline_drops": runtime.sender_data_deadline_drops,
+                },
+                "control": {
+                    "depth": runtime.sender_control_queue_depth,
+                    "capacity": runtime.sender_control_queue_capacity,
+                    "oldest_age_ms": runtime.sender_control_oldest_age_ms,
+                    "enqueue_drops": runtime.sender_control_enqueue_drops,
+                    "deadline_drops": runtime.sender_control_deadline_drops,
+                },
+                "repair": {
+                    "depth": runtime.sender_repair_queue_depth,
+                    "capacity": runtime.sender_repair_queue_capacity,
+                    "oldest_age_ms": runtime.sender_repair_oldest_age_ms,
+                    "enqueue_drops": runtime.sender_repair_enqueue_drops,
+                    "deadline_drops": runtime.sender_repair_deadline_drops,
+                },
+            }))
+        })
+        .collect()
+}
+
+fn sender_queue_pressure(runtime: &TunnelPathRuntime) -> f64 {
+    if runtime.sender_queue_capacity == 0 {
+        0.0
+    } else {
+        (runtime.sender_queue_depth as f64 / runtime.sender_queue_capacity as f64).clamp(0.0, 1.0)
+    }
 }
 
 fn tunnel_health(
@@ -2694,16 +4568,19 @@ fn tunnel_health(
                 path.rtt_ms = runtime.rtt_ms;
                 path.jitter_ms = runtime.jitter_ms;
                 path.loss_rate = runtime.loss_rate;
-                path.queue_depth = runtime.pending_heartbeats.len() as u32;
+                path.queue_depth = u32::try_from(runtime.sender_queue_depth).unwrap_or(u32::MAX);
                 path.send_failure_streak = runtime.send_failures;
-                path.stale_ack_ms = runtime.last_ack_at.map(|last_ack_at| {
-                    Instant::now()
-                        .duration_since(last_ack_at)
-                        .as_millis()
-                        .min(u128::from(u64::MAX)) as u64
-                });
-                path.queue_pressure =
-                    (runtime.pending_heartbeats.len() as f64 / 3.0).clamp(0.0, 1.0);
+                path.stale_ack_ms =
+                    runtime
+                        .last_ack_at
+                        .or(runtime.socket_opened_at)
+                        .map(|last_ack_at| {
+                            Instant::now()
+                                .duration_since(last_ack_at)
+                                .as_millis()
+                                .min(u128::from(u64::MAX)) as u64
+                        });
+                path.queue_pressure = sender_queue_pressure(runtime);
                 let duplicate_total = runtime
                     .duplicate_useful_packets
                     .saturating_add(runtime.duplicate_late_packets);
@@ -2762,24 +4639,51 @@ fn current_process_rss_bytes() -> Option<u64> {
     }
 }
 
-fn record_tunnel_send_report_success(
+fn drain_sender_completions(
+    senders: &HashMap<u16, PathSenderHandle>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    path_id: u16,
-    packet_kind: PacketKind,
-    bytes: u64,
     counters: &mut TunnelCounters,
     repair: &mut XBondRepairStatus,
 ) {
-    let runtime = path_runtime.entry(path_id).or_default();
-    runtime.send_failures = 0;
-    runtime.bytes_sent = runtime.bytes_sent.saturating_add(bytes);
+    for (path_id, sender) in senders {
+        let completed = sender.metrics.take_completions();
+        counters.encoded_frames = counters
+            .encoded_frames
+            .saturating_add(completed.encoded_frames);
+        counters.encode_micros_total = counters
+            .encode_micros_total
+            .saturating_add(completed.encode_micros);
+        counters.data_packets_sent = counters
+            .data_packets_sent
+            .saturating_add(completed.data_packets);
+        counters.duplicate_packets_sent = counters
+            .duplicate_packets_sent
+            .saturating_add(completed.duplicate_packets);
+        counters.fec_packets_sent = counters
+            .fec_packets_sent
+            .saturating_add(completed.fec_packets);
+        repair.frames_sent = repair.frames_sent.saturating_add(completed.repair_packets);
+        counters.sender_deadline_drops = counters
+            .sender_deadline_drops
+            .saturating_add(completed.sender_deadline_drops);
+        counters.repair_lane_drops = counters
+            .repair_lane_drops
+            .saturating_add(completed.repair_deadline_drops);
 
-    match packet_kind {
-        PacketKind::Data => counters.data_packets_sent += 1,
-        PacketKind::Duplicate => counters.duplicate_packets_sent += 1,
-        PacketKind::Fec => counters.fec_packets_sent += 1,
-        PacketKind::Repair => repair.frames_sent = repair.frames_sent.saturating_add(1),
-        _ => {}
+        let successful_packets = completed
+            .data_packets
+            .saturating_add(completed.duplicate_packets)
+            .saturating_add(completed.fec_packets)
+            .saturating_add(completed.repair_packets);
+        if successful_packets == 0 {
+            continue;
+        }
+
+        let runtime = path_runtime.entry(*path_id).or_default();
+        runtime.send_failures = 0;
+        runtime.bytes_sent = runtime
+            .bytes_sent
+            .saturating_add(completed.successful_bytes);
     }
 }
 
@@ -2803,6 +4707,11 @@ fn mark_path_socket_for_rebind(
     }
 }
 
+fn record_ineffective_rebind(runtime: &mut TunnelPathRuntime) -> bool {
+    runtime.ineffective_rebinds = runtime.ineffective_rebinds.saturating_add(1);
+    runtime.ineffective_rebinds >= SILENT_BLACKHOLE_MAX_INEFFECTIVE_REBINDS
+}
+
 fn socket_error_requires_rebind(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(19)
         || error.kind() == ErrorKind::NotFound
@@ -2812,26 +4721,291 @@ fn socket_error_requires_rebind(error: &std::io::Error) -> bool {
             .contains("no such device")
 }
 
+fn is_message_too_large_error(raw_os_error: Option<i32>) -> bool {
+    matches!(raw_os_error, Some(90 | 10040))
+}
+
+fn refresh_silent_blackhole_state(
+    runtime: &mut TunnelPathRuntime,
+    stale_threshold: Duration,
+) -> bool {
+    if path_is_silent_blackhole_candidate(runtime, stale_threshold) {
+        runtime.stale_ack_ticks = runtime.stale_ack_ticks.saturating_add(1);
+    } else {
+        runtime.stale_ack_ticks = 0;
+    }
+    runtime.stale_ack_ticks >= SILENT_BLACKHOLE_CONFIRM_TICKS
+}
+
+fn path_is_silent_blackhole_candidate(
+    runtime: &TunnelPathRuntime,
+    stale_threshold: Duration,
+) -> bool {
+    let ack_reference = runtime.last_ack_at.or(runtime.socket_opened_at);
+    let ack_is_stale =
+        ack_reference.is_some_and(|reference| reference.elapsed() >= stale_threshold);
+    let recent_heartbeats_failed = runtime.health_window.len() >= 3
+        && runtime
+            .health_window
+            .iter()
+            .rev()
+            .take(3)
+            .all(|delivered| !delivered);
+
+    ack_is_stale
+        && recent_heartbeats_failed
+        && runtime.loss_rate >= SILENT_BLACKHOLE_MIN_LOSS_RATE
+        && runtime.send_failures == 0
+        && runtime.force_rebind_reason.is_none()
+}
+
+fn silent_blackhole_stale_threshold(config: &ClientConfig) -> Duration {
+    tunnel_heartbeat_timeout(config)
+        .saturating_mul(2)
+        .max(SILENT_BLACKHOLE_MIN_STALE_ACK)
+}
+
+fn silent_blackhole_probe_allowed(runtime: &TunnelPathRuntime, confirmed: bool) -> bool {
+    let probe_rate_limited = runtime
+        .last_direct_probe_at
+        .is_some_and(|last_probe| last_probe.elapsed() < SILENT_BLACKHOLE_PROBE_COOLDOWN);
+    let rebind_rate_limited = runtime
+        .last_rebind_attempt
+        .is_some_and(|last_rebind| last_rebind.elapsed() < SILENT_BLACKHOLE_REBIND_COOLDOWN);
+
+    confirmed && !runtime.direct_probe_in_flight && !probe_rate_limited && !rebind_rate_limited
+}
+
+fn schedule_silent_blackhole_probes(
+    config: &ClientConfig,
+    specs_by_id: &HashMap<u16, ProbePathSpec>,
+    sockets: &HashMap<u16, Arc<UdpSocket>>,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    result_tx: &mpsc::Sender<SilentBlackholeProbeResult>,
+) {
+    let stale_threshold = silent_blackhole_stale_threshold(config);
+    for path_id in sockets.keys().copied().collect::<Vec<_>>() {
+        let Some(spec) = specs_by_id.get(&path_id) else {
+            continue;
+        };
+        if !interface_is_live(spec.interface_name.as_deref()) {
+            continue;
+        }
+
+        let runtime = path_runtime.entry(path_id).or_default();
+        let confirmed = refresh_silent_blackhole_state(runtime, stale_threshold);
+        if !silent_blackhole_probe_allowed(runtime, confirmed) {
+            continue;
+        }
+
+        runtime.direct_probe_in_flight = true;
+        runtime.last_direct_probe_at = Some(Instant::now());
+        let socket_generation = runtime.socket_generation;
+        let spec = spec.clone();
+        let result_tx = result_tx.clone();
+        tokio::spawn(async move {
+            let probe = tokio::task::spawn_blocking(move || {
+                direct_interface_tcp_probe(&spec, SILENT_BLACKHOLE_DIRECT_PROBE_TIMEOUT)
+            })
+            .await;
+            let (reachable, error) = match probe {
+                Ok(Ok(())) => (true, None),
+                Ok(Err(error)) => (false, Some(error.to_string())),
+                Err(error) => (false, Some(format!("direct probe task failed: {error}"))),
+            };
+            let _ = result_tx
+                .send(SilentBlackholeProbeResult {
+                    path_id,
+                    socket_generation,
+                    reachable,
+                    error,
+                })
+                .await;
+        });
+    }
+}
+
+fn direct_interface_tcp_probe(spec: &ProbePathSpec, timeout: Duration) -> Result<()> {
+    let bind_addr = effective_bind_addr_for_spec(SILENT_BLACKHOLE_DIRECT_PROBE_TARGET, spec)?;
+    let local_addr = bind_addr
+        .parse::<SocketAddr>()
+        .with_context(|| format!("failed to parse direct-probe bind address {bind_addr}"))?;
+    let target_addr = SILENT_BLACKHOLE_DIRECT_PROBE_TARGET
+        .parse::<SocketAddr>()
+        .context("invalid silent-blackhole direct probe target")?;
+    let socket = Socket::new(
+        Domain::for_address(local_addr),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )?;
+    apply_bind_device(
+        &socket,
+        spec.bind_device
+            .as_deref()
+            .or(spec.interface_name.as_deref()),
+    )?;
+    socket
+        .bind(&local_addr.into())
+        .with_context(|| format!("failed to bind direct probe to {bind_addr}"))?;
+    socket
+        .connect_timeout(&target_addr.into(), timeout)
+        .with_context(|| {
+            format!("interface-bound direct probe to {SILENT_BLACKHOLE_DIRECT_PROBE_TARGET} failed")
+        })?;
+    Ok(())
+}
+
+const PATH_HEALTH_WINDOW: usize = 8;
 const TUNNEL_HEALTH_WINDOW: usize = 20;
 const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
 const AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX: u64 = 0xFFFFu64 << 48;
 const REPAIR_CACHE_CAPACITY: usize = 4096;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
+const REPAIR_CACHE_MIN_BYTES: usize = 1 * 1024 * 1024;
+const REPAIR_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
+const PRE_RECOVERY_REPAIR_REQUEST_INTERVAL_MICROS: u64 = 250_000;
+const PRE_RECOVERY_MIN_TUNNEL_LOSS: f64 = 0.02;
+const PRE_RECOVERY_MIN_PENDING_GAP: usize = 3;
+const MAX_PRE_RECOVERY_REPAIR_REQUESTS: usize = 8;
 const MAX_REPAIR_REQUESTS: usize = 64;
 const MAX_UDP_DATAGRAM_BYTES: usize = 65_535;
+const RECEIVER_FRAME_OVERHEAD_ALLOWANCE: usize = 512;
+const MAX_CONTROL_PAYLOAD_BYTES: usize = 32 * 1024;
+const MAX_HEARTBEAT_PAYLOAD_BYTES: usize = 1024;
+const CONTROL_LANE_QUEUE_CAPACITY: usize = 4;
+const REPAIR_LANE_QUEUE_CAPACITY: usize = 128;
+const CONTROL_LANE_DEADLINE: Duration = Duration::from_secs(2);
+const REPAIR_LANE_DEADLINE: Duration = Duration::from_millis(750);
+const DATA_LANE_DEADLINE: Duration = Duration::from_secs(5);
+const MAX_SOCKET_SEND_BLOCK: Duration = Duration::from_millis(250);
+const TUN_WRITE_ENQUEUE_DEADLINE: Duration = Duration::from_millis(500);
+const SILENT_BLACKHOLE_CONFIRM_TICKS: u32 = 3;
+const SILENT_BLACKHOLE_MIN_LOSS_RATE: f64 = 0.75;
+const SILENT_BLACKHOLE_MIN_STALE_ACK: Duration = Duration::from_secs(5);
+const SILENT_BLACKHOLE_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
+const SILENT_BLACKHOLE_REBIND_COOLDOWN: Duration = Duration::from_secs(60);
+const SILENT_BLACKHOLE_MAX_INEFFECTIVE_REBINDS: u32 = 3;
+const SILENT_BLACKHOLE_DIRECT_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+const SILENT_BLACKHOLE_DIRECT_PROBE_TARGET: &str = "1.1.1.1:443";
+const SESSION_OPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const SESSION_SYNCHRONIZATION_TIMEOUT: Duration = Duration::from_secs(15);
+const SCHEDULE_CONTROL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const SCHEDULE_SYNCHRONIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 
-async fn send_tunnel_schedule_control(
+async fn send_session_open(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    senders: &HashMap<u16, PathSenderHandle>,
+    session_id: u64,
+    request_nonce: SessionHandshakeNonce,
+    control_sequence: &mut u64,
+    counters: &mut TunnelCounters,
+    json_events: bool,
+    trace_packets: bool,
+) -> Result<()> {
+    *control_sequence = control_sequence.saturating_add(1);
+    let sequence = *control_sequence;
+    let payload = Arc::new(serde_json::to_vec(&XBondControlMessage::SessionOpen {
+        session_id,
+        request_nonce,
+    })?);
+
+    for (path_id, sender) in senders {
+        let work = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(
+                PacketKind::Control,
+                session_id,
+                sequence,
+                now_micros(),
+                *path_id,
+            ),
+            payload.clone(),
+        );
+        enqueue_critical_control_work(
+            sender,
+            work,
+            path_runtime,
+            *path_id,
+            counters,
+            "session-open",
+            json_events,
+        )
+        .await?;
+    }
+
+    if json_events && trace_packets {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "session-open-sent",
+                "session_id": session_id,
+                "sequence": sequence,
+                "path_count": senders.len(),
+            })
+        );
+    }
+
+    Ok(())
+}
+
+async fn send_session_proof(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    senders: &HashMap<u16, PathSenderHandle>,
+    session_id: u64,
+    request_nonce: SessionHandshakeNonce,
+    challenge: SessionHandshakeNonce,
+    control_sequence: &mut u64,
+    counters: &mut TunnelCounters,
+    json_events: bool,
+) -> Result<()> {
+    *control_sequence = control_sequence.saturating_add(1);
+    let sequence = *control_sequence;
+    let payload = Arc::new(serde_json::to_vec(&XBondControlMessage::SessionProof {
+        session_id,
+        request_nonce,
+        challenge,
+    })?);
+
+    for (path_id, sender) in senders {
+        let work = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(
+                PacketKind::Control,
+                session_id,
+                sequence,
+                now_micros(),
+                *path_id,
+            ),
+            payload.clone(),
+        );
+        enqueue_critical_control_work(
+            sender,
+            work,
+            path_runtime,
+            *path_id,
+            counters,
+            "session-proof",
+            json_events,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+fn send_tunnel_schedule_control(
     config: &ClientConfig,
     schedule: &SchedulePlan,
     redundancy_policy: RedundancyPolicy,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     sockets: &HashMap<u16, Arc<UdpSocket>>,
-    key: &XBondKey,
+    senders: &HashMap<u16, PathSenderHandle>,
     session_id: u64,
     control_sequence: &mut u64,
     schedule_generation: u64,
     recovery_active: bool,
+    counters: &mut TunnelCounters,
     json_events: bool,
     trace_packets: bool,
 ) -> Result<()> {
@@ -2841,7 +5015,7 @@ async fn send_tunnel_schedule_control(
 
     *control_sequence = control_sequence.saturating_add(1);
     let sequence = *control_sequence;
-    let payload = serde_json::to_vec(&ScheduleControlMessage {
+    let payload = Arc::new(serde_json::to_vec(&ScheduleControlMessage {
         schedule_generation,
         schedule: schedule.clone(),
         redundancy_policy,
@@ -2852,10 +5026,11 @@ async fn send_tunnel_schedule_control(
         },
         paths: tunnel_health(config, path_runtime, sockets),
         recovery_active,
-    })?;
+    })?);
 
-    for (path_id, socket) in sockets {
-        let frame = XBondFrame::new(
+    for (path_id, sender) in senders {
+        let work = PathSendWork::control(
+            PacketKind::Control,
             XBondHeader::new(
                 PacketKind::Control,
                 session_id,
@@ -2865,21 +5040,14 @@ async fn send_tunnel_schedule_control(
             ),
             payload.clone(),
         );
-        let encoded = frame.encode_sealed(key)?;
-        if let Err(error) = socket.send(&encoded).await {
-            record_tunnel_send_failure(path_runtime, *path_id);
-            if json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "schedule-control-send-failed",
-                        "path_id": path_id,
-                        "sequence": sequence,
-                        "error": error.to_string(),
-                    })
-                );
-            }
-        }
+        enqueue_latest_control_work(
+            sender,
+            work,
+            *path_id,
+            counters,
+            "schedule-control",
+            json_events,
+        );
     }
 
     if json_events && trace_packets {
@@ -2897,68 +5065,82 @@ async fn send_tunnel_schedule_control(
     Ok(())
 }
 
-fn parse_repair_request(frame: &XBondFrame) -> Option<Vec<u64>> {
+fn parse_control_message(frame: &XBondFrame) -> Option<XBondControlMessage> {
     if frame.header.kind != PacketKind::Control {
         return None;
     }
 
-    let mut sequences = match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
-        XBondControlMessage::RepairRequest { sequences } => sequences,
-        XBondControlMessage::ServerRecoveryStatus { .. } => return None,
+    serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()
+}
+
+fn update_return_reorder_hold(
+    return_reorder: &mut PacketReorderBuffer,
+    normal_hold_ms: u64,
+    recovery_status: &RecoveryStatus,
+    server_recovery_status: &XBondServerRecoveryStatus,
+) {
+    let normal_hold_micros = normal_hold_ms.max(1).saturating_mul(1_000);
+    let desired_hold_micros = if recovery_status.active {
+        let server_hold_ms = server_recovery_status
+            .reported
+            .then_some(server_recovery_status.ingress_reorder.current_hold_ms)
+            .filter(|hold_ms| *hold_ms > 0)
+            .unwrap_or(150);
+        server_hold_ms.max(150).min(500).saturating_mul(1_000)
+    } else {
+        normal_hold_micros
     };
-    sequences.sort_unstable();
-    sequences.dedup();
-    sequences.truncate(MAX_REPAIR_REQUESTS);
-    (!sequences.is_empty()).then_some(sequences)
-}
 
-fn parse_server_recovery_status(frame: &XBondFrame) -> Option<XBondServerRecoveryStatus> {
-    if frame.header.kind != PacketKind::Control {
-        return None;
-    }
-
-    match serde_json::from_slice::<XBondControlMessage>(&frame.payload).ok()? {
-        XBondControlMessage::ServerRecoveryStatus { mut status } => {
-            status.reported = true;
-            Some(status)
-        }
-        XBondControlMessage::RepairRequest { .. } => None,
+    if return_reorder.hold_micros() != desired_hold_micros {
+        return_reorder.set_hold_micros(desired_hold_micros);
     }
 }
 
-async fn send_repair_requests_for_return_gaps(
+fn send_repair_requests_for_return_gaps(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    sockets: &HashMap<u16, Arc<UdpSocket>>,
-    key: &XBondKey,
+    senders: &HashMap<u16, PathSenderHandle>,
     session_id: u64,
     control_sequence: &mut u64,
     return_reorder: &mut PacketReorderBuffer,
     repair: &mut XBondRepairStatus,
     recovery_active: bool,
+    tunnel_loss_rate: Option<f64>,
+    counters: &mut TunnelCounters,
     json_events: bool,
 ) -> Result<()> {
-    if !recovery_active || sockets.is_empty() {
+    if senders.is_empty() {
         return Ok(());
     }
 
-    let sequences = return_reorder.repair_requests(
-        monotonic_micros(),
-        REPAIR_REQUEST_INTERVAL_MICROS,
-        MAX_REPAIR_REQUESTS,
-    );
+    let pre_recovery = !recovery_active
+        && pre_recovery_gap_repair_allowed(tunnel_loss_rate, return_reorder.pending_len());
+    if !recovery_active && !pre_recovery {
+        return Ok(());
+    }
+    let interval = if recovery_active {
+        REPAIR_REQUEST_INTERVAL_MICROS
+    } else {
+        PRE_RECOVERY_REPAIR_REQUEST_INTERVAL_MICROS
+    };
+    let maximum = if recovery_active {
+        MAX_REPAIR_REQUESTS
+    } else {
+        MAX_PRE_RECOVERY_REPAIR_REQUESTS
+    };
+    let sequences = return_reorder.repair_requests(monotonic_micros(), interval, maximum);
     if sequences.is_empty() {
         return Ok(());
     }
 
     *control_sequence = control_sequence.saturating_add(1);
     let sequence = *control_sequence;
-    let payload = serde_json::to_vec(&XBondControlMessage::RepairRequest {
+    let payload = Arc::new(serde_json::to_vec(&XBondControlMessage::RepairRequest {
         sequences: sequences.clone(),
-    })?;
+    })?);
     repair.requests_sent = repair.requests_sent.saturating_add(sequences.len() as u64);
 
-    for (path_id, socket) in sockets {
-        let frame = XBondFrame::new(
+    for (path_id, sender) in senders {
+        let work = PathSendWork::repair_control(
             XBondHeader::new(
                 PacketKind::Control,
                 session_id,
@@ -2968,25 +5150,145 @@ async fn send_repair_requests_for_return_gaps(
             ),
             payload.clone(),
         );
-        let encoded = frame.encode_sealed(key)?;
-        if let Err(error) = socket.send(&encoded).await {
-            record_tunnel_send_failure(path_runtime, *path_id);
-            if json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "repair-request-send-failed",
-                        "path_id": path_id,
-                        "sequence": sequence,
-                        "repair_sequences": sequences,
-                        "error": error.to_string(),
-                    })
-                );
+        match try_enqueue_sender_lane(&sender.repair_tx, &sender.metrics, work) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                sender.metrics.record_enqueue_drop(PathSendLane::Repair);
+                repair.queue_drops = repair.queue_drops.saturating_add(1);
+                counters.repair_lane_drops = counters.repair_lane_drops.saturating_add(1);
+                if json_events {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "repair-request-lane-saturated",
+                            "path_id": path_id,
+                            "sequence": sequence,
+                            "repair_sequences": sequences,
+                            "pre_recovery": pre_recovery,
+                        })
+                    );
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                record_tunnel_send_failure(path_runtime, *path_id);
             }
         }
     }
 
     Ok(())
+}
+
+fn enqueue_latest_control_work(
+    sender: &PathSenderHandle,
+    work: PathSendWork,
+    path_id: u16,
+    counters: &mut TunnelCounters,
+    operation: &str,
+    json_events: bool,
+) {
+    let replaced = sender.latest_control.replace(work);
+    if replaced {
+        counters.control_lane_coalesced = counters.control_lane_coalesced.saturating_add(1);
+        if json_events {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "control-lane-latest-replaced",
+                    "path_id": path_id,
+                    "operation": operation,
+                    "replacements": counters.control_lane_coalesced,
+                })
+            );
+        }
+    }
+}
+
+async fn enqueue_critical_control_work(
+    sender: &PathSenderHandle,
+    work: PathSendWork,
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    path_id: u16,
+    counters: &mut TunnelCounters,
+    operation: &str,
+    json_events: bool,
+) -> Result<()> {
+    match try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, work) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(work)) => {
+            let queued_at = work.queued_at;
+            if let Some(remaining) = work.deadline.checked_duration_since(Instant::now()) {
+                match time::timeout(remaining, sender.control_tx.reserve()).await {
+                    Ok(Ok(permit)) => {
+                        sender
+                            .metrics
+                            .record_enqueued_at(PathSendLane::Control, queued_at);
+                        permit.send(work);
+                        if json_events {
+                            println!(
+                                "{}",
+                                serde_json::json!({
+                                    "event": "critical-control-enqueued-after-backpressure",
+                                    "path_id": path_id,
+                                    "operation": operation,
+                                    "waited_ms": queued_at.elapsed().as_millis(),
+                                })
+                            );
+                        }
+                        return Ok(());
+                    }
+                    Ok(Err(_)) => {
+                        record_tunnel_send_failure(path_runtime, path_id);
+                        counters.control_lane_drops = counters.control_lane_drops.saturating_add(1);
+                        bail!("XBond control lane for path {path_id} stopped");
+                    }
+                    Err(_) => {}
+                }
+            }
+
+            sender.metrics.record_deadline_drop(PathSendLane::Control);
+            counters.control_lane_drops = counters.control_lane_drops.saturating_add(1);
+            bail!(
+                "XBond critical control lane for path {path_id} did not recover before the \
+                 {operation} deadline; reconnecting rather than dropping authoritative control"
+            )
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            record_tunnel_send_failure(path_runtime, path_id);
+            bail!("XBond control lane for path {path_id} stopped")
+        }
+    }
+}
+
+fn pre_recovery_gap_repair_allowed(tunnel_loss_rate: Option<f64>, pending_depth: usize) -> bool {
+    pending_depth >= PRE_RECOVERY_MIN_PENDING_GAP
+        && tunnel_loss_rate.is_some_and(|loss| loss >= PRE_RECOVERY_MIN_TUNNEL_LOSS)
+}
+
+fn update_repair_cache_budget(
+    resend_cache: &mut ResendCache,
+    observed_bits_per_second: u64,
+    now_micros: u64,
+    counters: &mut TunnelCounters,
+) {
+    let recommended_cache_bytes = recommended_repair_cache_bytes(
+        observed_bits_per_second,
+        REPAIR_CACHE_TTL_MICROS,
+        REPAIR_CACHE_MIN_BYTES,
+        REPAIR_CACHE_MAX_BYTES,
+    );
+    if recommended_cache_bytes == resend_cache.byte_capacity() {
+        return;
+    }
+
+    let entries_before = resend_cache.len();
+    let bytes_before = resend_cache.bytes_len();
+    resend_cache.set_byte_capacity(recommended_cache_bytes, now_micros);
+    counters.repair_cache_evictions = counters
+        .repair_cache_evictions
+        .saturating_add(entries_before.saturating_sub(resend_cache.len()) as u64);
+    counters.repair_cache_evicted_bytes = counters
+        .repair_cache_evicted_bytes
+        .saturating_add(bytes_before.saturating_sub(resend_cache.bytes_len()) as u64);
 }
 
 fn send_repair_frames_from_client_cache(
@@ -2998,6 +5300,7 @@ fn send_repair_frames_from_client_cache(
     session_id: u64,
     sequences: &[u64],
     repair: &mut XBondRepairStatus,
+    counters: &mut TunnelCounters,
 ) -> Result<()> {
     for sequence in sequences.iter().copied().take(MAX_REPAIR_REQUESTS) {
         let now = monotonic_micros();
@@ -3025,22 +5328,21 @@ fn send_repair_frames_from_client_cache(
                 send_micros,
                 path_id,
             );
-            let work = PathSendWork {
-                packet_kind: PacketKind::Repair,
-                header,
-                payload: payload.clone(),
-            };
-            let enqueue_result = match sender.tx.try_send(work) {
-                Ok(()) => Ok(()),
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    repair.queue_drops = repair.queue_drops.saturating_add(1);
-                    continue;
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
-                    ErrorKind::BrokenPipe,
-                    "XBond repair path sender stopped",
-                )),
-            };
+            let work = PathSendWork::repair(header, payload.clone());
+            let enqueue_result =
+                match try_enqueue_sender_lane(&sender.repair_tx, &sender.metrics, work) {
+                    Ok(()) => Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        sender.metrics.record_enqueue_drop(PathSendLane::Repair);
+                        repair.queue_drops = repair.queue_drops.saturating_add(1);
+                        counters.repair_lane_drops = counters.repair_lane_drops.saturating_add(1);
+                        continue;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => Err(std::io::Error::new(
+                        ErrorKind::BrokenPipe,
+                        "XBond repair path sender stopped",
+                    )),
+                };
             if let Err(_error) = enqueue_result {
                 record_tunnel_send_failure(path_runtime, path_id);
             }
@@ -3071,18 +5373,18 @@ fn repair_targets_from_client_plan(
     targets
 }
 
-async fn send_tunnel_heartbeats(
+fn send_tunnel_heartbeats(
     config: &ClientConfig,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
-    sockets: &HashMap<u16, Arc<UdpSocket>>,
-    key: &XBondKey,
+    senders: &HashMap<u16, PathSenderHandle>,
     session_id: u64,
+    counters: &mut TunnelCounters,
     json_events: bool,
 ) -> Result<()> {
     let timeout = tunnel_heartbeat_timeout(config);
-    let path_ids = sockets.keys().copied().collect::<Vec<_>>();
+    let path_ids = senders.keys().copied().collect::<Vec<_>>();
     for path_id in path_ids {
-        let Some(socket) = sockets.get(&path_id) else {
+        let Some(sender) = senders.get(&path_id) else {
             continue;
         };
 
@@ -3101,7 +5403,8 @@ async fn send_tunnel_heartbeats(
             ((path_id as u64) << 48) | runtime.health_sequence
         };
 
-        let frame = XBondFrame::new(
+        let work = PathSendWork::control(
+            PacketKind::Heartbeat,
             XBondHeader::new(
                 PacketKind::Heartbeat,
                 session_id,
@@ -3109,15 +5412,18 @@ async fn send_tunnel_heartbeats(
                 now_micros(),
                 path_id,
             ),
-            b"health".to_vec(),
+            Arc::new(b"health".to_vec()),
         );
-        let encoded = frame.encode_sealed(key)?;
-        match socket.send(&encoded).await {
-            Ok(_) => {
+        match try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, work) {
+            Ok(()) => {
                 let runtime = path_runtime.entry(path_id).or_default();
                 runtime.pending_heartbeats.insert(sequence, Instant::now());
             }
-            Err(error) => {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                sender.metrics.record_enqueue_drop(PathSendLane::Control);
+                counters.control_lane_drops = counters.control_lane_drops.saturating_add(1);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 record_tunnel_send_failure(path_runtime, path_id);
                 if let Some(runtime) = path_runtime.get_mut(&path_id) {
                     record_tunnel_health_sample(runtime, false, None);
@@ -3128,7 +5434,7 @@ async fn send_tunnel_heartbeats(
                         serde_json::json!({
                             "event": "health-heartbeat-send-failed",
                             "path_id": path_id,
-                            "error": error.to_string(),
+                            "error": "control lane closed",
                         })
                     );
                 }
@@ -3139,14 +5445,15 @@ async fn send_tunnel_heartbeats(
     Ok(())
 }
 
-async fn send_tunnel_aggregate_heartbeat(
+fn send_tunnel_aggregate_heartbeat(
     config: &ClientConfig,
     aggregate_health: &mut TunnelAggregateHealthRuntime,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     sockets: &HashMap<u16, Arc<UdpSocket>>,
+    senders: &HashMap<u16, PathSenderHandle>,
     transmission_plans: &PacketTransmissionPlans,
-    key: &XBondKey,
     session_id: u64,
+    counters: &mut TunnelCounters,
     json_events: bool,
 ) -> Result<()> {
     let timeout = tunnel_heartbeat_timeout(config);
@@ -3168,10 +5475,11 @@ async fn send_tunnel_aggregate_heartbeat(
     let mut sent_any = false;
 
     for path_id in targets {
-        let Some(socket) = sockets.get(&path_id) else {
+        let Some(sender) = senders.get(&path_id) else {
             continue;
         };
-        let frame = XBondFrame::new(
+        let work = PathSendWork::control(
+            PacketKind::Heartbeat,
             XBondHeader::new(
                 PacketKind::Heartbeat,
                 session_id,
@@ -3179,14 +5487,17 @@ async fn send_tunnel_aggregate_heartbeat(
                 send_micros,
                 path_id,
             ),
-            b"tunnel-health".to_vec(),
+            Arc::new(b"tunnel-health".to_vec()),
         );
-        let encoded = frame.encode_sealed(key)?;
-        match socket.send(&encoded).await {
+        match try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, work) {
             Ok(_) => {
                 sent_any = true;
             }
-            Err(error) => {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                sender.metrics.record_enqueue_drop(PathSendLane::Control);
+                counters.control_lane_drops = counters.control_lane_drops.saturating_add(1);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
                 record_tunnel_send_failure(path_runtime, path_id);
                 if json_events {
                     println!(
@@ -3194,7 +5505,7 @@ async fn send_tunnel_aggregate_heartbeat(
                         serde_json::json!({
                             "event": "tunnel-health-heartbeat-send-failed",
                             "path_id": path_id,
-                            "error": error.to_string(),
+                            "error": "control lane closed",
                         })
                     );
                 }
@@ -3287,15 +5598,14 @@ fn record_aggregate_tunnel_heartbeat_ack(
         return false;
     }
 
-    if aggregate_health
+    let Some(sent_at) = aggregate_health
         .pending_heartbeats
         .remove(&frame.header.sequence)
-        .is_none()
-    {
+    else {
         return false;
-    }
+    };
 
-    let rtt_ms = now_micros().saturating_sub(frame.header.send_micros) as f64 / 1_000.0;
+    let rtt_ms = sent_at.elapsed().as_secs_f64() * 1_000.0;
     aggregate_health.last_success_at = Some(Instant::now());
     record_aggregate_tunnel_health_sample(aggregate_health, true, Some(rtt_ms));
     true
@@ -3311,17 +5621,15 @@ fn record_tunnel_heartbeat_ack(
     frame: &XBondFrame,
 ) {
     let runtime = path_runtime.entry(path_id).or_default();
-    if runtime
-        .pending_heartbeats
-        .remove(&frame.header.sequence)
-        .is_none()
-    {
+    let Some(sent_at) = runtime.pending_heartbeats.remove(&frame.header.sequence) else {
         return;
-    }
+    };
 
-    let rtt_ms = now_micros().saturating_sub(frame.header.send_micros) as f64 / 1_000.0;
+    let rtt_ms = sent_at.elapsed().as_secs_f64() * 1_000.0;
     runtime.send_failures = 0;
     runtime.last_ack_at = Some(Instant::now());
+    runtime.stale_ack_ticks = 0;
+    runtime.ineffective_rebinds = 0;
     record_tunnel_health_sample(runtime, true, Some(rtt_ms));
 }
 
@@ -3427,13 +5735,13 @@ fn record_tunnel_health_sample(
     delivered: bool,
     rtt_ms: Option<f64>,
 ) {
-    if runtime.health_window.len() == TUNNEL_HEALTH_WINDOW {
+    if runtime.health_window.len() == PATH_HEALTH_WINDOW {
         runtime.health_window.pop_front();
     }
     runtime.health_window.push_back(delivered);
 
     if let Some(rtt_ms) = rtt_ms.filter(|value| value.is_finite()) {
-        if runtime.rtt_samples_ms.len() == TUNNEL_HEALTH_WINDOW {
+        if runtime.rtt_samples_ms.len() == PATH_HEALTH_WINDOW {
             runtime.rtt_samples_ms.pop_front();
         }
         runtime.rtt_samples_ms.push_back(rtt_ms);
@@ -3524,6 +5832,7 @@ fn write_tunnel_runtime_status(
     tun_mtu: u16,
     counters: &TunnelCounters,
     roles: &[xbond_core::ScoredPath],
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
     schedule: &SchedulePlan,
     effective_mode: ScheduleMode,
     effective_policy: RedundancyPolicy,
@@ -3545,7 +5854,7 @@ fn write_tunnel_runtime_status(
         .collect();
     let tunnel_health = aggregate_health.to_status();
 
-    write_runtime_status(
+    write_runtime_status_with_sender_lanes(
         config,
         XBondRuntimeStatus {
             running: true,
@@ -3604,6 +5913,9 @@ fn write_tunnel_runtime_status(
                 inbound_queue_drops: counters.inbound_queue_drops,
                 duplicate_send_skips: counters.duplicate_send_skips,
                 fec_send_skips: counters.fec_send_skips,
+                tun_write_packets: counters.tun_write_packets,
+                tun_write_queue_micros_total: counters.tun_write_queue_micros_total,
+                tun_write_micros_total: counters.tun_write_micros_total,
             },
             recovery: recovery_status.clone(),
             diagnostic_override: active_override.map(ActiveScheduleOverride::status),
@@ -3611,6 +5923,7 @@ fn write_tunnel_runtime_status(
             message: Some("XBond tunnel is running.".to_string()),
             ..XBondRuntimeStatus::default()
         },
+        path_runtime,
     )
 }
 
@@ -3973,6 +6286,7 @@ fn validate_bind_source_on_interface(bind_addr: &str, interface_name: &str) -> R
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn addr_show_has_ipv4_source(addr_output: &str, source: IpAddr) -> bool {
     addr_output
         .lines()
@@ -4338,7 +6652,22 @@ fn read_runtime_status(config: &ClientConfig) -> Result<XBondRuntimeStatus> {
         .with_context(|| format!("failed to parse {}", runtime_path.display()))
 }
 
-fn write_runtime_status(config: &ClientConfig, status: XBondRuntimeStatus) -> Result<()> {
+fn write_runtime_status_with_sender_lanes(
+    config: &ClientConfig,
+    status: XBondRuntimeStatus,
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+) -> Result<()> {
+    let mut value = serde_json::to_value(status)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "sender_lanes".to_string(),
+            serde_json::Value::Array(sender_lane_metrics_json(path_runtime)),
+        );
+    }
+    write_runtime_status_value(config, value)
+}
+
+fn write_runtime_status_value(config: &ClientConfig, status: serde_json::Value) -> Result<()> {
     let Some(path) = &config.runtime_status_path else {
         return Ok(());
     };
@@ -4572,6 +6901,42 @@ fn now_micros() -> u64 {
         .unwrap_or_default()
 }
 
+fn resolve_session_id(override_id: Option<u64>) -> Result<u64> {
+    if let Some(session_id) = override_id {
+        if session_id == 0 {
+            bail!("XBond session id must be nonzero");
+        }
+        return Ok(session_id);
+    }
+
+    for _ in 0..8 {
+        let mut bytes = [0u8; std::mem::size_of::<u64>()];
+        getrandom::getrandom(&mut bytes).map_err(|error| {
+            anyhow::anyhow!("failed to obtain a random XBond session id: {error}")
+        })?;
+        let session_id = u64::from_ne_bytes(bytes);
+        if session_id != 0 {
+            return Ok(session_id);
+        }
+    }
+
+    bail!("operating-system random source repeatedly returned a zero XBond session id")
+}
+
+fn resolve_session_handshake_nonce() -> Result<SessionHandshakeNonce> {
+    for _ in 0..8 {
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce).map_err(|error| {
+            anyhow::anyhow!("failed to obtain a random XBond session handshake nonce: {error}")
+        })?;
+        if nonce.iter().any(|byte| *byte != 0) {
+            return Ok(nonce);
+        }
+    }
+
+    bail!("operating-system random source repeatedly returned a zero XBond handshake nonce")
+}
+
 fn monotonic_micros() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     START
@@ -4585,22 +6950,466 @@ fn monotonic_micros() -> u64 {
 mod tests {
     use super::*;
 
-    fn primary_send_work(sequence: u64) -> PathSendWork {
-        PathSendWork {
-            packet_kind: PacketKind::Data,
-            header: XBondHeader::new(PacketKind::Data, 7, sequence, now_micros(), 1),
-            payload: Arc::new(vec![sequence as u8]),
+    fn nonce(value: u8) -> SessionHandshakeNonce {
+        [value; 16]
+    }
+
+    #[tokio::test]
+    async fn inbound_control_is_serviced_before_queued_payload() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (payload_tx, mut payload_rx) = mpsc::channel(1);
+        let frame = |kind, sequence| InboundTunnelFrame {
+            path_id: 1,
+            frame: XBondFrame::new(
+                XBondHeader::new(kind, 7, sequence, now_micros(), 1),
+                vec![0x45],
+            ),
+        };
+
+        payload_tx.send(frame(PacketKind::Data, 1)).await.unwrap();
+        control_tx
+            .send(frame(PacketKind::Heartbeat, 2))
+            .await
+            .unwrap();
+
+        let received = receive_prioritized_tunnel_frame(&mut control_rx, &mut payload_rx)
+            .await
+            .unwrap();
+        assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
+        assert_eq!(payload_rx.len(), 1);
+        assert!(is_prioritized_client_inbound(PacketKind::Control));
+        assert!(is_prioritized_client_inbound(PacketKind::Heartbeat));
+        assert!(!is_prioritized_client_inbound(PacketKind::Data));
+    }
+
+    fn complete_session_handshake(
+        state: &mut ClientSynchronizationState,
+        session_id: u64,
+        now: Instant,
+    ) {
+        let request_nonce = state.request_nonce();
+        let challenge = nonce(2);
+        assert!(matches!(
+            state.apply_control(
+                &XBondControlMessage::SessionChallenge {
+                    session_id,
+                    request_nonce,
+                    challenge,
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::SessionChallenge { .. }
+        ));
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionAccepted {
+                    session_id,
+                    request_nonce,
+                    challenge,
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::SessionAccepted
+        );
+    }
+
+    #[test]
+    fn generated_session_ids_are_random_and_nonzero() {
+        let first = resolve_session_id(None).unwrap();
+        let second = resolve_session_id(None).unwrap();
+        let first_nonce = resolve_session_handshake_nonce().unwrap();
+        let second_nonce = resolve_session_handshake_nonce().unwrap();
+
+        assert_ne!(first, 0);
+        assert_ne!(second, 0);
+        assert_ne!(first, second);
+        assert!(first_nonce.iter().any(|byte| *byte != 0));
+        assert!(second_nonce.iter().any(|byte| *byte != 0));
+        assert_ne!(first_nonce, second_nonce);
+        assert_eq!(resolve_session_id(Some(42)).unwrap(), 42);
+        assert!(resolve_session_id(Some(0)).is_err());
+    }
+
+    #[test]
+    fn data_plane_waits_for_matching_session_and_schedule_acceptance() {
+        let now = Instant::now();
+        let request_nonce = nonce(1);
+        let challenge = nonce(2);
+        let mut state = ClientSynchronizationState::new(42, request_nonce, 7, now);
+
+        assert!(!state.data_plane_ready());
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionAccepted {
+                    session_id: 99,
+                    request_nonce,
+                    challenge,
+                },
+                now
+            ),
+            SynchronizationControlOutcome::Ignored
+        );
+        assert!(!state.data_plane_ready());
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionChallenge {
+                    session_id: 42,
+                    request_nonce,
+                    challenge,
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::SessionChallenge {
+                request_nonce,
+                challenge,
+            }
+        );
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionAccepted {
+                    session_id: 42,
+                    request_nonce,
+                    challenge,
+                },
+                now
+            ),
+            SynchronizationControlOutcome::SessionAccepted
+        );
+        assert!(!state.data_plane_ready());
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::ScheduleAccepted {
+                    session_id: 42,
+                    schedule_generation: 6,
+                },
+                now
+            ),
+            SynchronizationControlOutcome::Ignored
+        );
+        assert!(!state.data_plane_ready());
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::ScheduleAccepted {
+                    session_id: 42,
+                    schedule_generation: 7,
+                },
+                now
+            ),
+            SynchronizationControlOutcome::ScheduleAccepted
+        );
+        assert!(state.data_plane_ready());
+    }
+
+    #[test]
+    fn session_handshake_ignores_stale_or_mismatched_controls() {
+        let now = Instant::now();
+        let request_nonce = nonce(1);
+        let challenge = nonce(2);
+        let mut state = ClientSynchronizationState::new(42, request_nonce, 7, now);
+
+        for control in [
+            XBondControlMessage::SessionChallenge {
+                session_id: 99,
+                request_nonce,
+                challenge,
+            },
+            XBondControlMessage::SessionChallenge {
+                session_id: 42,
+                request_nonce: nonce(9),
+                challenge,
+            },
+            XBondControlMessage::SessionChallenge {
+                session_id: 42,
+                request_nonce,
+                challenge: [0; 16],
+            },
+            XBondControlMessage::SessionAccepted {
+                session_id: 42,
+                request_nonce,
+                challenge,
+            },
+        ] {
+            assert_eq!(
+                state.apply_control(&control, now),
+                SynchronizationControlOutcome::Ignored
+            );
         }
+        assert!(!state.session_accepted());
+
+        assert!(matches!(
+            state.apply_control(
+                &XBondControlMessage::SessionChallenge {
+                    session_id: 42,
+                    request_nonce,
+                    challenge,
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::SessionChallenge { .. }
+        ));
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionAccepted {
+                    session_id: 42,
+                    request_nonce,
+                    challenge: nonce(3),
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::Ignored
+        );
+        assert!(!state.session_accepted());
+
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionAccepted {
+                    session_id: 42,
+                    request_nonce,
+                    challenge,
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::SessionAccepted
+        );
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionChallenge {
+                    session_id: 42,
+                    request_nonce,
+                    challenge: nonce(4),
+                },
+                now,
+            ),
+            SynchronizationControlOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn schedule_generation_change_requires_a_fresh_ack() {
+        let now = Instant::now();
+        let mut state = ClientSynchronizationState::new(42, nonce(1), 1, now);
+        complete_session_handshake(&mut state, 42, now);
+        state.apply_control(
+            &XBondControlMessage::ScheduleAccepted {
+                session_id: 42,
+                schedule_generation: 1,
+            },
+            now,
+        );
+        assert!(state.data_plane_ready());
+
+        state.require_schedule(2, now + Duration::from_secs(1));
+        assert!(!state.data_plane_ready());
+        state.apply_control(
+            &XBondControlMessage::ScheduleAccepted {
+                session_id: 42,
+                schedule_generation: 2,
+            },
+            now + Duration::from_secs(2),
+        );
+        assert!(state.data_plane_ready());
+
+        state.mark_schedule_unsynchronized(now + Duration::from_secs(3));
+        assert!(!state.data_plane_ready());
+    }
+
+    #[test]
+    fn matching_restart_required_ends_the_session() {
+        let now = Instant::now();
+        let mut state = ClientSynchronizationState::new(42, nonce(1), 1, now);
+        let restart = XBondControlMessage::SessionRestartRequired {
+            session_id: 42,
+            reason: "server lost session state".to_string(),
+        };
+
+        assert_eq!(
+            state.apply_control(&restart, now),
+            SynchronizationControlOutcome::Ignored
+        );
+        complete_session_handshake(&mut state, 42, now);
+        assert_eq!(
+            state.apply_control(&restart, now),
+            SynchronizationControlOutcome::RestartRequired("server lost session state".to_string())
+        );
+        assert_eq!(
+            state.apply_control(
+                &XBondControlMessage::SessionRestartRequired {
+                    session_id: 99,
+                    reason: "other session".to_string(),
+                },
+                now
+            ),
+            SynchronizationControlOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn synchronization_timeouts_force_a_clean_reconnect() {
+        let now = Instant::now();
+        let mut state = ClientSynchronizationState::new(42, nonce(1), 1, now);
+
+        assert!(state
+            .synchronization_error(now + SESSION_SYNCHRONIZATION_TIMEOUT - Duration::from_millis(1))
+            .is_none());
+        assert!(state
+            .synchronization_error(now + SESSION_SYNCHRONIZATION_TIMEOUT)
+            .unwrap()
+            .contains("session 42"));
+
+        complete_session_handshake(&mut state, 42, now + Duration::from_secs(1));
+        assert!(state
+            .synchronization_error(
+                now + Duration::from_secs(1) + SCHEDULE_SYNCHRONIZATION_TIMEOUT
+                    - Duration::from_millis(1)
+            )
+            .is_none());
+        assert!(state
+            .synchronization_error(now + Duration::from_secs(1) + SCHEDULE_SYNCHRONIZATION_TIMEOUT)
+            .unwrap()
+            .contains("schedule generation 1"));
+    }
+
+    fn primary_send_work(sequence: u64) -> PathSendWork {
+        PathSendWork::data(
+            PacketKind::Data,
+            XBondHeader::new(PacketKind::Data, 7, sequence, now_micros(), 1),
+            Arc::new(vec![sequence as u8]),
+        )
+    }
+
+    fn test_sender_handle(
+        data_tx: mpsc::Sender<PathSendWork>,
+        control_tx: mpsc::Sender<PathSendWork>,
+        repair_tx: mpsc::Sender<PathSendWork>,
+        data_capacity: usize,
+        task: JoinHandle<()>,
+    ) -> PathSenderHandle {
+        let metrics = Arc::new(PathSenderMetrics::new(data_capacity));
+        let latest_control = Arc::new(LatestControlSlot::new(metrics.clone()));
+        PathSenderHandle {
+            socket_generation: 1,
+            data_tx,
+            control_tx,
+            repair_tx,
+            latest_control,
+            metrics,
+            task,
+        }
+    }
+
+    #[tokio::test]
+    async fn sender_successes_are_aggregated_without_using_the_report_channel() {
+        let (data_tx, _data_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 1, task);
+        sender.metrics.record_encoded(7);
+        sender.metrics.record_encoded(11);
+        sender.metrics.record_success(PacketKind::Data, 1200);
+        sender.metrics.record_success(PacketKind::Duplicate, 1200);
+        sender.metrics.record_success(PacketKind::Fec, 600);
+        sender.metrics.record_success(PacketKind::Repair, 800);
+        sender
+            .metrics
+            .record_sender_deadline_drop(PathSendLane::Data);
+        sender
+            .metrics
+            .record_sender_deadline_drop(PathSendLane::Repair);
+
+        let senders = HashMap::from([(9, sender)]);
+        let mut runtimes = HashMap::new();
+        let mut counters = TunnelCounters::default();
+        let mut repair = XBondRepairStatus::default();
+        drain_sender_completions(&senders, &mut runtimes, &mut counters, &mut repair);
+
+        assert_eq!(counters.encoded_frames, 2);
+        assert_eq!(counters.encode_micros_total, 18);
+        assert_eq!(counters.data_packets_sent, 1);
+        assert_eq!(counters.duplicate_packets_sent, 1);
+        assert_eq!(counters.fec_packets_sent, 1);
+        assert_eq!(repair.frames_sent, 1);
+        assert_eq!(counters.sender_deadline_drops, 2);
+        assert_eq!(counters.repair_lane_drops, 1);
+        assert_eq!(runtimes[&9].bytes_sent, 3800);
+        assert_eq!(
+            senders[&9].metrics.take_completions(),
+            PathSenderCompletionSnapshot::default()
+        );
+        senders[&9].task.abort();
+    }
+
+    #[test]
+    fn return_reorder_uses_server_adaptive_hold_during_recovery() {
+        let mut reorder = PacketReorderBuffer::new(16, 25_000);
+        let recovery = RecoveryStatus {
+            active: true,
+            ..RecoveryStatus::default()
+        };
+        let mut server = XBondServerRecoveryStatus {
+            reported: true,
+            ..XBondServerRecoveryStatus::default()
+        };
+        server.ingress_reorder.current_hold_ms = 350;
+
+        update_return_reorder_hold(&mut reorder, 25, &recovery, &server);
+
+        assert_eq!(reorder.hold_micros(), 350_000);
+    }
+
+    #[test]
+    fn return_reorder_starts_recovery_with_safe_minimum_before_server_status() {
+        let mut reorder = PacketReorderBuffer::new(16, 25_000);
+        let recovery = RecoveryStatus {
+            active: true,
+            ..RecoveryStatus::default()
+        };
+
+        update_return_reorder_hold(
+            &mut reorder,
+            25,
+            &recovery,
+            &XBondServerRecoveryStatus::default(),
+        );
+
+        assert_eq!(reorder.hold_micros(), 150_000);
+    }
+
+    #[test]
+    fn return_reorder_resets_to_normal_hold_after_recovery() {
+        let mut reorder = PacketReorderBuffer::new(16, 500_000);
+
+        update_return_reorder_hold(
+            &mut reorder,
+            25,
+            &RecoveryStatus::default(),
+            &XBondServerRecoveryStatus::default(),
+        );
+
+        assert_eq!(reorder.hold_micros(), 25_000);
     }
 
     #[tokio::test]
     async fn saturated_primary_queue_preserves_backpressure_and_control_progress() {
         let (payload_tx, mut payload_rx) = mpsc::channel(1);
-        payload_tx.try_send(primary_send_work(1)).unwrap();
+        let (sender_control_tx, sender_control_rx) = mpsc::channel(1);
+        let (sender_repair_tx, sender_repair_rx) = mpsc::channel(1);
+        let sender_task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((sender_control_rx, sender_repair_rx));
+        });
+        let sender = test_sender_handle(
+            payload_tx,
+            sender_control_tx,
+            sender_repair_tx,
+            1,
+            sender_task,
+        );
+        try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, primary_send_work(1)).unwrap();
         let (completion_tx, mut completion_rx) = mpsc::channel(1);
 
         let result =
-            enqueue_primary_work(1, 4, &payload_tx, primary_send_work(2), &completion_tx).unwrap();
+            enqueue_primary_work(1, 4, &sender, primary_send_work(2), &completion_tx).unwrap();
 
         assert_eq!(result, PrimaryEnqueueResult::Pending);
         assert!(
@@ -4631,6 +7440,216 @@ mod tests {
         assert_eq!(completion.path_id, 1);
         assert_eq!(completion.socket_generation, 4);
         assert_eq!(payload_rx.recv().await.unwrap().header.sequence, 2);
+        sender.task.abort();
+    }
+
+    #[tokio::test]
+    async fn sender_queue_metrics_use_real_bounded_channel_occupancy() {
+        let (tx, rx) = mpsc::channel(4);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (repair_tx, repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((rx, control_rx, repair_rx));
+        });
+        let sender = test_sender_handle(tx, control_tx, repair_tx, 4, task);
+        try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, primary_send_work(1)).unwrap();
+        try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, primary_send_work(2)).unwrap();
+        let mut senders = HashMap::from([(1, sender)]);
+        let mut path_runtime = HashMap::from([(1, TunnelPathRuntime::default())]);
+        path_runtime
+            .get_mut(&1)
+            .unwrap()
+            .pending_heartbeats
+            .insert(9, Instant::now());
+
+        refresh_sender_queue_metrics(&mut path_runtime, &senders);
+
+        let runtime = path_runtime.get(&1).unwrap();
+        assert_eq!(runtime.sender_queue_depth, 2);
+        assert_eq!(runtime.sender_queue_capacity, 4);
+        assert_eq!(sender_queue_pressure(runtime), 0.5);
+        assert_eq!(runtime.pending_heartbeats.len(), 1);
+        senders.remove(&1).unwrap().task.abort();
+    }
+
+    #[tokio::test]
+    async fn pending_heartbeats_do_not_create_sender_queue_pressure() {
+        let (tx, rx) = mpsc::channel(4);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (repair_tx, repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((rx, control_rx, repair_rx));
+        });
+        let sender = test_sender_handle(tx, control_tx, repair_tx, 4, task);
+        let mut senders = HashMap::from([(1, sender)]);
+        let mut runtime = TunnelPathRuntime::default();
+        for sequence in 1..=3 {
+            runtime.pending_heartbeats.insert(sequence, Instant::now());
+        }
+        let mut path_runtime = HashMap::from([(1, runtime)]);
+
+        refresh_sender_queue_metrics(&mut path_runtime, &senders);
+
+        let runtime = path_runtime.get(&1).unwrap();
+        assert_eq!(runtime.sender_queue_depth, 0);
+        assert_eq!(sender_queue_pressure(runtime), 0.0);
+        assert_eq!(runtime.pending_heartbeats.len(), 3);
+        senders.remove(&1).unwrap().task.abort();
+    }
+
+    #[test]
+    fn tun_reader_exit_is_promoted_to_tunnel_failure() {
+        let read_error =
+            tun_reader_exit_error(TunReaderExit::ReadFailed("read failed".to_string()));
+        let task_error =
+            tun_reader_exit_error(TunReaderExit::TaskFailed("task failed".to_string()));
+        let queue_error = tun_reader_exit_error(TunReaderExit::PacketQueueClosed);
+
+        assert_eq!(read_error.to_string(), "read failed");
+        assert_eq!(task_error.to_string(), "task failed");
+        assert!(queue_error.to_string().contains("packet queue closed"));
+    }
+
+    #[test]
+    fn fec_pairs_only_consecutive_packets_in_the_same_context() {
+        let mut pending = None;
+        assert!(advance_pending_fec_source(
+            &mut pending,
+            10,
+            Arc::new(vec![1]),
+            true,
+            3,
+            RedundancyPolicy::Balanced,
+            false,
+        )
+        .is_none());
+
+        let pair = advance_pending_fec_source(
+            &mut pending,
+            11,
+            Arc::new(vec![2]),
+            true,
+            3,
+            RedundancyPolicy::Balanced,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(pair.0, 10);
+        assert_eq!(pair.1.as_slice(), &[1]);
+        assert_eq!(pair.2.as_slice(), &[2]);
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn fec_pending_state_clears_on_ineligible_or_changed_context() {
+        let mut pending = None;
+        advance_pending_fec_source(
+            &mut pending,
+            20,
+            Arc::new(vec![1]),
+            true,
+            4,
+            RedundancyPolicy::Balanced,
+            false,
+        );
+        advance_pending_fec_source(
+            &mut pending,
+            21,
+            Arc::new(vec![2]),
+            false,
+            4,
+            RedundancyPolicy::Balanced,
+            false,
+        );
+        assert!(pending.is_none());
+
+        advance_pending_fec_source(
+            &mut pending,
+            30,
+            Arc::new(vec![3]),
+            true,
+            4,
+            RedundancyPolicy::Balanced,
+            false,
+        );
+        assert!(advance_pending_fec_source(
+            &mut pending,
+            31,
+            Arc::new(vec![4]),
+            true,
+            5,
+            RedundancyPolicy::Balanced,
+            false,
+        )
+        .is_none());
+        assert_eq!(pending.as_ref().unwrap().sequence, 31);
+
+        assert!(advance_pending_fec_source(
+            &mut pending,
+            32,
+            Arc::new(vec![5]),
+            true,
+            5,
+            RedundancyPolicy::Reliable,
+            true,
+        )
+        .is_none());
+        assert_eq!(pending.as_ref().unwrap().sequence, 32);
+
+        assert!(advance_pending_fec_source(
+            &mut pending,
+            34,
+            Arc::new(vec![6]),
+            true,
+            5,
+            RedundancyPolicy::Reliable,
+            true,
+        )
+        .is_none());
+        assert_eq!(pending.as_ref().unwrap().sequence, 34);
+    }
+
+    #[test]
+    fn silent_blackhole_requires_hysteresis_and_resets_after_ack() {
+        let mut runtime = TunnelPathRuntime {
+            loss_rate: 1.0,
+            last_ack_at: Some(Instant::now() - Duration::from_secs(30)),
+            health_window: VecDeque::from([false, false, false]),
+            ..TunnelPathRuntime::default()
+        };
+        let threshold = Duration::from_secs(5);
+
+        assert!(!refresh_silent_blackhole_state(&mut runtime, threshold));
+        assert!(!refresh_silent_blackhole_state(&mut runtime, threshold));
+        assert!(refresh_silent_blackhole_state(&mut runtime, threshold));
+
+        runtime.last_ack_at = Some(Instant::now());
+        assert!(!refresh_silent_blackhole_state(&mut runtime, threshold));
+        assert_eq!(runtime.stale_ack_ticks, 0);
+    }
+
+    #[test]
+    fn silent_blackhole_probe_respects_inflight_and_cooldowns() {
+        let mut runtime = TunnelPathRuntime::default();
+        assert!(silent_blackhole_probe_allowed(&runtime, true));
+        assert!(!silent_blackhole_probe_allowed(&runtime, false));
+
+        runtime.direct_probe_in_flight = true;
+        assert!(!silent_blackhole_probe_allowed(&runtime, true));
+        runtime.direct_probe_in_flight = false;
+
+        runtime.last_direct_probe_at = Some(Instant::now());
+        assert!(!silent_blackhole_probe_allowed(&runtime, true));
+        runtime.last_direct_probe_at =
+            Some(Instant::now() - SILENT_BLACKHOLE_PROBE_COOLDOWN - Duration::from_secs(1));
+        runtime.last_rebind_attempt = Some(Instant::now());
+        assert!(!silent_blackhole_probe_allowed(&runtime, true));
+        runtime.last_rebind_attempt =
+            Some(Instant::now() - SILENT_BLACKHOLE_REBIND_COOLDOWN - Duration::from_secs(1));
+        assert!(silent_blackhole_probe_allowed(&runtime, true));
     }
 
     #[test]
@@ -4710,6 +7729,26 @@ mod tests {
     }
 
     #[test]
+    fn path_health_window_reacts_faster_than_aggregate_tunnel_window() {
+        let mut path = TunnelPathRuntime::default();
+        let mut aggregate = TunnelAggregateHealthRuntime::default();
+
+        for _ in 0..TUNNEL_HEALTH_WINDOW {
+            record_tunnel_health_sample(&mut path, true, Some(40.0));
+            record_aggregate_tunnel_health_sample(&mut aggregate, true, Some(40.0));
+        }
+        for _ in 0..PATH_HEALTH_WINDOW {
+            record_tunnel_health_sample(&mut path, true, Some(240.0));
+            record_aggregate_tunnel_health_sample(&mut aggregate, true, Some(240.0));
+        }
+
+        assert_eq!(path.rtt_samples_ms.len(), PATH_HEALTH_WINDOW);
+        assert_eq!(path.rtt_ms, Some(240.0));
+        assert_eq!(aggregate.rtt_samples_ms.len(), TUNNEL_HEALTH_WINDOW);
+        assert!(aggregate.rtt_ms.is_some_and(|rtt| rtt < 240.0));
+    }
+
+    #[test]
     fn aggregate_tunnel_health_first_ack_wins_and_ignores_duplicates() {
         let mut runtime = TunnelAggregateHealthRuntime::default();
         let sequence = AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX | 42;
@@ -4721,7 +7760,7 @@ mod tests {
                 PacketKind::Heartbeat,
                 7,
                 sequence,
-                now_micros().saturating_sub(20_000),
+                now_micros().saturating_add(60_000_000),
                 1,
             ),
             b"ack".to_vec(),
@@ -4736,7 +7775,79 @@ mod tests {
         assert_eq!(runtime.loss_rate, Some(0.0));
         assert_eq!(runtime.success_rate, Some(1.0));
         assert!(runtime.last_success_at.is_some());
-        assert!(runtime.rtt_ms.is_some_and(|value| value >= 0.0));
+        assert!(runtime
+            .rtt_ms
+            .is_some_and(|value| (10.0..100.0).contains(&value)));
+    }
+
+    #[test]
+    fn path_rtt_uses_pending_monotonic_instant_not_wire_timestamp() {
+        let sequence = 77;
+        let mut runtime = TunnelPathRuntime::default();
+        runtime
+            .pending_heartbeats
+            .insert(sequence, Instant::now() - Duration::from_millis(25));
+        let mut path_runtime = HashMap::from([(1, runtime)]);
+        let frame = XBondFrame::new(
+            XBondHeader::new(
+                PacketKind::Heartbeat,
+                7,
+                sequence,
+                now_micros().saturating_add(60_000_000),
+                1,
+            ),
+            b"ack".to_vec(),
+        );
+
+        record_tunnel_heartbeat_ack(&mut path_runtime, 1, &frame);
+
+        assert!(path_runtime[&1]
+            .rtt_ms
+            .is_some_and(|value| (15.0..100.0).contains(&value)));
+    }
+
+    #[test]
+    fn inbound_replay_window_rejects_replayed_control_frames() {
+        let mut receiver = FrameReceiver::new(1_000_000, 64);
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Control, 7, 91, now_micros(), 1),
+            b"authoritative-schedule".to_vec(),
+        );
+
+        assert_eq!(
+            receiver.observe(&frame, now_micros()),
+            ReceiveOutcome::Accepted
+        );
+        assert_eq!(
+            receiver.observe(&frame, now_micros()),
+            ReceiveOutcome::Duplicate
+        );
+        assert_eq!(receiver.stats().accepted_packets, 1);
+        assert_eq!(receiver.stats().duplicate_packets_dropped, 1);
+    }
+
+    #[test]
+    fn repeated_ineffective_rebinds_escalate_and_a_real_ack_resets_them() {
+        let sequence = 92;
+        let mut runtime = TunnelPathRuntime::default();
+
+        for attempt in 1..SILENT_BLACKHOLE_MAX_INEFFECTIVE_REBINDS {
+            assert!(!record_ineffective_rebind(&mut runtime));
+            assert_eq!(runtime.ineffective_rebinds, attempt);
+        }
+        assert!(record_ineffective_rebind(&mut runtime));
+
+        runtime
+            .pending_heartbeats
+            .insert(sequence, Instant::now() - Duration::from_millis(10));
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, sequence, now_micros(), 1),
+            b"ack".to_vec(),
+        );
+        let mut path_runtime = HashMap::from([(1, runtime)]);
+        record_tunnel_heartbeat_ack(&mut path_runtime, 1, &frame);
+
+        assert_eq!(path_runtime[&1].ineffective_rebinds, 0);
     }
 
     #[test]
@@ -4907,5 +8018,508 @@ mod tests {
 
         assert_eq!(paths[0].bind_addr, None);
         assert_eq!(paths[0].bind_device.as_deref(), Some("eth0"));
+    }
+
+    #[test]
+    fn lab_tun_flags_are_hidden_but_parseable_and_inert_by_default() {
+        let parsed = Args::try_parse_from(["xbond-client", "tunnel"]).unwrap();
+        let Command::Tunnel {
+            lab_fail_tun_read_after_packets,
+            lab_tun_write_delay_ms,
+            ..
+        } = parsed.command
+        else {
+            panic!("expected tunnel command");
+        };
+        assert_eq!(lab_fail_tun_read_after_packets, None);
+        assert_eq!(lab_tun_write_delay_ms, 0);
+
+        let parsed = Args::try_parse_from([
+            "xbond-client",
+            "tunnel",
+            "--lab-fail-tun-read-after-packets",
+            "7",
+            "--lab-tun-write-delay-ms",
+            "25",
+        ])
+        .unwrap();
+        let Command::Tunnel {
+            lab_fail_tun_read_after_packets,
+            lab_tun_write_delay_ms,
+            ..
+        } = parsed.command
+        else {
+            panic!("expected tunnel command");
+        };
+        assert_eq!(lab_fail_tun_read_after_packets, Some(7));
+        assert_eq!(lab_tun_write_delay_ms, 25);
+        assert!(!should_fail_tun_reader(Some(7), 6));
+        assert!(should_fail_tun_reader(Some(7), 7));
+        assert!(!should_fail_tun_reader(None, u64::MAX));
+    }
+
+    #[test]
+    fn receiver_payloads_are_mtu_bounded_and_reject_oversized_data() {
+        let mtu = 1400;
+        let pool = ReceiverPayloadPool::new(4, receiver_scratch_capacity(mtu));
+        let payload = vec![9u8; usize::from(mtu)];
+        let queued = copy_bounded_receiver_payload(PacketKind::Data, &payload, mtu, &pool).unwrap();
+
+        assert_eq!(queued, payload);
+        assert!(queued.capacity() <= receiver_scratch_capacity(mtu));
+        assert!(copy_bounded_receiver_payload(
+            PacketKind::Data,
+            &vec![1; receiver_scratch_capacity(mtu) + 1],
+            mtu,
+            &pool,
+        )
+        .is_none());
+        assert!(copy_bounded_receiver_payload(
+            PacketKind::Control,
+            &vec![1; MAX_CONTROL_PAYLOAD_BYTES],
+            mtu,
+            &pool,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn receiver_payload_pool_reuses_bounded_buffers() {
+        let pool = ReceiverPayloadPool::new(2, 2048);
+        let buffer = pool.take(1400);
+        let pointer = buffer.as_ptr();
+        pool.recycle(buffer);
+        assert_eq!(pool.len(), 1);
+
+        let reused = pool.take(1200);
+        assert_eq!(reused.as_ptr(), pointer);
+        assert_eq!(pool.len(), 0);
+        pool.recycle(Vec::with_capacity(4096));
+        assert_eq!(pool.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn saturated_tun_writer_queue_exits_instead_of_dropping_unique_packet() {
+        let (tx, _rx) = mpsc::channel(1);
+        let writer = TunWriterHandle {
+            tx,
+            queued_packets: Arc::new(AtomicU64::new(0)),
+            capacity: 1,
+        };
+        let packets = |sequence| {
+            vec![ReorderedPacket {
+                sequence,
+                path_id: 1,
+                payload: vec![0; 100],
+            }]
+        };
+        let mut counters = TunnelCounters::default();
+
+        enqueue_reordered_return_packets_with_deadline(
+            &writer,
+            packets(1),
+            &mut counters,
+            false,
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap();
+        let error = enqueue_reordered_return_packets_with_deadline(
+            &writer,
+            packets(2),
+            &mut counters,
+            false,
+            Duration::from_millis(10),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(counters.tun_write_queue_drops, 1);
+        assert_eq!(writer.queue_depth(), 1);
+        assert!(error.to_string().contains("reconnecting"));
+    }
+
+    #[tokio::test]
+    async fn tun_writer_rejects_an_oversized_batch_without_partial_admission() {
+        let (tx, mut rx) = mpsc::channel(3);
+        let writer = TunWriterHandle {
+            tx,
+            queued_packets: Arc::new(AtomicU64::new(0)),
+            capacity: 3,
+        };
+        let mut counters = TunnelCounters::default();
+        enqueue_reordered_return_packets_with_deadline(
+            &writer,
+            vec![
+                ReorderedPacket {
+                    sequence: 1,
+                    path_id: 1,
+                    payload: vec![1],
+                },
+                ReorderedPacket {
+                    sequence: 2,
+                    path_id: 1,
+                    payload: vec![2],
+                },
+            ],
+            &mut counters,
+            false,
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+
+        let error = enqueue_reordered_return_packets_with_deadline(
+            &writer,
+            vec![
+                ReorderedPacket {
+                    sequence: 3,
+                    path_id: 1,
+                    payload: vec![3],
+                },
+                ReorderedPacket {
+                    sequence: 4,
+                    path_id: 1,
+                    payload: vec![4],
+                },
+            ],
+            &mut counters,
+            false,
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("atomically admit 2"));
+        assert_eq!(counters.tun_write_queue_drops, 2);
+        assert_eq!(writer.queue_depth(), 2);
+        let queued = rx.recv().await.unwrap();
+        assert_eq!(
+            queued
+                .packets
+                .iter()
+                .map(|packet| packet.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn reserved_sender_lanes_prioritize_control_then_repair_then_data() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (repair_tx, mut repair_rx) = mpsc::channel(1);
+        let (data_tx, mut data_rx) = mpsc::channel(1);
+        let metrics = Arc::new(PathSenderMetrics::new(1));
+        let latest_control = LatestControlSlot::new(metrics);
+        control_tx
+            .send(PathSendWork::control(
+                PacketKind::Control,
+                XBondHeader::new(PacketKind::Control, 1, 1, 1, 1),
+                Arc::new(vec![1]),
+            ))
+            .await
+            .unwrap();
+        repair_tx
+            .send(PathSendWork::repair(
+                XBondHeader::new(PacketKind::Repair, 1, 2, 1, 1),
+                Arc::new(vec![2]),
+            ))
+            .await
+            .unwrap();
+        data_tx.send(primary_send_work(3)).await.unwrap();
+
+        assert_eq!(
+            receive_next_path_send_work(
+                &mut control_rx,
+                &latest_control,
+                &mut repair_rx,
+                &mut data_rx,
+            )
+            .await
+            .unwrap()
+            .lane,
+            PathSendLane::Control
+        );
+        assert_eq!(
+            receive_next_path_send_work(
+                &mut control_rx,
+                &latest_control,
+                &mut repair_rx,
+                &mut data_rx,
+            )
+            .await
+            .unwrap()
+            .lane,
+            PathSendLane::Repair
+        );
+        assert_eq!(
+            receive_next_path_send_work(
+                &mut control_rx,
+                &latest_control,
+                &mut repair_rx,
+                &mut data_rx,
+            )
+            .await
+            .unwrap()
+            .lane,
+            PathSendLane::Data
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_control_slot_delivers_newest_authoritative_update() {
+        let metrics = Arc::new(PathSenderMetrics::new(1));
+        let latest = LatestControlSlot::new(metrics.clone());
+        let first = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 10, 1, 1),
+            Arc::new(vec![10]),
+        );
+        let newest = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 11, 1, 1),
+            Arc::new(vec![11]),
+        );
+
+        assert!(!latest.replace(first));
+        assert!(latest.replace(newest));
+        let received = time::timeout(Duration::from_millis(100), latest.recv())
+            .await
+            .unwrap();
+        assert_eq!(received.header.sequence, 11);
+        assert_eq!(received.payload.as_slice(), &[11]);
+        metrics.record_dequeued(&received);
+
+        let snapshot = metrics.snapshot(PathSendLane::Control, Instant::now());
+        assert_eq!(snapshot.depth, 0);
+        assert_eq!(snapshot.enqueue_drops, 1);
+    }
+
+    #[tokio::test]
+    async fn critical_control_saturation_waits_until_deadline_then_fails_closed() {
+        let (data_tx, data_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (repair_tx, repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((data_rx, control_rx, repair_rx));
+        });
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 1, task);
+        let queued = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 1, 1, 1),
+            Arc::new(vec![1]),
+        );
+        try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, queued).unwrap();
+        let mut runtimes = HashMap::new();
+        let mut counters = TunnelCounters::default();
+        let mut critical = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 2, 1, 1),
+            Arc::new(vec![2]),
+        );
+        critical.deadline = Instant::now() + Duration::from_millis(20);
+
+        let error = enqueue_critical_control_work(
+            &sender,
+            critical,
+            &mut runtimes,
+            1,
+            &mut counters,
+            "session-open",
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("reconnecting"));
+        assert_eq!(counters.control_lane_drops, 1);
+        assert_eq!(
+            sender
+                .metrics
+                .snapshot(PathSendLane::Control, Instant::now())
+                .deadline_drops,
+            1
+        );
+        sender.task.abort();
+    }
+
+    #[tokio::test]
+    async fn critical_control_backpressure_delivers_when_capacity_recovers() {
+        let (data_tx, _data_rx) = mpsc::channel(1);
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 1, task);
+        let queued = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 1, 1, 1),
+            Arc::new(vec![1]),
+        );
+        try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, queued).unwrap();
+        let metrics = sender.metrics.clone();
+        let release = tokio::spawn(async move {
+            time::sleep(Duration::from_millis(10)).await;
+            let dequeued = control_rx.recv().await.unwrap();
+            metrics.record_dequeued(&dequeued);
+            control_rx
+        });
+        let mut runtimes = HashMap::new();
+        let mut counters = TunnelCounters::default();
+
+        enqueue_critical_control_work(
+            &sender,
+            PathSendWork::control(
+                PacketKind::Control,
+                XBondHeader::new(PacketKind::Control, 1, 2, 1, 1),
+                Arc::new(vec![2]),
+            ),
+            &mut runtimes,
+            1,
+            &mut counters,
+            "session-open",
+            false,
+        )
+        .await
+        .unwrap();
+
+        let mut control_rx = release.await.unwrap();
+        let delivered = control_rx.recv().await.unwrap();
+        assert_eq!(delivered.header.sequence, 2);
+        sender.metrics.record_dequeued(&delivered);
+        let snapshot = sender
+            .metrics
+            .snapshot(PathSendLane::Control, Instant::now());
+        assert_eq!(snapshot.depth, 0);
+        assert_eq!(snapshot.enqueue_drops, 0);
+        assert_eq!(snapshot.deadline_drops, 0);
+        assert_eq!(counters.control_lane_drops, 0);
+        sender.task.abort();
+    }
+
+    #[tokio::test]
+    async fn per_lane_metrics_report_depth_age_and_drop_classes() {
+        let (data_tx, data_rx) = mpsc::channel(2);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (repair_tx, repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((data_rx, control_rx, repair_rx));
+        });
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 2, task);
+        let mut data_work = primary_send_work(1);
+        data_work.queued_at = Instant::now() - Duration::from_millis(25);
+        try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, data_work).unwrap();
+        let control_work = PathSendWork::control(
+            PacketKind::Heartbeat,
+            XBondHeader::new(PacketKind::Heartbeat, 1, 2, 1, 1),
+            Arc::new(vec![2]),
+        );
+        try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, control_work).unwrap();
+        let repair_work = PathSendWork::repair(
+            XBondHeader::new(PacketKind::Repair, 1, 3, 1, 1),
+            Arc::new(vec![3]),
+        );
+        try_enqueue_sender_lane(&sender.repair_tx, &sender.metrics, repair_work).unwrap();
+        sender.metrics.record_enqueue_drop(PathSendLane::Repair);
+        sender.metrics.record_deadline_drop(PathSendLane::Control);
+
+        let mut senders = HashMap::from([(1, sender)]);
+        let mut runtimes = HashMap::from([(1, TunnelPathRuntime::default())]);
+        refresh_sender_queue_metrics(&mut runtimes, &senders);
+        let runtime = runtimes.get(&1).unwrap();
+
+        assert_eq!(runtime.sender_queue_depth, 1);
+        assert_eq!(runtime.sender_queue_capacity, 2);
+        assert!(runtime.sender_data_oldest_age_ms >= 20);
+        assert_eq!(runtime.sender_control_queue_depth, 1);
+        assert_eq!(runtime.sender_control_deadline_drops, 1);
+        assert_eq!(runtime.sender_repair_queue_depth, 1);
+        assert_eq!(runtime.sender_repair_enqueue_drops, 1);
+        let json = sender_lane_metrics_json(&runtimes);
+        assert_eq!(json[0]["data"]["depth"], 1);
+        assert_eq!(json[0]["control"]["deadline_drops"], 1);
+        assert_eq!(json[0]["repair"]["enqueue_drops"], 1);
+        senders.remove(&1).unwrap().task.abort();
+    }
+
+    #[tokio::test]
+    async fn send_budget_times_out_a_blocked_operation_before_lane_deadline() {
+        let work = primary_send_work(1);
+        let budget = udp_send_budget(&work, Instant::now()).unwrap();
+        assert_eq!(budget, MAX_SOCKET_SEND_BLOCK);
+        assert!(time::timeout(budget, std::future::pending::<()>())
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn tun_writer_metrics_are_bounded_and_drain_without_per_packet_reports() {
+        let metrics = TunWriterMetrics::for_paths([7, 8]);
+        metrics.record_success(7, 1_200, 40, 15);
+        metrics.record_success(u16::MAX, 300, 50, 20);
+        metrics.record_failure();
+
+        let snapshot = metrics.take_snapshot();
+        assert_eq!(snapshot.packets, 2);
+        assert_eq!(snapshot.payload_bytes, 1_500);
+        assert_eq!(snapshot.queue_delay_micros, 90);
+        assert_eq!(snapshot.write_micros, 35);
+        assert_eq!(snapshot.failures, 1);
+        assert_eq!(snapshot.repair_frames, 1);
+        assert_eq!(snapshot.path_bytes.get(&7), Some(&1_200));
+        assert!(!snapshot.path_bytes.contains_key(&8));
+        assert_eq!(metrics.take_snapshot(), TunWriterMetricsSnapshot::default());
+    }
+
+    #[test]
+    fn sender_deadlines_and_pmtu_errors_are_detected_without_mutating_mtu() {
+        let mut work = primary_send_work(1);
+        work.deadline = Instant::now() - Duration::from_millis(1);
+        assert!(path_send_work_deadline_expired(&work, Instant::now()));
+        assert!(udp_send_budget(&work, Instant::now()).is_none());
+        let work = primary_send_work(2);
+        assert!(udp_send_budget(&work, Instant::now()).unwrap() <= MAX_SOCKET_SEND_BLOCK);
+        assert!(is_message_too_large_error(Some(90)));
+        assert!(is_message_too_large_error(Some(10040)));
+        assert!(!is_message_too_large_error(Some(19)));
+        assert!(!is_message_too_large_error(None));
+    }
+
+    #[test]
+    fn adaptive_resend_cache_uses_core_budget_and_reports_exact_eviction() {
+        let mut cache = ResendCache::new_with_byte_capacity(
+            10,
+            REPAIR_CACHE_MAX_BYTES,
+            REPAIR_CACHE_TTL_MICROS,
+        );
+        cache.insert(1, 1, Arc::new(vec![1; 2 * 1024 * 1024]), 1);
+        cache.insert(1, 2, Arc::new(vec![2; 2 * 1024 * 1024]), 2);
+        let mut counters = TunnelCounters::default();
+
+        update_repair_cache_budget(&mut cache, 0, 3, &mut counters);
+
+        assert_eq!(cache.byte_capacity(), REPAIR_CACHE_MIN_BYTES);
+        assert_eq!(cache.bytes_len(), 0);
+        assert_eq!(counters.repair_cache_evictions, 2);
+        assert_eq!(counters.repair_cache_evicted_bytes, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn pre_recovery_gap_repair_is_conservative() {
+        assert!(!pre_recovery_gap_repair_allowed(Some(0.5), 2));
+        assert!(!pre_recovery_gap_repair_allowed(
+            Some(PRE_RECOVERY_MIN_TUNNEL_LOSS - 0.001),
+            PRE_RECOVERY_MIN_PENDING_GAP,
+        ));
+        assert!(!pre_recovery_gap_repair_allowed(
+            None,
+            PRE_RECOVERY_MIN_PENDING_GAP,
+        ));
+        assert!(pre_recovery_gap_repair_allowed(
+            Some(PRE_RECOVERY_MIN_TUNNEL_LOSS),
+            PRE_RECOVERY_MIN_PENDING_GAP,
+        ));
     }
 }

@@ -255,13 +255,13 @@
 @code {
     private const string ActualConnectionSeriesId = "__actual_connection";
     private const string ActualConnectionSeriesLabel = "XBond Tunnel";
-    private const string ActualConnectionSeriesColor = "#34d399";
+    private const string ActualConnectionSeriesColor = "#e5e5e5";
     private const string RecoveryHoldSeriesId = "__server_recovery_hold";
     private const string RecoveryHoldSeriesLabel = "Server hold";
-    private const string RecoveryHoldSeriesColor = "#fb923c";
+    private const string RecoveryHoldSeriesColor = "#fdba74";
     private const string ServerHealthSeriesId = "__server_egress_connect";
     private const string ServerHealthSeriesLabel = "Vultr egress";
-    private const string ServerHealthSeriesColor = "#3794ff";
+    private const string ServerHealthSeriesColor = "#c4b5fd";
     private static readonly IReadOnlyList<(int Seconds, string Label)> _periodOptions =
     [
         (15, "15s"),
@@ -510,7 +510,7 @@
     private List<ChartCard.LegendItem> GetPathLegend(bool includeActualConnection = false)
     {
         var legend = new List<ChartCard.LegendItem>();
-        var colors = new[] { "#22d3ee", "#f472b6", "#f59e0b", "#38bdf8", "#a855f7", "#fb923c" };
+        var colors = new[] { "#a7f3d0", "#fde68a", "#fdba74", "#fca5a5", "#c4b5fd", "#bae6fd" };
         var paths = _snapshot?.DashboardPaths ?? Array.Empty<XBondPathStatsSnapshot>();
         var colorIndex = 0;
 
@@ -596,7 +596,7 @@
     {
         return GetStatusText() switch
         {
-            "Good" => "rounded-full border border-cyan-500/30 bg-cyan-500/20 px-3 py-1 text-sm font-medium text-cyan-300",
+            "Good" => "rounded-full border border-emerald-500/30 bg-emerald-500/20 px-3 py-1 text-sm font-medium text-emerald-300",
             "Fair" => "rounded-full border border-yellow-500/30 bg-yellow-500/20 px-3 py-1 text-sm font-medium text-yellow-300",
             "Poor" => "rounded-full border border-orange-500/30 bg-orange-500/20 px-3 py-1 text-sm font-medium text-orange-300",
             "Critical" => "rounded-full border border-red-500/30 bg-red-500/20 px-3 py-1 text-sm font-medium text-red-300",
@@ -608,7 +608,7 @@
     {
         return GetStatusText() switch
         {
-            "Good" => "bg-cyan-500",
+            "Good" => "bg-emerald-300",
             "Fair" => "bg-yellow-500",
             "Poor" => "bg-orange-500",
             "Critical" => "bg-red-500",
@@ -632,14 +632,14 @@
     private static string GetLatencyTextColor(double latency)
     {
         if (latency <= 0) return "text-slate-300";
-        if (latency < 80) return "text-cyan-300";
+        if (latency < 80) return "text-slate-100";
         if (latency < 150) return "text-yellow-300";
         return "text-red-300";
     }
 
     private static string GetLossTextColor(double loss)
     {
-        if (loss < 2) return "text-cyan-300";
+        if (loss < 2) return "text-slate-100";
         if (loss < 10) return "text-yellow-300";
         return "text-red-300";
     }
@@ -668,7 +668,7 @@
     private string GetPeriodButtonClass(int seconds)
     {
         return _chartPeriod == seconds
-            ? "rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors"
+            ? "rounded bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-950 transition-colors"
             : "rounded px-3 py-1.5 text-sm font-medium text-slate-400 transition-colors hover:bg-slate-700 hover:text-white";
     }
 

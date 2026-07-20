@@ -21,12 +21,12 @@
     <svg viewBox="0 0 320 140" class="w-full h-44 overflow-visible" role="img" aria-label="Client throughput chart">
         <line x1="8" y1="124" x2="312" y2="124" stroke="rgba(148,163,184,0.25)" stroke-width="1" />
         <line x1="8" y1="12" x2="8" y2="124" stroke="rgba(148,163,184,0.2)" stroke-width="1" />
-        <polyline points="@DownloadPolyline" fill="none" stroke="#22d3ee" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-        <polyline points="@UploadPolyline" fill="none" stroke="#f472b6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="@DownloadPolyline" fill="none" stroke="#d8d8d8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+        <polyline points="@UploadPolyline" fill="none" stroke="#a3a3a3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
     </svg>
     <div class="flex items-center gap-4 text-xs">
-        <span class="text-cyan-300">↓ Download <AnimatedNumber Value="@Client.DownloadMbps" Decimals="@GetMbpsDecimals(Client.DownloadMbps)" AriaLabel="@FormatMbps(Client.DownloadMbps)" /> Mbps</span>
-        <span class="text-pink-300">↑ Upload <AnimatedNumber Value="@Client.UploadMbps" Decimals="@GetMbpsDecimals(Client.UploadMbps)" AriaLabel="@FormatMbps(Client.UploadMbps)" /> Mbps</span>
+        <span class="text-slate-100">↓ Download <AnimatedNumber Value="@Client.DownloadMbps" Decimals="@GetMbpsDecimals(Client.DownloadMbps)" AriaLabel="@FormatMbps(Client.DownloadMbps)" /> Mbps</span>
+        <span class="text-slate-300">↑ Upload <AnimatedNumber Value="@Client.UploadMbps" Decimals="@GetMbpsDecimals(Client.UploadMbps)" AriaLabel="@FormatMbps(Client.UploadMbps)" /> Mbps</span>
     </div>
 </div>
 
@@ -43,7 +43,7 @@
         </label>
     </div>
     <div class="flex flex-wrap gap-2">
-        <button class="px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold disabled:opacity-60" @onclick="ApplyRateLimitAsync" disabled="@IsBusy">Apply Limit</button>
+        <button class="px-3 py-2 rounded-lg bg-slate-200 text-slate-950 text-sm font-semibold disabled:opacity-60" @onclick="ApplyRateLimitAsync" disabled="@IsBusy">Apply Limit</button>
         <button class="px-3 py-2 rounded-lg bg-slate-700 text-white text-sm font-semibold disabled:opacity-60" @onclick="ClearRateLimitAsync" disabled="@IsBusy">Unlimited</button>
     </div>
     <p class="text-xs text-slate-500 mt-3">Cudy applies limits in Mbps per device. Data caps are not exposed by this firmware endpoint yet.</p>

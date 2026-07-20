@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://xnetwork.local/schemas/xbond-lab-result-v1.json",
+  "title": "XBond local network-condition lab result",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scenario",
+    "status",
+    "started_at",
+    "finished_at",
+    "metrics",
+    "thresholds",
+    "cleanup",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "scenario": {
+      "enum": [
+        "topology-smoke",
+        "healthy-single",
+        "anchor-bad-backup",
+        "all-intermittent",
+        "heavy-bidirectional",
+        "silent-blackhole",
+        "usb-reenumeration",
+        "tun-read-failure",
+        "server-process-restart",
+        "tun-write-backpressure",
+        "server-tun-write-backpressure",
+        "clock-rollback",
+        "clock-skew",
+        "stale-return-schedule",
+        "queue-saturation",
+        "mtu-sweep",
+        "soak"
+      ]
+    },
+    "status": { "enum": ["pass", "fail", "blocked", "error"] },
+    "started_at": { "type": "string", "format": "date-time" },
+    "finished_at": { "type": "string", "format": "date-time" },
+    "duration_seconds": { "type": "number", "minimum": 0 },
+    "reason": { "type": ["string", "null"] },
+    "metrics": { "type": "object" },
+    "thresholds": { "type": "object" },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "git_commit",
+        "git_branch",
+        "git_dirty",
+        "docker_context",
+        "docker_host",
+        "docker_engine_version",
+        "docker_kernel",
+        "docker_os",
+        "image_id",
+        "image_digests",
+        "lab_orchestrator_sha256",
+        "result_schema_sha256",
+        "lab_orchestrator_source_sha256",
+        "result_schema_source_sha256",
+        "lab_orchestrator_hash_matches_source",
+        "result_schema_hash_matches_source",
+        "client_binary_sha256",
+        "server_binary_sha256"
+      ],
+      "properties": {
+        "git_commit": { "type": "string", "minLength": 40 },
+        "git_branch": { "type": "string", "minLength": 1 },
+        "git_dirty": { "type": "boolean" },
+        "docker_context": { "const": "xeon-dev" },
+        "docker_host": { "type": "string", "minLength": 1 },
+        "docker_engine_version": { "type": "string", "minLength": 1 },
+        "docker_kernel": { "type": "string", "minLength": 1 },
+        "docker_os": { "type": "string", "minLength": 1 },
+        "image_id": { "type": "string", "pattern": "^sha256:" },
+        "image_digests": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "client_binary_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "server_binary_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "lab_orchestrator_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "result_schema_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "lab_orchestrator_source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "result_schema_source_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "lab_orchestrator_hash_matches_source": { "const": true },
+        "result_schema_hash_matches_source": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "cleanup": {
+      "type": "object",
+      "required": [
+        "namespaces_remaining",
+        "processes_remaining",
+        "qdisc_state_removed",
+        "qdisc_remaining"
+      ],
+      "properties": {
+        "namespaces_remaining": { "type": "array", "items": { "type": "string" } },
+        "processes_remaining": { "type": "array", "items": { "type": "integer" } },
+        "qdisc_state_removed": { "type": "boolean" },
+        "qdisc_remaining": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "notes": { "type": "array", "items": { "type": "string" } },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "scenario": { "const": "server-process-restart" } },
+        "required": ["scenario"]
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "required": [
+              "baseline_ping",
+              "post_restart_ping",
+              "restored_throughput",
+              "automatic_recovery_observed",
+              "recovery_seconds",
+              "client_pid_unchanged",
+              "server_pid_changed",
+              "session_id_changed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "scenario": { "const": "server-tun-write-backpressure" }
+        },
+        "required": ["scenario"]
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "required": ["responsive_pressure", "severe_pressure"],
+            "properties": {
+              "responsive_pressure": {
+                "type": "object",
+                "required": [
+                  "peak_tun_write_queue_depth",
+                  "queue_remained_bounded",
+                  "client_and_server_alive_during_pressure",
+                  "status_control_and_heartbeat_progressed"
+                ]
+              },
+              "severe_pressure": {
+                "type": "object",
+                "required": [
+                  "server_exit_code",
+                  "fail_closed_seconds",
+                  "explicit_saturation_failure",
+                  "client_remained_running"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "scenario": { "const": "soak" } },
+        "required": ["scenario"]
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "required": ["configured_duration_seconds"],
+            "properties": {
+              "configured_duration_seconds": {
+                "type": "integer",
+                "minimum": 1800
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

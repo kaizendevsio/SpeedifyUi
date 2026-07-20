@@ -153,7 +153,7 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
     scored
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RoleSelectionState {
     pub anchor_path_id: Option<u16>,
     pub backup_path_ids: Vec<u16>,
@@ -162,20 +162,6 @@ pub struct RoleSelectionState {
     pub backup_candidate_path_ids: Vec<u16>,
     pub backup_candidate_ticks: u8,
     pub schedule_change_count: u64,
-}
-
-impl Default for RoleSelectionState {
-    fn default() -> Self {
-        Self {
-            anchor_path_id: None,
-            backup_path_ids: Vec::new(),
-            anchor_candidate_path_id: None,
-            anchor_candidate_ticks: 0,
-            backup_candidate_path_ids: Vec::new(),
-            backup_candidate_ticks: 0,
-            schedule_change_count: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
