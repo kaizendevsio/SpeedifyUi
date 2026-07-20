@@ -1,4 +1,6 @@
-@if (IsOpen)
+@inject IJSRuntime JSRuntime
+
+@if (_isRendered)
 {
     <div class="@GetBackdropClass()" @onclick="CloseAsync">
         <section class="@GetPanelClass()" @onclick:stopPropagation="true" role="dialog" aria-modal="true" aria-labelledby="@_titleId">
@@ -35,6 +37,27 @@
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private readonly string _titleId = $"action-sheet-title-{Guid.NewGuid():N}";
+    private bool _isRendered;
+    private bool _isClosing;
+    private int _transitionVersion;
+
+    protected override void OnParametersSet()
+    {
+        if (IsOpen)
+        {
+            _transitionVersion++;
+            _isRendered = true;
+            _isClosing = false;
+            return;
+        }
+
+        if (_isRendered && !_isClosing)
+        {
+            _isClosing = true;
+            var transitionVersion = ++_transitionVersion;
+            _ = CompleteCloseAsync(transitionVersion);
+        }
+    }
 
     private async Task CloseAsync()
     {
@@ -46,16 +69,55 @@
 
     private string GetPanelClass()
     {
-        return $"action-sheet-panel {MaxWidthClass} {CssClass}".Trim();
+        var transitionClass = _isClosing ? "action-sheet-panel-closing" : "action-sheet-panel-opening";
+        return $"action-sheet-panel {transitionClass} {MaxWidthClass} {CssClass}".Trim();
     }
 
     private string GetBackdropClass()
     {
-        return $"action-sheet-backdrop {BackdropClass}".Trim();
+        var transitionClass = _isClosing ? "action-sheet-backdrop-closing" : "action-sheet-backdrop-opening";
+        return $"action-sheet-backdrop {transitionClass} {BackdropClass}".Trim();
     }
 
     private string GetBodyClass()
     {
         return $"action-sheet-body {BodyClass}".Trim();
+    }
+
+    private async Task CompleteCloseAsync(int transitionVersion)
+    {
+        var delay = 240;
+
+        try
+        {
+            var module = await JSRuntime.InvokeAsync<IJSObjectReference>("import", "./js/animatedUi.js");
+            if (await module.InvokeAsync<bool>("prefersReducedMotion"))
+            {
+                delay = 0;
+            }
+
+            await module.DisposeAsync();
+        }
+        catch (JSDisconnectedException)
+        {
+            delay = 0;
+        }
+
+        if (delay > 0)
+        {
+            await Task.Delay(delay);
+        }
+
+        await InvokeAsync(() =>
+        {
+            if (transitionVersion != _transitionVersion || IsOpen)
+            {
+                return;
+            }
+
+            _isRendered = false;
+            _isClosing = false;
+            StateHasChanged();
+        });
     }
 }

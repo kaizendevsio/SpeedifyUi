@@ -9,7 +9,9 @@ public class BrowserSmokeTests
         "/",
         "/details",
         "/xrouter",
-        "/settings"
+        "/settings",
+        "/live",
+        "/xbond"
     ];
 
     [Fact]
@@ -58,7 +60,7 @@ public class BrowserSmokeTests
                 Timeout = 10_000
             });
 
-            Assert.Contains("XNetwork", await page.TitleAsync(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Ulink", await page.TitleAsync(), StringComparison.OrdinalIgnoreCase);
         }
 
         Assert.True(pageErrors.Count == 0, string.Join(Environment.NewLine, pageErrors));

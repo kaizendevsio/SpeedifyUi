@@ -13,7 +13,7 @@
 @inject NavigationManager NavigationManager
 @inject IJSRuntime JSRuntime
 
-<PageTitle>Dashboard - XNetwork</PageTitle>
+<PageTitle>Dashboard - Ulink</PageTitle>
 
 <div class="p-4 md:p-6">
     <div class="hidden md:block">
@@ -90,46 +90,6 @@
             </div>
         }
 
-        <div class="mb-6 rounded-xl border border-slate-700 bg-slate-800/50 p-4 shadow-lg">
-            <div class="flex items-center gap-3">
-                <div class="@GetServerIconClass()">
-                    <i class="fas fa-server text-lg"></i>
-                </div>
-                <div class="min-w-0 flex-grow">
-                    <div class="mb-1 flex items-center gap-2">
-                        <h3 class="truncate text-base font-semibold text-white">XBond Tunnel</h3>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-400">
-                        <span class="inline-flex items-center gap-1.5 text-slate-300" title="XBond redundancy policy">
-                            <i class="fas fa-layer-group text-xs text-emerald-300"></i>
-                            <span>@FormatMode(_snapshot.RedundancyPolicy)</span>
-                        </span>
-                        @if (_snapshot.IsProtectingFromLoss)
-                        {
-                            <span class="inline-flex items-center gap-1 rounded-full border border-cyan-400/35 bg-cyan-500/10 px-2 py-0.5 text-xs font-medium text-cyan-100" title="@_snapshot.ProtectionReason">
-                                <i class="fas fa-shield-alt text-[0.65rem]"></i>
-                                <span>Protecting from loss</span>
-                            </span>
-                        }
-                        @if (_snapshot.IsRecoveryActive)
-                        {
-                            <span class="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-100" title="@_snapshot.RecoveryReason">
-                                <i class="fas fa-shield-heart text-[0.65rem]"></i>
-                                <span>Recovery @_snapshot.RecoveryHoldMs ms</span>
-                            </span>
-                        }
-                        @if (_snapshot.EffectiveServerHealthStatus != "healthy")
-                        {
-                            <span class="@GetServerHealthBadgeClass()" title="@_snapshot.ServerHealthDetails">
-                                <i class="fas fa-cloud-arrow-up text-[0.65rem]"></i>
-                                <span>@_snapshot.ServerHealthLabel</span>
-                            </span>
-                        }
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <ConnectionSummary
             ConnectionStatus="@ConnectionTitle"
             Latency="@GetLatencyValue()"
@@ -139,6 +99,15 @@
             AnchorDownload="@GetAnchorDownloadMbps()"
             BackupDownload="@GetBackupDownloadMbps()"
             IsStable="@IsConnectionStable()"
+            Mode="@FormatMode(_snapshot.RedundancyPolicy)"
+            IsProtectingFromLoss="@_snapshot.IsProtectingFromLoss"
+            ProtectionReason="@_snapshot.ProtectionReason"
+            IsRecoveryActive="@_snapshot.IsRecoveryActive"
+            RecoveryHoldMs="@_snapshot.RecoveryHoldMs"
+            RecoveryReason="@_snapshot.RecoveryReason"
+            ServerHealthStatus="@_snapshot.EffectiveServerHealthStatus"
+            ServerHealthLabel="@_snapshot.ServerHealthLabel"
+            ServerHealthDetails="@_snapshot.ServerHealthDetails"
             ShowTrafficDetailsHint="false" />
 
         <section class="space-y-3">
@@ -290,7 +259,7 @@
                 <div class="flex items-start justify-between gap-3">
                     <div>
                         <h4 class="font-semibold text-white">Starlink Actions</h4>
-                        <p class="mt-1 text-sm text-slate-400">Open the local Starlink app or swipe an action fully right to run it from XNetwork.</p>
+                        <p class="mt-1 text-sm text-slate-400">Open the local Starlink app or swipe an action fully right to run it from Ulink.</p>
                     </div>
                     <span class="text-xs text-slate-500">@FormatLastUpdated(starlinkCapabilities.LastUpdatedUtc)</span>
                 </div>
@@ -754,33 +723,11 @@
         return _snapshot?.DashboardPaths.Count(path => path.InterfaceUp) ?? 0;
     }
 
-    private string GetServerIconClass()
-    {
-        return _snapshot switch
-        {
-            { HasError: true } => "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-red-500/30 bg-red-500/10 text-red-300",
-            { IsRunning: true } => "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border border-green-500/30 bg-green-500/10 text-green-400",
-            _ => "flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-slate-700 text-slate-500"
-        };
-    }
-
-    private string GetServerHealthBadgeClass()
-    {
-        const string baseClass = "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-semibold";
-        return _snapshot?.EffectiveServerHealthStatus switch
-        {
-            "healthy" => $"{baseClass} border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
-            "degraded" => $"{baseClass} border-amber-500/35 bg-amber-500/10 text-amber-100",
-            "down" => $"{baseClass} border-rose-500/35 bg-rose-500/10 text-rose-100",
-            _ => $"{baseClass} border-slate-600 bg-slate-700/35 text-slate-300"
-        };
-    }
-
     private string GetPathCardClass(XBondPathStatsSnapshot path)
     {
-        const string baseClass = "rounded-xl border px-3 py-3 shadow-lg relative";
+        const string baseClass = "xbond-path-card rounded-xl border px-3 py-3 shadow-lg relative";
         var interactionClass = IsStarlinkPath(path)
-            ? " cursor-pointer transition-colors hover:bg-slate-700/30 focus-within:ring-2 focus-within:ring-cyan-500/40"
+            ? " cursor-pointer hover:bg-slate-700/30 focus-within:ring-2 focus-within:ring-slate-400/40"
             : "";
 
         if (!path.InterfaceUp)
@@ -899,7 +846,7 @@
         var colorClass = isActive ? GetSignalColorClass(path) : "bg-slate-700";
         var animationClass = GetPathStatusKind(path) == "connecting" && isActive ? "animate-pulse" : "";
 
-        return $"{heightClass} {colorClass} {animationClass} w-1.5 rounded-sm transition-all";
+        return $"{heightClass} {colorClass} {animationClass} w-1.5 rounded-sm transition-[background-color,opacity] duration-500 ease-out";
     }
 
     private static int GetSignalStrength(XBondPathStatsSnapshot path)
@@ -958,7 +905,7 @@
             _ => "h-3.5"
         };
         var isActive = index < path.CellularSignalBars.GetValueOrDefault();
-        return $"{heightClass} {(isActive ? "bg-emerald-300" : "bg-slate-700")} w-1 rounded-sm transition-all";
+        return $"{heightClass} {(isActive ? "bg-emerald-300" : "bg-slate-700")} w-1 rounded-sm transition-[background-color,opacity] duration-500 ease-out";
     }
 
     private static string RoleLabel(XBondPathStatsSnapshot path)
@@ -1291,7 +1238,7 @@
             "thermal throttle" or "power thermal" => "Starlink is reducing performance because of temperature or power constraints.",
             "low motor current" => "Starlink reported a motor current issue.",
             "signal lower than expected" => "Starlink reports signal quality below the expected level.",
-            "telemetry stale" => "XNetwork has not received fresh Starlink telemetry recently.",
+            "telemetry stale" => "Ulink has not received fresh Starlink telemetry recently.",
             _ => alert
         };
     }

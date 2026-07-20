@@ -568,7 +568,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
 
     private string BuildPersistenceBlockMessage() =>
         $"Automatic XBond client restarts are disabled because watchdog safety state is unavailable or uncertain. " +
-        $"{_automaticRestartBlockReason ?? "Repair or remove the state file, then restart XNetwork."}";
+        $"{_automaticRestartBlockReason ?? "Repair or remove the state file, then restart Ulink."}";
 
     private static XBondClientWatchdogState CloneState(XBondClientWatchdogState state) => new()
     {

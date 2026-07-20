@@ -65,6 +65,8 @@ export async function initialize(element, dotNetReference) {
             hasUserMoved: false
         },
         lastFrameTime: performance.now(),
+        lastRenderTime: 0,
+        frameInterval: window.matchMedia('(max-width: 767px)').matches ? 1000 / 30 : 1000 / 45,
         glowTexture: null
     };
 
@@ -159,7 +161,7 @@ function setupThreeScene(state, THREE) {
         alpha: true,
         powerPreference: 'high-performance'
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.matchMedia('(max-width: 767px)').matches ? 1.5 : 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     element.replaceChildren(renderer.domElement);
 
@@ -184,7 +186,7 @@ function setupThreeScene(state, THREE) {
 
     const glowTexture = createGlowTexture(THREE);
     const tunnelCore = createEnergyCore(THREE, glowTexture);
-    const serverCore = createSatelliteEndpoint(THREE, glowTexture);
+    const serverCore = createRelayAperture(THREE, glowTexture);
     serverCore.position.set(4.35, 0.02, -0.15);
     scene.add(tunnelCore, serverCore);
 
@@ -348,24 +350,21 @@ function getAdapterPosition(state, index, count, layout) {
 
 function createEnergyCore(THREE, glowTexture) {
     const core = new THREE.Group();
-    core.name = 'XBond energy core';
+    core.name = 'Ulink flow core';
 
-    const glow = createGlowSprite(THREE, glowTexture, LIVE_COLORS.success, 1.02, 1.72);
+    const glow = createGlowSprite(THREE, glowTexture, LIVE_COLORS.success, 0.82, 1.82);
     glow.userData.role = 'core-glow';
     core.add(glow);
 
     const rings = [];
-    const ringSpecs = [
-        { radius: 0.26, tube: 0.012, color: LIVE_COLORS.neutralBright, opacity: 0.82, rotation: [Math.PI / 2, 0, 0] },
-        { radius: 0.46, tube: 0.012, color: LIVE_COLORS.neutral, opacity: 0.58, rotation: [1.1, 0.35, 0.12] },
-        { radius: 0.66, tube: 0.009, color: LIVE_COLORS.neutralDim, opacity: 0.36, rotation: [0.75, -0.58, 0.2] }
-    ];
-
-    ringSpecs.forEach((spec, index) => {
+    [
+        { radius: 0.76, tube: 0.01, opacity: 0.3, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 0.98, tube: 0.008, opacity: 0.2, rotation: [0.72, 0.42, 0.18] }
+    ].forEach((spec, index) => {
         const ring = new THREE.Mesh(
             new THREE.TorusGeometry(spec.radius, spec.tube, 8, 160),
             new THREE.MeshBasicMaterial({
-                color: spec.color,
+                color: index === 0 ? LIVE_COLORS.neutralBright : LIVE_COLORS.neutralDim,
                 transparent: true,
                 opacity: spec.opacity,
                 blending: THREE.AdditiveBlending,
@@ -380,12 +379,37 @@ function createEnergyCore(THREE, glowTexture) {
         core.add(ring);
     });
 
+    const ribbons = [
+        createUlinkRibbon(THREE, -0.16, 0.15),
+        createUlinkRibbon(THREE, 0.16, -0.15)
+    ];
+    ribbons[1].rotation.y = Math.PI;
+    ribbons.forEach(ribbon => core.add(ribbon));
+
+    [
+        new THREE.Vector3(-0.37, 0.36, 0.15),
+        new THREE.Vector3(0.37, -0.36, -0.15)
+    ].forEach(position => {
+        const endpoint = new THREE.Mesh(
+            new THREE.SphereGeometry(0.055, 18, 12),
+            new THREE.MeshBasicMaterial({
+                color: LIVE_COLORS.white,
+                transparent: true,
+                opacity: 0.9,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            })
+        );
+        endpoint.position.copy(position);
+        core.add(endpoint);
+    });
+
     const pulse = new THREE.Mesh(
-        new THREE.RingGeometry(0.18, 0.22, 96),
+        new THREE.RingGeometry(0.24, 0.27, 96),
         new THREE.MeshBasicMaterial({
             color: 0xffffff,
             transparent: true,
-            opacity: 0.45,
+            opacity: 0.3,
             blending: THREE.AdditiveBlending,
             side: THREE.DoubleSide,
             depthWrite: false,
@@ -398,9 +422,8 @@ function createEnergyCore(THREE, glowTexture) {
 
     const shieldRings = [];
     [
-        { radius: 0.86, tube: 0.009, opacity: 0.28, rotation: [Math.PI / 2, 0, 0] },
-        { radius: 1.02, tube: 0.008, opacity: 0.2, rotation: [0.18, Math.PI / 2, 0.08] },
-        { radius: 1.18, tube: 0.006, opacity: 0.16, rotation: [1.02, 0.55, -0.24] }
+        { radius: 1.14, tube: 0.007, opacity: 0.18, rotation: [Math.PI / 2, 0, 0] },
+        { radius: 1.32, tube: 0.005, opacity: 0.12, rotation: [0.18, Math.PI / 2, 0.08] }
     ].forEach((spec, index) => {
         const shieldRing = new THREE.Mesh(
             new THREE.TorusGeometry(spec.radius, spec.tube, 8, 192),
@@ -422,129 +445,86 @@ function createEnergyCore(THREE, glowTexture) {
 
     core.userData.glow = glow;
     core.userData.rings = rings;
+    core.userData.ribbons = ribbons;
     core.userData.pulse = pulse;
     core.userData.shieldRings = shieldRings;
     return core;
 }
 
-function createSatelliteEndpoint(THREE, glowTexture) {
-    const satellite = new THREE.Group();
-    satellite.name = 'XBond satellite endpoint';
-    satellite.rotation.z = -0.08;
-    satellite.rotation.x = 0.08;
-
-    const glow = createGlowSprite(THREE, glowTexture, LIVE_COLORS.neutral, 0.62, 1.64);
-    satellite.add(glow);
-
-    const bodyMaterial = new THREE.MeshBasicMaterial({
-        color: LIVE_COLORS.neutralBright,
-        transparent: true,
-        opacity: 0.88,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: false
-    });
-    const panelMaterial = new THREE.MeshBasicMaterial({
-        color: LIVE_COLORS.neutralSoft,
-        transparent: true,
-        opacity: 0.58,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: false
-    });
-    const signalMaterial = new THREE.LineBasicMaterial({
-        color: LIVE_COLORS.neutral,
-        transparent: true,
-        opacity: 0.58,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: false
-    });
-
-    const body = new THREE.Mesh(
-        new THREE.BoxGeometry(0.34, 0.24, 0.24),
-        bodyMaterial
+function createUlinkRibbon(THREE, zOffset, tilt) {
+    const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(-0.42, 0.42, zOffset),
+        new THREE.Vector3(-0.48, 0.04, zOffset + tilt),
+        new THREE.Vector3(-0.22, -0.42, zOffset),
+        new THREE.Vector3(0.22, -0.42, zOffset),
+        new THREE.Vector3(0.48, 0.04, zOffset - tilt),
+        new THREE.Vector3(0.42, 0.42, zOffset)
+    ]);
+    const ribbon = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 96, 0.035, 10, false),
+        new THREE.MeshBasicMaterial({
+            color: LIVE_COLORS.neutralBright,
+            transparent: true,
+            opacity: 0.9,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        })
     );
-    satellite.add(body);
+    ribbon.userData.baseOpacity = 0.9;
+    return ribbon;
+}
 
-    [-1, 1].forEach(side => {
-        addCylinder(
-            satellite,
-            THREE,
-            new THREE.Vector3(side * 0.18, 0, 0),
-            new THREE.Vector3(side * 0.33, 0, 0),
-            0.014,
-            bodyMaterial
+function createRelayAperture(THREE, glowTexture) {
+    const relay = new THREE.Group();
+    relay.name = 'Ulink relay aperture';
+
+    relay.add(createGlowSprite(THREE, glowTexture, LIVE_COLORS.neutral, 0.48, 1.72));
+
+    [0.3, 0.48, 0.68].forEach((radius, index) => {
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(radius, 0.012 - index * 0.002, 8, 128),
+            new THREE.MeshBasicMaterial({
+                color: index === 0 ? LIVE_COLORS.neutralBright : LIVE_COLORS.neutralSoft,
+                transparent: true,
+                opacity: 0.72 - index * 0.17,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                depthTest: false
+            })
         );
-
-        const panel = new THREE.Mesh(
-            new THREE.BoxGeometry(0.56, 0.3, 0.022),
-            panelMaterial
-        );
-        panel.position.set(side * 0.62, 0, 0);
-        panel.rotation.y = side * 0.18;
-        satellite.add(panel);
-
-        [-0.09, 0.09].forEach(offset => {
-            const gridLine = new THREE.Line(
-                new THREE.BufferGeometry().setFromPoints([
-                    new THREE.Vector3(side * 0.36, offset, 0.02),
-                    new THREE.Vector3(side * 0.88, offset, 0.02)
-                ]),
-                signalMaterial.clone()
-            );
-            gridLine.material.opacity = 0.32;
-            satellite.add(gridLine);
-        });
+        ring.rotation.y = Math.PI / 2;
+        ring.rotation.x = index * 0.22;
+        ring.userData.spin = index % 2 === 0 ? 1 : -1;
+        relay.add(ring);
     });
 
-    addCylinder(
-        satellite,
-        THREE,
-        new THREE.Vector3(0, 0.13, 0),
-        new THREE.Vector3(0, 0.42, 0),
-        0.012,
-        bodyMaterial
+    const iris = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.IcosahedronGeometry(0.36, 1)),
+        new THREE.LineBasicMaterial({
+            color: LIVE_COLORS.neutral,
+            transparent: true,
+            opacity: 0.34,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            depthTest: false
+        })
     );
+    iris.scale.set(0.22, 1, 1);
+    iris.userData.spin = -0.5;
+    relay.add(iris);
 
-    const beacon = new THREE.Mesh(
-        new THREE.SphereGeometry(0.045, 16, 10),
-        bodyMaterial
+    const center = new THREE.Mesh(
+        new THREE.SphereGeometry(0.07, 20, 12),
+        new THREE.MeshBasicMaterial({
+            color: LIVE_COLORS.white,
+            transparent: true,
+            opacity: 0.9,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        })
     );
-    beacon.position.set(0, 0.46, 0);
-    satellite.add(beacon);
-
-    const dish = new THREE.Mesh(
-        new THREE.TorusGeometry(0.16, 0.012, 8, 96),
-        bodyMaterial
-    );
-    dish.scale.y = 0.62;
-    dish.position.set(0.03, -0.31, 0);
-    satellite.add(dish);
-
-    addCylinder(
-        satellite,
-        THREE,
-        new THREE.Vector3(0, -0.13, 0),
-        new THREE.Vector3(0.03, -0.25, 0),
-        0.01,
-        bodyMaterial
-    );
-
-    for (let i = 0; i < 3; i += 1) {
-        const ring = new THREE.Line(
-            new THREE.BufferGeometry().setFromPoints(
-                makeEllipsePoints(0.34 + i * 0.12, 0.16 + i * 0.07, 56)
-                    .map(point => new THREE.Vector3(0.42 + point.x, point.y, 0.02))
-            ),
-            signalMaterial.clone()
-        );
-        ring.material.opacity = 0.5 - i * 0.11;
-        ring.userData.spin = i % 2 === 0 ? 1 : -1;
-        satellite.add(ring);
-    }
-
-    return satellite;
+    relay.add(center);
+    return relay;
 }
 
 function makeEllipsePoints(radiusX, radiusY, segments) {
@@ -602,11 +582,27 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     const scale = selected ? 1.16 : 1;
     const opacity = active ? 0.92 : path.up ? 0.55 : 0.35;
 
-    const glow = createGlowSprite(THREE, glowTexture, color, opacity, (active ? 1.26 : 0.86) * scale);
+    const glow = createGlowSprite(THREE, glowTexture, color, opacity * 0.62, (active ? 1.08 : 0.76) * scale);
     node.add(glow);
 
-    const glyph = createAdapterGlyph(THREE, cache, path, color, active, scale);
-    node.add(glyph);
+    const rings = [];
+    [0.22, 0.34, 0.46].forEach((radius, index) => {
+        const ring = new THREE.Mesh(
+            new THREE.TorusGeometry(radius * scale, (active ? 0.015 : 0.01) * scale, 8, 96),
+            getBasicMaterial(cache, THREE, color, Math.max(0.16, opacity - index * 0.18))
+        );
+        ring.rotation.set(Math.PI / 2 + index * 0.24, index * 0.12, 0);
+        ring.userData.spin = index % 2 === 0 ? 1 : -1;
+        rings.push(ring);
+        node.add(ring);
+    });
+
+    const gate = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.OctahedronGeometry(0.18 * scale, 0)),
+        getLineMaterial(cache, THREE, color, active ? 0.84 : 0.38)
+    );
+    gate.rotation.z = Math.PI / 4;
+    node.add(gate);
 
     if (selected) {
         const selectedHalo = new THREE.Mesh(
@@ -631,8 +627,8 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     hitTarget.name = path.name || path.iface || 'adapter';
     node.add(hitTarget);
 
-    node.userData.rings = glyph.userData.rings || [];
-    node.userData.pulseParts = glyph.userData.pulseParts || [];
+    node.userData.rings = rings;
+    node.userData.pulseParts = [];
     return node;
 }
 
@@ -816,11 +812,11 @@ function addSceneLabels(state, cache, paths, compact) {
         });
     }
 
-    const coreLabel = createTextSprite(THREE, cache, 'XBond Core', '#d8d8d8', compact ? 0.56 : 0.7);
+    const coreLabel = createTextSprite(THREE, cache, 'Ulink Core', '#d8d8d8', compact ? 0.56 : 0.7);
     coreLabel.position.copy(state.tunnelCore.position).add(new THREE.Vector3(-0.58, -1.55, 0));
     state.labelGroup.add(coreLabel);
 
-    const serverLabel = createTextSprite(THREE, cache, 'Satellite Relay', '#d8d8d8', compact ? 0.52 : 0.68);
+    const serverLabel = createTextSprite(THREE, cache, 'Secure Relay', '#d8d8d8', compact ? 0.52 : 0.68);
     serverLabel.position.copy(state.serverCore.position).add(new THREE.Vector3(-0.72, -0.86, 0));
     state.labelGroup.add(serverLabel);
 
@@ -1048,6 +1044,12 @@ function disposeObjectTree(object) {
 
 function animateThree(state) {
     const now = performance.now();
+    state.animationId = requestAnimationFrame(() => animateThree(state));
+    if (now - state.lastRenderTime < state.frameInterval) {
+        return;
+    }
+
+    state.lastRenderTime = now;
     const delta = Math.min(0.04, (now - state.lastFrameTime) / 1000);
     state.lastFrameTime = now;
 
@@ -1059,6 +1061,10 @@ function animateThree(state) {
     state.tunnelCore.userData.rings?.forEach((ring, index) => {
         ring.rotation.z += delta * ring.userData.spin * (0.65 + index * 0.28);
         ring.rotation.x += delta * ring.userData.spin * 0.06;
+    });
+    state.tunnelCore.userData.ribbons?.forEach((ribbon, index) => {
+        ribbon.rotation.z = Math.sin(time * 0.72 + index * Math.PI) * 0.055;
+        ribbon.material.opacity = ribbon.userData.baseOpacity * (0.86 + Math.sin(time * 2.1 + index) * 0.14);
     });
 
     if (state.tunnelCore.userData.pulse) {
@@ -1110,7 +1116,6 @@ function animateThree(state) {
     });
 
     state.renderer.render(state.scene, state.camera);
-    state.animationId = requestAnimationFrame(() => animateThree(state));
 }
 
 function handlePointerDown(state, event) {

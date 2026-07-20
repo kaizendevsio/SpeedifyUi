@@ -3,6 +3,10 @@ const autoAnimateInstances = new WeakMap();
 
 let autoAnimateModulePromise;
 
+export function prefersReducedMotion() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 function getOdometerFormat(decimals) {
     if (decimals <= 0) {
         return "(,ddd)";

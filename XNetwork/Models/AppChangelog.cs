@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.104";
+    public const string CurrentVersion = "xbond-2026.06.105";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Introduced the Ulink identity and a cleaner live topology.",
+            Changes =
+            [
+                "Renamed the user-facing application to Ulink and replaced the router artwork with a purpose-built vector logo across the header, favicon, and PWA metadata.",
+                "Consolidated tunnel mode, protection, recovery, and actionable server health into the connection summary to reduce dashboard height.",
+                "Rebuilt Live as an interactive abstract flow topology with energy gates, a linked Ulink core, a secure relay aperture, and mobile-aware rendering.",
+                "Adapter state colors now fade without layout movement, the top bar is flat, and changelog sheets animate both opening and closing."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.104",
             Date = "2026-07-21",
             Summary = "Simplified dashboard tunnel status.",
             Changes =

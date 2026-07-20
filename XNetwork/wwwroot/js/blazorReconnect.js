@@ -87,7 +87,7 @@
             }
             return reconnected;
         } catch (error) {
-            console.warn('[XNetwork] Manual Blazor reconnect failed', error);
+            console.warn('[Ulink] Manual Blazor reconnect failed', error);
             if (reloadOnFailure) {
                 window.location.reload();
             }

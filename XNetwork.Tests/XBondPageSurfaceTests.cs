@@ -48,10 +48,55 @@ public class XBondPageSurfaceTests
 
         Assert.DoesNotContain("GetServerBadgeClass", home);
         Assert.DoesNotContain("XBond active", home);
-        Assert.Contains("_snapshot.EffectiveServerHealthStatus != \"healthy\"", home);
-        Assert.Contains("Recovery @_snapshot.RecoveryHoldMs ms", home);
-        Assert.DoesNotContain("IsRecoveryActive", summary);
-        Assert.DoesNotContain("RecoveryHoldMs", summary);
+        Assert.DoesNotContain("<h3 class=\"text-lg font-semibold text-white\">XBond Tunnel</h3>", home);
+        Assert.Contains("Mode=\"@FormatMode(_snapshot.RedundancyPolicy)\"", home);
+        Assert.Contains("IsRecoveryActive=\"@_snapshot.IsRecoveryActive\"", home);
+        Assert.Contains("ShowServerHealth", summary);
+        Assert.Contains("Recovery @RecoveryHoldMs ms", summary);
+        Assert.Contains("\"healthy\"", summary);
+    }
+
+    [Fact]
+    public void UserFacingShell_UsesUlinkBrandAndVectorLogo()
+    {
+        var layout = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Layout", "MainLayout.razor"));
+        var manifest = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "manifest.json"));
+        var logo = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "icons", "ulink-logo.svg"));
+
+        Assert.Contains(">Ulink<", layout);
+        Assert.Contains("/icons/ulink-logo.svg", layout);
+        Assert.DoesNotContain("xnetwork-logo", layout, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("\"name\": \"Ulink\"", manifest);
+        Assert.Contains("<svg", logo);
+        Assert.Contains("<title id=\"title\">Ulink</title>", logo);
+    }
+
+    [Fact]
+    public void ChangelogSheet_DelaysRemovalForExitAnimation()
+    {
+        var sheet = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Custom", "ActionSheet.razor"));
+        var animation = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "js", "animatedUi.js"));
+
+        Assert.Contains("@if (_isRendered)", sheet);
+        Assert.Contains("action-sheet-panel-closing", sheet);
+        Assert.Contains("CompleteCloseAsync", sheet);
+        Assert.Contains("prefersReducedMotion", sheet);
+        Assert.Contains("prefersReducedMotion", animation);
+    }
+
+    [Fact]
+    public void LiveScene_UsesAbstractUlinkTopologyWithCameraControls()
+    {
+        var live = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "js", "liveView.js"));
+
+        Assert.Contains("createUlinkRibbon", live);
+        Assert.Contains("createRelayAperture", live);
+        Assert.Contains("Ulink Core", live);
+        Assert.Contains("rotateCamera", live);
+        Assert.Contains("panCamera", live);
+        Assert.Contains("handleWheel", live);
+        Assert.Contains("1000 / 30", live);
+        Assert.DoesNotContain("createSatelliteEndpoint", live);
     }
 
     private static string FindRepoFile(params string[] pathParts)
