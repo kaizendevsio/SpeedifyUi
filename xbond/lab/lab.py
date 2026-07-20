@@ -1408,6 +1408,171 @@ def basic_throughput(lab: XBondLab, *, seconds: int = 4) -> dict[str, Any]:
     return {"upload": upload, "download": download}
 
 
+def throughput_sample_is_complete(sample: dict[str, Any]) -> bool:
+    return all(
+        sample.get(direction, {}).get("exit_code") == 0
+        and sample.get(direction, {}).get("valid_complete_json") is True
+        for direction in ("upload", "download")
+    )
+
+
+def throughput_floor_mbps(sample: dict[str, Any]) -> float:
+    return min(
+        float(sample.get("upload", {}).get("mbps", 0.0)),
+        float(sample.get("download", {}).get("mbps", 0.0)),
+    )
+
+
+def soak_baseline_is_complete(
+    measurement: dict[str, Any],
+    selected_throughput: dict[str, Any],
+) -> bool:
+    warmup = measurement.get("warmup", {})
+    required_valid_samples = measurement.get("required_valid_samples")
+    valid_attempt_count = measurement.get("valid_attempt_count")
+    return (
+        warmup.get("valid_complete") is True
+        and throughput_sample_is_complete(warmup.get("throughput", {}))
+        and measurement.get("complete") is True
+        and isinstance(required_valid_samples, int)
+        and isinstance(valid_attempt_count, int)
+        and valid_attempt_count >= required_valid_samples
+        and throughput_sample_is_complete(selected_throughput)
+    )
+
+
+class ResultSemanticValidationError(ValueError):
+    pass
+
+
+def validate_result_semantics(payload: dict[str, Any]) -> None:
+    if payload.get("scenario") != "soak":
+        return
+
+    measurement = payload["metrics"]["baseline_measurement"]
+    warmup = measurement["warmup"]
+    if warmup["valid_complete"]:
+        expected_warmup_floor = throughput_floor_mbps(warmup["throughput"])
+        if warmup["floor_mbps"] != expected_warmup_floor:
+            raise ResultSemanticValidationError(
+                "soak warmup floor_mbps does not match its throughput evidence"
+            )
+
+    if payload.get("status") == "pass" and not warmup["valid_complete"]:
+        raise ResultSemanticValidationError(
+            "a passing soak requires a complete valid warmup"
+        )
+
+    if not measurement["complete"]:
+        return
+
+    valid_attempts = [
+        attempt for attempt in measurement["attempts"] if attempt["valid_complete"]
+    ]
+    for attempt in valid_attempts:
+        expected_floor = throughput_floor_mbps(attempt["throughput"])
+        if attempt["floor_mbps"] != expected_floor:
+            raise ResultSemanticValidationError(
+                f"soak baseline attempt {attempt['attempt']} floor_mbps does not "
+                "match its throughput evidence"
+            )
+
+    required_valid_samples = measurement["required_valid_samples"]
+    if len(valid_attempts) != required_valid_samples:
+        raise ResultSemanticValidationError(
+            "complete soak baseline does not contain the required valid attempts"
+        )
+
+    median_attempt = sorted(
+        valid_attempts,
+        key=lambda attempt: (
+            float(attempt["floor_mbps"]),
+            int(attempt["attempt"]),
+        ),
+    )[len(valid_attempts) // 2]
+    if measurement["selected_attempt"] != median_attempt["attempt"]:
+        raise ResultSemanticValidationError(
+            "selected_attempt is not the median valid soak baseline attempt"
+        )
+    if measurement["selected_median_floor_mbps"] != median_attempt["floor_mbps"]:
+        raise ResultSemanticValidationError(
+            "selected_median_floor_mbps does not match selected_attempt"
+        )
+    if measurement["selected_throughput"] != median_attempt["throughput"]:
+        raise ResultSemanticValidationError(
+            "selected_throughput does not match selected_attempt"
+        )
+
+
+def collect_soak_baseline(
+    lab: XBondLab,
+    *,
+    warmup_seconds: int = 2,
+    sample_seconds: int = 3,
+    required_valid_samples: int = 3,
+    max_attempts: int = 5,
+) -> dict[str, Any]:
+    if required_valid_samples < 1 or required_valid_samples % 2 == 0:
+        raise ValueError("required_valid_samples must be a positive odd number")
+    if max_attempts < required_valid_samples:
+        raise ValueError("max_attempts must cover required_valid_samples")
+
+    warmup_throughput = basic_throughput(lab, seconds=warmup_seconds)
+    attempts: list[dict[str, Any]] = []
+    valid_attempts: list[dict[str, Any]] = []
+    for attempt_number in range(1, max_attempts + 1):
+        throughput = basic_throughput(lab, seconds=sample_seconds)
+        valid_complete = throughput_sample_is_complete(throughput)
+        attempt = {
+            "attempt": attempt_number,
+            "valid_complete": valid_complete,
+            "floor_mbps": (
+                throughput_floor_mbps(throughput) if valid_complete else None
+            ),
+            "throughput": throughput,
+        }
+        attempts.append(attempt)
+        if valid_complete:
+            valid_attempts.append(attempt)
+        if len(valid_attempts) >= required_valid_samples:
+            break
+
+    selected = None
+    if len(valid_attempts) >= required_valid_samples:
+        selected = sorted(
+            valid_attempts,
+            key=lambda attempt: (
+                float(attempt["floor_mbps"]),
+                int(attempt["attempt"]),
+            ),
+        )[len(valid_attempts) // 2]
+
+    return {
+        "warmup_seconds": warmup_seconds,
+        "warmup": {
+            "valid_complete": throughput_sample_is_complete(warmup_throughput),
+            "floor_mbps": (
+                throughput_floor_mbps(warmup_throughput)
+                if throughput_sample_is_complete(warmup_throughput)
+                else None
+            ),
+            "throughput": warmup_throughput,
+        },
+        "sample_seconds": sample_seconds,
+        "required_valid_samples": required_valid_samples,
+        "max_attempts": max_attempts,
+        "attempt_count": len(attempts),
+        "valid_attempt_count": len(valid_attempts),
+        "attempts": attempts,
+        "complete": selected is not None,
+        "selected_attempt": selected["attempt"] if selected else None,
+        "selected_median_floor_mbps": (
+            selected["floor_mbps"] if selected else None
+        ),
+        "selected_throughput": selected["throughput"] if selected else None,
+    }
+
+
 def native_path_throughput(
     lab: XBondLab, path: int = 1, *, seconds: int = 4
 ) -> dict[str, Any]:
@@ -3451,7 +3616,19 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     lab.apply_netem(2, "delay 120ms 60ms distribution normal loss 5%")
     lab.apply_netem(3, "delay 220ms 120ms distribution normal loss 12%")
     lab.start_runtime()
-    baseline_throughput = basic_throughput(lab, seconds=3)
+    baseline_measurement = collect_soak_baseline(lab)
+    baseline_throughput = baseline_measurement["selected_throughput"] or {
+        "upload": {
+            "exit_code": -1,
+            "valid_complete_json": False,
+            "mbps": 0.0,
+        },
+        "download": {
+            "exit_code": -1,
+            "valid_complete_json": False,
+            "mbps": 0.0,
+        },
+    }
     samples: list[dict[str, Any]] = []
     required_duration = max(1800, duration)
     client_pid = lab.client.pid if lab.client else None
@@ -3531,14 +3708,14 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         for sample in samples
         if "throughput" in sample
     ]
-    baseline_complete = all(
-        baseline_throughput[direction].get("exit_code") == 0
-        and baseline_throughput[direction].get("valid_complete_json") is True
-        for direction in ("upload", "download")
+    baseline_complete = soak_baseline_is_complete(
+        baseline_measurement,
+        baseline_throughput,
     )
-    baseline_floor_mbps = min(
-        baseline_throughput["upload"].get("mbps", 0),
-        baseline_throughput["download"].get("mbps", 0),
+    baseline_floor_mbps = (
+        throughput_floor_mbps(baseline_throughput)
+        if baseline_complete
+        else 0.0
     )
     throughput_samples_complete = bool(throughput_samples) and all(
         item[direction].get("exit_code") == 0
@@ -3546,7 +3723,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         for item in throughput_samples
         for direction in ("upload", "download")
     )
-    throughput_floor_mbps = [
+    throughput_floor_samples_mbps = [
         min(
             item["upload"].get("mbps", 0),
             item["download"].get("mbps", 0),
@@ -3555,12 +3732,12 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     ]
     throughput_baseline_ratios = [
         value / baseline_floor_mbps if baseline_floor_mbps > 0 else 0.0
-        for value in throughput_floor_mbps
+        for value in throughput_floor_samples_mbps
     ]
     qualified_throughput_samples = [
         value
         for value, ratio in zip(
-            throughput_floor_mbps,
+            throughput_floor_samples_mbps,
             throughput_baseline_ratios,
             strict=True,
         )
@@ -3689,12 +3866,13 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             "rss_steady_state_start_sample": steady_state_start,
             "rss_steady_state_trends": rss_steady_state_trends,
             "max_ping_loss_percent": max(ping_loss, default=100),
+            "baseline_measurement": baseline_measurement,
             "baseline_throughput": baseline_throughput,
             "baseline_throughput_complete": baseline_complete,
             "baseline_floor_mbps": baseline_floor_mbps,
             "throughput_sample_count": len(throughput_samples),
             "throughput_samples_complete": throughput_samples_complete,
-            "throughput_floor_mbps": throughput_floor_mbps,
+            "throughput_floor_mbps": throughput_floor_samples_mbps,
             "throughput_baseline_ratios": throughput_baseline_ratios,
             "qualified_throughput_sample_count": len(
                 qualified_throughput_samples
@@ -3736,6 +3914,9 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         "tun_write_latency_slope_micros_per_minute_max": 2000,
         "max_ping_loss_percent": 10,
         "baseline_and_samples_require_complete_valid_iperf_json": True,
+        "baseline_warmup_required": True,
+        "baseline_valid_samples_min": 3,
+        "baseline_attempts_max": 5,
         "throughput_floor_mbps_min": 1,
         "throughput_baseline_ratio_min": 0.25,
         "harmful_drop_counter_growth_max": 0,
@@ -3756,6 +3937,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         and result.metrics["max_ping_loss_percent"] <= 10
         and len(throughput_samples) > 0
         and baseline_complete
+        and baseline_measurement["valid_attempt_count"] >= 3
         and baseline_floor_mbps >= 1
         and throughput_samples_complete
         and len(qualified_throughput_samples) == len(throughput_samples)
@@ -3921,9 +4103,13 @@ def execute_one(scenario: str, duration: int) -> tuple[dict[str, Any], pathlib.P
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     try:
         jsonschema.validate(payload, schema)
+        validate_result_semantics(payload)
     except jsonschema.ValidationError as error:
         payload["status"] = "error"
         payload["errors"].append(f"Result schema validation failed: {error.message}")
+    except ResultSemanticValidationError as error:
+        payload["status"] = "error"
+        payload["errors"].append(f"Result semantic validation failed: {error}")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = RESULTS_DIR / f"{stamp}-{scenario}.json"

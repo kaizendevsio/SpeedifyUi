@@ -32,6 +32,19 @@ The current Rust test suite was also run:
 
 Passing tests are valuable, but several findings concern prolonged load, clock changes, queue saturation, device replacement, and simultaneous link impairment. Those cases need targeted integration and soak tests in addition to unit tests.
 
+## Current Performance-Hardening Batch
+
+The current uncommitted working-tree batch extends the audit implementation without claiming release validation or deployment:
+
+- Client TUN reads and inbound payloads use bounded reusable packet buffers; the server likewise recycles accepted payload allocations through a bounded, nonblocking pool. Empty pools allocate on demand, full pools discard returned buffers, and oversized buffers are not retained.
+- Server ingress control dispatch is nonblocking and split into bounded critical, latest-schedule, latest-heartbeat, and repair lanes. Replaceable schedule/heartbeat state is coalesced, while session handshakes retain distinct response routes keyed by session, path, and peer so a viable multipath response is not coalesced behind a broken reverse path.
+- Replacing or coalescing superseded control state is tracked separately and is not counted as queue saturation or a path-hard-demotion signal. Unique critical-control saturation still fails closed instead of silently dropping session state.
+- Silent-blackhole confirmation now tries multiple interface-bound targets: the configured XBond server endpoint, the default external target, and optional configured targets. Success from any target can establish that the physical path still has direct reachability.
+- XNetwork persists watchdog restart history and suppression deadlines across process restarts. It durably reserves quota/cooldown before an automatic restart and fails automatic restarts closed when state is corrupt, unreadable, unfinished, or cannot be finalized.
+- The strict soak baseline now runs a warmup, requires three complete valid throughput samples in at most five attempts, selects the median sample by the lower of upload/download throughput, and records warmup, attempts, validity, and selection evidence in the result schema.
+
+The prior 30-minute soak showed healthy runtime behavior, but its single throughput baseline produced a false-negative acceptance result. It is diagnostic evidence only. The final matrix must be rerun with the strict warmup/median baseline schema and remains pending.
+
 ## Executive Summary
 
 XBond already has several sound foundations:

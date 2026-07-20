@@ -1,12 +1,23 @@
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Debug;
 use std::sync::Arc;
 
 // Covers the map key/value, order entry, Arc allocation, and collection overhead.
 // Payload allocation is accounted separately using Vec::capacity().
 const ENTRY_METADATA_BYTES: usize = 128;
 
+pub trait RepairPayload: AsRef<[u8]> + Debug + Send + Sync + 'static {
+    fn retained_capacity(&self) -> usize;
+}
+
+impl RepairPayload for Vec<u8> {
+    fn retained_capacity(&self) -> usize {
+        self.capacity()
+    }
+}
+
 #[derive(Debug)]
-pub struct ResendCache {
+pub struct ResendCache<P: RepairPayload = Vec<u8>> {
     capacity: usize,
     configured_capacity: usize,
     capacity_tracks_byte_budget: bool,
@@ -14,13 +25,13 @@ pub struct ResendCache {
     bytes: usize,
     accounted_bytes: usize,
     ttl_micros: u64,
-    entries: HashMap<(u64, u64), CachedPacket>,
+    entries: HashMap<(u64, u64), CachedPacket<P>>,
     order: VecDeque<CacheOrderEntry>,
 }
 
 #[derive(Debug, Clone)]
-struct CachedPacket {
-    payload: Arc<Vec<u8>>,
+struct CachedPacket<P: RepairPayload> {
+    payload: Arc<P>,
     inserted_at_micros: u64,
     accounted_bytes: usize,
 }
@@ -31,7 +42,7 @@ struct CacheOrderEntry {
     inserted_at_micros: u64,
 }
 
-impl ResendCache {
+impl<P: RepairPayload> ResendCache<P> {
     pub fn new(capacity: usize, ttl_micros: u64) -> Self {
         let capacity = capacity.max(1);
         Self {
@@ -65,17 +76,13 @@ impl ResendCache {
         }
     }
 
-    pub fn insert(
-        &mut self,
-        session_id: u64,
-        sequence: u64,
-        payload: Arc<Vec<u8>>,
-        now_micros: u64,
-    ) {
+    pub fn insert(&mut self, session_id: u64, sequence: u64, payload: Arc<P>, now_micros: u64) {
         self.prune(now_micros);
         let key = (session_id, sequence);
         if let Some(replaced) = self.entries.remove(&key) {
-            self.bytes = self.bytes.saturating_sub(replaced.payload.len());
+            self.bytes = self
+                .bytes
+                .saturating_sub(replaced.payload.as_ref().as_ref().len());
             self.accounted_bytes = self
                 .accounted_bytes
                 .saturating_sub(replaced.accounted_bytes);
@@ -84,13 +91,13 @@ impl ResendCache {
             });
         }
 
-        let payload_accounted_bytes = accounted_packet_bytes(&payload);
+        let payload_accounted_bytes = accounted_packet_bytes(payload.as_ref());
         if payload_accounted_bytes > self.byte_capacity {
             return;
         }
 
         self.make_room_for(payload_accounted_bytes);
-        self.bytes = self.bytes.saturating_add(payload.len());
+        self.bytes = self.bytes.saturating_add(payload.as_ref().as_ref().len());
         self.accounted_bytes = self.accounted_bytes.saturating_add(payload_accounted_bytes);
         self.entries.insert(
             key,
@@ -107,7 +114,7 @@ impl ResendCache {
         self.prune(now_micros);
     }
 
-    pub fn get(&mut self, session_id: u64, sequence: u64, now_micros: u64) -> Option<Arc<Vec<u8>>> {
+    pub fn get(&mut self, session_id: u64, sequence: u64, now_micros: u64) -> Option<Arc<P>> {
         self.prune(now_micros);
         self.entries
             .get(&(session_id, sequence))
@@ -166,7 +173,9 @@ impl ResendCache {
                 .is_some_and(|entry| entry.inserted_at_micros == front.inserted_at_micros)
             {
                 if let Some(removed) = self.entries.remove(&front.key) {
-                    self.bytes = self.bytes.saturating_sub(removed.payload.len());
+                    self.bytes = self
+                        .bytes
+                        .saturating_sub(removed.payload.as_ref().as_ref().len());
                     self.accounted_bytes =
                         self.accounted_bytes.saturating_sub(removed.accounted_bytes);
                 }
@@ -187,7 +196,9 @@ impl ResendCache {
                 .is_some_and(|entry| entry.inserted_at_micros == front.inserted_at_micros)
             {
                 if let Some(removed) = self.entries.remove(&front.key) {
-                    self.bytes = self.bytes.saturating_sub(removed.payload.len());
+                    self.bytes = self
+                        .bytes
+                        .saturating_sub(removed.payload.as_ref().as_ref().len());
                     self.accounted_bytes =
                         self.accounted_bytes.saturating_sub(removed.accounted_bytes);
                 }
@@ -206,8 +217,10 @@ impl ResendCache {
     }
 }
 
-fn accounted_packet_bytes(payload: &Vec<u8>) -> usize {
-    payload.capacity().saturating_add(ENTRY_METADATA_BYTES)
+fn accounted_packet_bytes<P: RepairPayload>(payload: &P) -> usize {
+    payload
+        .retained_capacity()
+        .saturating_add(ENTRY_METADATA_BYTES)
 }
 
 fn effective_packet_capacity(configured_capacity: usize, byte_capacity: usize) -> usize {
@@ -353,7 +366,8 @@ mod tests {
     fn byte_capacity_update_recomputes_logical_packet_capacity() {
         let initial_budget = ENTRY_METADATA_BYTES * 5000;
         let increased_budget = ENTRY_METADATA_BYTES * 9000;
-        let mut cache = ResendCache::new_with_byte_capacity(4096, initial_budget, 3_000_000);
+        let mut cache: ResendCache =
+            ResendCache::new_with_byte_capacity(4096, initial_budget, 3_000_000);
 
         assert_eq!(cache.packet_capacity(), 5000);
 

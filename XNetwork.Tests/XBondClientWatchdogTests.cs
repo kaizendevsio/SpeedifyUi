@@ -192,6 +192,12 @@ public class XBondClientWatchdogTests
         Assert.Null(GetPrivateField<DateTimeOffset?>(harness.Service, "_suppressedUntilUtc"));
         Assert.Null(status.LastRestartAtUtc);
         Assert.Null(status.LastRestartReason);
+        var persisted = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            harness.StatePath).Load(attemptedAt);
+        Assert.True(persisted.CanRestartAutomatically);
+        Assert.Empty(persisted.State.RestartHistoryUtc);
+        Assert.Null(persisted.State.SuppressedUntilUtc);
         Assert.Equal(1, harness.Provider.Calls);
         Assert.Same(harness.Provider.LastSnapshot, cachedSnapshot);
     }
@@ -215,7 +221,232 @@ public class XBondClientWatchdogTests
         Assert.Equal(attemptedAt.AddMinutes(10), GetPrivateField<DateTimeOffset?>(harness.Service, "_suppressedUntilUtc"));
         Assert.Equal(attemptedAt, status.LastRestartAtUtc);
         Assert.Equal("test mismatch", status.LastRestartReason);
+        Assert.True(File.Exists(harness.StatePath));
         Assert.Equal(2, harness.Provider.Calls);
+    }
+
+    [Fact]
+    public void StateStore_MissingStateStartsWithValidEmptyGuards()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-state-{Guid.NewGuid():N}");
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
+        var store = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            statePath);
+        var now = DateTimeOffset.UtcNow;
+
+        var missing = store.Load(now);
+
+        Assert.True(missing.CanRestartAutomatically);
+        Assert.Empty(missing.State.RestartHistoryUtc);
+        Assert.Null(missing.State.SuppressedUntilUtc);
+    }
+
+    [Fact]
+    public void StateStore_CorruptOrUnreadableStateFailsClosed()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-state-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var corruptPath = Path.Combine(tempDirectory, "corrupt-state.json");
+        var unreadablePath = Path.Combine(tempDirectory, "state-is-a-directory");
+        File.WriteAllText(corruptPath, "{not valid json");
+        Directory.CreateDirectory(unreadablePath);
+        var now = DateTimeOffset.UtcNow;
+
+        var corrupt = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            corruptPath).Load(now);
+        var unreadable = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            unreadablePath).Load(now);
+
+        Assert.False(corrupt.CanRestartAutomatically);
+        Assert.True(corrupt.State.AutomaticRestartsBlocked);
+        Assert.NotNull(corrupt.FailureReason);
+        Assert.False(unreadable.CanRestartAutomatically);
+        Assert.True(unreadable.State.AutomaticRestartsBlocked);
+        Assert.NotNull(unreadable.FailureReason);
+    }
+
+    [Fact]
+    public void StateStore_FallbackPathUsesStableLocalAppDataOutsideDeployOutput()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-path-{Guid.NewGuid():N}");
+        var deployOutput = Path.Combine(root, "publish");
+        var localAppData = Path.Combine(root, "stable-app-data");
+
+        var statePath = XBondClientWatchdogStateStore.ResolveStateFilePath(
+            applicationData: "",
+            localApplicationData: localAppData,
+            userProfile: deployOutput,
+            commonApplicationData: "");
+
+        Assert.Equal(
+            Path.Combine(localAppData, "XNetwork", "xbond-client-watchdog-state.json"),
+            statePath);
+        Assert.DoesNotContain(deployOutput, statePath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void StateStore_PersistedUnfinishedTransactionFailsClosed()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-state-{Guid.NewGuid():N}");
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
+        var store = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            statePath);
+        var now = DateTimeOffset.UtcNow;
+        Directory.CreateDirectory(tempDirectory);
+        File.WriteAllText(
+            statePath,
+            $$"""
+              {
+                "RestartHistoryUtc": [ "{{now:O}}" ],
+                "SuppressedUntilUtc": "{{now.AddMinutes(10):O}}",
+                "AutomaticRestartsBlocked": true
+              }
+              """);
+
+        var loaded = store.Load(now);
+
+        Assert.False(loaded.CanRestartAutomatically);
+        Assert.Single(loaded.State.RestartHistoryUtc);
+        Assert.Equal(now.AddMinutes(10), loaded.State.SuppressedUntilUtc);
+    }
+
+    [Fact]
+    public void StateStore_LoadPrunesExpiredRestartQuotaAndCooldown()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-state-{Guid.NewGuid():N}");
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
+        var store = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            statePath);
+        var now = DateTimeOffset.UtcNow;
+        Directory.CreateDirectory(tempDirectory);
+        File.WriteAllText(
+            statePath,
+            $$"""
+              {
+                "RestartHistoryUtc": [
+                  "{{now.AddHours(-2):O}}",
+                  "{{now.AddMinutes(-10):O}}"
+                ],
+                "SuppressedUntilUtc": "{{now.AddMinutes(-1):O}}"
+              }
+              """);
+
+        var loaded = store.Load(now).State;
+
+        Assert.Equal([now.AddMinutes(-10)], loaded.RestartHistoryUtc);
+        Assert.Null(loaded.SuppressedUntilUtc);
+    }
+
+    [Fact]
+    public async Task SuccessfulRestart_ReloadsQuotaAndCooldownInNewServiceInstance()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-state-{Guid.NewGuid():N}");
+        var first = CreateRestartHarness(restartSucceeds: true, tempDirectory);
+        var restartedAt = DateTimeOffset.UtcNow;
+
+        await InvokeRestartAttemptAsync(first.Service, restartedAt);
+        var second = CreateRestartHarness(restartSucceeds: true, tempDirectory);
+        var status = second.Service.GetStatus();
+
+        Assert.Equal([restartedAt], GetPrivateField<Queue<DateTimeOffset>>(second.Service, "_restartHistory"));
+        Assert.Equal(restartedAt.AddMinutes(10), GetPrivateField<DateTimeOffset?>(second.Service, "_suppressedUntilUtc"));
+        Assert.Equal(1, status.RestartsLastHour);
+        Assert.Equal(restartedAt.AddMinutes(10), status.SuppressedUntilUtc);
+    }
+
+    [Fact]
+    public async Task SuccessfulRestart_FinalSaveFailureKeepsDurableAndInMemoryGuardsBlocked()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-state-{Guid.NewGuid():N}");
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
+        var concreteStore = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            statePath);
+        var failingStore = new FailOnSaveStateStore(concreteStore, failOnSaveCall: 2);
+        var harness = CreateRestartHarness(
+            restartSucceeds: true,
+            tempDirectory,
+            failingStore);
+        var restartedAt = DateTimeOffset.UtcNow;
+
+        var message = await InvokeRestartAttemptAsync(harness.Service, restartedAt);
+        var persisted = concreteStore.Load(restartedAt);
+
+        Assert.Contains("could not be finalized", message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(1, harness.RestartCalls());
+        Assert.Single(GetPrivateField<Queue<DateTimeOffset>>(harness.Service, "_restartHistory"));
+        Assert.Equal(restartedAt.AddMinutes(10), GetPrivateField<DateTimeOffset?>(harness.Service, "_suppressedUntilUtc"));
+        Assert.True(GetPrivateField<bool>(harness.Service, "_automaticRestartsBlocked"));
+        var blockedStatus = harness.Service.GetStatus();
+        Assert.True(blockedStatus.AutomaticRestartsBlocked);
+        Assert.Contains("could not be finalized", blockedStatus.AutomaticRestartBlockReason, StringComparison.OrdinalIgnoreCase);
+        Assert.False(persisted.CanRestartAutomatically);
+        Assert.Equal([restartedAt], persisted.State.RestartHistoryUtc);
+        Assert.Equal(restartedAt.AddMinutes(10), persisted.State.SuppressedUntilUtc);
+
+        var reloaded = CreateRestartHarness(restartSucceeds: true, tempDirectory, concreteStore);
+        var suppressedMessage = await InvokeRestartAttemptAsync(
+            reloaded.Service,
+            restartedAt.AddMinutes(11));
+
+        Assert.Contains("automatic XBond client restarts are disabled", suppressedMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, reloaded.RestartCalls());
+    }
+
+    [Fact]
+    public async Task ReinitializePersistentState_ClearsBlockOnlyAfterCleanStateIsSaved()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-recovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
+        File.WriteAllText(statePath, "{not valid json");
+        var concreteStore = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            statePath);
+        var harness = CreateRestartHarness(restartSucceeds: true, tempDirectory, concreteStore);
+
+        var blocked = harness.Service.GetStatus();
+        var recovered = await harness.Service.ReinitializePersistentStateAsync();
+        var persisted = concreteStore.Load(DateTimeOffset.UtcNow);
+
+        Assert.True(blocked.AutomaticRestartsBlocked);
+        Assert.NotNull(blocked.AutomaticRestartBlockReason);
+        Assert.False(recovered.AutomaticRestartsBlocked);
+        Assert.Null(recovered.AutomaticRestartBlockReason);
+        Assert.Equal(0, recovered.RestartsLastHour);
+        Assert.Null(recovered.SuppressedUntilUtc);
+        Assert.True(persisted.CanRestartAutomatically);
+        Assert.Empty(persisted.State.RestartHistoryUtc);
+        Assert.False(persisted.State.AutomaticRestartsBlocked);
+    }
+
+    [Fact]
+    public async Task ReinitializePersistentState_SaveFailurePreservesBlockAndReason()
+    {
+        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-recovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDirectory);
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
+        File.WriteAllText(statePath, "{not valid json");
+        var concreteStore = new XBondClientWatchdogStateStore(
+            NullLogger<XBondClientWatchdogStateStore>.Instance,
+            statePath);
+        var failingStore = new FailOnSaveStateStore(concreteStore, failOnSaveCall: 1);
+        var harness = CreateRestartHarness(restartSucceeds: true, tempDirectory, failingStore);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => harness.Service.ReinitializePersistentStateAsync());
+        var status = harness.Service.GetStatus();
+        var persisted = concreteStore.Load(DateTimeOffset.UtcNow);
+
+        Assert.Contains("automatic restarts remain disabled", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(status.AutomaticRestartsBlocked);
+        Assert.Contains("could not be reinitialized", status.AutomaticRestartBlockReason, StringComparison.OrdinalIgnoreCase);
+        Assert.False(persisted.CanRestartAutomatically);
     }
 
     private static XBondClientWatchdogSettings DefaultSettings() => new()
@@ -252,9 +483,13 @@ public class XBondClientWatchdogTests
         LossPercent = 0
     };
 
-    private static RestartHarness CreateRestartHarness(bool restartSucceeds)
+    private static RestartHarness CreateRestartHarness(
+        bool restartSucceeds,
+        string? tempDirectory = null,
+        IXBondClientWatchdogStateStore? stateStore = null)
     {
-        var tempDirectory = Path.Combine(Path.GetTempPath(), $"xbond-watchdog-{Guid.NewGuid():N}");
+        tempDirectory ??= Path.Combine(Path.GetTempPath(), $"xbond-watchdog-{Guid.NewGuid():N}");
+        var statePath = Path.Combine(tempDirectory, "watchdog-state.json");
         var watchdogSettings = DefaultSettings();
         watchdogSettings.Enabled = true;
         watchdogSettings.RestartCooldownMinutes = 10;
@@ -297,6 +532,9 @@ public class XBondClientWatchdogTests
             new XBondClientWatchdogSettingsStore(
                 NullLogger<XBondClientWatchdogSettingsStore>.Instance,
                 Path.Combine(tempDirectory, "watchdog.json")),
+            stateStore ?? new XBondClientWatchdogStateStore(
+                NullLogger<XBondClientWatchdogStateStore>.Instance,
+                statePath),
             cache,
             new XBondPhysicalPathProbeService(
                 xbondSettings,
@@ -305,7 +543,7 @@ public class XBondClientWatchdogTests
             xbondSettings,
             NullLogger<XBondClientWatchdogService>.Instance);
 
-        return new RestartHarness(service, cache, provider, () => restartCalls);
+        return new RestartHarness(service, cache, provider, statePath, () => restartCalls);
     }
 
     private static async Task<string> InvokeRestartAttemptAsync(
@@ -349,7 +587,28 @@ public class XBondClientWatchdogTests
         XBondClientWatchdogService Service,
         XBondSnapshotCache Cache,
         CountingStatsProvider Provider,
+        string StatePath,
         Func<int> RestartCalls);
+
+    private sealed class FailOnSaveStateStore(
+        IXBondClientWatchdogStateStore inner,
+        int failOnSaveCall) : IXBondClientWatchdogStateStore
+    {
+        private int _saveCalls;
+
+        public XBondClientWatchdogStateLoadResult Load(DateTimeOffset nowUtc) => inner.Load(nowUtc);
+
+        public Task SaveAsync(
+            XBondClientWatchdogState state,
+            DateTimeOffset nowUtc,
+            CancellationToken cancellationToken = default)
+        {
+            _saveCalls++;
+            return _saveCalls == failOnSaveCall
+                ? Task.FromException(new IOException("simulated state persistence failure"))
+                : inner.SaveAsync(state, nowUtc, cancellationToken);
+        }
+    }
 
     private sealed class CountingStatsProvider : IXBondStatsProvider
     {

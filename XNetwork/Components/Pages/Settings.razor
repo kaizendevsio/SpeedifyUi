@@ -565,6 +565,29 @@
                 <div class="@_clientWatchdogMessageClass rounded-lg border p-3 text-sm">@_clientWatchdogMessage</div>
             }
 
+            @if (_clientWatchdogStatus?.AutomaticRestartsBlocked == true)
+            {
+                <div class="rounded-lg border border-rose-500/35 bg-rose-500/10 p-3 text-sm text-rose-100">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <p class="font-semibold">
+                                <i class="fas fa-triangle-exclamation mr-1.5"></i>
+                                Automatic restarts blocked
+                            </p>
+                            <p class="mt-1 break-words text-xs text-rose-100/80">
+                                @(_clientWatchdogStatus.AutomaticRestartBlockReason ?? "Watchdog safety state is unavailable or uncertain.")
+                            </p>
+                        </div>
+                        <button type="button"
+                                class="rounded-lg border border-rose-400/40 bg-rose-500/15 px-3 py-2 text-sm font-semibold text-rose-50 hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+                                disabled="@_clientWatchdogBusy"
+                                @onclick="ShowClientWatchdogRecoveryConfirmation">
+                            Reinitialize safety state
+                        </button>
+                    </div>
+                </div>
+            }
+
             <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <label class="flex items-center justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 md:col-span-2 xl:col-span-3">
                     <span>
@@ -640,7 +663,7 @@
                 <button type="button" class="settings-secondary-button" disabled="@(_clientWatchdogBusy || _clientWatchdogStatus?.IsRunning == true)" @onclick="RunClientWatchdogNowAsync">Run check now</button>
             </div>
 
-            <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300">
+            <div class="@ClientWatchdogStatusPanelClass">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                     <span>@(_clientWatchdogStatus?.Message ?? "Watchdog status is unavailable.")</span>
                     <span class="text-xs text-slate-500">@FormatClientWatchdogUpdated()</span>
@@ -1088,6 +1111,14 @@
     </div>
 </ActionSheet>
 
+<ConfirmationModal IsVisible="@_showClientWatchdogRecoveryConfirmation"
+                   Title="Reinitialize watchdog safety state?"
+                   Message="This clears the persisted watchdog restart quota and cooldown. Automatic restarts are unblocked only after the clean state is written successfully."
+                   ConfirmText="Reinitialize state"
+                   ConfirmButtonClass="btn-orange"
+                   RequiredConfirmationText="RESET WATCHDOG"
+                   OnConfirm="HandleClientWatchdogRecoveryConfirmationAsync" />
+
 @code {
     private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(2));
     private readonly CancellationTokenSource _refreshCts = new();
@@ -1151,6 +1182,7 @@
     private bool _isWifiConnecting;
     private bool _showProxyEditor;
     private bool _showBypassEditor;
+    private bool _showClientWatchdogRecoveryConfirmation;
     private bool _tunnelExpanded;
     private bool _policyExpanded;
     private bool _adaptersExpanded;
@@ -1715,7 +1747,11 @@
             await XBondClientWatchdogService.SaveSettingsAsync(_clientWatchdogDraft, _refreshCts.Token);
             _clientWatchdogDraft = CopyClientWatchdogSettings(XBondClientWatchdogService.Settings);
             _clientWatchdogStatus = XBondClientWatchdogService.GetStatus();
-            ShowClientWatchdogMessage("XBond client watchdog settings saved.", isError: false);
+            ShowClientWatchdogMessage(
+                _clientWatchdogStatus.AutomaticRestartsBlocked
+                    ? $"Watchdog settings saved, but automatic restarts remain blocked: {_clientWatchdogStatus.AutomaticRestartBlockReason}"
+                    : "XBond client watchdog settings saved.",
+                isError: _clientWatchdogStatus.AutomaticRestartsBlocked);
         }
         catch (Exception ex)
         {
@@ -1735,11 +1771,45 @@
         try
         {
             _clientWatchdogStatus = await XBondClientWatchdogService.RunCheckNowAsync(_refreshCts.Token);
-            ShowClientWatchdogMessage(_clientWatchdogStatus.Message, isError: false);
+            ShowClientWatchdogMessage(
+                _clientWatchdogStatus.Message,
+                isError: _clientWatchdogStatus.AutomaticRestartsBlocked);
         }
         catch (Exception ex)
         {
             ShowClientWatchdogMessage($"Watchdog check failed: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _clientWatchdogBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ShowClientWatchdogRecoveryConfirmation()
+    {
+        _showClientWatchdogRecoveryConfirmation = true;
+    }
+
+    private async Task HandleClientWatchdogRecoveryConfirmationAsync(bool confirmed)
+    {
+        _showClientWatchdogRecoveryConfirmation = false;
+        if (!confirmed)
+        {
+            return;
+        }
+
+        _clientWatchdogBusy = true;
+        ClearClientWatchdogMessage();
+        try
+        {
+            _clientWatchdogStatus = await XBondClientWatchdogService.ReinitializePersistentStateAsync(_refreshCts.Token);
+            ShowClientWatchdogMessage(_clientWatchdogStatus.Message, isError: false);
+        }
+        catch (Exception ex)
+        {
+            _clientWatchdogStatus = XBondClientWatchdogService.GetStatus();
+            ShowClientWatchdogMessage($"Could not reinitialize watchdog safety state: {ex.Message}", isError: true);
         }
         finally
         {
@@ -2006,11 +2076,19 @@
 
     private string ClientWatchdogBadge => _clientWatchdogStatus?.IsRunning == true
         ? "Checking"
+        : _clientWatchdogStatus?.AutomaticRestartsBlocked == true
+            ? "Blocked"
         : _clientWatchdogDraft.Enabled ? "Enabled" : "Disabled";
 
-    private string ClientWatchdogPillClass => _clientWatchdogDraft.Enabled
-        ? "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-100"
-        : "rounded-full border border-slate-600 bg-slate-700/40 px-2.5 py-1 text-xs font-semibold text-slate-300";
+    private string ClientWatchdogPillClass => _clientWatchdogStatus?.AutomaticRestartsBlocked == true
+        ? "rounded-full border border-rose-500/35 bg-rose-500/10 px-2.5 py-1 text-xs font-semibold text-rose-100"
+        : _clientWatchdogDraft.Enabled
+            ? "rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-100"
+            : "rounded-full border border-slate-600 bg-slate-700/40 px-2.5 py-1 text-xs font-semibold text-slate-300";
+
+    private string ClientWatchdogStatusPanelClass => _clientWatchdogStatus?.AutomaticRestartsBlocked == true
+        ? "rounded-lg border border-rose-500/35 bg-rose-500/10 p-3 text-sm text-rose-100"
+        : "rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-300";
 
     private static XBondClientWatchdogSettings CopyClientWatchdogSettings(XBondClientWatchdogSettings source) => new()
     {

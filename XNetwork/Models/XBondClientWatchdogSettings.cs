@@ -53,6 +53,10 @@ public sealed class XBondClientWatchdogStatus
 
     public int RestartsLastHour { get; set; }
 
+    public bool AutomaticRestartsBlocked { get; set; }
+
+    public string? AutomaticRestartBlockReason { get; set; }
+
     public bool TunnelUnhealthy { get; set; }
 
     public double? TunnelRttMs { get; set; }
@@ -69,6 +73,20 @@ public sealed class XBondClientWatchdogStatus
 
     public List<XBondPhysicalPathProbeResult> PathProbes { get; set; } = new();
 }
+
+public sealed class XBondClientWatchdogState
+{
+    public List<DateTimeOffset> RestartHistoryUtc { get; set; } = new();
+
+    public DateTimeOffset? SuppressedUntilUtc { get; set; }
+
+    public bool AutomaticRestartsBlocked { get; set; }
+}
+
+public sealed record XBondClientWatchdogStateLoadResult(
+    XBondClientWatchdogState State,
+    bool CanRestartAutomatically,
+    string? FailureReason);
 
 public sealed class XBondPhysicalPathProbeResult
 {

@@ -12,7 +12,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Notify, RwLock};
 use tokio::time;
 use xbond_core::{
     build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into,
@@ -48,6 +48,8 @@ const RETURN_SCHEDULE_STALE_AFTER_MICROS: u64 = 10_000_000;
 const RETURN_SCHEDULE_GRACE_MICROS: u64 = 5_000_000;
 const MAX_UDP_DATAGRAM_BYTES: usize = 65_535;
 const EXPECTED_UDP_PAYLOAD_BYTES: usize = 2048;
+const PAYLOAD_POOL_CAPACITY: usize = 256;
+const MAX_POOLED_PAYLOAD_CAPACITY: usize = EXPECTED_UDP_PAYLOAD_BYTES * 4;
 const RETIRED_SESSION_CAPACITY: usize = 64;
 const TUN_WRITE_ENQUEUE_DEADLINE: Duration = Duration::from_millis(250);
 const PRIMARY_RETURN_QUEUE_DEADLINE: Duration = Duration::from_millis(250);
@@ -148,12 +150,172 @@ struct InboundServerFrame {
     frame: XBondFrame,
     peer: SocketAddr,
     pre_admission_deduplicated: bool,
+    payload_recycle_tx: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+impl InboundServerFrame {
+    fn new(
+        frame: XBondFrame,
+        peer: SocketAddr,
+        pre_admission_deduplicated: bool,
+        payload_recycle_tx: Option<mpsc::Sender<Vec<u8>>>,
+    ) -> Self {
+        Self {
+            frame,
+            peer,
+            pre_admission_deduplicated,
+            payload_recycle_tx,
+        }
+    }
+
+    fn take_payload(&mut self) -> RecyclablePayload {
+        RecyclablePayload {
+            payload: Some(std::mem::take(&mut self.frame.payload)),
+            payload_recycle_tx: self.payload_recycle_tx.clone(),
+        }
+    }
+}
+
+impl Drop for InboundServerFrame {
+    fn drop(&mut self) {
+        if !self.frame.payload.is_empty() || self.frame.payload.capacity() > 0 {
+            recycle_payload(
+                self.payload_recycle_tx.as_ref(),
+                std::mem::take(&mut self.frame.payload),
+            );
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RecyclablePayload {
+    payload: Option<Vec<u8>>,
+    payload_recycle_tx: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+impl RecyclablePayload {
+    fn as_slice(&self) -> &[u8] {
+        self.payload.as_deref().unwrap_or_default()
+    }
+
+    fn into_vec(mut self) -> Vec<u8> {
+        self.payload.take().unwrap_or_default()
+    }
+}
+
+impl Drop for RecyclablePayload {
+    fn drop(&mut self) {
+        if let Some(payload) = self.payload.take() {
+            recycle_payload(self.payload_recycle_tx.as_ref(), payload);
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CriticalControlKey {
+    Handshake {
+        control: ServerSessionHandshakeControl,
+        route: ResponseRouteKey,
+    },
+    Other {
+        session_id: u64,
+        sequence: u64,
+        route: ResponseRouteKey,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResponseRouteKey {
+    session_id: u64,
+    path_id: u16,
+    peer: SocketAddr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoalescingQueuePush {
+    Queued,
+    Replaced,
+    IgnoredStale,
+    EvictedOldest,
+    Full,
+}
+
+#[derive(Debug)]
+struct BoundedCoalescingQueue<K> {
+    entries: Mutex<VecDeque<(K, InboundServerFrame)>>,
+    notify: Notify,
+    capacity: usize,
+    evict_oldest: bool,
+}
+
+impl<K: PartialEq> BoundedCoalescingQueue<K> {
+    fn new(capacity: usize, evict_oldest: bool) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+            capacity: capacity.max(1),
+            evict_oldest,
+        }
+    }
+
+    fn push_with(
+        &self,
+        key: K,
+        inbound: InboundServerFrame,
+        should_replace: impl FnOnce(&InboundServerFrame, &InboundServerFrame) -> bool,
+    ) -> CoalescingQueuePush {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = entries
+            .iter()
+            .position(|(existing_key, _)| existing_key == &key)
+        {
+            if !should_replace(&entries[index].1, &inbound) {
+                return CoalescingQueuePush::IgnoredStale;
+            }
+            entries[index] = (key, inbound);
+            self.notify.notify_one();
+            return CoalescingQueuePush::Replaced;
+        }
+
+        let outcome = if entries.len() >= self.capacity {
+            if !self.evict_oldest {
+                return CoalescingQueuePush::Full;
+            }
+            entries.pop_front();
+            CoalescingQueuePush::EvictedOldest
+        } else {
+            CoalescingQueuePush::Queued
+        };
+        entries.push_back((key, inbound));
+        self.notify.notify_one();
+        outcome
+    }
+
+    async fn recv(&self) -> InboundServerFrame {
+        loop {
+            let notified = self.notify.notified();
+            if let Some((_, inbound)) = self
+                .entries
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pop_front()
+            {
+                return inbound;
+            }
+            notified.await;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InboundDispatchOutcome {
     Queued,
+    Coalesced,
     Dropped,
+    CriticalSaturated,
     Closed,
 }
 
@@ -570,6 +732,8 @@ struct ServerControlPlaneStatus {
     last_control_progress_at_micros: u64,
     protocol_acks_queued: u64,
     schedule_updates_accepted: u64,
+    ingress_control_frames_coalesced: u64,
+    ingress_repair_queue_drops: u64,
     ingress_payload_queue_drops: u64,
     ingress_duplicates_coalesced: u64,
     primary_return_queue_full: u64,
@@ -836,18 +1000,135 @@ fn is_prioritized_inbound(kind: PacketKind) -> bool {
     )
 }
 
-async fn dispatch_inbound_frame(
-    control_tx: &mpsc::Sender<InboundServerFrame>,
+#[derive(Debug)]
+enum InboundLane {
+    Critical(CriticalControlKey),
+    LatestSchedule(ResponseRouteKey),
+    LatestHeartbeat(ResponseRouteKey),
+    Repair,
+    Payload,
+}
+
+fn response_route(inbound: &InboundServerFrame) -> ResponseRouteKey {
+    ResponseRouteKey {
+        session_id: inbound.frame.header.session_id,
+        path_id: inbound.frame.header.path_id,
+        peer: inbound.peer,
+    }
+}
+
+fn classify_inbound_lane(inbound: &InboundServerFrame) -> InboundLane {
+    let frame = &inbound.frame;
+    let route = response_route(inbound);
+    match frame.header.kind {
+        PacketKind::Heartbeat => InboundLane::LatestHeartbeat(route),
+        PacketKind::Repair => InboundLane::Repair,
+        PacketKind::Control => {
+            if let Some(handshake) = parse_session_handshake(frame) {
+                return InboundLane::Critical(CriticalControlKey::Handshake {
+                    control: handshake,
+                    route,
+                });
+            }
+            if serde_json::from_slice::<ScheduleControlMessage>(&frame.payload).is_ok()
+                || serde_json::from_slice::<SchedulePlan>(&frame.payload).is_ok()
+            {
+                return InboundLane::LatestSchedule(route);
+            }
+            if parse_repair_request(frame).is_some() {
+                return InboundLane::Repair;
+            }
+            InboundLane::Critical(CriticalControlKey::Other {
+                session_id: frame.header.session_id,
+                sequence: frame.header.sequence,
+                route,
+            })
+        }
+        PacketKind::Data | PacketKind::Duplicate | PacketKind::Fec => InboundLane::Payload,
+    }
+}
+
+fn schedule_control_version(frame: &XBondFrame) -> (u64, u64) {
+    (
+        parse_schedule_control_generation(frame).unwrap_or_default(),
+        frame.header.sequence,
+    )
+}
+
+fn recycle_payload(
+    payload_recycle_tx: Option<&mpsc::Sender<Vec<u8>>>,
+    mut payload: Vec<u8>,
+) -> bool {
+    let Some(payload_recycle_tx) = payload_recycle_tx else {
+        return false;
+    };
+    if payload.capacity() > MAX_POOLED_PAYLOAD_CAPACITY {
+        return false;
+    }
+    payload.clear();
+    payload_recycle_tx.try_send(payload).is_ok()
+}
+
+fn take_payload_buffer(payload_recycle_rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<u8> {
+    match payload_recycle_rx.try_recv() {
+        Ok(mut payload) => {
+            payload.clear();
+            payload
+        }
+        Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+            Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES)
+        }
+    }
+}
+
+fn dispatch_inbound_frame(
+    critical_control: &BoundedCoalescingQueue<CriticalControlKey>,
+    latest_schedule: &BoundedCoalescingQueue<ResponseRouteKey>,
+    latest_heartbeat: &BoundedCoalescingQueue<ResponseRouteKey>,
+    repair_tx: &mpsc::Sender<InboundServerFrame>,
     payload_tx: &mpsc::Sender<InboundServerFrame>,
     inbound: InboundServerFrame,
     payload_queue_drops: &AtomicU64,
+    repair_queue_drops: &AtomicU64,
+    control_frames_coalesced: &AtomicU64,
 ) -> InboundDispatchOutcome {
-    if is_prioritized_inbound(inbound.frame.header.kind) {
-        return if control_tx.send(inbound).await.is_ok() {
-            InboundDispatchOutcome::Queued
-        } else {
-            InboundDispatchOutcome::Closed
-        };
+    match classify_inbound_lane(&inbound) {
+        InboundLane::Critical(key) => {
+            return control_dispatch_outcome(
+                critical_control.push_with(key, inbound, |existing, candidate| {
+                    candidate.frame.header.sequence >= existing.frame.header.sequence
+                }),
+                control_frames_coalesced,
+            );
+        }
+        InboundLane::LatestSchedule(route) => {
+            return control_dispatch_outcome(
+                latest_schedule.push_with(route, inbound, |existing, candidate| {
+                    schedule_control_version(&candidate.frame)
+                        >= schedule_control_version(&existing.frame)
+                }),
+                control_frames_coalesced,
+            );
+        }
+        InboundLane::LatestHeartbeat(route) => {
+            return control_dispatch_outcome(
+                latest_heartbeat.push_with(route, inbound, |existing, candidate| {
+                    candidate.frame.header.sequence >= existing.frame.header.sequence
+                }),
+                control_frames_coalesced,
+            );
+        }
+        InboundLane::Repair => {
+            return match repair_tx.try_send(inbound) {
+                Ok(()) => InboundDispatchOutcome::Queued,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    repair_queue_drops.fetch_add(1, Ordering::Relaxed);
+                    InboundDispatchOutcome::Dropped
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => InboundDispatchOutcome::Closed,
+            };
+        }
+        InboundLane::Payload => {}
     }
 
     match payload_tx.try_send(inbound) {
@@ -868,25 +1149,46 @@ fn pre_admission_duplicate_class(kind: PacketKind) -> Option<u32> {
     }
 }
 
+fn control_dispatch_outcome(
+    queue_outcome: CoalescingQueuePush,
+    control_frames_coalesced: &AtomicU64,
+) -> InboundDispatchOutcome {
+    match queue_outcome {
+        CoalescingQueuePush::Queued => InboundDispatchOutcome::Queued,
+        CoalescingQueuePush::Replaced
+        | CoalescingQueuePush::IgnoredStale
+        | CoalescingQueuePush::EvictedOldest => {
+            control_frames_coalesced.fetch_add(1, Ordering::Relaxed);
+            InboundDispatchOutcome::Coalesced
+        }
+        CoalescingQueuePush::Full => InboundDispatchOutcome::CriticalSaturated,
+    }
+}
+
 async fn receive_prioritized_frame(
-    control_rx: &mut mpsc::Receiver<InboundServerFrame>,
+    critical_control: &BoundedCoalescingQueue<CriticalControlKey>,
+    latest_schedule: &BoundedCoalescingQueue<ResponseRouteKey>,
+    latest_heartbeat: &BoundedCoalescingQueue<ResponseRouteKey>,
+    repair_rx: &mut mpsc::Receiver<InboundServerFrame>,
     payload_rx: &mut mpsc::Receiver<InboundServerFrame>,
     payload_enabled: bool,
 ) -> Option<InboundServerFrame> {
     if !payload_enabled {
-        return control_rx.recv().await;
+        return Some(tokio::select! {
+            biased;
+            inbound = critical_control.recv() => inbound,
+            inbound = latest_schedule.recv() => inbound,
+            inbound = latest_heartbeat.recv() => inbound,
+        });
     }
 
     tokio::select! {
         biased;
-        inbound = control_rx.recv() => match inbound {
-            Some(inbound) => Some(inbound),
-            None => payload_rx.recv().await,
-        },
-        inbound = payload_rx.recv() => match inbound {
-            Some(inbound) => Some(inbound),
-            None => control_rx.recv().await,
-        },
+        inbound = critical_control.recv() => Some(inbound),
+        inbound = latest_schedule.recv() => Some(inbound),
+        inbound = latest_heartbeat.recv() => Some(inbound),
+        inbound = repair_rx.recv() => inbound,
+        inbound = payload_rx.recv() => inbound,
     }
 }
 
@@ -972,6 +1274,29 @@ fn enqueue_control_message(
     ))
 }
 
+fn enqueue_schedule_accepted(
+    tx: &mpsc::Sender<ControlSendWork>,
+    key: &XBondKey,
+    peer: SocketAddr,
+    session_id: u64,
+    schedule_generation: u64,
+    control_sequence: &mut u64,
+    control_plane: &mut ServerControlPlaneStatus,
+) -> Result<bool> {
+    enqueue_control_message(
+        tx,
+        key,
+        peer,
+        session_id,
+        control_sequence,
+        &XBondControlMessage::ScheduleAccepted {
+            session_id,
+            schedule_generation,
+        },
+        control_plane,
+    )
+}
+
 fn enqueue_control_message_to_peers(
     tx: &mpsc::Sender<ControlSendWork>,
     key: &XBondKey,
@@ -1045,6 +1370,7 @@ fn spawn_tun_writer(
     mut tun_writer: XBondTun,
     capacity: usize,
     worker_exit_tx: mpsc::Sender<TunWorkerExit>,
+    payload_recycle_tx: mpsc::Sender<Vec<u8>>,
     fault: TunFaultInjection,
 ) -> TunWriterHandle {
     let capacity = capacity.max(1);
@@ -1058,7 +1384,7 @@ fn spawn_tun_writer(
             let packet_count = batch.packets.len();
             let enqueued_at_micros = batch.enqueued_at_micros;
             let write_result = (|| -> std::result::Result<(), String> {
-                for packet in batch.packets {
+                for mut packet in batch.packets {
                     if injected_tun_failure(fault.write_fail_after_packets, packets_written) {
                         worker_telemetry
                             .write_errors
@@ -1071,7 +1397,12 @@ fn spawn_tun_writer(
                         std::thread::sleep(Duration::from_millis(fault.write_delay_ms));
                     }
                     let started = Instant::now();
-                    if let Err(error) = tun_writer.write_packet(&packet.payload) {
+                    let write_result = tun_writer.write_packet(&packet.payload);
+                    recycle_payload(
+                        Some(&payload_recycle_tx),
+                        std::mem::take(&mut packet.payload),
+                    );
+                    if let Err(error) = write_result {
                         worker_telemetry
                             .write_errors
                             .fetch_add(1, Ordering::Relaxed);
@@ -1546,11 +1877,21 @@ async fn main() -> Result<()> {
         read_fail_after_packets: args.fault_tun_read_fail_after_packets,
     };
 
-    let (control_frame_tx, mut control_frame_rx) =
+    let critical_control_frames =
+        Arc::new(BoundedCoalescingQueue::new(CONTROL_QUEUE_CAPACITY, false));
+    let latest_schedule_frames =
+        Arc::new(BoundedCoalescingQueue::new(RETIRED_SESSION_CAPACITY, false));
+    let latest_heartbeat_frames =
+        Arc::new(BoundedCoalescingQueue::new(CONTROL_QUEUE_CAPACITY, true));
+    let (repair_frame_tx, mut repair_frame_rx) =
         mpsc::channel::<InboundServerFrame>(CONTROL_QUEUE_CAPACITY);
     let (payload_frame_tx, mut payload_frame_rx) =
         mpsc::channel::<InboundServerFrame>(args.inbound_queue_capacity.max(1));
+    let (payload_recycle_tx, mut payload_recycle_rx) =
+        mpsc::channel::<Vec<u8>>(PAYLOAD_POOL_CAPACITY);
     let ingress_payload_queue_drops = Arc::new(AtomicU64::new(0));
+    let ingress_repair_queue_drops = Arc::new(AtomicU64::new(0));
+    let ingress_control_frames_coalesced = Arc::new(AtomicU64::new(0));
     let ingress_duplicates_coalesced = Arc::new(AtomicU64::new(0));
     let (send_report_tx, mut send_report_rx) =
         mpsc::channel::<ReturnSendReport>(SEND_REPORT_QUEUE_CAPACITY);
@@ -1562,11 +1903,17 @@ async fn main() -> Result<()> {
     );
     let recv_socket = socket.clone();
     let recv_key = key.clone();
+    let recv_critical_control_frames = critical_control_frames.clone();
+    let recv_latest_schedule_frames = latest_schedule_frames.clone();
+    let recv_latest_heartbeat_frames = latest_heartbeat_frames.clone();
     let recv_payload_queue_drops = ingress_payload_queue_drops.clone();
+    let recv_repair_queue_drops = ingress_repair_queue_drops.clone();
+    let recv_control_frames_coalesced = ingress_control_frames_coalesced.clone();
     let recv_duplicates_coalesced = ingress_duplicates_coalesced.clone();
+    let recv_payload_recycle_tx = payload_recycle_tx.clone();
     let mut udp_receiver_task = tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
-        let mut payload = Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES);
+        let mut payload = take_payload_buffer(&mut payload_recycle_rx);
         let mut pre_admission_duplicates = DuplicateWindow::new(8192);
         loop {
             let (len, peer) = match recv_socket.recv_from(&mut buf).await {
@@ -1600,20 +1947,24 @@ async fn main() -> Result<()> {
             let frame_session_id = header.session_id;
             let frame_sequence = header.sequence;
             let frame_payload =
-                std::mem::replace(&mut payload, Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES));
-            let inbound = InboundServerFrame {
-                frame: XBondFrame::new(header, frame_payload),
+                std::mem::replace(&mut payload, take_payload_buffer(&mut payload_recycle_rx));
+            let inbound = InboundServerFrame::new(
+                XBondFrame::new(header, frame_payload),
                 peer,
-                pre_admission_deduplicated: duplicate_class.is_some(),
-            };
+                duplicate_class.is_some(),
+                Some(recv_payload_recycle_tx.clone()),
+            );
             match dispatch_inbound_frame(
-                &control_frame_tx,
+                &recv_critical_control_frames,
+                &recv_latest_schedule_frames,
+                &recv_latest_heartbeat_frames,
+                &repair_frame_tx,
                 &payload_frame_tx,
                 inbound,
                 &recv_payload_queue_drops,
-            )
-            .await
-            {
+                &recv_repair_queue_drops,
+                &recv_control_frames_coalesced,
+            ) {
                 InboundDispatchOutcome::Queued => {
                     if let Some(class) = duplicate_class {
                         debug_assert_eq!(
@@ -1626,7 +1977,15 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
+                InboundDispatchOutcome::Coalesced => {}
                 InboundDispatchOutcome::Dropped => {}
+                InboundDispatchOutcome::CriticalSaturated => {
+                    eprintln!(
+                        "xbond server critical inbound control queue saturated; terminating \
+                         cleanly rather than dropping session control"
+                    );
+                    break;
+                }
                 InboundDispatchOutcome::Closed => break,
             }
         }
@@ -1641,6 +2000,7 @@ async fn main() -> Result<()> {
             tun_ref.try_clone()?,
             args.tun_queue_capacity,
             tun_worker_exit_tx.clone(),
+            payload_recycle_tx.clone(),
             tun_fault,
         ))
     } else {
@@ -1758,22 +2118,25 @@ async fn main() -> Result<()> {
             }
 
             Some(inbound) = receive_prioritized_frame(
-                &mut control_frame_rx,
+                &critical_control_frames,
+                &latest_schedule_frames,
+                &latest_heartbeat_frames,
+                &mut repair_frame_rx,
                 &mut payload_frame_rx,
                 pending_tun_write.is_none(),
             ) => {
+                let mut inbound = inbound;
                 let pre_admission_deduplicated = inbound.pre_admission_deduplicated;
-                let frame = inbound.frame;
                 let peer = inbound.peer;
                 let receive_micros = monotonic_micros();
-                if is_prioritized_inbound(frame.header.kind) {
+                if is_prioritized_inbound(inbound.frame.header.kind) {
                     control_plane.prioritized_frames_processed = control_plane
                         .prioritized_frames_processed
                         .saturating_add(1);
                     control_plane.last_control_progress_at_micros = now_micros();
                 }
 
-                if let Some(handshake) = parse_session_handshake(&frame) {
+                if let Some(handshake) = parse_session_handshake(&inbound.frame) {
                     match handshake {
                         ServerSessionHandshakeControl::Open {
                             session_id,
@@ -1781,7 +2144,7 @@ async fn main() -> Result<()> {
                         } => {
                             let fresh_challenge = random_handshake_nonce()?;
                             if let Some(challenge) = session_gate.issue_challenge(
-                                frame.header.session_id,
+                                inbound.frame.header.session_id,
                                 session_id,
                                 request_nonce,
                                 fresh_challenge,
@@ -1806,7 +2169,7 @@ async fn main() -> Result<()> {
                                     "{}",
                                     serde_json::json!({
                                         "event": "session-challenge-rejected",
-                                        "header_session_id": frame.header.session_id,
+                                        "header_session_id": inbound.frame.header.session_id,
                                         "control_session_id": session_id,
                                         "peer": peer.to_string(),
                                     })
@@ -1819,7 +2182,7 @@ async fn main() -> Result<()> {
                             challenge,
                         } => {
                             let decision = session_gate.prove(
-                                frame.header.session_id,
+                                inbound.frame.header.session_id,
                                 session_id,
                                 request_nonce,
                                 challenge,
@@ -1913,7 +2276,7 @@ async fn main() -> Result<()> {
                                             "{}",
                                             serde_json::json!({
                                                 "event": "session-proof-rejected",
-                                                "header_session_id": frame.header.session_id,
+                                                "header_session_id": inbound.frame.header.session_id,
                                                 "control_session_id": session_id,
                                                 "peer": peer.to_string(),
                                             })
@@ -1926,21 +2289,21 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                if !session_gate.accepts(frame.header.session_id) {
+                if !session_gate.accepts(inbound.frame.header.session_id) {
                     let restart_repeat_due = last_restart_required_sent
                         .is_none_or(|sent_at| sent_at.elapsed() >= Duration::from_secs(1));
                     if restart_repeat_due
-                        && session_gate.restart_required_for(frame.header.session_id)
+                        && session_gate.restart_required_for(inbound.frame.header.session_id)
                     {
                         let restart = XBondControlMessage::SessionRestartRequired {
-                            session_id: frame.header.session_id,
+                            session_id: inbound.frame.header.session_id,
                             reason: "The server no longer has active forwarding state for this session; open a new random session epoch.".to_string(),
                         };
                         enqueue_control_message(
                             &control_send_tx,
                             &key,
                             peer,
-                            frame.header.session_id,
+                            inbound.frame.header.session_id,
                             &mut control_sequence,
                             &restart,
                             &mut control_plane,
@@ -1951,7 +2314,7 @@ async fn main() -> Result<()> {
                                 "{}",
                                 serde_json::json!({
                                     "event": "session-restart-required-repeated",
-                                    "session_id": frame.header.session_id,
+                                    "session_id": inbound.frame.header.session_id,
                                     "peer": peer.to_string(),
                                 })
                             );
@@ -1961,13 +2324,13 @@ async fn main() -> Result<()> {
                 }
 
                 let should_ack = matches!(
-                    frame.header.kind,
+                    inbound.frame.header.kind,
                     PacketKind::Heartbeat | PacketKind::Control
                 );
                 let outcome = if pre_admission_deduplicated {
                     receiver.accept_prechecked()
                 } else {
-                    receiver.observe(&frame, now_micros())
+                    receiver.observe(&inbound.frame, now_micros())
                 };
                 let ack_sent = should_ack
                     && matches!(
@@ -1975,7 +2338,7 @@ async fn main() -> Result<()> {
                         ReceiveOutcome::Accepted | ReceiveOutcome::Duplicate
                     );
                 if ack_sent {
-                    let reply = build_ack_frame(&frame);
+                    let reply = build_ack_frame(&inbound.frame);
                     let encoded = reply.encode_sealed(&key)?;
                     if enqueue_control_datagram(
                         &control_send_tx,
@@ -1992,22 +2355,43 @@ async fn main() -> Result<()> {
                     print_packet_event(
                         event_name(outcome),
                         outcome,
-                        &frame,
+                        &inbound.frame,
                         &peer.to_string(),
                         ack_sent,
                         &receiver,
                     );
                 }
 
+                let schedule_ack_generation =
+                    parse_schedule_control_generation(&inbound.frame);
+                let parsed_control = parse_return_control(&inbound.frame, receive_micros);
                 if outcome != ReceiveOutcome::Accepted {
-                    if frame.header.kind == PacketKind::Repair {
+                    if outcome == ReceiveOutcome::Duplicate {
+                        if let (Some(schedule_generation), Some(candidate)) =
+                            (schedule_ack_generation, parsed_control.as_ref())
+                        {
+                            if return_control_matches_current(
+                                return_control.as_ref(),
+                                candidate,
+                            ) {
+                                enqueue_schedule_accepted(
+                                    &control_send_tx,
+                                    &key,
+                                    peer,
+                                    inbound.frame.header.session_id,
+                                    schedule_generation,
+                                    &mut control_sequence,
+                                    &mut control_plane,
+                                )?;
+                            }
+                        }
+                    }
+                    if inbound.frame.header.kind == PacketKind::Repair {
                         repair.late_frames = repair.late_frames.saturating_add(1);
                     }
                     continue;
                 }
 
-                let schedule_ack_generation = parse_schedule_control_generation(&frame);
-                let parsed_control = parse_return_control(&frame, receive_micros);
                 if parsed_control.as_ref().is_some_and(|candidate| {
                     !return_control_update_is_valid(
                         return_control.as_ref(),
@@ -2019,7 +2403,7 @@ async fn main() -> Result<()> {
                             "{}",
                             serde_json::json!({
                                 "event": "return-schedule-rejected",
-                                "session_id": frame.header.session_id,
+                                "session_id": inbound.frame.header.session_id,
                                 "schedule_generation": parsed_control.as_ref().map(|control| control.schedule_generation),
                                 "current_schedule_generation": return_control.as_ref().map(|control| control.schedule_generation),
                             })
@@ -2029,16 +2413,16 @@ async fn main() -> Result<()> {
                 }
 
                 expire_stale_peers(&mut peers, receive_micros);
-                if is_tunnel_payload(frame.header.kind)
-                    && reorder_session_id != frame.header.session_id
+                if is_tunnel_payload(inbound.frame.header.kind)
+                    && reorder_session_id != inbound.frame.header.session_id
                 {
                     reorder.reset();
                     fec_recovery = FecRecovery::new(8192);
-                    reorder_session_id = frame.header.session_id;
+                    reorder_session_id = inbound.frame.header.session_id;
                 }
-                if frame.header.path_id != 0 {
+                if inbound.frame.header.path_id != 0 {
                     peers.insert(
-                        frame.header.path_id,
+                        inbound.frame.header.path_id,
                         PeerState {
                             addr: peer,
                             last_seen_micros: receive_micros,
@@ -2061,7 +2445,7 @@ async fn main() -> Result<()> {
                                 "{}",
                                 serde_json::json!({
                                     "event": "ingress-reorder-hold-updated",
-                                    "session_id": frame.header.session_id,
+                                    "session_id": inbound.frame.header.session_id,
                                     "recovery_active": control.recovery_active,
                                     "adaptive": adaptive,
                                 })
@@ -2073,17 +2457,13 @@ async fn main() -> Result<()> {
                         .schedule_updates_accepted
                         .saturating_add(1);
                     if let Some(schedule_generation) = schedule_ack_generation {
-                        let accepted = XBondControlMessage::ScheduleAccepted {
-                            session_id: last_session_id,
-                            schedule_generation,
-                        };
-                        enqueue_control_message(
+                        enqueue_schedule_accepted(
                             &control_send_tx,
                             &key,
                             peer,
                             last_session_id,
+                            schedule_generation,
                             &mut control_sequence,
-                            &accepted,
                             &mut control_plane,
                         )?;
                     }
@@ -2092,7 +2472,7 @@ async fn main() -> Result<()> {
                             "{}",
                             serde_json::json!({
                                 "event": "return-schedule-updated",
-                                "session_id": frame.header.session_id,
+                                "session_id": inbound.frame.header.session_id,
                                 "policy": return_control.as_ref().map(|control| control.policy),
                                 "recovery_active": return_control.as_ref().is_some_and(|control| control.recovery_active),
                                 "ingress_reorder_hold_ms": current_ingress_hold_micros / 1_000,
@@ -2137,7 +2517,7 @@ async fn main() -> Result<()> {
                     last_server_recovery_status_sent = Instant::now();
                 }
 
-                if let Some(sequences) = parse_repair_request(&frame) {
+                if let Some(sequences) = parse_repair_request(&inbound.frame) {
                     repair.requests_received = repair
                         .requests_received
                         .saturating_add(sequences.len() as u64);
@@ -2161,12 +2541,16 @@ async fn main() -> Result<()> {
                 let mut forwarded_packets = 0u64;
                 let mut dropped_reason = None;
                 let trace_tunnel_payload =
-                    (args.json_events && args.trace_packets && is_tunnel_payload(frame.header.kind))
-                        .then(|| (frame.header.clone(), frame.payload.len()));
-                if outcome == ReceiveOutcome::Accepted && is_data_like(frame.header.kind) {
+                    (args.json_events
+                        && args.trace_packets
+                        && is_tunnel_payload(inbound.frame.header.kind))
+                    .then(|| (inbound.frame.header.clone(), inbound.frame.payload.len()));
+                if outcome == ReceiveOutcome::Accepted
+                    && is_data_like(inbound.frame.header.kind)
+                {
                     data_packets_received += 1;
-                    let header = frame.header.clone();
-                    let payload = frame.payload;
+                    let header = inbound.frame.header.clone();
+                    let payload = inbound.take_payload();
                     let fec_is_active = return_control
                         .as_ref()
                         .is_some_and(|control| !control.schedule.fec_path_ids.is_empty());
@@ -2174,13 +2558,13 @@ async fn main() -> Result<()> {
                         fec_recovery.observe_data(
                             header.session_id,
                             header.sequence,
-                            payload.clone(),
+                            payload.as_slice().to_vec(),
                         )
                     } else {
                         Vec::new()
                     };
                     if fec_recovery.mark_delivered(header.session_id, header.sequence) {
-                        if is_ipv4_packet(&payload) {
+                        if is_ipv4_packet(payload.as_slice()) {
                             if let Some(tun_writer) = &tun_writer {
                                 let ready = reorder.push(
                                     header.sequence,
@@ -2189,7 +2573,7 @@ async fn main() -> Result<()> {
                                     } else {
                                         header.path_id
                                     },
-                                    payload,
+                                    payload.into_vec(),
                                     monotonic_micros(),
                                     0,
                                 );
@@ -2253,10 +2637,12 @@ async fn main() -> Result<()> {
                             non_ipv4_packets_dropped += 1;
                         }
                     }
-                } else if outcome == ReceiveOutcome::Accepted && frame.header.kind == PacketKind::Fec {
+                } else if outcome == ReceiveOutcome::Accepted
+                    && inbound.frame.header.kind == PacketKind::Fec
+                {
                     fec_packets_received += 1;
-                    let session_id = frame.header.session_id;
-                    match XorFecBlock::decode(&frame.payload) {
+                    let session_id = inbound.frame.header.session_id;
+                    match XorFecBlock::decode(&inbound.frame.payload) {
                         Ok(block) => {
                             for recovered in fec_recovery.observe_fec(session_id, block) {
                                 if !fec_recovery.mark_delivered(session_id, recovered.sequence)
@@ -2449,6 +2835,10 @@ async fn main() -> Result<()> {
             }
 
             _ = status_tick.tick() => {
+                control_plane.ingress_control_frames_coalesced =
+                    ingress_control_frames_coalesced.load(Ordering::Relaxed);
+                control_plane.ingress_repair_queue_drops =
+                    ingress_repair_queue_drops.load(Ordering::Relaxed);
                 control_plane.ingress_payload_queue_drops =
                     ingress_payload_queue_drops.load(Ordering::Relaxed);
                 control_plane.ingress_duplicates_coalesced =
@@ -3645,6 +4035,16 @@ fn return_control_update_is_valid(
         && candidate.recovery_active == current.recovery_active
 }
 
+fn return_control_matches_current(
+    current: Option<&ReturnControl>,
+    candidate: &ReturnControl,
+) -> bool {
+    current.is_some_and(|current| {
+        candidate.schedule_generation == current.schedule_generation
+            && return_control_update_is_valid(Some(current), candidate)
+    })
+}
+
 fn select_return_targets(
     control: Option<&ReturnControl>,
     peers: &HashMap<u16, PeerState>,
@@ -3853,6 +4253,83 @@ mod tests {
 
     fn nonce(value: u8) -> SessionHandshakeNonce {
         [value; 16]
+    }
+
+    fn inbound_frame(
+        kind: PacketKind,
+        session_id: u64,
+        sequence: u64,
+        path_id: u16,
+        payload: Vec<u8>,
+    ) -> InboundServerFrame {
+        inbound_frame_from(
+            "192.0.2.1:1000".parse().unwrap(),
+            kind,
+            session_id,
+            sequence,
+            path_id,
+            payload,
+        )
+    }
+
+    fn inbound_frame_from(
+        peer: SocketAddr,
+        kind: PacketKind,
+        session_id: u64,
+        sequence: u64,
+        path_id: u16,
+        payload: Vec<u8>,
+    ) -> InboundServerFrame {
+        InboundServerFrame::new(
+            XBondFrame::new(
+                XBondHeader::new(kind, session_id, sequence, now_micros(), path_id),
+                payload,
+            ),
+            peer,
+            false,
+            None,
+        )
+    }
+
+    fn schedule_frame(session_id: u64, sequence: u64, generation: u64) -> InboundServerFrame {
+        schedule_frame_from(
+            "192.0.2.1:1000".parse().unwrap(),
+            session_id,
+            sequence,
+            generation,
+            1,
+        )
+    }
+
+    fn schedule_frame_from(
+        peer: SocketAddr,
+        session_id: u64,
+        sequence: u64,
+        generation: u64,
+        path_id: u16,
+    ) -> InboundServerFrame {
+        inbound_frame_from(
+            peer,
+            PacketKind::Control,
+            session_id,
+            sequence,
+            path_id,
+            serde_json::to_vec(&ScheduleControlMessage {
+                schedule_generation: generation,
+                schedule: SchedulePlan {
+                    mode: ScheduleMode::AnchorOnly,
+                    anchor_path_id: Some(1),
+                    data_path_ids: vec![1],
+                    duplicate_path_ids: Vec::new(),
+                    fec_path_ids: Vec::new(),
+                },
+                redundancy_policy: RedundancyPolicy::Balanced,
+                policy_config: RedundancyPolicyConfig::default(),
+                paths: Vec::new(),
+                recovery_active: false,
+            })
+            .unwrap(),
+        )
     }
 
     #[test]
@@ -4138,85 +4615,112 @@ mod tests {
 
     #[tokio::test]
     async fn prioritized_control_progresses_when_payload_queue_is_saturated() {
-        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (repair_tx, mut repair_rx) = mpsc::channel(1);
         let (payload_tx, mut payload_rx) = mpsc::channel(1);
-        let drops = AtomicU64::new(0);
-        let peer = "192.0.2.1:1000".parse().unwrap();
-        let inbound = |kind, sequence| InboundServerFrame {
-            frame: XBondFrame::new(
-                XBondHeader::new(kind, 1, sequence, now_micros(), 1),
-                vec![0x45],
-            ),
-            peer,
-            pre_admission_deduplicated: false,
-        };
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
 
         assert_eq!(
             dispatch_inbound_frame(
-                &control_tx,
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
                 &payload_tx,
-                inbound(PacketKind::Data, 1),
-                &drops,
-            )
-            .await,
+                inbound_frame(PacketKind::Data, 1, 1, 1, vec![0x45]),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
             InboundDispatchOutcome::Queued,
         );
         assert_eq!(
             dispatch_inbound_frame(
-                &control_tx,
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
                 &payload_tx,
-                inbound(PacketKind::Data, 2),
-                &drops,
-            )
-            .await,
+                inbound_frame(PacketKind::Data, 1, 2, 1, vec![0x45]),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
             InboundDispatchOutcome::Dropped,
         );
         assert_eq!(
             dispatch_inbound_frame(
-                &control_tx,
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
                 &payload_tx,
-                inbound(PacketKind::Heartbeat, 3),
-                &drops,
-            )
-            .await,
+                inbound_frame(PacketKind::Heartbeat, 1, 3, 1, Vec::new()),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
             InboundDispatchOutcome::Queued,
         );
 
         let received = time::timeout(
             Duration::from_millis(50),
-            receive_prioritized_frame(&mut control_rx, &mut payload_rx, true),
+            receive_prioritized_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &mut repair_rx,
+                &mut payload_rx,
+                true,
+            ),
         )
         .await
         .unwrap()
         .unwrap();
         assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
         assert_eq!(payload_rx.len(), 1);
-        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(payload_drops.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
     async fn pending_tun_admission_pauses_payload_without_blocking_control() {
-        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (_repair_tx, mut repair_rx) = mpsc::channel(1);
         let (payload_tx, mut payload_rx) = mpsc::channel(1);
-        let peer = "192.0.2.1:1000".parse().unwrap();
-        let inbound = |kind, sequence| InboundServerFrame {
-            frame: XBondFrame::new(
-                XBondHeader::new(kind, 1, sequence, now_micros(), 1),
-                vec![0x45],
-            ),
-            peer,
-            pre_admission_deduplicated: false,
-        };
 
-        payload_tx.send(inbound(PacketKind::Data, 1)).await.unwrap();
-        control_tx
-            .send(inbound(PacketKind::Heartbeat, 2))
+        payload_tx
+            .send(inbound_frame(PacketKind::Data, 1, 1, 1, vec![0x45]))
             .await
             .unwrap();
+        assert_eq!(
+            heartbeats.push_with(
+                ResponseRouteKey {
+                    session_id: 1,
+                    path_id: 1,
+                    peer: "192.0.2.1:1000".parse().unwrap(),
+                },
+                inbound_frame(PacketKind::Heartbeat, 1, 2, 1, Vec::new()),
+                |_, _| true,
+            ),
+            CoalescingQueuePush::Queued
+        );
 
         let received = time::timeout(
             Duration::from_millis(50),
-            receive_prioritized_frame(&mut control_rx, &mut payload_rx, false),
+            receive_prioritized_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &mut repair_rx,
+                &mut payload_rx,
+                false,
+            ),
         )
         .await
         .unwrap()
@@ -4224,6 +4728,557 @@ mod tests {
 
         assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
         assert_eq!(payload_rx.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn saturated_control_lanes_coalesce_latest_and_fail_closed_for_unique_critical_work() {
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+        let open = |sequence| {
+            inbound_frame(
+                PacketKind::Control,
+                7,
+                sequence,
+                1,
+                serde_json::to_vec(&XBondControlMessage::SessionOpen {
+                    session_id: 7,
+                    request_nonce: nonce(1),
+                })
+                .unwrap(),
+            )
+        };
+
+        assert_eq!(
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                open(1),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
+            InboundDispatchOutcome::Queued
+        );
+        assert_eq!(
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                open(2),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
+            InboundDispatchOutcome::Coalesced
+        );
+        assert_eq!(
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                inbound_frame(
+                    PacketKind::Control,
+                    7,
+                    3,
+                    1,
+                    serde_json::to_vec(&XBondControlMessage::SessionProof {
+                        session_id: 7,
+                        request_nonce: nonce(1),
+                        challenge: nonce(2),
+                    })
+                    .unwrap(),
+                ),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
+            InboundDispatchOutcome::CriticalSaturated
+        );
+
+        let queued = time::timeout(Duration::from_millis(50), critical.recv())
+            .await
+            .unwrap();
+        assert_eq!(queued.frame.header.sequence, 2);
+        assert_eq!(coalesced.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn saturated_schedule_slot_keeps_newest_generation() {
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+
+        assert_eq!(
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                schedule_frame(9, 10, 10),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
+            InboundDispatchOutcome::Queued
+        );
+        assert_eq!(
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                schedule_frame(9, 11, 11),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
+            InboundDispatchOutcome::Coalesced
+        );
+        assert_eq!(
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                schedule_frame(9, 9, 9),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            ),
+            InboundDispatchOutcome::Coalesced
+        );
+
+        let queued = time::timeout(Duration::from_millis(50), schedules.recv())
+            .await
+            .unwrap();
+        assert_eq!(parse_schedule_control_generation(&queued.frame), Some(11));
+        assert_eq!(queued.frame.header.sequence, 11);
+        assert_eq!(coalesced.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn saturated_heartbeat_slot_keeps_latest_sequence_per_path() {
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+
+        for (sequence, expected) in [
+            (10, InboundDispatchOutcome::Queued),
+            (11, InboundDispatchOutcome::Coalesced),
+            (9, InboundDispatchOutcome::Coalesced),
+        ] {
+            assert_eq!(
+                dispatch_inbound_frame(
+                    &critical,
+                    &schedules,
+                    &heartbeats,
+                    &repair_tx,
+                    &payload_tx,
+                    inbound_frame(PacketKind::Heartbeat, 4, sequence, 2, Vec::new()),
+                    &payload_drops,
+                    &repair_drops,
+                    &coalesced,
+                ),
+                expected
+            );
+        }
+
+        let queued = time::timeout(Duration::from_millis(50), heartbeats.recv())
+            .await
+            .unwrap();
+        assert_eq!(queued.frame.header.sequence, 11);
+        assert_eq!(coalesced.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn multipath_handshake_responses_reach_viable_peer_when_other_reverse_path_is_broken() {
+        let broken_peer: SocketAddr = "192.0.2.10:1000".parse().unwrap();
+        let viable_peer: SocketAddr = "192.0.2.11:1000".parse().unwrap();
+        let critical = BoundedCoalescingQueue::new(4, false);
+        let schedules = BoundedCoalescingQueue::new(4, false);
+        let heartbeats = BoundedCoalescingQueue::new(4, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+        let request_nonce = nonce(1);
+        let open_payload = serde_json::to_vec(&XBondControlMessage::SessionOpen {
+            session_id: 7,
+            request_nonce,
+        })
+        .unwrap();
+
+        for (peer, path_id) in [(broken_peer, 1), (viable_peer, 2)] {
+            assert_eq!(
+                dispatch_inbound_frame(
+                    &critical,
+                    &schedules,
+                    &heartbeats,
+                    &repair_tx,
+                    &payload_tx,
+                    inbound_frame_from(
+                        peer,
+                        PacketKind::Control,
+                        7,
+                        10,
+                        path_id,
+                        open_payload.clone(),
+                    ),
+                    &payload_drops,
+                    &repair_drops,
+                    &coalesced,
+                ),
+                InboundDispatchOutcome::Queued
+            );
+        }
+
+        let key = XBondKey::from_passphrase("test-key");
+        let (response_tx, mut response_rx) = mpsc::channel(8);
+        let mut control_sequence = 100;
+        let mut control_plane = ServerControlPlaneStatus::default();
+        let mut gate = ServerSessionGate::new();
+        let mut challenge = None;
+        for fresh_challenge in [nonce(2), nonce(3)] {
+            let inbound = critical.recv().await;
+            let ServerSessionHandshakeControl::Open {
+                session_id,
+                request_nonce,
+            } = parse_session_handshake(&inbound.frame).unwrap()
+            else {
+                panic!("expected session open");
+            };
+            let issued = gate
+                .issue_challenge(
+                    inbound.frame.header.session_id,
+                    session_id,
+                    request_nonce,
+                    fresh_challenge,
+                    1_000,
+                )
+                .unwrap();
+            challenge.get_or_insert(issued);
+            enqueue_control_message(
+                &response_tx,
+                &key,
+                inbound.peer,
+                session_id,
+                &mut control_sequence,
+                &XBondControlMessage::SessionChallenge {
+                    session_id,
+                    request_nonce,
+                    challenge: issued,
+                },
+                &mut control_plane,
+            )
+            .unwrap();
+        }
+        let challenge = challenge.unwrap();
+        let challenge_responses = [
+            response_rx.recv().await.unwrap(),
+            response_rx.recv().await.unwrap(),
+        ];
+        assert!(challenge_responses.iter().any(|work| {
+            work.peer == viable_peer
+                && matches!(
+                    XBondFrame::decode_sealed(&work.encoded, &key)
+                        .ok()
+                        .and_then(|frame| serde_json::from_slice(&frame.payload).ok()),
+                    Some(XBondControlMessage::SessionChallenge { .. })
+                )
+        }));
+
+        let proof_payload = serde_json::to_vec(&XBondControlMessage::SessionProof {
+            session_id: 7,
+            request_nonce,
+            challenge,
+        })
+        .unwrap();
+        for (peer, path_id) in [(broken_peer, 1), (viable_peer, 2)] {
+            assert_eq!(
+                dispatch_inbound_frame(
+                    &critical,
+                    &schedules,
+                    &heartbeats,
+                    &repair_tx,
+                    &payload_tx,
+                    inbound_frame_from(
+                        peer,
+                        PacketKind::Control,
+                        7,
+                        11,
+                        path_id,
+                        proof_payload.clone(),
+                    ),
+                    &payload_drops,
+                    &repair_drops,
+                    &coalesced,
+                ),
+                InboundDispatchOutcome::Queued
+            );
+        }
+
+        for _ in 0..2 {
+            let inbound = critical.recv().await;
+            let ServerSessionHandshakeControl::Proof {
+                session_id,
+                request_nonce,
+                challenge,
+            } = parse_session_handshake(&inbound.frame).unwrap()
+            else {
+                panic!("expected session proof");
+            };
+            assert!(matches!(
+                gate.prove(
+                    inbound.frame.header.session_id,
+                    session_id,
+                    request_nonce,
+                    challenge,
+                    1_001,
+                ),
+                ServerSessionOpenDecision::AcceptedNew | ServerSessionOpenDecision::AcceptedCurrent
+            ));
+            enqueue_control_message(
+                &response_tx,
+                &key,
+                inbound.peer,
+                session_id,
+                &mut control_sequence,
+                &XBondControlMessage::SessionAccepted {
+                    session_id,
+                    request_nonce,
+                    challenge,
+                },
+                &mut control_plane,
+            )
+            .unwrap();
+        }
+        let acceptance_responses = [
+            response_rx.recv().await.unwrap(),
+            response_rx.recv().await.unwrap(),
+        ];
+        assert!(acceptance_responses.iter().any(|work| {
+            work.peer == viable_peer
+                && matches!(
+                    XBondFrame::decode_sealed(&work.encoded, &key)
+                        .ok()
+                        .and_then(|frame| serde_json::from_slice(&frame.payload).ok()),
+                    Some(XBondControlMessage::SessionAccepted { .. })
+                )
+        }));
+    }
+
+    #[tokio::test]
+    async fn multipath_schedule_ack_reaches_viable_peer_when_other_reverse_path_is_broken() {
+        let broken_peer: SocketAddr = "192.0.2.20:1000".parse().unwrap();
+        let viable_peer: SocketAddr = "192.0.2.21:1000".parse().unwrap();
+        let critical = BoundedCoalescingQueue::new(4, false);
+        let schedules = BoundedCoalescingQueue::new(4, false);
+        let heartbeats = BoundedCoalescingQueue::new(4, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+
+        for (peer, path_id) in [(broken_peer, 1), (viable_peer, 2)] {
+            assert_eq!(
+                dispatch_inbound_frame(
+                    &critical,
+                    &schedules,
+                    &heartbeats,
+                    &repair_tx,
+                    &payload_tx,
+                    schedule_frame_from(peer, 9, 20, 12, path_id),
+                    &payload_drops,
+                    &repair_drops,
+                    &coalesced,
+                ),
+                InboundDispatchOutcome::Queued
+            );
+        }
+
+        let key = XBondKey::from_passphrase("test-key");
+        let (response_tx, mut response_rx) = mpsc::channel(8);
+        let mut control_sequence = 200;
+        let mut control_plane = ServerControlPlaneStatus::default();
+        let mut receiver = FrameReceiver::new(500_000, 32);
+        let mut current_control = None;
+        let mut saw_duplicate = false;
+        for _ in 0..2 {
+            let inbound = schedules.recv().await;
+            let outcome = receiver.observe(&inbound.frame, now_micros());
+            let generation = parse_schedule_control_generation(&inbound.frame).unwrap();
+            let candidate = parse_return_control(&inbound.frame, monotonic_micros()).unwrap();
+            if outcome == ReceiveOutcome::Accepted {
+                current_control = Some(candidate);
+                enqueue_schedule_accepted(
+                    &response_tx,
+                    &key,
+                    inbound.peer,
+                    inbound.frame.header.session_id,
+                    generation,
+                    &mut control_sequence,
+                    &mut control_plane,
+                )
+                .unwrap();
+            } else if outcome == ReceiveOutcome::Duplicate
+                && return_control_matches_current(current_control.as_ref(), &candidate)
+            {
+                saw_duplicate = true;
+                enqueue_schedule_accepted(
+                    &response_tx,
+                    &key,
+                    inbound.peer,
+                    inbound.frame.header.session_id,
+                    generation,
+                    &mut control_sequence,
+                    &mut control_plane,
+                )
+                .unwrap();
+            }
+        }
+        assert!(
+            saw_duplicate,
+            "the viable route must receive explicit acceptance even for a duplicate schedule copy"
+        );
+
+        let responses = [
+            response_rx.recv().await.unwrap(),
+            response_rx.recv().await.unwrap(),
+        ];
+        assert!(responses.iter().any(|work| {
+            work.peer == viable_peer
+                && matches!(
+                    XBondFrame::decode_sealed(&work.encoded, &key)
+                        .ok()
+                        .and_then(|frame| serde_json::from_slice(&frame.payload).ok()),
+                    Some(XBondControlMessage::ScheduleAccepted {
+                        session_id: 9,
+                        schedule_generation: 12,
+                    })
+                )
+        }));
+    }
+
+    #[test]
+    fn repair_lane_saturation_is_bounded_and_nonblocking() {
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+
+        for (sequence, expected) in [
+            (1, InboundDispatchOutcome::Queued),
+            (2, InboundDispatchOutcome::Dropped),
+        ] {
+            assert_eq!(
+                dispatch_inbound_frame(
+                    &critical,
+                    &schedules,
+                    &heartbeats,
+                    &repair_tx,
+                    &payload_tx,
+                    inbound_frame(PacketKind::Repair, 1, sequence, 1, vec![0x45]),
+                    &payload_drops,
+                    &repair_drops,
+                    &coalesced,
+                ),
+                expected
+            );
+        }
+        assert_eq!(repair_drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn payload_pool_reuses_returned_allocation_and_falls_back_when_empty() {
+        let (recycle_tx, mut recycle_rx) = mpsc::channel(1);
+        let payload = take_payload_buffer(&mut recycle_rx);
+        let allocation = payload.as_ptr();
+
+        assert!(recycle_payload(Some(&recycle_tx), payload));
+        let reused = take_payload_buffer(&mut recycle_rx);
+        assert_eq!(reused.as_ptr(), allocation);
+
+        let fallback = take_payload_buffer(&mut recycle_rx);
+        assert!(fallback.capacity() >= EXPECTED_UDP_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn inbound_frame_drop_returns_accepted_payload_to_pool() {
+        let (recycle_tx, mut recycle_rx) = mpsc::channel(1);
+        let payload = Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES);
+        let allocation = payload.as_ptr();
+        let inbound = InboundServerFrame::new(
+            XBondFrame::new(
+                XBondHeader::new(PacketKind::Heartbeat, 1, 1, now_micros(), 1),
+                payload,
+            ),
+            "192.0.2.1:1000".parse().unwrap(),
+            false,
+            Some(recycle_tx),
+        );
+
+        drop(inbound);
+        let recycled = take_payload_buffer(&mut recycle_rx);
+
+        assert_eq!(
+            recycled.as_ptr(),
+            allocation,
+            "dropping a processed accepted frame should return its allocation"
+        );
+    }
+
+    #[test]
+    fn payload_pool_caps_retained_capacity_and_never_waits_when_full() {
+        let (recycle_tx, mut recycle_rx) = mpsc::channel(1);
+        assert!(recycle_payload(
+            Some(&recycle_tx),
+            Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES)
+        ));
+        assert!(!recycle_payload(
+            Some(&recycle_tx),
+            Vec::with_capacity(EXPECTED_UDP_PAYLOAD_BYTES)
+        ));
+        assert!(!recycle_payload(
+            Some(&recycle_tx),
+            Vec::with_capacity(MAX_POOLED_PAYLOAD_CAPACITY + 1)
+        ));
+
+        assert_eq!(
+            take_payload_buffer(&mut recycle_rx).capacity(),
+            EXPECTED_UDP_PAYLOAD_BYTES
+        );
     }
 
     #[test]

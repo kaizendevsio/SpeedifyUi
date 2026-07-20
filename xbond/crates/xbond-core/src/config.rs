@@ -25,6 +25,8 @@ pub struct ClientConfig {
     pub inbound_queue_capacity: usize,
     #[serde(default = "default_udp_socket_buffer_bytes")]
     pub udp_socket_buffer_bytes: usize,
+    #[serde(default)]
+    pub silent_blackhole_probe_targets: Vec<String>,
     #[serde(default = "default_recovery_enabled")]
     pub recovery_enabled: bool,
     #[serde(default = "default_recovery_enter_degraded_ticks")]
@@ -77,6 +79,7 @@ impl Default for ClientConfig {
             tun_queue_capacity: default_tun_queue_capacity(),
             inbound_queue_capacity: default_inbound_queue_capacity(),
             udp_socket_buffer_bytes: default_udp_socket_buffer_bytes(),
+            silent_blackhole_probe_targets: Vec::new(),
             recovery_enabled: default_recovery_enabled(),
             recovery_enter_degraded_ticks: default_recovery_enter_degraded_ticks(),
             recovery_exit_clean_ticks: default_recovery_exit_clean_ticks(),

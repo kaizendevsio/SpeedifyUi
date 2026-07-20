@@ -29,7 +29,7 @@ pub use protocol::{
     FLAG_SERVER_TO_CLIENT,
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
-pub use repair::{recommended_repair_cache_bytes, ResendCache};
+pub use repair::{recommended_repair_cache_bytes, RepairPayload, ResendCache};
 pub use scheduler::{
     build_schedule, build_transmission_plan, build_transmission_plan_for_packet,
     expand_schedule_for_recovery, precompute_transmission_plans, stabilize_recovery_schedule,

@@ -4,6 +4,7 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,12 +28,12 @@ use xbond_core::{
     FrameReceiver, PacketKind, PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot,
     PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig,
     RecoveryScheduleStabilityState, RecoveryState, RecoveryStatus, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderedPacket, ResendCache, RoleSelectionConfig, RoleSelectionState,
-    RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan, SessionHandshakeNonce,
-    XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader,
-    XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRepairStatus,
-    XBondRuntimeStatus, XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus,
-    XorFecBlock, FLAG_SERVER_TO_CLIENT,
+    RedundancyPolicyConfig, ReorderedPacket, RepairPayload, ResendCache, RoleSelectionConfig,
+    RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
+    SessionHandshakeNonce, XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus,
+    XBondFrame, XBondHeader, XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
+    XBondRepairStatus, XBondRuntimeStatus, XBondServerRecoveryStatus, XBondStatus, XBondTun,
+    XBondTunnelStatus, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 #[derive(Debug, Parser)]
@@ -500,55 +501,86 @@ fn inbound_queue_depth(
 struct PathSendWork {
     packet_kind: PacketKind,
     header: XBondHeader,
-    payload: Arc<Vec<u8>>,
+    payload: SendPayload,
     queued_at: Instant,
     deadline: Instant,
     lane: PathSendLane,
 }
 
 impl PathSendWork {
-    fn data(packet_kind: PacketKind, header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+    fn data(packet_kind: PacketKind, header: XBondHeader, payload: impl Into<SendPayload>) -> Self {
         Self {
             packet_kind,
             header,
-            payload,
+            payload: payload.into(),
             queued_at: Instant::now(),
             deadline: Instant::now() + DATA_LANE_DEADLINE,
             lane: PathSendLane::Data,
         }
     }
 
-    fn control(packet_kind: PacketKind, header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+    fn control(
+        packet_kind: PacketKind,
+        header: XBondHeader,
+        payload: impl Into<SendPayload>,
+    ) -> Self {
         Self {
             packet_kind,
             header,
-            payload,
+            payload: payload.into(),
             queued_at: Instant::now(),
             deadline: Instant::now() + CONTROL_LANE_DEADLINE,
             lane: PathSendLane::Control,
         }
     }
 
-    fn repair(header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+    fn repair(header: XBondHeader, payload: impl Into<SendPayload>) -> Self {
         Self {
             packet_kind: PacketKind::Repair,
             header,
-            payload,
+            payload: payload.into(),
             queued_at: Instant::now(),
             deadline: Instant::now() + REPAIR_LANE_DEADLINE,
             lane: PathSendLane::Repair,
         }
     }
 
-    fn repair_control(header: XBondHeader, payload: Arc<Vec<u8>>) -> Self {
+    fn repair_control(header: XBondHeader, payload: impl Into<SendPayload>) -> Self {
         Self {
             packet_kind: PacketKind::Control,
             header,
-            payload,
+            payload: payload.into(),
             queued_at: Instant::now(),
             deadline: Instant::now() + REPAIR_LANE_DEADLINE,
             lane: PathSendLane::Repair,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum SendPayload {
+    Owned(Arc<Vec<u8>>),
+    Tun(Arc<PooledTunPacket>),
+}
+
+impl SendPayload {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Owned(payload) => payload.as_slice(),
+            Self::Tun(payload) => payload.as_ref().as_ref(),
+        }
+    }
+}
+
+impl From<Arc<Vec<u8>>> for SendPayload {
+    fn from(payload: Arc<Vec<u8>>) -> Self {
+        Self::Owned(payload)
+    }
+}
+
+impl From<Arc<PooledTunPacket>> for SendPayload {
+    fn from(payload: Arc<PooledTunPacket>) -> Self {
+        Self::Tun(payload)
     }
 }
 
@@ -613,6 +645,7 @@ struct LaneQueueSnapshot {
     oldest_age_ms: u64,
     enqueue_drops: u64,
     deadline_drops: u64,
+    replacements: u64,
 }
 
 #[derive(Debug, Default)]
@@ -621,6 +654,7 @@ struct LaneQueueTelemetry {
     queued_at: VecDeque<Instant>,
     enqueue_drops: u64,
     deadline_drops: u64,
+    replacements: u64,
 }
 
 impl LaneQueueTelemetry {
@@ -647,7 +681,7 @@ impl LaneQueueTelemetry {
 
     fn record_replaced(&mut self, old_queued_at: Instant, new_queued_at: Instant) {
         self.record_dequeued(old_queued_at);
-        self.enqueue_drops = self.enqueue_drops.saturating_add(1);
+        self.replacements = self.replacements.saturating_add(1);
         self.record_enqueued(new_queued_at);
     }
 
@@ -666,6 +700,7 @@ impl LaneQueueTelemetry {
                 .unwrap_or_default(),
             enqueue_drops: self.enqueue_drops,
             deadline_drops: self.deadline_drops,
+            replacements: self.replacements,
         }
     }
 }
@@ -1035,6 +1070,114 @@ enum TunWriterExit {
 }
 
 #[derive(Debug, Clone)]
+struct TunPacketBufferReturn {
+    tx: std_mpsc::SyncSender<Vec<u8>>,
+    retained: Arc<AtomicU64>,
+    maximum_capacity: usize,
+}
+
+impl TunPacketBufferReturn {
+    fn recycle(&self, mut buffer: Vec<u8>) {
+        if buffer.capacity() > self.maximum_capacity {
+            return;
+        }
+        buffer.clear();
+        self.retained.fetch_add(1, Ordering::Relaxed);
+        if self.tx.try_send(buffer).is_err() {
+            self.retained.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TunPacketBufferPool {
+    rx: std_mpsc::Receiver<Vec<u8>>,
+    returner: TunPacketBufferReturn,
+    packet_capacity: usize,
+}
+
+impl TunPacketBufferPool {
+    fn new(maximum_buffers: usize, packet_capacity: usize) -> Self {
+        let maximum_buffers = maximum_buffers.max(1);
+        let packet_capacity = packet_capacity.max(1);
+        let (tx, rx) = std_mpsc::sync_channel(maximum_buffers);
+        Self {
+            rx,
+            returner: TunPacketBufferReturn {
+                tx,
+                retained: Arc::new(AtomicU64::new(0)),
+                maximum_capacity: packet_capacity,
+            },
+            packet_capacity,
+        }
+    }
+
+    fn take(&self) -> Vec<u8> {
+        let mut buffer = match self.rx.try_recv() {
+            Ok(buffer) => {
+                self.returner.retained.fetch_sub(1, Ordering::Relaxed);
+                buffer
+            }
+            Err(std_mpsc::TryRecvError::Empty | std_mpsc::TryRecvError::Disconnected) => {
+                Vec::with_capacity(self.packet_capacity)
+            }
+        };
+        if buffer.capacity() < self.packet_capacity {
+            buffer.reserve_exact(self.packet_capacity - buffer.capacity());
+        }
+        buffer.resize(self.packet_capacity, 0);
+        buffer
+    }
+
+    fn wrap(&self, mut buffer: Vec<u8>, packet_len: usize) -> PooledTunPacket {
+        buffer.truncate(packet_len);
+        PooledTunPacket {
+            buffer: Some(buffer),
+            returner: self.returner.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn retained(&self) -> usize {
+        self.returner.retained.load(Ordering::Relaxed) as usize
+    }
+}
+
+#[derive(Debug)]
+struct PooledTunPacket {
+    buffer: Option<Vec<u8>>,
+    returner: TunPacketBufferReturn,
+}
+
+impl AsRef<[u8]> for PooledTunPacket {
+    fn as_ref(&self) -> &[u8] {
+        self.buffer.as_deref().unwrap_or_default()
+    }
+}
+
+impl std::ops::Deref for PooledTunPacket {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl RepairPayload for PooledTunPacket {
+    fn retained_capacity(&self) -> usize {
+        self.buffer.as_ref().map(Vec::capacity).unwrap_or_default()
+    }
+}
+
+impl Drop for PooledTunPacket {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            self.returner.recycle(buffer);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ReceiverPayloadPool {
     buffers: Arc<StdMutex<Vec<Vec<u8>>>>,
     maximum_buffers: usize,
@@ -1149,6 +1292,7 @@ struct TunnelPathRuntime {
     sender_control_oldest_age_ms: u64,
     sender_control_enqueue_drops: u64,
     sender_control_deadline_drops: u64,
+    sender_control_replacements: u64,
     sender_repair_queue_depth: usize,
     sender_repair_queue_capacity: usize,
     sender_repair_oldest_age_ms: u64,
@@ -1251,13 +1395,14 @@ struct TunnelCounters {
 #[derive(Debug, Clone)]
 struct PendingFecSource {
     sequence: u64,
-    payload: Arc<Vec<u8>>,
+    payload: Arc<PooledTunPacket>,
     schedule_generation: u64,
     policy: RedundancyPolicy,
     recovery_active: bool,
 }
 
-type ConsecutiveFecPair = (u64, Arc<Vec<u8>>, Arc<Vec<u8>>);
+type ConsecutiveFecPair = (u64, Arc<PooledTunPacket>, Arc<PooledTunPacket>);
+type ClientResendCache = ResendCache<PooledTunPacket>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
@@ -1984,12 +2129,13 @@ fn spawn_tun_reader(
     mut tun_reader: XBondTun,
     tun_name: String,
     tun_read_mtu: usize,
-    tun_packet_tx: mpsc::Sender<Vec<u8>>,
+    tun_packet_tx: mpsc::Sender<PooledTunPacket>,
+    pool_capacity: usize,
     fail_after_packets: Option<u64>,
 ) -> mpsc::UnboundedReceiver<TunReaderExit> {
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let task = tokio::task::spawn_blocking(move || {
-        let mut buf = vec![0u8; tun_read_mtu];
+        let pool = TunPacketBufferPool::new(pool_capacity, tun_read_mtu);
         let mut packets_read = 0u64;
         loop {
             if should_fail_tun_reader(fail_after_packets, packets_read) {
@@ -1998,14 +2144,18 @@ fn spawn_tun_reader(
                      {packets_read} packets"
                 ));
             }
-            match tun_reader.read_packet(&mut buf) {
+            let mut packet = pool.take();
+            match tun_reader.read_packet(&mut packet) {
                 Ok(len) => {
                     packets_read = packets_read.saturating_add(1);
-                    if tun_packet_tx.blocking_send(buf[..len].to_vec()).is_err() {
+                    if tun_packet_tx.blocking_send(pool.wrap(packet, len)).is_err() {
                         return TunReaderExit::PacketQueueClosed;
                     }
                 }
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    pool.returner.recycle(packet);
+                    continue;
+                }
                 Err(error) => {
                     return TunReaderExit::ReadFailed(format!(
                         "XBond TUN reader for {tun_name} stopped: {error}"
@@ -2212,7 +2362,7 @@ fn reset_client_session_runtime(
     config: &ClientConfig,
     inbound_receiver: &mut FrameReceiver,
     return_reorder: &mut PacketReorderBuffer,
-    resend_cache: &mut ResendCache,
+    resend_cache: &mut ClientResendCache,
     repair: &mut XBondRepairStatus,
     server_recovery_status: &mut XBondServerRecoveryStatus,
     aggregate_health: &mut TunnelAggregateHealthRuntime,
@@ -2289,7 +2439,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         .with_context(|| format!("failed to clone XBond TUN {} for packet writer", tun.name()))?;
     let tun_queue_capacity = config.tun_queue_capacity.max(1);
     let inbound_queue_capacity = config.inbound_queue_capacity.max(1);
-    let (tun_packet_tx, mut tun_packet_rx) = mpsc::channel::<Vec<u8>>(tun_queue_capacity);
+    let (tun_packet_tx, mut tun_packet_rx) = mpsc::channel::<PooledTunPacket>(tun_queue_capacity);
     let tun_name = tun.name().to_string();
     let tun_read_mtu = usize::from(options.tun_mtu).max(2048);
     let receiver_payload_pool = ReceiverPayloadPool::new(
@@ -2301,6 +2451,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         tun_name.clone(),
         tun_read_mtu,
         tun_packet_tx,
+        tun_queue_capacity,
         options.lab_fail_tun_read_after_packets,
     );
     let tun_writer_metrics = Arc::new(TunWriterMetrics::for_paths(specs_by_id.keys().copied()));
@@ -3359,8 +3510,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 {
                         let fec_payload = Arc::new(XorFecBlock::encode(
                             base_sequence,
-                            first_payload.as_slice(),
-                            second_payload.as_slice(),
+                            first_payload.as_ref().as_ref(),
+                            second_payload.as_ref().as_ref(),
                         )?);
                         for transmission in packet_transmissions
                             .iter()
@@ -3802,7 +3953,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 fn advance_pending_fec_source(
     pending: &mut Option<PendingFecSource>,
     sequence: u64,
-    payload: Arc<Vec<u8>>,
+    payload: Arc<PooledTunPacket>,
     fec_eligible: bool,
     schedule_generation: u64,
     policy: RedundancyPolicy,
@@ -4615,6 +4766,7 @@ fn refresh_sender_queue_metrics(
         runtime.sender_control_oldest_age_ms = 0;
         runtime.sender_control_enqueue_drops = 0;
         runtime.sender_control_deadline_drops = 0;
+        runtime.sender_control_replacements = 0;
         runtime.sender_repair_queue_depth = 0;
         runtime.sender_repair_queue_capacity = 0;
         runtime.sender_repair_oldest_age_ms = 0;
@@ -4638,6 +4790,7 @@ fn refresh_sender_queue_metrics(
         runtime.sender_control_oldest_age_ms = control.oldest_age_ms;
         runtime.sender_control_enqueue_drops = control.enqueue_drops;
         runtime.sender_control_deadline_drops = control.deadline_drops;
+        runtime.sender_control_replacements = control.replacements;
         runtime.sender_repair_queue_depth = repair.depth;
         runtime.sender_repair_queue_capacity = repair.capacity;
         runtime.sender_repair_oldest_age_ms = repair.oldest_age_ms;
@@ -4692,6 +4845,7 @@ fn sender_lane_metrics_json(
                     "oldest_age_ms": runtime.sender_control_oldest_age_ms,
                     "enqueue_drops": runtime.sender_control_enqueue_drops,
                     "deadline_drops": runtime.sender_control_deadline_drops,
+                    "replacements": runtime.sender_control_replacements,
                 },
                 "repair": {
                     "depth": runtime.sender_repair_queue_depth,
@@ -4980,6 +5134,7 @@ fn schedule_silent_blackhole_probes(
     result_tx: &mpsc::Sender<SilentBlackholeProbeResult>,
 ) {
     let stale_threshold = silent_blackhole_stale_threshold(config);
+    let probe_targets = Arc::new(silent_blackhole_probe_targets(config));
     for path_id in sockets.keys().copied().collect::<Vec<_>>() {
         let Some(spec) = specs_by_id.get(&path_id) else {
             continue;
@@ -4998,10 +5153,15 @@ fn schedule_silent_blackhole_probes(
         runtime.last_direct_probe_at = Some(Instant::now());
         let socket_generation = runtime.socket_generation;
         let spec = spec.clone();
+        let probe_targets = Arc::clone(&probe_targets);
         let result_tx = result_tx.clone();
         tokio::spawn(async move {
             let probe = tokio::task::spawn_blocking(move || {
-                direct_interface_tcp_probe(&spec, SILENT_BLACKHOLE_DIRECT_PROBE_TIMEOUT)
+                direct_interface_tcp_probe(
+                    &spec,
+                    probe_targets.as_slice(),
+                    SILENT_BLACKHOLE_DIRECT_PROBE_TIMEOUT,
+                )
             })
             .await;
             let (reachable, error) = match probe {
@@ -5021,14 +5181,69 @@ fn schedule_silent_blackhole_probes(
     }
 }
 
-fn direct_interface_tcp_probe(spec: &ProbePathSpec, timeout: Duration) -> Result<()> {
-    let bind_addr = effective_bind_addr_for_spec(SILENT_BLACKHOLE_DIRECT_PROBE_TARGET, spec)?;
+fn silent_blackhole_probe_targets(config: &ClientConfig) -> Vec<String> {
+    let mut targets = Vec::new();
+    for target in std::iter::once(config.server_addr.as_str())
+        .chain(std::iter::once(SILENT_BLACKHOLE_DEFAULT_EXTERNAL_TARGET))
+        .chain(
+            config
+                .silent_blackhole_probe_targets
+                .iter()
+                .map(String::as_str),
+        )
+    {
+        let target = target.trim();
+        if !target.is_empty() && !targets.iter().any(|existing| existing == target) {
+            targets.push(target.to_string());
+        }
+    }
+    targets
+}
+
+fn probe_any_silent_blackhole_target<F>(targets: &[String], mut probe: F) -> Result<()>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let mut failures = Vec::new();
+    for target in targets {
+        match probe(target) {
+            Ok(()) => return Ok(()),
+            Err(error) => failures.push(format!("{target}: {error:#}")),
+        }
+    }
+
+    bail!(
+        "all interface-bound liveness targets failed: {}",
+        failures.join("; ")
+    )
+}
+
+fn direct_interface_tcp_probe(
+    spec: &ProbePathSpec,
+    targets: &[String],
+    timeout: Duration,
+) -> Result<()> {
+    probe_any_silent_blackhole_target(targets, |target| {
+        direct_interface_tcp_probe_target(spec, target, timeout)
+    })
+}
+
+fn direct_interface_tcp_probe_target(
+    spec: &ProbePathSpec,
+    target: &str,
+    timeout: Duration,
+) -> Result<()> {
+    let bind_addr = effective_bind_addr_for_spec(target, spec)?;
     let local_addr = bind_addr
         .parse::<SocketAddr>()
         .with_context(|| format!("failed to parse direct-probe bind address {bind_addr}"))?;
-    let target_addr = SILENT_BLACKHOLE_DIRECT_PROBE_TARGET
-        .parse::<SocketAddr>()
-        .context("invalid silent-blackhole direct probe target")?;
+    let target_addr = target
+        .to_socket_addrs()
+        .with_context(|| format!("failed to resolve silent-blackhole probe target {target}"))?
+        .find(SocketAddr::is_ipv4)
+        .with_context(|| {
+            format!("silent-blackhole probe target {target} did not resolve to IPv4")
+        })?;
     let socket = Socket::new(
         Domain::for_address(local_addr),
         Type::STREAM,
@@ -5045,9 +5260,7 @@ fn direct_interface_tcp_probe(spec: &ProbePathSpec, timeout: Duration) -> Result
         .with_context(|| format!("failed to bind direct probe to {bind_addr}"))?;
     socket
         .connect_timeout(&target_addr.into(), timeout)
-        .with_context(|| {
-            format!("interface-bound direct probe to {SILENT_BLACKHOLE_DIRECT_PROBE_TARGET} failed")
-        })?;
+        .with_context(|| format!("interface-bound direct probe to {target} failed"))?;
     Ok(())
 }
 
@@ -5086,7 +5299,7 @@ const SILENT_BLACKHOLE_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
 const SILENT_BLACKHOLE_REBIND_COOLDOWN: Duration = Duration::from_secs(30);
 const SILENT_BLACKHOLE_MAX_INEFFECTIVE_REBINDS: u32 = 2;
 const SILENT_BLACKHOLE_DIRECT_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
-const SILENT_BLACKHOLE_DIRECT_PROBE_TARGET: &str = "1.1.1.1:443";
+const SILENT_BLACKHOLE_DEFAULT_EXTERNAL_TARGET: &str = "1.1.1.1:443";
 const SESSION_OPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const SESSION_SYNCHRONIZATION_TIMEOUT: Duration = Duration::from_secs(15);
 const SCHEDULE_CONTROL_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -5463,8 +5676,8 @@ fn pre_recovery_gap_repair_allowed(tunnel_loss_rate: Option<f64>, pending_depth:
         && tunnel_loss_rate.is_some_and(|loss| loss >= PRE_RECOVERY_MIN_TUNNEL_LOSS)
 }
 
-fn update_repair_cache_budget(
-    resend_cache: &mut ResendCache,
+fn update_repair_cache_budget<P: RepairPayload>(
+    resend_cache: &mut ResendCache<P>,
     observed_bits_per_second: u64,
     now_micros: u64,
     counters: &mut TunnelCounters,
@@ -5495,7 +5708,7 @@ fn send_repair_frames_from_client_cache(
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     senders: &HashMap<u16, PathSenderHandle>,
     transmission_plans: &PacketTransmissionPlans,
-    resend_cache: &mut ResendCache,
+    resend_cache: &mut ClientResendCache,
     session_id: u64,
     sequences: &[u64],
     repair: &mut XBondRepairStatus,
@@ -7150,6 +7363,13 @@ mod tests {
         [value; 16]
     }
 
+    fn pooled_test_packet(bytes: &[u8]) -> Arc<PooledTunPacket> {
+        let pool = TunPacketBufferPool::new(1, bytes.len().max(1));
+        let mut buffer = pool.take();
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        Arc::new(pool.wrap(buffer, bytes.len()))
+    }
+
     #[tokio::test]
     async fn inbound_control_is_serviced_before_queued_payload() {
         let (control_tx, mut control_rx) = mpsc::channel(1);
@@ -7776,7 +7996,7 @@ mod tests {
         assert!(advance_pending_fec_source(
             &mut pending,
             10,
-            Arc::new(vec![1]),
+            pooled_test_packet(&[1]),
             true,
             3,
             RedundancyPolicy::Balanced,
@@ -7787,7 +8007,7 @@ mod tests {
         let pair = advance_pending_fec_source(
             &mut pending,
             11,
-            Arc::new(vec![2]),
+            pooled_test_packet(&[2]),
             true,
             3,
             RedundancyPolicy::Balanced,
@@ -7796,8 +8016,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(pair.0, 10);
-        assert_eq!(pair.1.as_slice(), &[1]);
-        assert_eq!(pair.2.as_slice(), &[2]);
+        assert_eq!(pair.1.as_ref().as_ref(), &[1]);
+        assert_eq!(pair.2.as_ref().as_ref(), &[2]);
         assert!(pending.is_none());
     }
 
@@ -7807,7 +8027,7 @@ mod tests {
         advance_pending_fec_source(
             &mut pending,
             20,
-            Arc::new(vec![1]),
+            pooled_test_packet(&[1]),
             true,
             4,
             RedundancyPolicy::Balanced,
@@ -7816,7 +8036,7 @@ mod tests {
         advance_pending_fec_source(
             &mut pending,
             21,
-            Arc::new(vec![2]),
+            pooled_test_packet(&[2]),
             false,
             4,
             RedundancyPolicy::Balanced,
@@ -7827,7 +8047,7 @@ mod tests {
         advance_pending_fec_source(
             &mut pending,
             30,
-            Arc::new(vec![3]),
+            pooled_test_packet(&[3]),
             true,
             4,
             RedundancyPolicy::Balanced,
@@ -7836,7 +8056,7 @@ mod tests {
         assert!(advance_pending_fec_source(
             &mut pending,
             31,
-            Arc::new(vec![4]),
+            pooled_test_packet(&[4]),
             true,
             5,
             RedundancyPolicy::Balanced,
@@ -7848,7 +8068,7 @@ mod tests {
         assert!(advance_pending_fec_source(
             &mut pending,
             32,
-            Arc::new(vec![5]),
+            pooled_test_packet(&[5]),
             true,
             5,
             RedundancyPolicy::Reliable,
@@ -7860,7 +8080,7 @@ mod tests {
         assert!(advance_pending_fec_source(
             &mut pending,
             34,
-            Arc::new(vec![6]),
+            pooled_test_packet(&[6]),
             true,
             5,
             RedundancyPolicy::Reliable,
@@ -7908,6 +8128,68 @@ mod tests {
         runtime.last_rebind_attempt =
             Some(Instant::now() - SILENT_BLACKHOLE_REBIND_COOLDOWN - Duration::from_secs(1));
         assert!(silent_blackhole_probe_allowed(&runtime, true));
+    }
+
+    #[test]
+    fn silent_blackhole_targets_include_server_external_and_configured_targets() {
+        let config = ClientConfig {
+            server_addr: "45.77.241.247:8444".to_string(),
+            silent_blackhole_probe_targets: vec![
+                "9.9.9.9:443".to_string(),
+                " 1.1.1.1:443 ".to_string(),
+                "45.77.241.247:8444".to_string(),
+                String::new(),
+            ],
+            ..ClientConfig::default()
+        };
+
+        assert_eq!(
+            silent_blackhole_probe_targets(&config),
+            vec![
+                "45.77.241.247:8444".to_string(),
+                "1.1.1.1:443".to_string(),
+                "9.9.9.9:443".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn silent_blackhole_probe_uses_later_target_when_first_fails() {
+        let targets = vec!["45.77.241.247:8444".to_string(), "1.1.1.1:443".to_string()];
+        let mut attempted = Vec::new();
+
+        probe_any_silent_blackhole_target(&targets, |target| {
+            attempted.push(target.to_string());
+            if target == "1.1.1.1:443" {
+                Ok(())
+            } else {
+                bail!("simulated target failure")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(attempted, targets);
+    }
+
+    #[test]
+    fn silent_blackhole_probe_targets_are_configurable_in_toml() {
+        let config: ClientConfig = toml::from_str(
+            r#"
+enabled = true
+server_addr = "45.77.241.247:8444"
+mode = "anchor-duplicate-1"
+max_active_backups = 1
+realtime_deadline_ms = 500
+silent_blackhole_probe_targets = ["9.9.9.9:443", "8.8.8.8:443"]
+paths = []
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.silent_blackhole_probe_targets,
+            vec!["9.9.9.9:443", "8.8.8.8:443"]
+        );
     }
 
     #[test]
@@ -8401,6 +8683,69 @@ mod tests {
         assert_eq!(pool.len(), 0);
     }
 
+    #[test]
+    fn tun_packet_pool_reuses_after_final_shared_reference_drops() {
+        let pool = TunPacketBufferPool::new(2, 2048);
+        let mut buffer = pool.take();
+        let pointer = buffer.as_ptr();
+        buffer[..4].copy_from_slice(b"data");
+        let packet = Arc::new(pool.wrap(buffer, 4));
+        let clone = packet.clone();
+
+        drop(packet);
+        assert_eq!(pool.retained(), 0);
+        assert_eq!(clone.as_ref().as_ref(), b"data");
+        drop(clone);
+        assert_eq!(pool.retained(), 1);
+
+        let reused = pool.take();
+        assert_eq!(reused.as_ptr(), pointer);
+        assert_eq!(reused.len(), 2048);
+        assert_eq!(pool.retained(), 0);
+    }
+
+    #[test]
+    fn tun_packet_pool_allocates_when_empty() {
+        let pool = TunPacketBufferPool::new(1, 1400);
+
+        let first = pool.take();
+        let second = pool.take();
+
+        assert_eq!(first.len(), 1400);
+        assert_eq!(second.len(), 1400);
+        assert_ne!(first.as_ptr(), second.as_ptr());
+        assert_eq!(pool.retained(), 0);
+    }
+
+    #[test]
+    fn tun_packet_pool_nonblocking_return_keeps_strict_buffer_count_cap() {
+        let pool = TunPacketBufferPool::new(1, 512);
+        let first = pool.wrap(pool.take(), 64);
+        let second = pool.wrap(pool.take(), 64);
+
+        drop(first);
+        assert_eq!(pool.retained(), 1);
+        drop(second);
+        assert_eq!(pool.retained(), 1);
+
+        let _ = pool.take();
+        assert_eq!(pool.retained(), 0);
+    }
+
+    #[test]
+    fn tun_packet_pool_rejects_oversized_return_capacity() {
+        let pool = TunPacketBufferPool::new(2, 512);
+        let oversized = PooledTunPacket {
+            buffer: Some(Vec::with_capacity(1024)),
+            returner: pool.returner.clone(),
+        };
+
+        drop(oversized);
+
+        assert_eq!(pool.retained(), 0);
+        assert!(pool.take().capacity() <= 512);
+    }
+
     #[tokio::test]
     async fn saturated_tun_writer_queue_exits_instead_of_dropping_unique_packet() {
         let (tx, _rx) = mpsc::channel(1);
@@ -8673,7 +9018,60 @@ mod tests {
 
         let snapshot = metrics.snapshot(PathSendLane::Control, Instant::now());
         assert_eq!(snapshot.depth, 0);
-        assert_eq!(snapshot.enqueue_drops, 1);
+        assert_eq!(snapshot.enqueue_drops, 0);
+        assert_eq!(snapshot.replacements, 1);
+    }
+
+    #[tokio::test]
+    async fn latest_control_replacement_does_not_saturate_or_hard_demote_path() {
+        let (data_tx, data_rx) = mpsc::channel(1);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (repair_tx, repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            std::future::pending::<()>().await;
+            drop((data_rx, control_rx, repair_rx));
+        });
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 1, task);
+        let first = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 10, 1, 1),
+            Arc::new(vec![10]),
+        );
+        let newest = PathSendWork::control(
+            PacketKind::Control,
+            XBondHeader::new(PacketKind::Control, 1, 11, 1, 1),
+            Arc::new(vec![11]),
+        );
+
+        assert!(!sender.latest_control.replace(first));
+        let mut senders = HashMap::from([(1, sender)]);
+        let mut runtimes = HashMap::from([(1, TunnelPathRuntime::default())]);
+        refresh_sender_queue_metrics(&mut runtimes, &senders);
+        let initial_pressure = sender_queue_pressure(&runtimes[&1]);
+
+        assert!(senders[&1].latest_control.replace(newest));
+        refresh_sender_queue_metrics(&mut runtimes, &senders);
+        let runtime = &runtimes[&1];
+        assert_eq!(runtime.sender_control_enqueue_drops, 0);
+        assert_eq!(runtime.sender_control_replacements, 1);
+        assert_eq!(sender_queue_pressure(runtime), initial_pressure);
+        assert!(sender_queue_pressure(runtime) < 1.0);
+
+        let config = ClientConfig {
+            paths: vec![xbond_core::PathConfig {
+                id: 1,
+                name: "healthy".to_string(),
+                interface_name: None,
+                bind_addr: Some("192.0.2.10:0".to_string()),
+                enabled: true,
+            }],
+            ..ClientConfig::default()
+        };
+        let mut path = config_health(&config).remove(0);
+        path.queue_pressure = sender_queue_pressure(runtime);
+        assert_eq!(path.hard_demotion_reason(), None);
+
+        senders.remove(&1).unwrap().task.abort();
     }
 
     #[tokio::test]

@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.101";
+    public const string CurrentVersion = "xbond-2026.06.102";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-20",
+            Summary = "Hardened XBond performance, control paths, and automatic recovery.",
+            Changes =
+            [
+                "Client and server packet pools are bounded and reusable to reduce allocation pressure without retaining excess memory.",
+                "Server control lanes stay nonblocking under load while preserving distinct peer and session responses.",
+                "Silent-blackhole detection uses robust interface-bound probes against the XBond endpoint and independent targets.",
+                "The fail-closed watchdog persists restart safety state and exposes Settings recovery when durable state is unavailable.",
+                "Soak validation now requires multiple complete throughput baselines and stricter cleanup, provenance, and growth checks."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.101",
             Date = "2026-07-20",
             Summary = "Hardened XBond recovery, session handling, and bounded packet queues.",
             Changes =

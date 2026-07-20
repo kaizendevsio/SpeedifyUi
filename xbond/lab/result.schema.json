@@ -2,6 +2,519 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://xnetwork.local/schemas/xbond-lab-result-v1.json",
   "title": "XBond local network-condition lab result",
+  "$defs": {
+    "iperfDirectionResult": {
+      "type": "object",
+      "required": [
+        "exit_code",
+        "valid_complete_json",
+        "mbps"
+      ],
+      "properties": {
+        "exit_code": { "type": "integer" },
+        "valid_complete_json": { "type": "boolean" },
+        "mbps": { "type": "number", "minimum": 0 }
+      }
+    },
+    "throughputResult": {
+      "type": "object",
+      "required": ["upload", "download"],
+      "properties": {
+        "upload": { "$ref": "#/$defs/iperfDirectionResult" },
+        "download": { "$ref": "#/$defs/iperfDirectionResult" }
+      },
+      "additionalProperties": false
+    },
+    "completeIperfDirectionResult": {
+      "allOf": [
+        { "$ref": "#/$defs/iperfDirectionResult" },
+        {
+          "properties": {
+            "exit_code": { "const": 0 },
+            "valid_complete_json": { "const": true }
+          }
+        }
+      ]
+    },
+    "completeThroughputResult": {
+      "type": "object",
+      "required": ["upload", "download"],
+      "properties": {
+        "upload": {
+          "$ref": "#/$defs/completeIperfDirectionResult"
+        },
+        "download": {
+          "$ref": "#/$defs/completeIperfDirectionResult"
+        }
+      },
+      "additionalProperties": false
+    },
+    "baselineWarmup": {
+      "type": "object",
+      "required": [
+        "valid_complete",
+        "floor_mbps",
+        "throughput"
+      ],
+      "properties": {
+        "valid_complete": { "type": "boolean" },
+        "floor_mbps": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "throughput": { "$ref": "#/$defs/throughputResult" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "valid_complete": { "const": true } },
+            "required": ["valid_complete"]
+          },
+          "then": {
+            "properties": {
+              "floor_mbps": {
+                "type": "number",
+                "minimum": 0
+              },
+              "throughput": {
+                "$ref": "#/$defs/completeThroughputResult"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "floor_mbps": { "type": "null" },
+              "throughput": {
+                "not": {
+                  "$ref": "#/$defs/completeThroughputResult"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "baselineAttempt": {
+      "type": "object",
+      "required": [
+        "attempt",
+        "valid_complete",
+        "floor_mbps",
+        "throughput"
+      ],
+      "properties": {
+        "attempt": { "type": "integer", "minimum": 1 },
+        "valid_complete": { "type": "boolean" },
+        "floor_mbps": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "throughput": { "$ref": "#/$defs/throughputResult" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "valid_complete": { "const": true } },
+            "required": ["valid_complete"]
+          },
+          "then": {
+            "properties": {
+              "floor_mbps": {
+                "type": "number",
+                "minimum": 0
+              },
+              "throughput": {
+                "$ref": "#/$defs/completeThroughputResult"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "floor_mbps": { "type": "null" },
+              "throughput": {
+                "not": {
+                  "$ref": "#/$defs/completeThroughputResult"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "baselineMeasurement": {
+      "type": "object",
+      "required": [
+        "warmup_seconds",
+        "warmup",
+        "sample_seconds",
+        "required_valid_samples",
+        "max_attempts",
+        "attempt_count",
+        "valid_attempt_count",
+        "attempts",
+        "complete",
+        "selected_attempt",
+        "selected_median_floor_mbps",
+        "selected_throughput"
+      ],
+      "properties": {
+        "warmup_seconds": { "const": 2 },
+        "warmup": { "$ref": "#/$defs/baselineWarmup" },
+        "sample_seconds": { "const": 3 },
+        "required_valid_samples": { "const": 3 },
+        "max_attempts": { "const": 5 },
+        "attempt_count": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 5
+        },
+        "valid_attempt_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "attempts": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/baselineAttempt" }
+        },
+        "complete": { "type": "boolean" },
+        "selected_attempt": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "selected_median_floor_mbps": {
+          "type": ["number", "null"],
+          "minimum": 0
+        },
+        "selected_throughput": {
+          "oneOf": [
+            { "$ref": "#/$defs/throughputResult" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "complete": { "const": true } },
+            "required": ["complete"]
+          },
+          "then": {
+            "properties": {
+              "attempt_count": { "minimum": 3 },
+              "valid_attempt_count": { "const": 3 },
+              "attempts": {
+                "minItems": 3,
+                "maxItems": 5,
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "valid_complete": { "const": true }
+                  },
+                  "required": ["valid_complete"]
+                },
+                "minContains": 3,
+                "maxContains": 3
+              },
+              "selected_attempt": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              "selected_median_floor_mbps": {
+                "type": "number",
+                "minimum": 0
+              },
+              "selected_throughput": {
+                "$ref": "#/$defs/completeThroughputResult"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "attempt_count": { "const": 5 },
+              "valid_attempt_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "attempts": {
+                "minItems": 5,
+                "maxItems": 5,
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "valid_complete": { "const": true }
+                  },
+                  "required": ["valid_complete"]
+                },
+                "minContains": 0,
+                "maxContains": 2
+              },
+              "selected_attempt": { "type": "null" },
+              "selected_median_floor_mbps": { "type": "null" },
+              "selected_throughput": { "type": "null" }
+            }
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "attempt_count": { "const": 3 },
+                "attempts": {
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "prefixItems": [
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 1 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 2 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 3 } },
+                      "required": ["attempt"]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "attempt_count": { "const": 4 },
+                "attempts": {
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "prefixItems": [
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 1 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 2 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 3 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 4 } },
+                      "required": ["attempt"]
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "attempt_count": { "const": 5 },
+                "attempts": {
+                  "minItems": 5,
+                  "maxItems": 5,
+                  "prefixItems": [
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 1 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 2 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 3 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 4 } },
+                      "required": ["attempt"]
+                    },
+                    {
+                      "type": "object",
+                      "properties": { "attempt": { "const": 5 } },
+                      "required": ["attempt"]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "valid_attempt_count": { "const": 0 },
+                "attempts": {
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "valid_complete": { "const": true }
+                    },
+                    "required": ["valid_complete"]
+                  },
+                  "minContains": 0,
+                  "maxContains": 0
+                }
+              }
+            },
+            {
+              "properties": {
+                "valid_attempt_count": { "const": 1 },
+                "attempts": {
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "valid_complete": { "const": true }
+                    },
+                    "required": ["valid_complete"]
+                  },
+                  "minContains": 1,
+                  "maxContains": 1
+                }
+              }
+            },
+            {
+              "properties": {
+                "valid_attempt_count": { "const": 2 },
+                "attempts": {
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "valid_complete": { "const": true }
+                    },
+                    "required": ["valid_complete"]
+                  },
+                  "minContains": 2,
+                  "maxContains": 2
+                }
+              }
+            },
+            {
+              "properties": {
+                "valid_attempt_count": { "const": 3 },
+                "attempts": {
+                  "contains": {
+                    "type": "object",
+                    "properties": {
+                      "valid_complete": { "const": true }
+                    },
+                    "required": ["valid_complete"]
+                  },
+                  "minContains": 3,
+                  "maxContains": 3
+                }
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": { "complete": { "const": true } },
+            "required": ["complete"]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "selected_attempt": { "const": 1 },
+                  "attempts": {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "attempt": { "const": 1 },
+                        "valid_complete": { "const": true }
+                      },
+                      "required": ["attempt", "valid_complete"]
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "selected_attempt": { "const": 2 },
+                  "attempts": {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "attempt": { "const": 2 },
+                        "valid_complete": { "const": true }
+                      },
+                      "required": ["attempt", "valid_complete"]
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "selected_attempt": { "const": 3 },
+                  "attempts": {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "attempt": { "const": 3 },
+                        "valid_complete": { "const": true }
+                      },
+                      "required": ["attempt", "valid_complete"]
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "selected_attempt": { "const": 4 },
+                  "attempts": {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "attempt": { "const": 4 },
+                        "valid_complete": { "const": true }
+                      },
+                      "required": ["attempt", "valid_complete"]
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "selected_attempt": { "const": 5 },
+                  "attempts": {
+                    "contains": {
+                      "type": "object",
+                      "properties": {
+                        "attempt": { "const": 5 },
+                        "valid_complete": { "const": true }
+                      },
+                      "required": ["attempt", "valid_complete"]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
   "type": "object",
   "required": [
     "schema_version",
@@ -191,11 +704,46 @@
       "then": {
         "properties": {
           "metrics": {
-            "required": ["configured_duration_seconds"],
+            "required": [
+              "configured_duration_seconds",
+              "baseline_measurement"
+            ],
             "properties": {
               "configured_duration_seconds": {
                 "type": "integer",
                 "minimum": 1800
+              },
+              "baseline_measurement": {
+                "$ref": "#/$defs/baselineMeasurement"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "scenario": { "const": "soak" },
+          "status": { "const": "pass" }
+        },
+        "required": ["scenario", "status"]
+      },
+      "then": {
+        "properties": {
+          "metrics": {
+            "properties": {
+              "baseline_measurement": {
+                "properties": {
+                  "complete": { "const": true },
+                  "warmup": {
+                    "properties": {
+                      "valid_complete": { "const": true }
+                    },
+                    "required": ["valid_complete"]
+                  }
+                },
+                "required": ["complete", "warmup"]
               }
             }
           }

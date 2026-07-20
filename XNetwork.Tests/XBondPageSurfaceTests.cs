@@ -26,6 +26,20 @@ public class XBondPageSurfaceTests
         }
     }
 
+    [Fact]
+    public void SettingsPage_ShowsBlockedWatchdogAndConfirmedRecoveryAction()
+    {
+        var content = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Settings.razor"));
+
+        Assert.Contains("Automatic restarts blocked", content);
+        Assert.Contains("Reinitialize safety state", content);
+        Assert.Contains("RequiredConfirmationText=\"RESET WATCHDOG\"", content);
+        Assert.Contains("? \"Blocked\"", content);
+        Assert.Contains(
+            "isError: _clientWatchdogStatus.AutomaticRestartsBlocked",
+            content);
+    }
+
     private static string FindRepoFile(params string[] pathParts)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);

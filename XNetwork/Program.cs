@@ -63,6 +63,9 @@ builder.Services.AddSingleton<XBondScopedRouteService>();
 builder.Services.AddSingleton<XBondSpeedTestService>();
 builder.Services.AddSingleton<XBondMssClampService>();
 builder.Services.AddSingleton<XBondClientWatchdogSettingsStore>();
+builder.Services.AddSingleton<XBondClientWatchdogStateStore>();
+builder.Services.AddSingleton<IXBondClientWatchdogStateStore>(
+    sp => sp.GetRequiredService<XBondClientWatchdogStateStore>());
 builder.Services.AddSingleton(sp =>
 {
     var settings = builder.Configuration.GetSection("XBondClientWatchdog").Get<XBondClientWatchdogSettings>() ?? new XBondClientWatchdogSettings();
