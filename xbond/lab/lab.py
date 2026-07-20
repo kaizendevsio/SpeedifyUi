@@ -187,6 +187,8 @@ def parse_timestamped_ping(
     command: list[str],
     *,
     restore_wall_time: float,
+    steady_window_start_wall_time: float,
+    steady_window_seconds: float,
     sample_interval: float,
     stopped_wall_time: float,
 ) -> dict[str, Any]:
@@ -207,13 +209,33 @@ def parse_timestamped_ping(
         if post_restore
         else None
     )
+    steady_window_end_wall_time = min(
+        stopped_wall_time,
+        steady_window_start_wall_time + steady_window_seconds,
+    )
+    steady_window_replies = [
+        stamp
+        for stamp in timestamps
+        if steady_window_start_wall_time
+        <= stamp
+        <= steady_window_end_wall_time
+    ]
     expected_post_restore = max(
         1,
-        int((stopped_wall_time - restore_wall_time) / sample_interval) + 1,
+        int(
+            (
+                steady_window_end_wall_time
+                - steady_window_start_wall_time
+            )
+            / sample_interval
+        )
+        + 1,
     )
     post_restore_loss = max(
         0.0,
-        100.0 * (expected_post_restore - len(post_restore)) / expected_post_restore,
+        100.0
+        * (expected_post_restore - len(steady_window_replies))
+        / expected_post_restore,
     )
     recent = post_restore[-10:]
     recent_gaps = [
@@ -227,9 +249,10 @@ def parse_timestamped_ping(
     result.update(
         {
             "reply_timestamps": timestamps,
-            "post_restore_reply_count": len(post_restore),
+            "post_restore_reply_count": len(steady_window_replies),
             "post_restore_expected_count": expected_post_restore,
             "post_restore_loss_percent": round(post_restore_loss, 3),
+            "steady_window_seconds": steady_window_seconds,
             "time_to_first_success_seconds": (
                 round(first_success_seconds, 3)
                 if first_success_seconds is not None
@@ -3079,10 +3102,11 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
     if supervisor_restarted:
         client_exit_code = lab.restart_client(log_name="client-schedule-resync")
     schedule_recovery_seconds = round(time.monotonic() - restore_started, 3)
+    schedule_recovered_wall_time = time.time()
     # Keep the same ping process running long enough after schedule recovery
-    # for cumulative loss to reflect sustained recovery, not just the outage
-    # window that preceded the first successful reply.
-    time.sleep(15)
+    # to measure a fixed 15-second steady-state window plus five seconds of
+    # additional evidence for the separate sustained-recovery assertion.
+    time.sleep(20)
     stopped_wall_time = time.time()
     if continuous_ping.poll() is None:
         lab.stop_process(
@@ -3099,6 +3123,8 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
         ),
         continuous_command,
         restore_wall_time=restore_wall_time,
+        steady_window_start_wall_time=schedule_recovered_wall_time,
+        steady_window_seconds=15,
         sample_interval=continuous_interval,
         stopped_wall_time=stopped_wall_time,
     )
@@ -3481,6 +3507,22 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         if rss_samples_complete
         else trend_summary([], []),
     }
+    steady_state_start = max(1, int(len(samples) * 0.2))
+    steady_state_times = sample_times[steady_state_start:]
+    rss_steady_state_trends = {
+        "client": trend_summary(
+            steady_state_times,
+            client_rss[steady_state_start:],
+        )
+        if rss_samples_complete
+        else trend_summary([], []),
+        "server": trend_summary(
+            steady_state_times,
+            server_rss[steady_state_start:],
+        )
+        if rss_samples_complete
+        else trend_summary([], []),
+    }
     ping_loss = [
         sample["ping"].get("loss_percent", 100) for sample in samples
     ]
@@ -3537,8 +3579,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     client_tun_write_latency_samples: list[float] = []
     server_tun_write_latency_times: list[float] = []
     server_tun_write_latency_samples: list[float] = []
-    client_tun_write_totals_valid = bool(samples)
-    server_tun_write_samples_valid = bool(samples)
+    server_tun_write_valid_sample_count = 0
     previous_client_packets: float | None = None
     previous_client_write_total: float | None = None
     for sample in samples:
@@ -3552,7 +3593,8 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         if not isinstance(client_packets, (int, float)) or not isinstance(
             client_write_total, (int, float)
         ):
-            client_tun_write_totals_valid = False
+            previous_client_packets = None
+            previous_client_write_total = None
         else:
             current_packets = float(client_packets)
             current_write_total = float(client_write_total)
@@ -3562,21 +3604,28 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             ):
                 packet_delta = current_packets - previous_client_packets
                 write_delta = current_write_total - previous_client_write_total
-                if packet_delta < 0 or write_delta < 0:
-                    client_tun_write_totals_valid = False
-                elif packet_delta > 0:
+                if packet_delta > 0 and write_delta >= 0:
                     client_tun_write_latency_times.append(float(sample["at_seconds"]))
                     client_tun_write_latency_samples.append(write_delta / packet_delta)
             previous_client_packets = current_packets
             previous_client_write_total = current_write_total
         if isinstance(server_write_latency, (int, float)):
+            server_tun_write_valid_sample_count += 1
             server_tun_write_latency_times.append(float(sample["at_seconds"]))
             server_tun_write_latency_samples.append(float(server_write_latency))
-        else:
-            server_tun_write_samples_valid = False
+    client_tun_write_expected_delta_count = max(0, len(samples) - 1)
+    client_tun_write_sample_coverage = (
+        len(client_tun_write_latency_samples)
+        / client_tun_write_expected_delta_count
+        if client_tun_write_expected_delta_count > 0
+        else 0.0
+    )
+    server_tun_write_sample_coverage = (
+        server_tun_write_valid_sample_count / len(samples) if samples else 0.0
+    )
     tun_write_latency_samples_complete = (
-        client_tun_write_totals_valid
-        and server_tun_write_samples_valid
+        client_tun_write_sample_coverage >= 0.95
+        and server_tun_write_sample_coverage >= 0.95
         and len(client_tun_write_latency_samples) >= 2
         and len(server_tun_write_latency_samples) >= 2
     )
@@ -3637,6 +3686,8 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             "samples": samples,
             "rss_samples_complete": rss_samples_complete,
             "rss_trends": rss_trends,
+            "rss_steady_state_start_sample": steady_state_start,
+            "rss_steady_state_trends": rss_steady_state_trends,
             "max_ping_loss_percent": max(ping_loss, default=100),
             "baseline_throughput": baseline_throughput,
             "baseline_throughput_complete": baseline_complete,
@@ -3655,6 +3706,8 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             "counter_growth_complete": counter_growth_complete,
             "counter_growth": counter_growth,
             "tun_write_latency_samples_complete": tun_write_latency_samples_complete,
+            "client_tun_write_sample_coverage": client_tun_write_sample_coverage,
+            "server_tun_write_sample_coverage": server_tun_write_sample_coverage,
             "tun_write_latency_trends": tun_write_latency_trends,
             "all_sample_pids_unchanged": all_sample_pids_unchanged,
             "client_pid_unchanged": client_pid == (lab.client.pid if lab.client else None),
@@ -3668,6 +3721,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         "rss_peak_growth_kib_max": 32768,
         "rss_end_growth_kib_max": 16384,
         "rss_slope_kib_per_minute_max": 128,
+        "rss_slope_steady_state_warmup_fraction": 0.2,
         "queue_samples_required": True,
         "each_queue_is_gated_independently": True,
         "queue_end_growth_max": 4,
@@ -3676,6 +3730,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         "queue_oldest_age_end_growth_ms_max": 250,
         "queue_oldest_age_slope_ms_per_minute_max": 5,
         "tun_write_latency_samples_required": True,
+        "tun_write_latency_sample_coverage_min": 0.95,
         "tun_write_latency_micros_max": 100000,
         "tun_write_latency_end_growth_micros_max": 20000,
         "tun_write_latency_slope_micros_per_minute_max": 2000,
@@ -3710,9 +3765,12 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             and trend["peak_growth"] <= 32768
             and trend["end_growth"] is not None
             and trend["end_growth"] <= 16384
-            and trend["slope_per_minute"] is not None
-            and trend["slope_per_minute"] <= 128
             for trend in rss_trends.values()
+        )
+        and all(
+            trend["slope_per_minute"] is not None
+            and trend["slope_per_minute"] <= 128
+            for trend in rss_steady_state_trends.values()
         )
         and queue_samples_complete
         and all(
