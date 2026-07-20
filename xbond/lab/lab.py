@@ -1983,45 +1983,52 @@ def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
         == "silent-udp-blackhole-direct-probe-ok"
     )
 
-    # Keep the confirmed blackhole in place. The in-lab supervisor owns the
-    # client process and must restart it automatically after a nonzero exit.
+    # Keep the confirmed blackhole in place. A persistently bad optional path
+    # must be hard-demoted after bounded hot-rebind attempts without restarting
+    # the healthy aggregate tunnel, client process, or authenticated session.
     escalation_started = time.monotonic()
     escalation_deadline = escalation_started + 90
-    supervisor_restarted = False
+    persistent_path_demoted = False
+    demoted_path = {}
     while time.monotonic() < escalation_deadline:
-        if lab.client_supervisor_restart_count("client-blackhole-supervisor") > 0:
-            supervisor_restarted = True
+        current = json_file(lab.client_status) or {}
+        current_paths = {
+            item.get("path_id"): item for item in current.get("paths", [])
+        }
+        demoted_path = current_paths.get(2, {})
+        persistent_path_demoted = (
+            (demoted_path.get("socket_generation") or 0)
+            > (path.get("socket_generation") or 0)
+            and demoted_path.get("last_rebind_reason")
+            == "persistent-silent-udp-blackhole-path-demoted"
+            and (demoted_path.get("send_failure_streak") or 0) >= 2
+        )
+        if persistent_path_demoted:
             break
         time.sleep(0.5)
     escalation_seconds = round(time.monotonic() - escalation_started, 3)
     for namespace in ROUTER_NAMES:
         ns_run(namespace, ["iptables", "-F"], check=False)
-    supervised_recovery_ready = False
-    if supervisor_restarted:
-        recovery_deadline = time.monotonic() + 30
-        while time.monotonic() < recovery_deadline:
-            recovery_evidence = session_evidence(
-                log_tail(
-                    lab.scenario,
-                    "client-blackhole-supervisor",
-                    limit=200000,
-                )
-            )
-            latest_session_id = recovery_evidence.get("session_id")
-            supervised_recovery_ready = (
-                latest_session_id not in (None, session_before)
-                and any(
-                    event.get("event") == "schedule-accepted"
-                    and event.get("session_id") == latest_session_id
-                    for event in recovery_evidence.get("events", [])
-                )
-                and not (json_file(lab.server_status) or {}).get(
-                    "schedule_required", True
-                )
-            )
-            if supervised_recovery_ready:
-                break
-            time.sleep(0.25)
+    path_recovered_after_remote_ack = False
+    recovered_path = {}
+    recovery_deadline = time.monotonic() + 30
+    while time.monotonic() < recovery_deadline:
+        current = json_file(lab.client_status) or {}
+        current_paths = {
+            item.get("path_id"): item for item in current.get("paths", [])
+        }
+        recovered_path = current_paths.get(2, {})
+        path_recovered_after_remote_ack = (
+            persistent_path_demoted
+            and (recovered_path.get("send_failure_streak") or 0) == 0
+            and not recovered_path.get("in_cooldown", False)
+            and recovered_path.get("demotion_reason") is None
+            and (recovered_path.get("stale_ack_ms") or 1_000_000) < 5_000
+            and (recovered_path.get("loss_rate") or 1.0) < 1.0
+        )
+        if path_recovered_after_remote_ack:
+            break
+        time.sleep(0.25)
     recovered_ping = lab.tunnel_ping(count=8)
     worker_pids_after_recovery = namespace_process_pids(
         CLIENT_NS, "xbond-client"
@@ -2053,12 +2060,14 @@ def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
                 "client-blackhole-supervisor"
             ),
             "supervisor_exit_codes": exit_codes,
-            "automatic_supervisor_restart_observed": supervisor_restarted,
-            "supervised_recovery_ready": supervised_recovery_ready,
+            "persistent_path_demoted": persistent_path_demoted,
+            "demoted_path": demoted_path,
+            "path_recovered_after_remote_ack": path_recovered_after_remote_ack,
+            "recovered_path": recovered_path,
             "escalation_seconds": escalation_seconds,
             "session_id_before": session_before,
-            "session_id_after_supervisor_recovery": session_after,
-            "tunnel_ping_after_supervisor_recovery": recovered_ping,
+            "session_id_after_path_recovery": session_after,
+            "tunnel_ping_after_path_recovery": recovered_ping,
             "client_supervisor_log_tail": supervisor_log[-20000:],
             "server_log_tail": log_tail(lab.scenario, "server", limit=16000),
             "runtime": lab.collect_runtime_metrics(),
@@ -2070,20 +2079,24 @@ def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
         "worker_pid_must_not_change_for_first_rebind": True,
         "supervisor_pid_must_not_change": True,
         "required_rebind_reason": "silent-udp-blackhole-direct-probe-ok",
-        "nonzero_exit_must_be_restarted_by_in_lab_supervisor": True,
+        "persistent_path_must_be_hard_demoted": True,
+        "client_supervisor_restart_count_max": 0,
+        "worker_pid_must_not_change": True,
+        "session_id_must_not_change": True,
+        "path_must_recover_after_real_remote_ack": True,
         "escalation_seconds_max": 90,
-        "post_escalation_tunnel_loss_percent_max": 5,
+        "post_recovery_tunnel_loss_percent_max": 5,
     }
     result.status = (
         "pass"
         if first_rebind_succeeded
-        and supervisor_restarted
-        and any(code != 0 for code in exit_codes)
-        and supervised_recovery_ready
+        and persistent_path_demoted
+        and path_recovered_after_remote_ack
+        and not exit_codes
+        and lab.client_supervisor_restart_count("client-blackhole-supervisor") == 0
         and supervisor_pid_before == (lab.client.pid if lab.client else None)
-        and worker_pids_after_recovery
-        and worker_pids_after_recovery != worker_pids_before
-        and session_after not in (None, session_before)
+        and worker_pids_after_recovery == worker_pids_before
+        and session_after == session_before
         and recovered_ping.get("loss_percent", 100) <= 5
         else "fail"
     )

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -419,7 +419,10 @@ async fn send_control_request(
 }
 
 #[cfg(not(unix))]
-async fn send_control_request(_socket: &Path, _request: ControlRequest) -> Result<ControlResponse> {
+async fn send_control_request(
+    _socket: &std::path::Path,
+    _request: ControlRequest,
+) -> Result<ControlResponse> {
     bail!("XBond live override control is only available on Unix-like systems")
 }
 
