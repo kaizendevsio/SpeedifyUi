@@ -895,6 +895,7 @@ struct TunWriteBatch {
 struct TunWriterHandle {
     tx: mpsc::Sender<TunWriteBatch>,
     queued_packets: Arc<AtomicU64>,
+    max_queued_packets: Arc<AtomicU64>,
     capacity: usize,
 }
 
@@ -906,18 +907,29 @@ impl TunWriterHandle {
     fn try_reserve_packets(&self, packet_count: usize) -> bool {
         let packet_count = packet_count as u64;
         let capacity = self.capacity as u64;
-        self.queued_packets
+        let reserved = self
+            .queued_packets
             .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |current| {
                 current
                     .checked_add(packet_count)
                     .filter(|next| *next <= capacity)
             })
-            .is_ok()
+            .map(|previous| previous.saturating_add(packet_count));
+        if let Ok(depth) = reserved {
+            self.max_queued_packets.fetch_max(depth, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
     }
 
     fn release_packets(&self, packet_count: usize) {
         self.queued_packets
             .fetch_sub(packet_count as u64, Ordering::AcqRel);
+    }
+
+    fn peak_queue_depth(&self) -> usize {
+        self.max_queued_packets.load(Ordering::Relaxed) as usize
     }
 }
 
@@ -2021,10 +2033,11 @@ fn spawn_tun_writer(
     let (work_tx, mut work_rx) = mpsc::channel::<TunWriteBatch>(bounded_capacity);
     let queued_packets = Arc::new(AtomicU64::new(0));
     let worker_queued_packets = queued_packets.clone();
+    let max_queued_packets = Arc::new(AtomicU64::new(0));
     let (exit_tx, exit_rx) = mpsc::unbounded_channel();
     let task = tokio::task::spawn_blocking(move || {
         while let Some(batch) = work_rx.blocking_recv() {
-            worker_queued_packets.fetch_sub(batch.packets.len() as u64, Ordering::AcqRel);
+            let packet_count = batch.packets.len();
             let queue_delay_micros = batch
                 .queued_at
                 .elapsed()
@@ -2052,11 +2065,13 @@ fn spawn_tun_writer(
                 }
                 payload_pool.recycle(packet.payload);
                 if let Err(error) = result {
+                    worker_queued_packets.fetch_sub(packet_count as u64, Ordering::AcqRel);
                     return TunWriterExit::WriteFailed(format!(
                         "XBond TUN writer for {tun_name} stopped: {error}"
                     ));
                 }
             }
+            worker_queued_packets.fetch_sub(packet_count as u64, Ordering::AcqRel);
         }
         TunWriterExit::QueueClosed
     });
@@ -2073,6 +2088,7 @@ fn spawn_tun_writer(
         TunWriterHandle {
             tx: work_tx,
             queued_packets,
+            max_queued_packets,
             capacity: bounded_capacity,
         },
         exit_rx,
@@ -2635,6 +2651,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         serde_json::json!({
                             "event": "client-dataplane-internal-metrics",
                             "tun_write_queue_depth": tun_write_tx.queue_depth(),
+                            "tun_write_queue_peak_depth": tun_write_tx.peak_queue_depth(),
                             "tun_write_queue_capacity": tun_write_tx.capacity,
                             "tun_write_queue_drops": counters.tun_write_queue_drops,
                             "tun_write_failures": counters.tun_write_failures,
@@ -3794,17 +3811,52 @@ async fn enqueue_reordered_return_packets_with_deadline(
         .iter()
         .map(|packet| packet.payload.len())
         .sum::<usize>();
-    if !tun_write_tx.try_reserve_packets(packet_count) {
+    if packet_count > tun_write_tx.capacity {
         counters.tun_write_queue_drops = counters
             .tun_write_queue_drops
             .saturating_add(packet_count as u64);
         bail!(
             "XBond TUN writer cannot atomically admit {packet_count} reordered packets within its \
-             {}-packet capacity; reconnecting immediately instead of stalling the control loop \
-             for up to {} ms per packet",
-            tun_write_tx.capacity,
-            enqueue_deadline.as_millis()
+             {}-packet capacity; terminating the tunnel for a clean restart",
+            tun_write_tx.capacity
         );
+    }
+    let deadline = Instant::now() + enqueue_deadline;
+    loop {
+        if tun_write_tx.try_reserve_packets(packet_count) {
+            break;
+        }
+        if tun_write_tx.tx.is_closed() {
+            bail!("XBond TUN writer queue closed unexpectedly");
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            counters.tun_write_queue_drops = counters
+                .tun_write_queue_drops
+                .saturating_add(packet_count as u64);
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "tun-writer-primary-backpressure",
+                        "packets": packet_count,
+                        "bytes": payload_bytes,
+                        "queue_capacity": tun_write_tx.capacity,
+                        "queue_depth": tun_write_tx.queue_depth(),
+                        "queue_peak_depth": tun_write_tx.peak_queue_depth(),
+                        "deadline_ms": enqueue_deadline.as_millis(),
+                    })
+                );
+            }
+            bail!(
+                "XBond TUN writer remained saturated and could not atomically admit {packet_count} \
+                 reordered packets within {} ms; terminating the tunnel for a clean restart",
+                enqueue_deadline.as_millis()
+            );
+        }
+
+        time::sleep(remaining.min(Duration::from_millis(2))).await;
     }
 
     let batch = TunWriteBatch {
@@ -3831,6 +3883,7 @@ async fn enqueue_reordered_return_packets_with_deadline(
                         "bytes": payload_bytes,
                         "queue_capacity": tun_write_tx.capacity,
                         "queue_depth": tun_write_tx.queue_depth(),
+                        "queue_peak_depth": tun_write_tx.peak_queue_depth(),
                         "deadline_ms": enqueue_deadline.as_millis(),
                     })
                 );
@@ -8104,6 +8157,7 @@ mod tests {
         let writer = TunWriterHandle {
             tx,
             queued_packets: Arc::new(AtomicU64::new(0)),
+            max_queued_packets: Arc::new(AtomicU64::new(0)),
             capacity: 1,
         };
         let packets = |sequence| {
@@ -8136,7 +8190,7 @@ mod tests {
 
         assert_eq!(counters.tun_write_queue_drops, 1);
         assert_eq!(writer.queue_depth(), 1);
-        assert!(error.to_string().contains("reconnecting"));
+        assert!(error.to_string().contains("clean restart"));
     }
 
     #[tokio::test]
@@ -8145,6 +8199,7 @@ mod tests {
         let writer = TunWriterHandle {
             tx,
             queued_packets: Arc::new(AtomicU64::new(0)),
+            max_queued_packets: Arc::new(AtomicU64::new(0)),
             capacity: 3,
         };
         let mut counters = TunnelCounters::default();
@@ -8203,6 +8258,57 @@ mod tests {
             vec![1, 2]
         );
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn transient_tun_writer_pressure_waits_for_atomic_capacity() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let writer = TunWriterHandle {
+            tx,
+            queued_packets: Arc::new(AtomicU64::new(0)),
+            max_queued_packets: Arc::new(AtomicU64::new(0)),
+            capacity: 1,
+        };
+        let mut counters = TunnelCounters::default();
+        let packet = |sequence| {
+            vec![ReorderedPacket {
+                sequence,
+                path_id: 1,
+                payload: vec![sequence as u8],
+            }]
+        };
+
+        enqueue_reordered_return_packets_with_deadline(
+            &writer,
+            packet(1),
+            &mut counters,
+            false,
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+        let release_writer = writer.clone();
+        tokio::spawn(async move {
+            for delay_ms in [15, 0] {
+                let batch = rx.recv().await.unwrap();
+                time::sleep(Duration::from_millis(delay_ms)).await;
+                release_writer.release_packets(batch.packets.len());
+            }
+        });
+
+        enqueue_reordered_return_packets_with_deadline(
+            &writer,
+            packet(2),
+            &mut counters,
+            false,
+            Duration::from_millis(100),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(counters.tun_write_queue_drops, 0);
+        assert_eq!(writer.queue_depth(), 1);
+        assert_eq!(writer.peak_queue_depth(), 1);
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ Validation environment: Docker context `xeon-dev`
 
 | Priority | Finding | Implementation | Validation |
 |---|---|---|---|
-| High | Blocking TUN writes | Dedicated bounded and supervised client/server TUN writers; reordered output is admitted as one atomic bounded batch. Transient server saturation waits asynchronously for bounded capacity while control work continues; sustained saturation ends the session cleanly. Queue capacity remains reserved until the blocking write finishes, and peak depth is reported. | Unit tests plus client/server TUN write-backpressure scenarios |
+| High | Blocking TUN writes | Dedicated bounded and supervised client/server TUN writers; reordered output is admitted as one atomic bounded batch. Transient client and server saturation waits asynchronously for bounded capacity while control work continues; sustained saturation ends the session cleanly. Queue capacity remains reserved until the blocking write finishes, and peak depth is reported. | Unit tests plus client/server TUN write-backpressure scenarios |
 | High | TUN reader failure | Reader exit is reported to the supervisor and causes a clean nonzero process exit | Unit tests plus injected TUN read-failure scenario |
 | High | Clock-derived session identity | Random session epochs and explicit authenticated session synchronization. Server control generations use a wall-clock restart epoch so a restarted server cannot regress below the client's last accepted generation. An unknown session triggers authenticated in-process client session rotation instead of requiring a client process restart. | Clock rollback/skew and server-process-restart scenarios |
 | High | Silent stale UDP paths | Rate-limited per-path hot rebind after stale ACKs and a successful interface-bound direct probe; repeated ineffective rebinds escalate to a clean session restart | Silent-blackhole and USB re-enumeration scenarios |
@@ -42,6 +42,7 @@ matrix; the full clean-candidate matrix below remains the release gate.
 |---|---|---|
 | All paths intermittent | Pass: 0% tunnel ping loss; 4.41% of healthy aggregate throughput retained, above the 3% floor | `20260720-014749-all-intermittent.json` |
 | Server process restart | Pass: client PID unchanged; authenticated session replaced; recovery in about 1.05 seconds | `20260720-015051-server-process-restart.json` |
+| Client TUN write backpressure | Pass: transient saturation waited for bounded atomic capacity while the client and control plane remained active | `20260720-021003-tun-write-backpressure.json` |
 | Server TUN write backpressure | Pass: transient pressure kept control responsive; severe sustained saturation failed closed without killing the client | `20260720-014556-server-tun-write-backpressure.json` |
 
 ## Required Validation Matrix
