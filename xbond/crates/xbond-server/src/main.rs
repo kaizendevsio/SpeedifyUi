@@ -23,7 +23,7 @@ use xbond_core::{
     ScheduleControlMessage, SchedulePlan, SessionChallengeOutcome, SessionHandshakeNonce,
     SessionProofOutcome, XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondRepairStatus,
     XBondServerHealthStatus, XBondServerHealthTargetStatus, XBondServerIngressReorderStatus,
-    XBondServerRecoveryStatus, XBondTun, XorFecBlock,
+    XBondServerRecoveryStatus, XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -204,6 +204,23 @@ struct PendingPrimaryReturn {
 }
 
 #[derive(Debug)]
+struct PendingTunWriteBatch {
+    packets: Vec<ReorderedPacket>,
+    deadline: Instant,
+    enqueue_deadline: Duration,
+}
+
+impl PendingTunWriteBatch {
+    fn new(packets: Vec<ReorderedPacket>, enqueue_deadline: Duration) -> Self {
+        Self {
+            packets,
+            deadline: Instant::now() + enqueue_deadline,
+            enqueue_deadline,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ReturnSenderHandle {
     control_tx: mpsc::Sender<ReturnSendWork>,
     data_tx: mpsc::Sender<ReturnSendWork>,
@@ -312,19 +329,10 @@ struct TunFaultInjection {
     read_fail_after_packets: u64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct IngressRepairLimiter {
     window_started_micros: u64,
     sent_in_window: usize,
-}
-
-impl Default for IngressRepairLimiter {
-    fn default() -> Self {
-        Self {
-            window_started_micros: 0,
-            sent_in_window: 0,
-        }
-    }
 }
 
 impl IngressRepairLimiter {
@@ -863,7 +871,12 @@ fn pre_admission_duplicate_class(kind: PacketKind) -> Option<u32> {
 async fn receive_prioritized_frame(
     control_rx: &mut mpsc::Receiver<InboundServerFrame>,
     payload_rx: &mut mpsc::Receiver<InboundServerFrame>,
+    payload_enabled: bool,
 ) -> Option<InboundServerFrame> {
+    if !payload_enabled {
+        return control_rx.recv().await;
+    }
+
     tokio::select! {
         biased;
         inbound = control_rx.recv() => match inbound {
@@ -942,16 +955,15 @@ fn enqueue_control_message(
     control_plane: &mut ServerControlPlaneStatus,
 ) -> Result<bool> {
     *control_sequence = control_sequence.saturating_add(1);
-    let frame = XBondFrame::new(
-        XBondHeader::new(
-            PacketKind::Control,
-            session_id,
-            *control_sequence,
-            now_micros(),
-            0,
-        ),
-        serde_json::to_vec(message)?,
+    let mut header = XBondHeader::new(
+        PacketKind::Control,
+        session_id,
+        *control_sequence,
+        now_micros(),
+        0,
     );
+    header.flags = FLAG_SERVER_TO_CLIENT;
+    let frame = XBondFrame::new(header, serde_json::to_vec(message)?);
     Ok(enqueue_control_datagram(
         tx,
         frame.encode_sealed(key)?,
@@ -1113,50 +1125,52 @@ fn spawn_tun_writer(
     }
 }
 
-async fn enqueue_tun_packets_with_deadline(
+fn try_enqueue_pending_tun_write(
     writer: &TunWriterHandle,
-    packets: Vec<ReorderedPacket>,
-    enqueue_deadline: Duration,
-) -> Result<TunEnqueueOutcome> {
-    if packets.is_empty() {
-        return Ok(TunEnqueueOutcome::default());
+    pending: &mut Option<PendingTunWriteBatch>,
+) -> Result<Option<TunEnqueueOutcome>> {
+    let pending_packet_count = pending
+        .as_ref()
+        .map(|batch| batch.packets.len())
+        .unwrap_or_default();
+    if pending_packet_count == 0 {
+        return Ok(Some(TunEnqueueOutcome::default()));
     }
-    let packet_count = packets.len();
-    let deadline = Instant::now() + enqueue_deadline;
-    let enqueued_at_micros = loop {
-        let enqueued_at_micros = monotonic_micros();
-        if writer
-            .telemetry
-            .try_reserve_packets(packet_count, writer.capacity, enqueued_at_micros)
-        {
-            break enqueued_at_micros;
-        }
+    let current_depth = writer.telemetry.queue_depth.load(Ordering::Relaxed) as usize;
+    let available = writer.capacity.saturating_sub(current_depth);
+    let packet_count = pending_packet_count.min(available);
+    if packet_count == 0 {
         if writer.tx.is_closed() {
             return Err(anyhow::anyhow!("XBond server TUN writer stopped"));
         }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            writer
-                .telemetry
-                .saturation_failures
-                .fetch_add(1, Ordering::Relaxed);
-            return Err(anyhow::anyhow!(
-                "XBond server TUN writer remained saturated and could not atomically admit {packet_count} packets within {} ms; terminating the tunnel for a clean restart",
-                enqueue_deadline.as_millis()
-            ));
+        return Ok(None);
+    }
+    let enqueued_at_micros = monotonic_micros();
+    if !writer
+        .telemetry
+        .try_reserve_packets(packet_count, writer.capacity, enqueued_at_micros)
+    {
+        if writer.tx.is_closed() {
+            return Err(anyhow::anyhow!("XBond server TUN writer stopped"));
         }
-
-        time::sleep(remaining.min(Duration::from_millis(2))).await;
-    };
-
+        return Ok(None);
+    }
+    let mut admission = pending.take().expect("pending TUN write disappeared");
+    let remaining_packets = admission.packets.split_off(packet_count);
+    if !remaining_packets.is_empty() {
+        *pending = Some(PendingTunWriteBatch {
+            packets: remaining_packets,
+            deadline: admission.deadline,
+            enqueue_deadline: admission.enqueue_deadline,
+        });
+    }
     match writer.tx.try_send(TunWriteBatch {
-        packets,
+        packets: admission.packets,
         enqueued_at_micros,
     }) {
-        Ok(()) => Ok(TunEnqueueOutcome {
+        Ok(()) => Ok(Some(TunEnqueueOutcome {
             enqueued: packet_count as u64,
-        }),
+        })),
         Err(mpsc::error::TrySendError::Closed(batch)) => {
             writer
                 .telemetry
@@ -1167,22 +1181,103 @@ async fn enqueue_tun_packets_with_deadline(
             writer
                 .telemetry
                 .release_packets(batch.packets.len(), batch.enqueued_at_micros);
-            writer
-                .telemetry
-                .saturation_failures
-                .fetch_add(1, Ordering::Relaxed);
-            Err(anyhow::anyhow!(
-                "XBond server TUN writer batch queue is full despite reserved packet capacity; terminating the tunnel for a clean restart"
-            ))
+            let mut restored_packets = batch.packets;
+            if let Some(remaining) = pending.take() {
+                restored_packets.extend(remaining.packets);
+                *pending = Some(PendingTunWriteBatch {
+                    packets: restored_packets,
+                    deadline: remaining.deadline,
+                    enqueue_deadline: remaining.enqueue_deadline,
+                });
+            } else {
+                *pending = Some(PendingTunWriteBatch {
+                    packets: restored_packets,
+                    deadline: admission.deadline,
+                    enqueue_deadline: admission.enqueue_deadline,
+                });
+            }
+            Ok(None)
         }
     }
 }
 
-async fn enqueue_tun_packets(
+fn start_or_append_tun_write(
+    writer: &TunWriterHandle,
+    pending: &mut Option<PendingTunWriteBatch>,
+    packets: Vec<ReorderedPacket>,
+    max_pending_packets: usize,
+) -> Result<TunEnqueueOutcome> {
+    if packets.is_empty() {
+        return Ok(TunEnqueueOutcome::default());
+    }
+    if packets.len() > max_pending_packets {
+        writer
+            .telemetry
+            .saturation_failures
+            .fetch_add(1, Ordering::Relaxed);
+        return Err(anyhow::anyhow!(
+            "XBond server pending TUN admission received {} packets, exceeding its bounded {max_pending_packets}-packet limit; terminating the tunnel for a clean restart",
+            packets.len()
+        ));
+    }
+    if let Some(batch) = pending.as_mut() {
+        if batch.packets.len().saturating_add(packets.len()) > max_pending_packets {
+            writer
+                .telemetry
+                .saturation_failures
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(anyhow::anyhow!(
+                "XBond server pending TUN admission exceeded its bounded {max_pending_packets}-packet limit; terminating the tunnel for a clean restart"
+            ));
+        }
+        batch.packets.extend(packets);
+        return Ok(TunEnqueueOutcome::default());
+    }
+
+    *pending = Some(PendingTunWriteBatch::new(
+        packets,
+        TUN_WRITE_ENQUEUE_DEADLINE,
+    ));
+    Ok(try_enqueue_pending_tun_write(writer, pending)?.unwrap_or_default())
+}
+
+fn tun_admission_timeout_error(
+    writer: &TunWriterHandle,
+    pending: &PendingTunWriteBatch,
+) -> anyhow::Error {
+    writer
+        .telemetry
+        .saturation_failures
+        .fetch_add(1, Ordering::Relaxed);
+    anyhow::anyhow!(
+        "XBond server TUN writer remained saturated and could not atomically admit {} packets within {} ms; terminating the tunnel for a clean restart",
+        pending.packets.len(),
+        pending.enqueue_deadline.as_millis()
+    )
+}
+
+#[cfg(test)]
+async fn enqueue_tun_packets_with_deadline(
     writer: &TunWriterHandle,
     packets: Vec<ReorderedPacket>,
+    enqueue_deadline: Duration,
 ) -> Result<TunEnqueueOutcome> {
-    enqueue_tun_packets_with_deadline(writer, packets, TUN_WRITE_ENQUEUE_DEADLINE).await
+    let mut pending = Some(PendingTunWriteBatch::new(packets, enqueue_deadline));
+    let mut total = TunEnqueueOutcome::default();
+    loop {
+        if let Some(outcome) = try_enqueue_pending_tun_write(writer, &mut pending)? {
+            total.enqueued = total.enqueued.saturating_add(outcome.enqueued);
+            if pending.is_none() {
+                return Ok(total);
+            }
+        }
+        let admission = pending.as_ref().expect("pending TUN write disappeared");
+        let remaining = admission.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(tun_admission_timeout_error(writer, admission));
+        }
+        time::sleep(remaining.min(Duration::from_millis(2))).await;
+    }
 }
 
 fn sync_tun_writer_telemetry(
@@ -1357,10 +1452,8 @@ fn spawn_primary_return_sender(
                     attempted_datagram_bytes: 0,
                 },
             };
-            if !report.success {
-                if report_tx.send(report).await.is_err() {
-                    break;
-                }
+            if !report.success && report_tx.send(report).await.is_err() {
+                break;
             }
         }
     });
@@ -1439,10 +1532,13 @@ async fn main() -> Result<()> {
     let mut reorder_tick = time::interval(Duration::from_millis(
         args.realtime_deadline_ms.clamp(5, 50),
     ));
+    let mut tun_admission_tick = time::interval(Duration::from_millis(2));
+    tun_admission_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut status_tick = time::interval(Duration::from_secs(1));
     let mut json_status_event_counter = 0u32;
     let mut control_plane = ServerControlPlaneStatus::default();
     let mut pending_primary_return: Option<PendingPrimaryReturn> = None;
+    let mut pending_tun_write: Option<PendingTunWriteBatch> = None;
     let mut consecutive_primary_return_enqueue_expiries = 0u32;
     let tun_fault = TunFaultInjection {
         write_delay_ms: args.fault_tun_write_delay_ms,
@@ -1485,6 +1581,10 @@ async fn main() -> Result<()> {
             else {
                 continue;
             };
+            if !is_client_originated_frame(&header) {
+                payload.clear();
+                continue;
+            }
             let duplicate_class = pre_admission_duplicate_class(header.kind);
             if duplicate_class.is_some_and(|class| {
                 pre_admission_duplicates.contains_key_class(
@@ -1596,7 +1696,7 @@ async fn main() -> Result<()> {
     );
     let server_health_status = server_health.read().await.clone();
     control_plane.repair_cache_entries = resend_cache.len() as u64;
-    control_plane.repair_cache_bytes = resend_cache.bytes_len() as u64;
+    control_plane.repair_cache_bytes = resend_cache.accounted_bytes_len() as u64;
     control_plane.repair_cache_byte_capacity = resend_cache.byte_capacity() as u64;
     write_server_status(
         &args,
@@ -1637,7 +1737,31 @@ async fn main() -> Result<()> {
                 ));
             }
 
-            Some(inbound) = receive_prioritized_frame(&mut control_frame_rx, &mut payload_frame_rx) => {
+            _ = tun_admission_tick.tick(), if pending_tun_write.is_some() => {
+                let tun_writer = tun_writer
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("pending XBond server TUN write without a TUN writer"))?;
+                if let Some(delivered) =
+                    try_enqueue_pending_tun_write(tun_writer, &mut pending_tun_write)?
+                {
+                    data_packets_forwarded =
+                        data_packets_forwarded.saturating_add(delivered.enqueued);
+                } else if pending_tun_write
+                    .as_ref()
+                    .is_some_and(|pending| pending.deadline <= Instant::now())
+                {
+                    let pending = pending_tun_write
+                        .as_ref()
+                        .expect("pending TUN write disappeared");
+                    return Err(tun_admission_timeout_error(tun_writer, pending));
+                }
+            }
+
+            Some(inbound) = receive_prioritized_frame(
+                &mut control_frame_rx,
+                &mut payload_frame_rx,
+                pending_tun_write.is_none(),
+            ) => {
                 let pre_admission_deduplicated = inbound.pre_admission_deduplicated;
                 let frame = inbound.frame;
                 let peer = inbound.peer;
@@ -1716,6 +1840,7 @@ async fn main() -> Result<()> {
                                         &mut reorder_session_id,
                                         &mut repair,
                                         &mut pending_primary_return,
+                                        &mut pending_tun_write,
                                     );
                                     ingress_repair_limiter.reset();
                                     reorder_session_id = session_id;
@@ -2068,7 +2193,12 @@ async fn main() -> Result<()> {
                                     monotonic_micros(),
                                     0,
                                 );
-                                let delivered = enqueue_tun_packets(tun_writer, ready).await?;
+                                let delivered = start_or_append_tun_write(
+                                    tun_writer,
+                                    &mut pending_tun_write,
+                                    ready,
+                                    args.ingress_reorder_capacity,
+                                )?;
                                 data_packets_forwarded =
                                     data_packets_forwarded.saturating_add(delivered.enqueued);
                                 forwarded_packets =
@@ -2107,7 +2237,12 @@ async fn main() -> Result<()> {
                                     monotonic_micros(),
                                     0,
                                 );
-                                let delivered = enqueue_tun_packets(tun_writer, ready).await?;
+                                let delivered = start_or_append_tun_write(
+                                    tun_writer,
+                                    &mut pending_tun_write,
+                                    ready,
+                                    args.ingress_reorder_capacity,
+                                )?;
                                 data_packets_forwarded =
                                     data_packets_forwarded.saturating_add(delivered.enqueued);
                                 forwarded_packets =
@@ -2137,8 +2272,12 @@ async fn main() -> Result<()> {
                                             monotonic_micros(),
                                             0,
                                         );
-                                        let delivered =
-                                            enqueue_tun_packets(tun_writer, ready).await?;
+                                        let delivered = start_or_append_tun_write(
+                                            tun_writer,
+                                            &mut pending_tun_write,
+                                            ready,
+                                            args.ingress_reorder_capacity,
+                                        )?;
                                         data_packets_forwarded =
                                             data_packets_forwarded
                                                 .saturating_add(delivered.enqueued);
@@ -2222,8 +2361,9 @@ async fn main() -> Result<()> {
                         .primary_return_forced_restarts
                         .saturating_add(1);
                     return Err(anyhow::anyhow!(
-                        "XBond primary return UDP sends exceeded their deadline {} consecutive times; terminating for a clean session restart",
-                        PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES
+                        "XBond primary return UDP sends exceeded their deadline \
+                         {PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES} consecutive times; \
+                         terminating for a clean session restart"
                     ));
                 }
             }
@@ -2272,8 +2412,9 @@ async fn main() -> Result<()> {
                                 .primary_return_forced_restarts
                                 .saturating_add(1);
                             return Err(anyhow::anyhow!(
-                                "XBond primary return queue remained saturated for {} consecutive packets; terminating for a clean session restart",
-                                PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES
+                                "XBond primary return queue remained saturated for \
+                                 {PRIMARY_RETURN_MAX_CONSECUTIVE_DEADLINE_EXPIRIES} consecutive \
+                                 packets; terminating for a clean session restart"
                             ));
                         }
                     }
@@ -2282,11 +2423,12 @@ async fn main() -> Result<()> {
 
             _ = reorder_tick.tick() => {
                 if let Some(tun_writer) = &tun_writer {
-                    let delivered = enqueue_tun_packets(
+                    let delivered = start_or_append_tun_write(
                         tun_writer,
+                        &mut pending_tun_write,
                         reorder.drain_ready(monotonic_micros()),
-                    )
-                    .await?;
+                        args.ingress_reorder_capacity,
+                    )?;
                     data_packets_forwarded =
                         data_packets_forwarded.saturating_add(delivered.enqueued);
                     send_repair_requests_for_ingress_gaps(
@@ -2365,6 +2507,7 @@ async fn main() -> Result<()> {
                         &mut reorder_session_id,
                         &mut repair,
                         &mut pending_primary_return,
+                        &mut pending_tun_write,
                     );
                     ingress_repair_limiter.reset();
                     last_session_id = 0;
@@ -2394,7 +2537,7 @@ async fn main() -> Result<()> {
                 }
                 repair.cache_entries = resend_cache.len();
                 control_plane.repair_cache_entries = resend_cache.len() as u64;
-                control_plane.repair_cache_bytes = resend_cache.bytes_len() as u64;
+                control_plane.repair_cache_bytes = resend_cache.accounted_bytes_len() as u64;
                 control_plane.repair_cache_byte_capacity =
                     resend_cache.byte_capacity() as u64;
                 let recovery_active = return_control
@@ -2520,7 +2663,7 @@ async fn main() -> Result<()> {
                         send_micros,
                         path_id,
                     );
-                    header.flags = 1;
+                    header.flags = FLAG_SERVER_TO_CLIENT;
                     let work = ReturnSendWork {
                         packet_kind: kind,
                         peer,
@@ -3096,16 +3239,19 @@ fn write_server_status(
 }
 
 fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
-    XBondFrame::new(
-        XBondHeader::new(
-            frame.header.kind,
-            frame.header.session_id,
-            frame.header.sequence,
-            frame.header.send_micros,
-            frame.header.path_id,
-        ),
-        b"ack".to_vec(),
-    )
+    let mut header = XBondHeader::new(
+        frame.header.kind,
+        frame.header.session_id,
+        frame.header.sequence,
+        frame.header.send_micros,
+        frame.header.path_id,
+    );
+    header.flags = FLAG_SERVER_TO_CLIENT;
+    XBondFrame::new(header, b"ack".to_vec())
+}
+
+fn is_client_originated_frame(header: &XBondHeader) -> bool {
+    header.flags & FLAG_SERVER_TO_CLIENT == 0
 }
 
 fn event_name(outcome: ReceiveOutcome) -> &'static str {
@@ -3272,16 +3418,15 @@ fn send_server_recovery_status(
     })?;
 
     for (path_id, peer) in &peers {
-        let frame = XBondFrame::new(
-            XBondHeader::new(
-                PacketKind::Control,
-                session_id,
-                sequence,
-                now_micros(),
-                *path_id,
-            ),
-            payload.clone(),
+        let mut header = XBondHeader::new(
+            PacketKind::Control,
+            session_id,
+            sequence,
+            now_micros(),
+            *path_id,
         );
+        header.flags = FLAG_SERVER_TO_CLIENT;
+        let frame = XBondFrame::new(header, payload.clone());
         let encoded = frame.encode_sealed(key)?;
         enqueue_control_datagram(control_send_tx, encoded, *peer, control_plane);
     }
@@ -3337,16 +3482,15 @@ fn send_repair_requests_for_ingress_gaps(
     repair.requests_sent = repair.requests_sent.saturating_add(sequences.len() as u64);
 
     for (path_id, peer) in peers {
-        let frame = XBondFrame::new(
-            XBondHeader::new(
-                PacketKind::Control,
-                session_id,
-                control_id,
-                now_micros(),
-                path_id,
-            ),
-            payload.clone(),
+        let mut header = XBondHeader::new(
+            PacketKind::Control,
+            session_id,
+            control_id,
+            now_micros(),
+            path_id,
         );
+        header.flags = FLAG_SERVER_TO_CLIENT;
+        let frame = XBondFrame::new(header, payload.clone());
         let encoded = frame.encode_sealed(key)?;
         enqueue_control_datagram(control_send_tx, encoded, peer, control_plane);
     }
@@ -3404,7 +3548,7 @@ fn send_repair_frames_from_server_cache(
                 send_micros,
                 path_id,
             );
-            header.flags = 1;
+            header.flags = FLAG_SERVER_TO_CLIENT;
             let work = ReturnSendWork {
                 packet_kind: PacketKind::Repair,
                 peer,
@@ -3464,6 +3608,7 @@ fn clear_session_forwarding_state(
     reorder_session_id: &mut u64,
     repair: &mut XBondRepairStatus,
     pending_primary_return: &mut Option<PendingPrimaryReturn>,
+    pending_tun_write: &mut Option<PendingTunWriteBatch>,
 ) {
     *receiver = FrameReceiver::new(realtime_deadline_micros, 8192);
     peers.clear();
@@ -3479,6 +3624,7 @@ fn clear_session_forwarding_state(
     *reorder_session_id = 0;
     *repair = XBondRepairStatus::default();
     *pending_primary_return = None;
+    *pending_tun_write = None;
 }
 
 fn return_control_update_is_valid(
@@ -3747,8 +3893,27 @@ mod tests {
             assert_eq!(ack.header.kind, kind);
             assert_eq!(ack.header.sequence, frame.header.sequence);
             assert_eq!(ack.header.path_id, frame.header.path_id);
+            assert_eq!(ack.header.flags, FLAG_SERVER_TO_CLIENT);
             assert_eq!(ack.payload, b"ack");
         }
+    }
+
+    #[test]
+    fn ack_uses_a_distinct_authenticated_direction_and_round_trips() {
+        let key = XBondKey::from_passphrase("test-key");
+        let request = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 1, 2, 3, 4),
+            b"heartbeat".to_vec(),
+        );
+        let ack = build_ack_frame(&request);
+
+        let request_encoded = request.encode_sealed(&key).unwrap();
+        let ack_encoded = ack.encode_sealed(&key).unwrap();
+
+        assert_ne!(request_encoded, ack_encoded);
+        assert_eq!(XBondFrame::decode_sealed(&ack_encoded, &key).unwrap(), ack);
+        assert!(is_client_originated_frame(&request.header));
+        assert!(!is_client_originated_frame(&ack.header));
     }
 
     #[test]
@@ -3887,6 +4052,14 @@ mod tests {
             },
             alternate_copy_accepted: false,
         });
+        let mut pending_tun_write = Some(PendingTunWriteBatch::new(
+            vec![ReorderedPacket {
+                sequence: 1,
+                path_id: 1,
+                payload: vec![0x45],
+            }],
+            TUN_WRITE_ENQUEUE_DEADLINE,
+        ));
 
         clear_session_forwarding_state(
             &mut receiver,
@@ -3899,6 +4072,7 @@ mod tests {
             &mut reorder_session_id,
             &mut repair,
             &mut pending_primary_return,
+            &mut pending_tun_write,
         );
 
         assert!(peers.is_empty());
@@ -3909,6 +4083,7 @@ mod tests {
         assert_eq!(reorder_session_id, 0);
         assert_eq!(repair.requests_sent, 0);
         assert!(pending_primary_return.is_none());
+        assert!(pending_tun_write.is_none());
         assert_eq!(receiver.stats().accepted_packets, 0);
     }
 
@@ -3944,6 +4119,7 @@ mod tests {
             let frame = XBondFrame::decode_sealed(&work.encoded, &key).unwrap();
             assert_eq!(frame.header.kind, PacketKind::Control);
             assert_eq!(frame.header.session_id, 42);
+            assert_eq!(frame.header.flags, FLAG_SERVER_TO_CLIENT);
             assert_eq!(
                 serde_json::from_slice::<XBondControlMessage>(&frame.payload).unwrap(),
                 message
@@ -4008,7 +4184,7 @@ mod tests {
 
         let received = time::timeout(
             Duration::from_millis(50),
-            receive_prioritized_frame(&mut control_rx, &mut payload_rx),
+            receive_prioritized_frame(&mut control_rx, &mut payload_rx, true),
         )
         .await
         .unwrap()
@@ -4016,6 +4192,38 @@ mod tests {
         assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
         assert_eq!(payload_rx.len(), 1);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn pending_tun_admission_pauses_payload_without_blocking_control() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (payload_tx, mut payload_rx) = mpsc::channel(1);
+        let peer = "192.0.2.1:1000".parse().unwrap();
+        let inbound = |kind, sequence| InboundServerFrame {
+            frame: XBondFrame::new(
+                XBondHeader::new(kind, 1, sequence, now_micros(), 1),
+                vec![0x45],
+            ),
+            peer,
+            pre_admission_deduplicated: false,
+        };
+
+        payload_tx.send(inbound(PacketKind::Data, 1)).await.unwrap();
+        control_tx
+            .send(inbound(PacketKind::Heartbeat, 2))
+            .await
+            .unwrap();
+
+        let received = time::timeout(
+            Duration::from_millis(50),
+            receive_prioritized_frame(&mut control_rx, &mut payload_rx, false),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
+        assert_eq!(payload_rx.len(), 1);
     }
 
     #[test]
@@ -4193,6 +4401,72 @@ mod tests {
         assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 0);
         assert_eq!(telemetry.max_queue_depth.load(Ordering::Relaxed), 2);
         assert_eq!(telemetry.saturation_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn tun_writer_chunks_oversized_reorder_flush_within_capacity() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let telemetry = Arc::new(TunWriterTelemetry::default());
+        let writer = TunWriterHandle {
+            tx,
+            telemetry: telemetry.clone(),
+            capacity: 2,
+        };
+        let packets = (1..=4)
+            .map(|sequence| ReorderedPacket {
+                sequence,
+                path_id: 1,
+                payload: vec![0x45],
+            })
+            .collect();
+
+        let release_telemetry = telemetry.clone();
+        let consumer = tokio::spawn(async move {
+            let mut sequences = Vec::new();
+            while sequences.len() < 4 {
+                let batch = rx.recv().await.unwrap();
+                assert!(batch.packets.len() <= 2);
+                sequences.extend(batch.packets.iter().map(|packet| packet.sequence));
+                release_telemetry.release_packets(batch.packets.len(), batch.enqueued_at_micros);
+            }
+            sequences
+        });
+        assert_eq!(
+            enqueue_tun_packets_with_deadline(&writer, packets, Duration::from_millis(100),)
+                .await
+                .unwrap(),
+            TunEnqueueOutcome { enqueued: 4 }
+        );
+        assert_eq!(consumer.await.unwrap(), vec![1, 2, 3, 4]);
+        assert_eq!(telemetry.queue_depth.load(Ordering::Relaxed), 0);
+        assert!(telemetry.max_queue_depth.load(Ordering::Relaxed) <= 2);
+    }
+
+    #[test]
+    fn initial_pending_tun_batch_cannot_bypass_packet_bound() {
+        let (tx, _rx) = mpsc::channel(1);
+        let telemetry = Arc::new(TunWriterTelemetry::default());
+        let writer = TunWriterHandle {
+            tx,
+            telemetry: telemetry.clone(),
+            capacity: 2,
+        };
+        let packets = (1..=3)
+            .map(|sequence| ReorderedPacket {
+                sequence,
+                path_id: 1,
+                payload: vec![0x45],
+            })
+            .collect();
+        let mut pending = None;
+
+        let error = start_or_append_tun_write(&writer, &mut pending, packets, 2).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("exceeding its bounded 2-packet limit"));
+        assert!(pending.is_none());
+        assert_eq!(telemetry.saturation_failures.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

@@ -63,7 +63,8 @@ Run `systemctl stop xbond-server-nat.service` to remove the NAT rules through `E
 
 - `xbond-client tunnel` opens a TUN and encapsulates IPv4 packets.
 - XNetwork keeps manual `/32` route diagnostics, while `xbond-client.service` owns the IPv4 default route through `xbond0` in this branch. No automatic rollback to Speedify is implemented.
-- Each `xbond-client tunnel` process uses a fresh runtime session id by default so service restarts are not treated as duplicate old packets by the server. Use `--session-id` only for deterministic diagnostics.
+- Every `xbond-client` tunnel and diagnostic invocation uses a fresh runtime session ID so service restarts and repeated diagnostics cannot reuse packet nonces or be mistaken for duplicate old packets by the server.
+- Frame nonce derivation includes the authenticated random session epoch and wire send time. This is shared client/server behavior, so deploy both binaries together whenever the crypto implementation changes.
 - `xbond-server --tun-name <name>` writes first-arrival IPv4 payloads to a TUN and reads return packets from the server TUN for encapsulation back to the client.
 - `AnchorFec` uses XBond XOR parity blocks and can recover one missing packet per two-packet block when the paired packet and parity arrive.
 - The tunnel scheduler recomputes roles continuously and refuses paths that are down, fail socket binding/connectivity, repeatedly fail sends, or report full loss.

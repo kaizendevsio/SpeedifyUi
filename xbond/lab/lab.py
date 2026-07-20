@@ -141,6 +141,106 @@ def telemetry_subset(status: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def reap_terminated_children() -> None:
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+
+
+def namespace_pids(namespace: str) -> list[int]:
+    completed = run(["ip", "netns", "pids", namespace], check=False)
+    return sorted(
+        int(value)
+        for value in completed.stdout.split()
+        if value.isdigit()
+    )
+
+
+def namespace_process_pids(namespace: str, process_name: str) -> list[int]:
+    matches = []
+    for pid in namespace_pids(namespace):
+        try:
+            name = pathlib.Path(f"/proc/{pid}/comm").read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError:
+            continue
+        if name == process_name:
+            matches.append(pid)
+    return matches
+
+
+def parse_timestamped_ping(
+    output: str,
+    command: list[str],
+    *,
+    restore_wall_time: float,
+    sample_interval: float,
+    stopped_wall_time: float,
+) -> dict[str, Any]:
+    result = parse_ping(output, command)
+    timestamps = [
+        float(match.group(1))
+        for line in output.splitlines()
+        if (
+            match := re.match(
+                r"^\[([0-9]+(?:\.[0-9]+)?)\]\s+\d+\s+bytes\s+from\s+",
+                line,
+            )
+        )
+    ]
+    post_restore = [stamp for stamp in timestamps if stamp >= restore_wall_time]
+    first_success_seconds = (
+        max(0.0, post_restore[0] - restore_wall_time)
+        if post_restore
+        else None
+    )
+    expected_post_restore = max(
+        1,
+        int((stopped_wall_time - restore_wall_time) / sample_interval) + 1,
+    )
+    post_restore_loss = max(
+        0.0,
+        100.0 * (expected_post_restore - len(post_restore)) / expected_post_restore,
+    )
+    recent = post_restore[-10:]
+    recent_gaps = [
+        later - earlier for earlier, later in zip(recent, recent[1:])
+    ]
+    sustained_recovery = (
+        len(recent) == 10
+        and max(recent_gaps, default=0.0) <= max(0.75, sample_interval * 3)
+        and stopped_wall_time - recent[-1] <= max(1.0, sample_interval * 5)
+    )
+    result.update(
+        {
+            "reply_timestamps": timestamps,
+            "post_restore_reply_count": len(post_restore),
+            "post_restore_expected_count": expected_post_restore,
+            "post_restore_loss_percent": round(post_restore_loss, 3),
+            "time_to_first_success_seconds": (
+                round(first_success_seconds, 3)
+                if first_success_seconds is not None
+                else None
+            ),
+            "sustained_recovery": sustained_recovery,
+        }
+    )
+    return result
+
+
 def parse_ping(output: str, command: list[str]) -> dict[str, Any]:
     packets = re.search(
         r"(\d+) packets transmitted, (\d+) received, .*?([\d.]+)% packet loss",
@@ -223,10 +323,6 @@ def iperf(
     ]
     if reverse:
         command.append("-R")
-    result: dict[str, Any] = {
-        "direction": "download" if reverse else "upload",
-        "command": command,
-    }
     try:
         completed = ns_run(
             CLIENT_NS,
@@ -235,27 +331,23 @@ def iperf(
             timeout=seconds + omit + 20,
         )
     except subprocess.TimeoutExpired as exc:
-        result.update(
-            {
-                "exit_code": -1,
-                "timed_out": True,
-                "error": f"iperf3 exceeded its {seconds + omit + 20}s deadline",
-                "mbps": 0.0,
-            }
-        )
-        return result
+        return {
+            "direction": "download" if reverse else "upload",
+            "command": command,
+            "exit_code": -1,
+            "timed_out": True,
+            "valid_complete_json": False,
+            "error": f"iperf3 exceeded its {seconds + omit + 20}s deadline",
+            "mbps": 0.0,
+        }
 
-    result["exit_code"] = completed.returncode
-    try:
-        payload = json.loads(completed.stdout)
-        result["raw"] = payload
-        summary = payload.get("end", {}).get("sum_received" if reverse else "sum_sent", {})
-        result["mbps"] = float(summary.get("bits_per_second", 0.0)) / 1_000_000
-        result["retransmits"] = payload.get("end", {}).get("sum_sent", {}).get("retransmits")
-    except json.JSONDecodeError:
-        result["error"] = (completed.stderr or completed.stdout)[-4000:]
-        result["mbps"] = 0.0
-    return result
+    return parse_iperf_output(
+        completed.stdout,
+        completed.stderr,
+        reverse=reverse,
+        command=command,
+        return_code=completed.returncode,
+    )
 
 
 def tcp_retransmits(namespace: str) -> int | None:
@@ -317,6 +409,71 @@ def trend_summary(
     }
 
 
+def per_metric_trends(
+    samples: list[dict[str, Any]],
+    predicate: Callable[[str], bool],
+) -> tuple[dict[str, dict[str, float | int | None]], bool]:
+    metric_keys = sorted(
+        {
+            f"{side}:{key}"
+            for sample in samples
+            for side in ("client_status", "server_status")
+            for key, value in sample[side].items()
+            if predicate(key) and isinstance(value, (int, float))
+        }
+    )
+    trends: dict[str, dict[str, float | int | None]] = {}
+    complete = bool(samples) and bool(metric_keys)
+    for metric_key in metric_keys:
+        side, key = metric_key.split(":", 1)
+        values = [
+            float(sample[side][key])
+            for sample in samples
+            if isinstance(sample[side].get(key), (int, float))
+        ]
+        timestamps = [
+            float(sample["at_seconds"])
+            for sample in samples
+            if isinstance(sample[side].get(key), (int, float))
+        ]
+        if len(values) != len(samples):
+            complete = False
+        trends[metric_key] = trend_summary(timestamps, values)
+    return trends, complete
+
+
+def counter_growth_by_key(
+    samples: list[dict[str, Any]],
+    predicate: Callable[[str], bool],
+) -> tuple[dict[str, float], bool]:
+    if not samples:
+        return {}, False
+    first = samples[0]
+    last = samples[-1]
+    metric_keys = sorted(
+        {
+            f"{side}:{key}"
+            for sample in samples
+            for side in ("client_status", "server_status")
+            for key, value in sample[side].items()
+            if predicate(key) and isinstance(value, (int, float))
+        }
+    )
+    growth: dict[str, float] = {}
+    complete = bool(metric_keys)
+    for metric_key in metric_keys:
+        side, key = metric_key.split(":", 1)
+        before = first[side].get(key)
+        after = last[side].get(key)
+        if not isinstance(before, (int, float)) or not isinstance(
+            after, (int, float)
+        ):
+            complete = False
+            continue
+        growth[metric_key] = max(0.0, float(after) - float(before))
+    return growth, complete
+
+
 def sha256_file(path: pathlib.Path) -> str | None:
     try:
         digest = hashlib.sha256()
@@ -326,6 +483,63 @@ def sha256_file(path: pathlib.Path) -> str | None:
         return digest.hexdigest()
     except OSError:
         return None
+
+
+def parse_iperf_output(
+    stdout: str,
+    stderr: str,
+    *,
+    reverse: bool,
+    command: list[str],
+    return_code: int | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "direction": "download" if reverse else "upload",
+        "exit_code": return_code,
+        "command": command,
+        "valid_complete_json": False,
+        "mbps": 0.0,
+    }
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        result["error"] = (
+            f"iperf3 did not emit complete valid JSON: {error}; "
+            f"{(stderr or stdout)[-4000:]}"
+        )
+        return result
+
+    summary_name = "sum_received" if reverse else "sum_sent"
+    summary = payload.get("end", {}).get(summary_name)
+    bits_per_second = summary.get("bits_per_second") if isinstance(summary, dict) else None
+    reported_error = payload.get("error")
+    if (
+        return_code != 0
+        or not isinstance(bits_per_second, (int, float))
+        or reported_error
+    ):
+        result["error"] = (
+            str(reported_error)
+            if reported_error
+            else (
+                f"iperf3 exited with {return_code} or omitted "
+                f"end.{summary_name}.bits_per_second"
+            )
+        )
+        result["raw"] = payload
+        return result
+
+    result.update(
+        {
+            "valid_complete_json": True,
+            "mbps": float(bits_per_second) / 1_000_000,
+            "retransmits": payload.get("end", {})
+            .get("sum_sent", {})
+            .get("retransmits"),
+            "raw": payload,
+        }
+    )
+    return result
 
 
 def nested_number(value: dict[str, Any] | None, *keys: str) -> float:
@@ -431,11 +645,47 @@ class XBondLab:
         self.server_status = RUN_ROOT / "server-status.json"
         self.client_config = RUN_ROOT / "client.toml"
         self.process_pids: list[int] = []
+        self.process_groups: set[int] = set()
 
     def track_process(self, process: subprocess.Popen[str]) -> subprocess.Popen[str]:
         self.extra_processes.append(process)
-        self.process_pids.append(process.pid)
+        self._record_process(process)
         return process
+
+    def _record_process(self, process: subprocess.Popen[str]) -> None:
+        self.process_pids.append(process.pid)
+        with contextlib.suppress(ProcessLookupError):
+            self.process_groups.add(os.getpgid(process.pid))
+
+    def stop_process(
+        self,
+        process: subprocess.Popen[str] | None,
+        *,
+        signal_number: signal.Signals = signal.SIGTERM,
+        timeout: float = 5,
+    ) -> None:
+        if process is None:
+            return
+        process_group = None
+        with contextlib.suppress(ProcessLookupError):
+            process_group = os.getpgid(process.pid)
+        if process_group is None:
+            process_group = process.pid if process.pid in self.process_groups else None
+        if process_group is not None and process_group_exists(process_group):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process_group, signal_number)
+        elif process.poll() is None:
+            process.send_signal(signal_number)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if process_group is not None and process_group_exists(process_group):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process_group, signal.SIGKILL)
+            elif process.poll() is None:
+                process.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=3)
 
     def clean_existing(self) -> None:
         for namespace in ALL_NAMESPACES:
@@ -609,8 +859,9 @@ class XBondLab:
             stderr=subprocess.STDOUT,
             text=True,
             env=env,
+            start_new_session=True,
         )
-        self.process_pids.append(process.pid)
+        self._record_process(process)
         return process
 
     def start_runtime(
@@ -722,10 +973,7 @@ class XBondLab:
     ) -> int | None:
         previous_return_code = None
         if self.server:
-            if self.server.poll() is None:
-                self.server.terminate()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    self.server.wait(timeout=5)
+            self.stop_process(self.server)
             previous_return_code = self.server.poll()
 
         self.server_status.unlink(missing_ok=True)
@@ -772,10 +1020,7 @@ class XBondLab:
         return previous_return_code
 
     def restart_iperf_server(self) -> None:
-        if self.iperf_server and self.iperf_server.poll() is None:
-            self.iperf_server.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                self.iperf_server.wait(timeout=2)
+        self.stop_process(self.iperf_server, timeout=2)
         self.iperf_server = self._start(
             SERVER_NS,
             ["iperf3", "-s", "-B", SERVER_TUN_IP, "-1"],
@@ -859,10 +1104,7 @@ class XBondLab:
     ) -> int | None:
         previous_return_code = None
         if self.client:
-            if self.client.poll() is None:
-                self.client.terminate()
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    self.client.wait(timeout=5)
+            self.stop_process(self.client)
             previous_return_code = self.client.poll()
 
         self.client_status.unlink(missing_ok=True)
@@ -901,6 +1143,82 @@ class XBondLab:
             "fresh session and acknowledged return schedule",
         )
         return previous_return_code
+
+    def restart_client_supervised(
+        self,
+        *,
+        log_name: str = "client-supervisor",
+        tun_mtu: int = 1400,
+    ) -> int | None:
+        previous_return_code = None
+        if self.client:
+            self.stop_process(self.client)
+            previous_return_code = self.client.poll()
+
+        self.client_status.unlink(missing_ok=True)
+        (RUN_ROOT / "client-control.sock").unlink(missing_ok=True)
+        client_command = [
+            "/opt/xbond/bin/xbond-client",
+            "tunnel",
+            "--config",
+            str(self.client_config),
+            "--tun-name",
+            "xbond0",
+            "--tun-mtu",
+            str(tun_mtu),
+            "--control-socket",
+            str(RUN_ROOT / "client-control.sock"),
+            "--json-events",
+        ]
+        shell_script = "\n".join(
+            [
+                "restart_count=0",
+                "while true; do",
+                '  echo "LAB_SUPERVISOR_START count=$restart_count"',
+                f"  {shlex.join(client_command)} &",
+                "  child=$!",
+                "  for _ in $(seq 1 300); do",
+                "    if ip link show xbond0 >/dev/null 2>&1; then",
+                f"      ip addr replace {CLIENT_TUN_IP}/30 dev xbond0",
+                f"      ip link set xbond0 mtu {tun_mtu} up",
+                "      break",
+                "    fi",
+                "    sleep 0.05",
+                "  done",
+                '  wait "$child"',
+                "  rc=$?",
+                '  echo "LAB_SUPERVISOR_EXIT count=$restart_count exit_code=$rc"',
+                '  if [ "$rc" -eq 0 ]; then exit 0; fi',
+                "  restart_count=$((restart_count + 1))",
+                '  echo "LAB_SUPERVISOR_RESTART count=$restart_count"',
+                "  sleep 0.25",
+                "done",
+            ]
+        )
+        self.client = self._start(
+            CLIENT_NS,
+            ["sh", "-lc", shell_script],
+            log_name,
+        )
+        wait_for(
+            lambda: (
+                (json_file(self.client_status) or {}).get("anchor_path_id")
+                is not None
+                and not (json_file(self.server_status) or {}).get(
+                    "schedule_required", True
+                )
+            ),
+            20,
+            "supervised client session and acknowledged return schedule",
+        )
+        return previous_return_code
+
+    def client_supervisor_restart_count(self, log_name: str) -> int:
+        matches = re.findall(
+            r"LAB_SUPERVISOR_RESTART count=(\d+)",
+            log_tail(self.scenario, log_name, limit=200000),
+        )
+        return max((int(value) for value in matches), default=0)
 
     def collect_runtime_metrics(self) -> dict[str, Any]:
         client_status = json_file(self.client_status)
@@ -986,17 +1304,12 @@ class XBondLab:
             self.server,
             *self.extra_processes,
         )
+        stopped: set[int] = set()
         for process in processes:
-            if process and process.poll() is None:
-                process.terminate()
-        for process in processes:
-            if not process:
+            if process is None or process.pid in stopped:
                 continue
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
+            stopped.add(process.pid)
+            self.stop_process(process)
         self.iperf_server = None
         self.direct_probe_server = None
         self.client = None
@@ -1015,6 +1328,30 @@ class XBondLab:
             if "netem" in output.lower()
         )
         self.stop_runtime()
+        for process_group in self.process_groups:
+            if process_group_exists(process_group):
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process_group, signal.SIGKILL)
+        cleanup_deadline = time.monotonic() + 3
+        while time.monotonic() < cleanup_deadline:
+            reap_terminated_children()
+            if not any(
+                process_group_exists(process_group)
+                for process_group in self.process_groups
+            ):
+                break
+            time.sleep(0.05)
+        namespace_pids_remaining = {}
+        for namespace in ALL_NAMESPACES:
+            pids = namespace_pids(namespace)
+            if pids:
+                for pid in pids:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(pid, signal.SIGKILL)
+                time.sleep(0.1)
+                pids = namespace_pids(namespace)
+            if pids:
+                namespace_pids_remaining[namespace] = pids
         for namespace in ALL_NAMESPACES:
             run(["ip", "netns", "del", namespace], check=False)
         remaining_namespaces = [
@@ -1025,9 +1362,16 @@ class XBondLab:
         remaining_processes = [
             pid for pid in self.process_pids if pathlib.Path(f"/proc/{pid}").exists()
         ]
+        remaining_process_groups = sorted(
+            process_group
+            for process_group in self.process_groups
+            if process_group_exists(process_group)
+        )
         return {
             "namespaces_remaining": sorted(set(remaining_namespaces)),
             "processes_remaining": remaining_processes,
+            "process_groups_remaining": remaining_process_groups,
+            "namespace_pids_remaining": namespace_pids_remaining,
             "qdisc_state_removed": not qdisc_remaining,
             "qdisc_remaining": qdisc_remaining,
         }
@@ -1069,25 +1413,13 @@ def native_path_throughput(
         completed = ns_run(
             CLIENT_NS, command, check=False, timeout=seconds + 20
         )
-        item: dict[str, Any] = {
-            "command": command,
-            "exit_code": completed.returncode,
-        }
-        try:
-            payload = json.loads(completed.stdout)
-            summary = payload.get("end", {}).get(
-                "sum_received" if reverse else "sum_sent", {}
-            )
-            item["mbps"] = (
-                float(summary.get("bits_per_second", 0.0)) / 1_000_000
-            )
-            item["retransmits"] = (
-                payload.get("end", {}).get("sum_sent", {}).get("retransmits")
-            )
-            item["raw"] = payload
-        except json.JSONDecodeError:
-            item["mbps"] = 0.0
-            item["error"] = (completed.stderr or completed.stdout)[-4000:]
+        item = parse_iperf_output(
+            completed.stdout,
+            completed.stderr,
+            reverse=reverse,
+            command=command,
+            return_code=completed.returncode,
+        )
         results["download" if reverse else "upload"] = item
     return results
 
@@ -1102,35 +1434,6 @@ def throughput_ratio(tunnel: dict[str, Any], native: dict[str, Any]) -> float:
         native["download"].get("mbps", 0.0),
     )
     return tunnel_floor / native_floor if native_floor > 0 else 0.0
-
-
-def parse_iperf_output(
-    stdout: str,
-    stderr: str,
-    *,
-    reverse: bool,
-    command: list[str],
-    return_code: int | None,
-) -> dict[str, Any]:
-    result: dict[str, Any] = {
-        "direction": "download" if reverse else "upload",
-        "exit_code": return_code,
-        "command": command,
-    }
-    try:
-        payload = json.loads(stdout)
-        summary = payload.get("end", {}).get(
-            "sum_received" if reverse else "sum_sent", {}
-        )
-        result["mbps"] = float(summary.get("bits_per_second", 0.0)) / 1_000_000
-        result["retransmits"] = (
-            payload.get("end", {}).get("sum_sent", {}).get("retransmits")
-        )
-        result["raw"] = payload
-    except json.JSONDecodeError:
-        result["mbps"] = 0.0
-        result["error"] = (stderr or stdout)[-4000:]
-    return result
 
 
 def concurrent_bidirectional_throughput(
@@ -1169,6 +1472,7 @@ def concurrent_bidirectional_throughput(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
         lab.track_process(process)
         processes[name] = process
@@ -1191,17 +1495,21 @@ def concurrent_bidirectional_throughput(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     lab.track_process(ping_process)
 
     samples: list[dict[str, Any]] = []
-    deadline = time.monotonic() + seconds + 20
+    # Under the deliberate tiny-queue fault, TCP teardown can take much
+    # longer than the requested data interval. Let iperf finish and emit valid
+    # JSON instead of terminating a run that still carried measurable data.
+    deadline = time.monotonic() + seconds + 45
     while any(process.poll() is None for process in processes.values()):
         samples.append(lab.sample_runtime())
         if time.monotonic() >= deadline:
             for process in processes.values():
                 if process.poll() is None:
-                    process.terminate()
+                    lab.stop_process(process)
             break
         time.sleep(sample_interval)
 
@@ -1219,7 +1527,7 @@ def concurrent_bidirectional_throughput(
         with contextlib.suppress(subprocess.TimeoutExpired):
             ping_process.wait(timeout=5)
     if ping_process.poll() is None:
-        ping_process.terminate()
+        lab.stop_process(ping_process, signal_number=signal.SIGINT)
     ping_stdout, ping_stderr = ping_process.communicate(timeout=5)
     ping_output = "\n".join(
         part for part in (ping_stdout, ping_stderr) if part
@@ -1260,12 +1568,13 @@ def capture_outer_packets(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     lab.track_process(capture)
     time.sleep(0.3)
     action_result = action()
     if capture.poll() is None:
-        capture.terminate()
+        lab.stop_process(capture)
     stdout, stderr = capture.communicate(timeout=5)
     packet_lines = [
         line for line in stdout.splitlines() if re.match(r"^\s*\d{2}:\d{2}:", line)
@@ -1637,8 +1946,13 @@ def scenario_heavy_bidirectional(lab: XBondLab, result: LabResult, _: int) -> No
 def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
     lab.setup_topology()
     lab.start_runtime()
-    client_pid_before = lab.client.pid if lab.client else None
+    lab.restart_client_supervised(log_name="client-blackhole-supervisor")
+    supervisor_pid_before = lab.client.pid if lab.client else None
+    worker_pids_before = namespace_process_pids(CLIENT_NS, "xbond-client")
     before = json_file(lab.client_status) or {}
+    session_before = session_evidence(
+        log_tail(lab.scenario, "client-blackhole-supervisor", limit=200000)
+    ).get("session_id")
     before_paths = {path.get("path_id"): path for path in before.get("paths", [])}
     before_generation = before_paths.get(2, {}).get("socket_generation", 0)
     router = ROUTER_NAMES[1]
@@ -1655,6 +1969,74 @@ def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
     after = json_file(lab.client_status) or {}
     after_paths = {path.get("path_id"): path for path in after.get("paths", [])}
     path = after_paths.get(2, {})
+    worker_pids_after_first_rebind = namespace_process_pids(
+        CLIENT_NS, "xbond-client"
+    )
+    first_rebind_succeeded = (
+        outside_ping.get("loss_percent") == 0
+        and (path.get("socket_generation") or 0) > before_generation
+        and supervisor_pid_before == (lab.client.pid if lab.client else None)
+        and worker_pids_before == worker_pids_after_first_rebind
+        and lab.client_supervisor_restart_count("client-blackhole-supervisor")
+        == 0
+        and path.get("last_rebind_reason")
+        == "silent-udp-blackhole-direct-probe-ok"
+    )
+
+    # Keep the confirmed blackhole in place. The in-lab supervisor owns the
+    # client process and must restart it automatically after a nonzero exit.
+    escalation_started = time.monotonic()
+    escalation_deadline = escalation_started + 90
+    supervisor_restarted = False
+    while time.monotonic() < escalation_deadline:
+        if lab.client_supervisor_restart_count("client-blackhole-supervisor") > 0:
+            supervisor_restarted = True
+            break
+        time.sleep(0.5)
+    escalation_seconds = round(time.monotonic() - escalation_started, 3)
+    for namespace in ROUTER_NAMES:
+        ns_run(namespace, ["iptables", "-F"], check=False)
+    supervised_recovery_ready = False
+    if supervisor_restarted:
+        recovery_deadline = time.monotonic() + 30
+        while time.monotonic() < recovery_deadline:
+            recovery_evidence = session_evidence(
+                log_tail(
+                    lab.scenario,
+                    "client-blackhole-supervisor",
+                    limit=200000,
+                )
+            )
+            latest_session_id = recovery_evidence.get("session_id")
+            supervised_recovery_ready = (
+                latest_session_id not in (None, session_before)
+                and any(
+                    event.get("event") == "schedule-accepted"
+                    and event.get("session_id") == latest_session_id
+                    for event in recovery_evidence.get("events", [])
+                )
+                and not (json_file(lab.server_status) or {}).get(
+                    "schedule_required", True
+                )
+            )
+            if supervised_recovery_ready:
+                break
+            time.sleep(0.25)
+    recovered_ping = lab.tunnel_ping(count=8)
+    worker_pids_after_recovery = namespace_process_pids(
+        CLIENT_NS, "xbond-client"
+    )
+    supervisor_log = log_tail(
+        lab.scenario, "client-blackhole-supervisor", limit=200000
+    )
+    session_after = session_evidence(supervisor_log).get("session_id")
+    exit_codes = [
+        int(value)
+        for value in re.findall(
+            r"LAB_SUPERVISOR_EXIT count=\d+ exit_code=(\d+)",
+            supervisor_log,
+        )
+    ]
     result.metrics.update(
         {
             "outside_tunnel_path_ping": outside_ping,
@@ -1662,24 +2044,47 @@ def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
             "socket_generation_after": path.get("socket_generation"),
             "rebind_count": path.get("rebind_count"),
             "last_rebind_reason": path.get("last_rebind_reason"),
-            "client_pid_before": client_pid_before,
-            "client_pid_after": lab.client.pid if lab.client else None,
+            "supervisor_pid_before": supervisor_pid_before,
+            "supervisor_pid_after": lab.client.pid if lab.client else None,
+            "worker_pids_before": worker_pids_before,
+            "worker_pids_after_first_rebind": worker_pids_after_first_rebind,
+            "worker_pids_after_recovery": worker_pids_after_recovery,
+            "supervisor_restart_count": lab.client_supervisor_restart_count(
+                "client-blackhole-supervisor"
+            ),
+            "supervisor_exit_codes": exit_codes,
+            "automatic_supervisor_restart_observed": supervisor_restarted,
+            "supervised_recovery_ready": supervised_recovery_ready,
+            "escalation_seconds": escalation_seconds,
+            "session_id_before": session_before,
+            "session_id_after_supervisor_recovery": session_after,
+            "tunnel_ping_after_supervisor_recovery": recovered_ping,
+            "client_supervisor_log_tail": supervisor_log[-20000:],
+            "server_log_tail": log_tail(lab.scenario, "server", limit=16000),
             "runtime": lab.collect_runtime_metrics(),
         }
     )
     result.thresholds = {
         "outside_ping_loss_percent_max": 0,
         "socket_generation_must_increase": True,
-        "client_pid_must_not_change": True,
+        "worker_pid_must_not_change_for_first_rebind": True,
+        "supervisor_pid_must_not_change": True,
         "required_rebind_reason": "silent-udp-blackhole-direct-probe-ok",
+        "nonzero_exit_must_be_restarted_by_in_lab_supervisor": True,
+        "escalation_seconds_max": 90,
+        "post_escalation_tunnel_loss_percent_max": 5,
     }
     result.status = (
         "pass"
-        if outside_ping.get("loss_percent") == 0
-        and (path.get("socket_generation") or 0) > before_generation
-        and client_pid_before == (lab.client.pid if lab.client else None)
-        and path.get("last_rebind_reason")
-        == "silent-udp-blackhole-direct-probe-ok"
+        if first_rebind_succeeded
+        and supervisor_restarted
+        and any(code != 0 for code in exit_codes)
+        and supervised_recovery_ready
+        and supervisor_pid_before == (lab.client.pid if lab.client else None)
+        and worker_pids_after_recovery
+        and worker_pids_after_recovery != worker_pids_before
+        and session_after not in (None, session_before)
+        and recovered_ping.get("loss_percent", 100) <= 5
         else "fail"
     )
 
@@ -1860,6 +2265,7 @@ def scenario_server_process_restart(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     lab.track_process(continuous_ping)
     time.sleep(0.5)
@@ -1903,11 +2309,9 @@ def scenario_server_process_restart(
 
     time.sleep(1 if recovered else 0)
     if continuous_ping.poll() is None:
-        continuous_ping.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            continuous_ping.wait(timeout=3)
-    if continuous_ping.poll() is None:
-        continuous_ping.kill()
+        lab.stop_process(
+            continuous_ping, signal_number=signal.SIGINT, timeout=3
+        )
     continuous_stdout, continuous_stderr = continuous_ping.communicate(timeout=5)
     continuous_output = "\n".join(
         part for part in (continuous_stdout, continuous_stderr) if part
@@ -2036,8 +2440,28 @@ def scenario_tun_write_backpressure(lab: XBondLab, result: LabResult, _: int) ->
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     lab.track_process(load)
+    concurrent_ping_command = [
+        "ping",
+        "-n",
+        "-c",
+        "40",
+        "-i",
+        "0.1",
+        "-I",
+        "xbond0",
+        SERVER_TUN_IP,
+    ]
+    concurrent_ping = subprocess.Popen(
+        ns_cmd(CLIENT_NS, *concurrent_ping_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    lab.track_process(concurrent_ping)
     samples: list[dict[str, Any]] = []
     observation_deadline = time.monotonic() + 4
     while time.monotonic() < observation_deadline:
@@ -2049,12 +2473,18 @@ def scenario_tun_write_backpressure(lab: XBondLab, result: LabResult, _: int) ->
         time.sleep(0.1)
     timed_out = load.poll() is None
     if timed_out:
-        load.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            load.wait(timeout=3)
-    if load.poll() is None:
-        load.kill()
+        lab.stop_process(load)
     stdout, stderr = load.communicate(timeout=5)
+    if concurrent_ping.poll() is None:
+        lab.stop_process(
+            concurrent_ping, signal_number=signal.SIGINT, timeout=3
+        )
+    ping_stdout, ping_stderr = concurrent_ping.communicate(timeout=5)
+    concurrent_ping_result = parse_ping(
+        "\n".join(part for part in (ping_stdout, ping_stderr) if part),
+        concurrent_ping_command,
+    )
+    concurrent_ping_result["exit_code"] = concurrent_ping.returncode
     sample_after = lab.sample_runtime()
     ping_after = lab.tunnel_ping(count=6)
 
@@ -2063,16 +2493,30 @@ def scenario_tun_write_backpressure(lab: XBondLab, result: LabResult, _: int) ->
         int(value)
         for sample in flattened_samples
         for key, value in sample.items()
-        if key.endswith("inbound_queue_depth") and isinstance(value, (int, float))
+        if key == "process.tun_write_queue_depth"
+        and isinstance(value, (int, float))
     ]
-    queue_drops = [
+    queue_peaks = [
         int(value)
         for sample in flattened_samples
         for key, value in sample.items()
-        if key.endswith("inbound_queue_drops") and isinstance(value, (int, float))
+        if key == "process.tun_write_queue_peak_depth"
+        and isinstance(value, (int, float))
     ]
     peak_depth = max(queue_depths, default=0)
-    peak_drops = max(queue_drops, default=0)
+    peak_recorded_depth = max(queue_peaks, default=0)
+    before_telemetry = sample_before["client_telemetry"]
+    after_telemetry = sample_after["client_telemetry"]
+    tun_write_packets_delta = max(
+        0,
+        int(after_telemetry.get("process.tun_write_packets", 0))
+        - int(before_telemetry.get("process.tun_write_packets", 0)),
+    )
+    tun_write_queue_micros_delta = max(
+        0,
+        int(after_telemetry.get("process.tun_write_queue_micros_total", 0))
+        - int(before_telemetry.get("process.tun_write_queue_micros_total", 0)),
+    )
     client_and_server_alive_during_load = bool(samples) and all(
         sample["client_process"].get("running")
         and sample["server_process"].get("running")
@@ -2093,6 +2537,16 @@ def scenario_tun_write_backpressure(lab: XBondLab, result: LabResult, _: int) ->
         for sample in samples
         if sample["server_control_progress_at_micros"] > 0
     ]
+    heartbeat_ages = [
+        sample["tunnel_last_success_age_ms"] for sample in samples
+    ]
+    heartbeat_success_rates = [
+        sample["tunnel_success_rate"] for sample in samples
+    ]
+    heartbeat_progressed = (
+        sum(1 for value in heartbeat_success_rates if value > 0) >= 2
+        and max(heartbeat_ages, default=float("inf")) <= 3000
+    )
     status_and_control_progressed = (
         len(set(client_status_versions)) >= 2
         and len(set(server_status_versions)) >= 2
@@ -2118,28 +2572,43 @@ def scenario_tun_write_backpressure(lab: XBondLab, result: LabResult, _: int) ->
             "load_output_tail": stdout[-4000:],
             "client_log_tail": log_tail(lab.scenario, "client", limit=12000),
             "server_log_tail": log_tail(lab.scenario, "server", limit=12000),
-            "peak_inbound_queue_depth": peak_depth,
-            "peak_inbound_queue_drops": peak_drops,
+            "peak_tun_write_queue_depth_sampled": peak_depth,
+            "peak_tun_write_queue_depth_recorded": peak_recorded_depth,
+            "tun_write_packets_delta": tun_write_packets_delta,
+            "tun_write_queue_micros_delta": tun_write_queue_micros_delta,
             "samples": samples,
+            "concurrent_tunnel_ping": concurrent_ping_result,
             "ping_after": ping_after,
             "client_and_server_alive_during_load": client_and_server_alive_during_load,
             "status_and_control_progressed_during_load": status_and_control_progressed,
+            "tunnel_heartbeat_progressed_during_load": heartbeat_progressed,
             "runtime": lab.collect_runtime_metrics(),
         }
     )
     result.thresholds = {
         "queue_pressure_must_be_observed": True,
+        "tun_write_packets_delta_min": 1,
+        "tun_write_queue_micros_delta_min": 1,
         "client_and_server_must_remain_running_throughout": True,
         "status_and_control_must_progress_during_load": True,
+        "tunnel_heartbeat_success_rate_must_remain_positive": True,
+        "tunnel_heartbeat_last_success_age_ms_max": 3000,
+        "concurrent_tunnel_ping_received_min": 10,
+        "concurrent_tunnel_ping_loss_percent_max": 25,
         "post_pressure_tunnel_loss_percent_max": 10,
         "configured_write_delay_ms": delay_ms,
     }
     processes = result.metrics["runtime"]["processes"]
     result.status = (
         "pass"
-        if (peak_depth > 0 or peak_drops > 0)
+        if peak_recorded_depth > 0
+        and tun_write_packets_delta >= 1
+        and tun_write_queue_micros_delta >= 1
         and client_and_server_alive_during_load
         and status_and_control_progressed
+        and heartbeat_progressed
+        and concurrent_ping_result.get("received", 0) >= 10
+        and concurrent_ping_result.get("loss_percent", 100) <= 25
         and processes["client"].get("running")
         and processes["server"].get("running")
         and ping_after.get("loss_percent", 100) <= 10
@@ -2184,6 +2653,7 @@ def scenario_server_tun_write_backpressure(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     lab.track_process(moderate_load)
     responsive_samples: list[dict[str, Any]] = []
@@ -2199,12 +2669,17 @@ def scenario_server_tun_write_backpressure(
         time.sleep(0.1)
 
     if moderate_load.poll() is None:
-        moderate_load.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            moderate_load.wait(timeout=3)
-    if moderate_load.poll() is None:
-        moderate_load.kill()
+        lab.stop_process(
+            moderate_load, signal_number=signal.SIGINT, timeout=3
+        )
     moderate_stdout, moderate_stderr = moderate_load.communicate(timeout=5)
+    concurrent_ping_result = parse_ping(
+        "\n".join(
+            part for part in (moderate_stdout, moderate_stderr) if part
+        ),
+        load_command,
+    )
+    concurrent_ping_result["exit_code"] = moderate_load.returncode
     responsive_after = lab.sample_runtime()
 
     server_telemetry_samples = [
@@ -2275,6 +2750,7 @@ def scenario_server_tun_write_backpressure(
         "load_exit_code": moderate_load.returncode,
         "load_output_tail": moderate_stdout[-4000:],
         "load_error_tail": moderate_stderr[-4000:],
+        "concurrent_tunnel_ping": concurrent_ping_result,
         "samples": responsive_samples,
         "peak_tun_write_queue_depth": peak_queue_depth,
         "peak_tun_write_queue_saturation_failures": max(
@@ -2323,6 +2799,7 @@ def scenario_server_tun_write_backpressure(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=True,
     )
     lab.track_process(severe_load)
     severe_started = time.monotonic()
@@ -2336,11 +2813,7 @@ def scenario_server_tun_write_backpressure(
     fail_closed_seconds = time.monotonic() - severe_started
     server_exit_code = lab.server.poll() if lab.server else None
     if severe_load.poll() is None:
-        severe_load.terminate()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            severe_load.wait(timeout=3)
-    if severe_load.poll() is None:
-        severe_load.kill()
+        lab.stop_process(severe_load)
     severe_stdout, severe_stderr = severe_load.communicate(timeout=5)
     severe_server_log = log_tail(
         lab.scenario, "server-severe-pressure", limit=20000
@@ -2379,6 +2852,8 @@ def scenario_server_tun_write_backpressure(
         "responsive_queue_pressure_must_be_observed": True,
         "responsive_queue_depth_must_not_exceed_capacity": True,
         "status_control_and_heartbeat_must_progress": True,
+        "concurrent_tunnel_ping_received_min": 6,
+        "concurrent_tunnel_ping_loss_percent_max": 25,
         "client_and_server_must_remain_running_during_responsive_phase": True,
         "severe_pressure_must_fail_closed": True,
         "severe_pressure_fail_closed_seconds_max": 5,
@@ -2390,6 +2865,8 @@ def scenario_server_tun_write_backpressure(
         and responsive_phase["queue_remained_bounded"]
         and responsive_processes_alive
         and control_cadence_responsive
+        and concurrent_ping_result.get("received", 0) >= 6
+        and concurrent_ping_result.get("loss_percent", 100) <= 25
         and server_exit_code not in (None, 0)
         and fail_closed_seconds <= 5
         and explicit_saturation_failure
@@ -2534,14 +3011,52 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
             router,
             ["iptables", "-I", "FORWARD", "-p", "udp", "--dport", str(SERVER_PORT), "-j", "DROP"],
         )
+    schedule_generation_before_outage = (
+        (json_file(lab.server_status) or {}).get("return_schedule") or {}
+    ).get("schedule_generation", 0)
     time.sleep(18)
+    continuous_interval = 0.2
+    continuous_command = [
+        "ping",
+        "-D",
+        "-O",
+        "-n",
+        "-i",
+        str(continuous_interval),
+        "-c",
+        "300",
+        "-w",
+        "60",
+        "-I",
+        "xbond0",
+        SERVER_TUN_IP,
+    ]
+    continuous_ping = subprocess.Popen(
+        ns_cmd(CLIENT_NS, *continuous_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    lab.track_process(continuous_ping)
+    time.sleep(1)
+    restore_wall_time = time.time()
+    restore_started = time.monotonic()
     for router in ROUTER_NAMES:
         ns_run(router, ["iptables", "-F"])
 
     wait_for(
         lambda: (
             (lab.client is not None and lab.client.poll() is not None)
-            or not (json_file(lab.server_status) or {}).get("schedule_required", True)
+            or (
+                not (json_file(lab.server_status) or {}).get("schedule_required", True)
+                and (
+                    ((json_file(lab.server_status) or {}).get("return_schedule") or {}).get(
+                        "schedule_generation", 0
+                    )
+                    > schedule_generation_before_outage
+                )
+            )
         ),
         20,
         "return schedule resynchronization or supervised client restart",
@@ -2550,7 +3065,33 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
     supervisor_restarted = client_exit_code is not None
     if supervisor_restarted:
         client_exit_code = lab.restart_client(log_name="client-schedule-resync")
+    schedule_recovery_seconds = round(time.monotonic() - restore_started, 3)
+    # Keep the same ping process running long enough after schedule recovery
+    # for cumulative loss to reflect sustained recovery, not just the outage
+    # window that preceded the first successful reply.
+    time.sleep(15)
+    stopped_wall_time = time.time()
+    if continuous_ping.poll() is None:
+        lab.stop_process(
+            continuous_ping, signal_number=signal.SIGINT, timeout=3
+        )
+    continuous_stdout, continuous_stderr = continuous_ping.communicate(
+        timeout=5
+    )
+    continuous_result = parse_timestamped_ping(
+        "\n".join(
+            part
+            for part in (continuous_stdout, continuous_stderr)
+            if part
+        ),
+        continuous_command,
+        restore_wall_time=restore_wall_time,
+        sample_interval=continuous_interval,
+        stopped_wall_time=stopped_wall_time,
+    )
+    continuous_result["exit_code"] = continuous_ping.returncode
     after = lab.tunnel_ping(count=8)
+    validation_completed_seconds = round(time.monotonic() - restore_started, 3)
     lab.restart_iperf_server()
     download = iperf(reverse=True, seconds=4)
     result.notes.append(
@@ -2565,14 +3106,23 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
             "one_way_control_and_data_loss_seconds": 18,
             "client_exit_code_before_supervisor_restart": client_exit_code,
             "supervisor_restarted_client": supervisor_restarted,
+            "continuous_ping_started_before_restore": True,
+            "continuous_ping_across_restore": continuous_result,
             "ping_after_restore": after,
+            "schedule_recovery_seconds": schedule_recovery_seconds,
+            "restore_to_validation_seconds": validation_completed_seconds,
             "download_after_restore": download,
             "runtime": lab.collect_runtime_metrics(),
         }
     )
     result.thresholds = {
         "post_restore_loss_percent_max": 5,
+        "continuous_time_to_first_success_seconds_max": 15,
+        "continuous_post_restore_loss_percent_max": 20,
+        "continuous_sustained_recovery_required": True,
+        "schedule_recovery_seconds_max": 15,
         "post_restore_download_mbps_min": 5,
+        "post_restore_download_requires_complete_valid_iperf_json": True,
         "fresh_anchor_stale_backup_loss_percent_max": 10,
         "fresh_anchor_must_not_restart_client": True,
         "fresh_schedule_required": True,
@@ -2587,6 +3137,13 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
         if fresh_anchor_ping.get("loss_percent", 100) <= 10
         and fresh_anchor_pid_unchanged
         and after.get("loss_percent", 100) <= 5
+        and continuous_result.get("time_to_first_success_seconds") is not None
+        and continuous_result["time_to_first_success_seconds"] <= 15
+        and continuous_result.get("post_restore_loss_percent", 100) <= 20
+        and continuous_result.get("sustained_recovery") is True
+        and schedule_recovery_seconds <= 15
+        and download.get("exit_code") == 0
+        and download.get("valid_complete_json") is True
         and download.get("mbps", 0) >= 5
         and fresh_schedule
         else "fail"
@@ -2595,17 +3152,25 @@ def scenario_stale_return_schedule(lab: XBondLab, result: LabResult, _: int) -> 
 
 def scenario_queue_saturation(lab: XBondLab, result: LabResult, _: int) -> None:
     lab.setup_topology()
-    lab.start_runtime(queue_capacity=8, inbound_capacity=16)
+    # This is still far below the production 2048/4096 capacities, but large
+    # enough to exercise sustained pressure without turning the test into a
+    # synthetic zero-throughput denial of service.
+    lab.start_runtime(queue_capacity=32, inbound_capacity=64)
     retransmit_before = tcp_retransmits(CLIENT_NS)
     server_status_before = json_file(lab.server_status) or {}
     control_before = server_status_before.get("control_plane") or {}
     throughput, pressure_samples, ping_under_pressure = (
         concurrent_bidirectional_throughput(
             lab,
-            seconds=12,
-            parallel=12,
+            seconds=10,
+            parallel=8,
             sample_interval=0.1,
         )
+    )
+    throughput_completed = all(
+        throughput[direction].get("exit_code") == 0
+        and throughput[direction].get("valid_complete_json") is True
+        for direction in ("upload", "download")
     )
     runtime_under_pressure = lab.collect_runtime_metrics()
     queue_telemetry = {
@@ -2707,6 +3272,7 @@ def scenario_queue_saturation(lab: XBondLab, result: LabResult, _: int) -> None:
     result.metrics.update(
         {
             "bidirectional_throughput_under_pressure": throughput,
+            "bidirectional_iperf_completed": throughput_completed,
             "ping_concurrent_with_pressure": ping_under_pressure,
             "pressure_samples": pressure_samples,
             "client_exit_code_before_supervisor_restart": client_exit_code,
@@ -2731,10 +3297,14 @@ def scenario_queue_saturation(lab: XBondLab, result: LabResult, _: int) -> None:
     result.thresholds = {
         "processes_must_recover_running": True,
         "concurrent_bidirectional_load_required": True,
+        "both_iperf_directions_require_exit_zero_and_complete_valid_json": True,
         "server_primary_return_counters_required": True,
         "server_primary_return_queue_full_delta_min": 1,
         "server_primary_return_enqueued_delta_min": 1,
         "all_return_copies_dropped_delta_max": 0,
+        "under_pressure_upload_mbps_min": 1,
+        "under_pressure_download_mbps_min": 1,
+        "under_pressure_ping_loss_percent_max": 10,
         "post_recovery_throughput_mbps_min": 5,
         "post_recovery_tunnel_loss_percent_max": 5,
         "tcp_retransmit_delta_max": 20000,
@@ -2744,9 +3314,11 @@ def scenario_queue_saturation(lab: XBondLab, result: LabResult, _: int) -> None:
         "pass"
         if processes["client"].get("running")
         and processes["server"].get("running")
-        and throughput["upload"].get("exit_code") is not None
-        and throughput["download"].get("exit_code") is not None
+        and throughput_completed
         and ping_under_pressure.get("ran_concurrently") is True
+        and throughput["upload"].get("mbps", 0) >= 1
+        and throughput["download"].get("mbps", 0) >= 1
+        and ping_under_pressure.get("loss_percent", 100) <= 10
         and required_primary_return_counters_present
         and primary_return_queue_full_delta >= 1
         and primary_return_enqueued_delta >= 1
@@ -2840,6 +3412,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     lab.apply_netem(2, "delay 120ms 60ms distribution normal loss 5%")
     lab.apply_netem(3, "delay 220ms 120ms distribution normal loss 12%")
     lab.start_runtime()
+    baseline_throughput = basic_throughput(lab, seconds=3)
     samples: list[dict[str, Any]] = []
     required_duration = max(1800, duration)
     client_pid = lab.client.pid if lab.client else None
@@ -2903,31 +3476,50 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         for sample in samples
         if "throughput" in sample
     ]
-    useful_throughput_samples = [
-        item
-        for item in throughput_samples
-        if item["upload"].get("mbps", 0) > 0
-        and item["download"].get("mbps", 0) > 0
-    ]
-    queue_depth_samples: list[float] = []
-    queue_samples_complete = bool(samples)
-    for sample in samples:
-        depths = [
-            float(value)
-            for side in ("client_status", "server_status")
-            for key, value in sample[side].items()
-            if key.endswith("queue_depth") and isinstance(value, (int, float))
-        ]
-        if not depths:
-            queue_samples_complete = False
-        queue_depth_samples.append(sum(depths))
-    queue_trend = (
-        trend_summary(sample_times, queue_depth_samples)
-        if queue_samples_complete
-        else trend_summary([], [])
+    baseline_complete = all(
+        baseline_throughput[direction].get("exit_code") == 0
+        and baseline_throughput[direction].get("valid_complete_json") is True
+        for direction in ("upload", "download")
     )
-    queue_oldest_age_samples: list[float] = []
-    queue_age_samples_complete = bool(samples)
+    baseline_floor_mbps = min(
+        baseline_throughput["upload"].get("mbps", 0),
+        baseline_throughput["download"].get("mbps", 0),
+    )
+    throughput_samples_complete = bool(throughput_samples) and all(
+        item[direction].get("exit_code") == 0
+        and item[direction].get("valid_complete_json") is True
+        for item in throughput_samples
+        for direction in ("upload", "download")
+    )
+    throughput_floor_mbps = [
+        min(
+            item["upload"].get("mbps", 0),
+            item["download"].get("mbps", 0),
+        )
+        for item in throughput_samples
+    ]
+    throughput_baseline_ratios = [
+        value / baseline_floor_mbps if baseline_floor_mbps > 0 else 0.0
+        for value in throughput_floor_mbps
+    ]
+    qualified_throughput_samples = [
+        value
+        for value, ratio in zip(
+            throughput_floor_mbps,
+            throughput_baseline_ratios,
+            strict=True,
+        )
+        if value >= 1 and ratio >= 0.25
+    ]
+    queue_depth_trends, queue_samples_complete = per_metric_trends(
+        samples,
+        lambda key: key.endswith("queue_depth")
+        or ("sender_lanes[" in key and key.endswith(".depth")),
+    )
+    queue_age_trends, queue_age_samples_complete = per_metric_trends(
+        samples,
+        lambda key: key.endswith("oldest_age_ms"),
+    )
     client_tun_write_latency_times: list[float] = []
     client_tun_write_latency_samples: list[float] = []
     server_tun_write_latency_times: list[float] = []
@@ -2937,16 +3529,6 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     previous_client_packets: float | None = None
     previous_client_write_total: float | None = None
     for sample in samples:
-        oldest_ages = [
-            float(value)
-            for side in ("client_status", "server_status")
-            for key, value in sample[side].items()
-            if key.endswith("oldest_age_ms") and isinstance(value, (int, float))
-        ]
-        if not oldest_ages:
-            queue_age_samples_complete = False
-        queue_oldest_age_samples.append(max(oldest_ages, default=0))
-
         client_packets = sample["client_status"].get("process.tun_write_packets")
         client_write_total = sample["client_status"].get(
             "process.tun_write_micros_total"
@@ -2985,11 +3567,6 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         and len(client_tun_write_latency_samples) >= 2
         and len(server_tun_write_latency_samples) >= 2
     )
-    queue_oldest_age_trend = (
-        trend_summary(sample_times, queue_oldest_age_samples)
-        if queue_age_samples_complete
-        else trend_summary([], [])
-    )
     tun_write_latency_trends = {
         "client": trend_summary(
             client_tun_write_latency_times, client_tun_write_latency_samples
@@ -3009,6 +3586,37 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         and sample["processes"]["server"].get("pid") == server_pid
         for sample in samples
     )
+    counter_predicates: dict[str, Callable[[str], bool]] = {
+        "harmful_drops": lambda key: any(
+            marker in key.lower()
+            for marker in (
+                "inbound_queue_drops",
+                "tun_queue_drops",
+                "all_return_copies_dropped",
+                "tun_write_queue_saturated_drops",
+                "ingress_payload_queue_drops",
+                ".data.enqueue_drops",
+                ".data.deadline_drops",
+                "repair.queue_drops",
+            )
+        ),
+        "repair_misses": lambda key: key.lower().endswith("repair.cache_misses"),
+        "late_duplicates": lambda key: key.lower().endswith("late_duplicates"),
+        "rebinds": lambda key: key.lower().endswith("rebind_count"),
+    }
+    counter_growth: dict[str, dict[str, Any]] = {}
+    counter_growth_complete = True
+    duration_minutes = max(actual_duration / 60, 1 / 60)
+    for category, predicate in counter_predicates.items():
+        growth, complete = counter_growth_by_key(samples, predicate)
+        total = sum(growth.values())
+        counter_growth[category] = {
+            "by_key": growth,
+            "total": total,
+            "per_minute": total / duration_minutes,
+            "complete": complete,
+        }
+        counter_growth_complete = counter_growth_complete and complete
     result.metrics.update(
         {
             "configured_duration_seconds": duration,
@@ -3017,12 +3625,22 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             "rss_samples_complete": rss_samples_complete,
             "rss_trends": rss_trends,
             "max_ping_loss_percent": max(ping_loss, default=100),
+            "baseline_throughput": baseline_throughput,
+            "baseline_throughput_complete": baseline_complete,
+            "baseline_floor_mbps": baseline_floor_mbps,
             "throughput_sample_count": len(throughput_samples),
-            "useful_throughput_sample_count": len(useful_throughput_samples),
+            "throughput_samples_complete": throughput_samples_complete,
+            "throughput_floor_mbps": throughput_floor_mbps,
+            "throughput_baseline_ratios": throughput_baseline_ratios,
+            "qualified_throughput_sample_count": len(
+                qualified_throughput_samples
+            ),
             "queue_samples_complete": queue_samples_complete,
-            "queue_depth_trend": queue_trend,
+            "queue_depth_trends": queue_depth_trends,
             "queue_age_samples_complete": queue_age_samples_complete,
-            "queue_oldest_age_trend": queue_oldest_age_trend,
+            "queue_oldest_age_trends": queue_age_trends,
+            "counter_growth_complete": counter_growth_complete,
+            "counter_growth": counter_growth,
             "tun_write_latency_samples_complete": tun_write_latency_samples_complete,
             "tun_write_latency_trends": tun_write_latency_trends,
             "all_sample_pids_unchanged": all_sample_pids_unchanged,
@@ -3038,6 +3656,7 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         "rss_end_growth_kib_max": 16384,
         "rss_slope_kib_per_minute_max": 128,
         "queue_samples_required": True,
+        "each_queue_is_gated_independently": True,
         "queue_end_growth_max": 4,
         "queue_slope_per_minute_max": 0.25,
         "queue_oldest_age_ms_max": 1000,
@@ -3048,7 +3667,15 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         "tun_write_latency_end_growth_micros_max": 20000,
         "tun_write_latency_slope_micros_per_minute_max": 2000,
         "max_ping_loss_percent": 10,
-        "all_throughput_samples_must_be_useful": True,
+        "baseline_and_samples_require_complete_valid_iperf_json": True,
+        "throughput_floor_mbps_min": 1,
+        "throughput_baseline_ratio_min": 0.25,
+        "harmful_drop_counter_growth_max": 0,
+        "repair_miss_counter_growth_max": 300,
+        "repair_miss_growth_per_minute_max": 10,
+        "late_duplicate_counter_growth_max": 30000,
+        "late_duplicate_growth_per_minute_max": 1000,
+        "rebind_counter_growth_max": 3,
         "process_pids_must_not_change_in_any_sample": True,
         "processes_must_remain_running": True,
     }
@@ -3060,7 +3687,10 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
         and result.metrics["actual_duration_seconds"] >= 1800
         and result.metrics["max_ping_loss_percent"] <= 10
         and len(throughput_samples) > 0
-        and len(useful_throughput_samples) == len(throughput_samples)
+        and baseline_complete
+        and baseline_floor_mbps >= 1
+        and throughput_samples_complete
+        and len(qualified_throughput_samples) == len(throughput_samples)
         and rss_samples_complete
         and all(
             trend["peak_growth"] is not None
@@ -3072,17 +3702,30 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
             for trend in rss_trends.values()
         )
         and queue_samples_complete
-        and queue_trend["end_growth"] is not None
-        and queue_trend["end_growth"] <= 4
-        and queue_trend["slope_per_minute"] is not None
-        and queue_trend["slope_per_minute"] <= 0.25
+        and all(
+            trend["end_growth"] is not None
+            and trend["end_growth"] <= 4
+            and trend["slope_per_minute"] is not None
+            and trend["slope_per_minute"] <= 0.25
+            for trend in queue_depth_trends.values()
+        )
         and queue_age_samples_complete
-        and queue_oldest_age_trend["peak"] is not None
-        and queue_oldest_age_trend["peak"] <= 1000
-        and queue_oldest_age_trend["end_growth"] is not None
-        and queue_oldest_age_trend["end_growth"] <= 250
-        and queue_oldest_age_trend["slope_per_minute"] is not None
-        and queue_oldest_age_trend["slope_per_minute"] <= 5
+        and all(
+            trend["peak"] is not None
+            and trend["peak"] <= 1000
+            and trend["end_growth"] is not None
+            and trend["end_growth"] <= 250
+            and trend["slope_per_minute"] is not None
+            and trend["slope_per_minute"] <= 5
+            for trend in queue_age_trends.values()
+        )
+        and counter_growth_complete
+        and counter_growth["harmful_drops"]["total"] == 0
+        and counter_growth["repair_misses"]["total"] <= 300
+        and counter_growth["repair_misses"]["per_minute"] <= 10
+        and counter_growth["late_duplicates"]["total"] <= 30000
+        and counter_growth["late_duplicates"]["per_minute"] <= 1000
+        and counter_growth["rebinds"]["total"] <= 3
         and tun_write_latency_samples_complete
         and all(
             trend["peak"] is not None
@@ -3193,12 +3836,15 @@ def execute_one(scenario: str, duration: int) -> tuple[dict[str, Any], pathlib.P
         if (
             result.cleanup["namespaces_remaining"]
             or result.cleanup["processes_remaining"]
+            or result.cleanup["process_groups_remaining"]
+            or result.cleanup["namespace_pids_remaining"]
             or not result.cleanup["qdisc_state_removed"]
         ):
             if result.status == "pass":
                 result.status = "fail"
             result.errors.append(
-                "Lab cleanup left namespaces, processes, or managed qdisc state behind."
+                "Lab cleanup left namespaces, descendants, process groups, "
+                "or managed qdisc state behind."
             )
     payload = result.finish()
     schema = json.loads(schema_path.read_text(encoding="utf-8"))

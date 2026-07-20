@@ -26,6 +26,7 @@ pub use protocol::{
     decode_sealed_payload, decode_sealed_payload_into, encode_payload, encode_sealed_payload,
     encode_sealed_payload_into, DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind,
     ReceiveOutcome, ReceiveStats, XBondControlMessage, XBondFrame, XBondHeader,
+    FLAG_SERVER_TO_CLIENT,
 };
 pub use reorder::{PacketReorderBuffer, ReorderStats, ReorderedPacket};
 pub use repair::{recommended_repair_cache_bytes, ResendCache};

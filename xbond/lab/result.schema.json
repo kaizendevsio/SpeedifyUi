@@ -96,12 +96,25 @@
       "required": [
         "namespaces_remaining",
         "processes_remaining",
+        "process_groups_remaining",
+        "namespace_pids_remaining",
         "qdisc_state_removed",
         "qdisc_remaining"
       ],
       "properties": {
         "namespaces_remaining": { "type": "array", "items": { "type": "string" } },
         "processes_remaining": { "type": "array", "items": { "type": "integer" } },
+        "process_groups_remaining": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "namespace_pids_remaining": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "integer" }
+          }
+        },
         "qdisc_state_removed": { "type": "boolean" },
         "qdisc_remaining": {
           "type": "array",

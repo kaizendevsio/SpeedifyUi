@@ -43,6 +43,7 @@ pub struct AuthenticatedSessionTracker {
     next_generation: u64,
     pending_order: VecDeque<((u64, SessionHandshakeNonce), u64)>,
     pending: HashMap<(u64, SessionHandshakeNonce), PendingChallenge>,
+    retired_order: VecDeque<u64>,
     retired: HashSet<u64>,
 }
 
@@ -61,7 +62,8 @@ impl AuthenticatedSessionTracker {
             next_generation: 0,
             pending_order: VecDeque::with_capacity(pending_capacity),
             pending: HashMap::with_capacity(pending_capacity),
-            retired: HashSet::new(),
+            retired_order: VecDeque::with_capacity(pending_capacity),
+            retired: HashSet::with_capacity(pending_capacity),
         }
     }
 
@@ -75,6 +77,10 @@ impl AuthenticatedSessionTracker {
 
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    pub fn retired_len(&self) -> usize {
+        self.retired.len()
     }
 
     pub fn issue_challenge(
@@ -167,7 +173,7 @@ impl AuthenticatedSessionTracker {
             SessionProofOutcome::AlreadyCurrent
         } else {
             if let Some(previous_session_id) = self.current.replace(session_id) {
-                self.retired.insert(previous_session_id);
+                self.retire(previous_session_id);
             }
             self.pending.clear();
             self.pending_order.clear();
@@ -207,6 +213,17 @@ impl AuthenticatedSessionTracker {
                 break;
             }
             self.pending_order.pop_front();
+        }
+    }
+
+    fn retire(&mut self, session_id: u64) {
+        if self.retired.insert(session_id) {
+            self.retired_order.push_back(session_id);
+        }
+        while self.retired_order.len() > self.pending_capacity {
+            if let Some(expired) = self.retired_order.pop_front() {
+                self.retired.remove(&expired);
+            }
         }
     }
 }
@@ -325,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_request_and_proof_cannot_reopen_after_many_later_sessions() {
+    fn captured_proof_cannot_reopen_after_retired_retention_eviction() {
         let mut tracker = AuthenticatedSessionTracker::with_challenge_ttl(2, 100);
         let old_request = nonce(1);
         let old_challenge = nonce(2);
@@ -352,13 +369,16 @@ mod tests {
         let replacement_challenge = nonce(99);
         assert_eq!(
             tracker.issue_challenge(42, old_request, replacement_challenge, 1_000),
-            SessionChallengeOutcome::RejectedRetiredSession
+            SessionChallengeOutcome::Issued {
+                challenge: replacement_challenge
+            }
         );
         assert_eq!(
             tracker.consume_proof(42, old_request, old_challenge, 1_001),
-            SessionProofOutcome::RejectedRetiredSession
+            SessionProofOutcome::RejectedMismatchedChallenge
         );
         assert_eq!(tracker.current(), Some(40));
+        assert_eq!(tracker.retired_len(), 2);
     }
 
     #[test]
@@ -433,6 +453,34 @@ mod tests {
             tracker.consume_proof(2, nonce(2), nonce(12), 13),
             SessionProofOutcome::Opened
         );
+    }
+
+    #[test]
+    fn retired_session_state_is_bounded_and_keeps_most_recent_ids() {
+        let mut tracker = AuthenticatedSessionTracker::with_challenge_ttl(2, 1_000);
+
+        for session_id in 1_u64..=5 {
+            assert_eq!(
+                complete_open(
+                    &mut tracker,
+                    session_id,
+                    nonce(session_id as u8),
+                    nonce((session_id + 10) as u8),
+                    session_id * 10,
+                ),
+                SessionProofOutcome::Opened
+            );
+        }
+
+        assert_eq!(tracker.retired_len(), 2);
+        assert_eq!(
+            tracker.issue_challenge(4, nonce(20), nonce(21), 100),
+            SessionChallengeOutcome::RejectedRetiredSession
+        );
+        assert!(matches!(
+            tracker.issue_challenge(1, nonce(22), nonce(23), 100),
+            SessionChallengeOutcome::Issued { .. }
+        ));
     }
 
     #[test]

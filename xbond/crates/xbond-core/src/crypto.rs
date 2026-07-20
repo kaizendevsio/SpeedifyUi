@@ -87,9 +87,10 @@ impl XBondKey {
 
 fn nonce_for(header: &XBondHeader) -> XNonce {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"xbond-frame-nonce-v1");
+    hasher.update(b"xbond-frame-nonce-v2");
     hasher.update(&header.session_id.to_be_bytes());
     hasher.update(&header.sequence.to_be_bytes());
+    hasher.update(&header.send_micros.to_be_bytes());
     hasher.update(&header.path_id.to_be_bytes());
     hasher.update(&[header.kind.as_u8(), header.flags]);
     let hash = hasher.finalize();
@@ -127,7 +128,7 @@ pub enum CryptoError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{PacketKind, XBondHeader};
+    use crate::protocol::{PacketKind, XBondHeader, FLAG_SERVER_TO_CLIENT};
 
     #[test]
     fn sealed_payload_round_trips() {
@@ -190,6 +191,36 @@ mod tests {
 
         assert_eq!(
             key.open(&wrong_header, &sealed),
+            Err(CryptoError::OpenFailed)
+        );
+    }
+
+    #[test]
+    fn reused_session_and_sequence_with_fresh_wire_time_uses_a_new_nonce() {
+        let key = XBondKey::from_passphrase("test-key");
+        let old_header = XBondHeader::new(PacketKind::Data, 99, 1, 500, 1);
+        let fresh_header = XBondHeader::new(PacketKind::Data, 99, 1, 501, 1);
+
+        let old = key.seal(&old_header, b"old payload").unwrap();
+        let fresh = key.seal(&fresh_header, b"fresh payload").unwrap();
+
+        assert_ne!(old, fresh);
+        assert_eq!(key.open(&fresh_header, &old), Err(CryptoError::OpenFailed));
+    }
+
+    #[test]
+    fn server_direction_flag_separates_request_and_ack_nonces() {
+        let key = XBondKey::from_passphrase("test-key");
+        let request = XBondHeader::new(PacketKind::Heartbeat, 99, 1, 500, 1);
+        let mut ack = request.clone();
+        ack.flags = FLAG_SERVER_TO_CLIENT;
+
+        let request_ciphertext = key.seal(&request, b"heartbeat").unwrap();
+        let ack_ciphertext = key.seal(&ack, b"ack").unwrap();
+
+        assert_ne!(request_ciphertext, ack_ciphertext);
+        assert_eq!(
+            key.open(&ack, &request_ciphertext),
             Err(CryptoError::OpenFailed)
         );
     }

@@ -115,6 +115,7 @@ includes:
 - extracted queue, repair, rebind, socket generation, late, drop, reorder, TUN,
   and FEC telemetry
 - qdisc statistics for impaired scenarios
+- strict iperf completion/JSON validity and process-group/namespace cleanup
 - cleanup verification for namespaces, processes, and managed qdisc state
 - reproducibility provenance: Git commit/branch/dirty state, Docker context and
   host, engine/kernel/OS, built image ID/digests, and exact client/server binary

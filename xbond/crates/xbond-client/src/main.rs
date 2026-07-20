@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -32,7 +32,7 @@ use xbond_core::{
     XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader,
     XBondKey, XBondPathStatus, XBondProcessStatus, XBondReorderStatus, XBondRepairStatus,
     XBondRuntimeStatus, XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus,
-    XorFecBlock,
+    XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 #[derive(Debug, Parser)]
@@ -64,8 +64,6 @@ enum Command {
         interface: Option<String>,
         #[arg(long, default_value_t = 1)]
         path_id: u16,
-        #[arg(long)]
-        session_id: Option<u64>,
         #[arg(long, default_value_t = 10)]
         count: u32,
         #[arg(long, default_value_t = 250)]
@@ -86,8 +84,6 @@ enum Command {
         path_ids: Vec<u16>,
         #[arg(long = "bind")]
         binds: Vec<String>,
-        #[arg(long)]
-        session_id: Option<u64>,
         #[arg(long, default_value_t = 10)]
         count: u32,
         #[arg(long, default_value_t = 250)]
@@ -106,8 +102,6 @@ enum Command {
         tun_name: String,
         #[arg(long, default_value_t = 1400)]
         tun_mtu: u16,
-        #[arg(long)]
-        session_id: Option<u64>,
         #[arg(long, default_value = "XBOND_PSK")]
         key_env: String,
         #[arg(long)]
@@ -188,7 +182,6 @@ async fn main() -> Result<()> {
             bind,
             interface,
             path_id,
-            session_id,
             count,
             interval_ms,
             timeout_ms,
@@ -200,7 +193,7 @@ async fn main() -> Result<()> {
                 bind,
                 bind_device: interface,
                 path_id,
-                session_id: resolve_session_id(session_id)?,
+                session_id: resolve_session_id()?,
                 count,
                 interval_ms,
                 timeout_ms,
@@ -218,7 +211,6 @@ async fn main() -> Result<()> {
             server,
             path_ids,
             binds,
-            session_id,
             count,
             interval_ms,
             timeout_ms,
@@ -230,7 +222,7 @@ async fn main() -> Result<()> {
                 server,
                 path_ids,
                 binds,
-                session_id: resolve_session_id(session_id)?,
+                session_id: resolve_session_id()?,
                 count,
                 interval_ms,
                 timeout_ms,
@@ -247,7 +239,6 @@ async fn main() -> Result<()> {
             config,
             tun_name,
             tun_mtu,
-            session_id,
             key_env,
             packet_limit,
             json_events,
@@ -260,7 +251,6 @@ async fn main() -> Result<()> {
                 config,
                 tun_name,
                 tun_mtu,
-                session_id,
                 key_env,
                 packet_limit,
                 json_events,
@@ -317,7 +307,6 @@ struct TunnelOptions {
     config: PathBuf,
     tun_name: String,
     tun_mtu: u16,
-    session_id: Option<u64>,
     key_env: String,
     packet_limit: Option<u64>,
     json_events: bool,
@@ -430,10 +419,7 @@ async fn send_control_request(
 }
 
 #[cfg(not(unix))]
-async fn send_control_request(
-    _socket: &PathBuf,
-    _request: ControlRequest,
-) -> Result<ControlResponse> {
+async fn send_control_request(_socket: &Path, _request: ControlRequest) -> Result<ControlResponse> {
     bail!("XBond live override control is only available on Unix-like systems")
 }
 
@@ -481,7 +467,12 @@ fn is_prioritized_client_inbound(kind: PacketKind) -> bool {
 async fn receive_prioritized_tunnel_frame(
     control_rx: &mut mpsc::Receiver<InboundTunnelFrame>,
     payload_rx: &mut mpsc::Receiver<InboundTunnelFrame>,
+    payload_enabled: bool,
 ) -> Option<InboundTunnelFrame> {
+    if !payload_enabled {
+        return control_rx.recv().await;
+    }
+
     tokio::select! {
         biased;
         inbound = control_rx.recv() => match inbound {
@@ -891,6 +882,29 @@ struct TunWriteBatch {
     queued_at: Instant,
 }
 
+#[derive(Debug)]
+struct PendingTunWriteBatch {
+    packets: Vec<ReorderedPacket>,
+    payload_bytes: usize,
+    deadline: Instant,
+    enqueue_deadline: Duration,
+}
+
+impl PendingTunWriteBatch {
+    fn new(packets: Vec<ReorderedPacket>, enqueue_deadline: Duration) -> Self {
+        let payload_bytes = packets
+            .iter()
+            .map(|packet| packet.payload.len())
+            .sum::<usize>();
+        Self {
+            packets,
+            payload_bytes,
+            deadline: Instant::now() + enqueue_deadline,
+            enqueue_deadline,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TunWriterHandle {
     tx: mpsc::Sender<TunWriteBatch>,
@@ -1085,6 +1099,7 @@ enum PrimaryEnqueueResult {
 #[derive(Debug, Default)]
 struct TunnelPathRuntime {
     send_failures: u32,
+    remote_ack_required_to_clear_send_failures: bool,
     bytes_sent: u64,
     last_bytes_sent: u64,
     bytes_received: u64,
@@ -1136,6 +1151,8 @@ struct TunnelPathRuntime {
     sender_repair_oldest_age_ms: u64,
     sender_repair_enqueue_drops: u64,
     sender_repair_deadline_drops: u64,
+    sender_queue_pressure_score: f64,
+    sender_previous_total_drops: u64,
     stale_ack_ticks: u32,
     direct_probe_in_flight: bool,
     last_direct_probe_at: Option<Instant>,
@@ -1583,6 +1600,7 @@ async fn run_ping(options: PingOptions) -> Result<PingResult> {
                     if reply.header.kind == PacketKind::Heartbeat
                         && reply.header.session_id == options.session_id
                         && reply.header.sequence == sequence
+                        && reply.header.flags & FLAG_SERVER_TO_CLIENT != 0
                         && reply.payload == b"ack"
                     {
                         let elapsed =
@@ -1725,8 +1743,7 @@ fn handle_control_request(
             ControlResponse {
                 ok: true,
                 message: format!(
-                    "XBond override set to {:?} / {:?} for {}s.",
-                    mode, redundancy_policy, ttl_seconds
+                    "XBond override set to {mode:?} / {redundancy_policy:?} for {ttl_seconds}s."
                 ),
                 active_override: active_override.as_ref().map(ActiveScheduleOverride::status),
                 ..ControlResponse::default()
@@ -2154,7 +2171,7 @@ async fn begin_fresh_authenticated_session(
     trace_packets: bool,
     reason: &str,
 ) -> Result<FreshAuthenticatedSession> {
-    let session_id = resolve_session_id(None)?;
+    let session_id = resolve_session_id()?;
     let request_nonce = resolve_session_handshake_nonce()?;
     let now = Instant::now();
     let mut synchronization =
@@ -2226,8 +2243,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
-    let automatic_session_rotation = options.session_id.is_none();
-    let mut session_id = resolve_session_id(options.session_id)?;
+    let mut session_id = resolve_session_id()?;
 
     let specs = select_probe_paths(&config, &[], &[])?;
     let specs_by_id = specs
@@ -2420,10 +2436,13 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
     let mut reorder_tick =
         time::interval(Duration::from_millis(config.reorder_hold_ms.clamp(5, 100)));
+    let mut tun_admission_tick = time::interval(Duration::from_millis(2));
+    tun_admission_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut last_throughput_sample = Instant::now();
     let mut primary_send_pending = false;
     let mut last_primary_queue_full_reported = 0u64;
     let mut last_primary_queue_full = None::<(u16, u64)>;
+    let mut pending_tun_write = None::<PendingTunWriteBatch>;
 
     update_tunnel_throughput(
         &mut path_runtime,
@@ -2451,6 +2470,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         &repair,
         &server_recovery_status,
         tun_packet_rx.len(),
+        tun_write_tx.queue_depth(),
+        tun_write_tx.peak_queue_depth(),
         inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
     )?;
     send_session_open(
@@ -2500,11 +2521,6 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 ).await?;
                 let synchronization_now = Instant::now();
                 if let Some(error) = synchronization.synchronization_error(synchronization_now) {
-                    if !automatic_session_rotation {
-                        bail!(
-                            "{error}; automatic session rotation is disabled because --session-id was supplied"
-                        );
-                    }
                     let previous_session_id = session_id;
                     reset_client_session_runtime(
                         &config,
@@ -2520,6 +2536,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     sequence = 0;
                     primary_send_pending = false;
                     last_primary_queue_full = None;
+                    pending_tun_write = None;
                     let fresh = begin_fresh_authenticated_session(
                         &mut path_runtime,
                         &senders,
@@ -2662,7 +2679,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "sender_lanes": sender_lane_metrics_json(&path_runtime),
                             "pmtu_errors": counters.pmtu_errors,
                             "repair_cache_entries": resend_cache.len(),
-                            "repair_cache_bytes": resend_cache.bytes_len(),
+                            "repair_cache_bytes": resend_cache.accounted_bytes_len(),
                             "repair_cache_byte_capacity": resend_cache.byte_capacity(),
                             "repair_cache_packet_capacity": resend_cache.packet_capacity(),
                             "repair_cache_evictions": counters.repair_cache_evictions,
@@ -2731,6 +2748,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &repair,
                     &server_recovery_status,
                     tun_packet_rx.len(),
+                    tun_write_tx.queue_depth(),
+                    tun_write_tx.peak_queue_depth(),
                     inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                 )?;
                 counters.supervisor_control_progress_ticks = counters
@@ -2768,15 +2787,29 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 }
             }
 
-            _ = reorder_tick.tick() => {
+            _ = tun_admission_tick.tick(), if pending_tun_write.is_some() => {
+                if !try_enqueue_pending_tun_write(&tun_write_tx, &mut pending_tun_write)? {
+                    let pending = pending_tun_write
+                        .as_ref()
+                        .expect("backpressured TUN admission disappeared");
+                    if pending.deadline <= Instant::now() {
+                        return Err(record_tun_admission_timeout(
+                            &tun_write_tx,
+                            pending,
+                            &mut counters,
+                            options.json_events,
+                        ));
+                    }
+                }
+            }
+
+            _ = reorder_tick.tick(), if pending_tun_write.is_none() => {
                 let ready = return_reorder.drain_ready(monotonic_micros());
-                enqueue_reordered_return_packets(
+                pending_tun_write = start_reordered_return_packet_admission(
                     &tun_write_tx,
                     ready,
-                    &mut counters,
-                    options.json_events,
-                )
-                .await?;
+                    TUN_WRITE_ENQUEUE_DEADLINE,
+                )?;
                 send_repair_requests_for_return_gaps(
                     &mut path_runtime,
                     &senders,
@@ -2952,9 +2985,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     current_schedule_generation,
                     &return_reorder,
                     &repair,
-                    &server_recovery_status,
-                    tun_packet_rx.len(),
-                    inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
+                        &server_recovery_status,
+                        tun_packet_rx.len(),
+                        tun_write_tx.queue_depth(),
+                        tun_write_tx.peak_queue_depth(),
+                        inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                 )?;
                 let _ = envelope.response_tx.send(response);
             }
@@ -3049,6 +3084,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
 
             Some(result) = silent_probe_result_rx.recv() => {
                 let threshold = silent_blackhole_stale_threshold(&config);
+                let aggregate_failed =
+                    aggregate_tunnel_is_confirmed_blackhole(&aggregate_health, threshold);
                 let (should_rebind, ineffective_rebinds, should_restart_session) =
                     if socket_generation_is_current(
                     &path_runtime,
@@ -3072,21 +3109,35 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 };
 
                 if should_rebind {
-                    if should_restart_session {
+                    if should_restart_session && aggregate_failed {
                         bail!(
-                            "path {} remained a confirmed silent UDP blackhole after {} socket \
-                             rebind attempts; restarting the authenticated XBond session instead \
-                             of repeating ineffective local rebinds",
+                            "the aggregate tunnel and path {} remained confirmed silent UDP \
+                             blackholes after {} socket rebind attempts; restarting the \
+                             authenticated XBond session",
                             result.path_id,
                             ineffective_rebinds
+                        );
+                    }
+                    if should_restart_session {
+                        let runtime = path_runtime.entry(result.path_id).or_default();
+                        runtime.send_failures = runtime.send_failures.max(2);
+                        runtime.remote_ack_required_to_clear_send_failures = true;
+                        runtime.last_rebind_error = Some(
+                            "path-scoped silent UDP blackhole persisted after hot rebind; \
+                             keeping the path hard-demoted until a fresh socket receives an ACK"
+                                .to_string(),
                         );
                     }
                     mark_path_socket_for_rebind(
                         &mut path_runtime,
                         result.path_id,
-                        "silent-udp-blackhole-direct-probe-ok",
+                        if should_restart_session {
+                            "persistent-silent-udp-blackhole-path-demoted"
+                        } else {
+                            "silent-udp-blackhole-direct-probe-ok"
+                        },
                         None,
-                        false,
+                        should_restart_session,
                     );
                 } else if let Some(error) = result.error.as_ref() {
                     if let Some(runtime) = path_runtime.get_mut(&result.path_id) {
@@ -3104,6 +3155,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "socket_generation": result.socket_generation,
                             "reachable": result.reachable,
                             "rebind_requested": should_rebind,
+                            "path_hard_demoted": should_restart_session && !aggregate_failed,
+                            "aggregate_failed": aggregate_failed,
                             "ineffective_rebinds": ineffective_rebinds,
                             "error": result.error,
                         })
@@ -3381,6 +3434,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
             Some(mut inbound) = receive_prioritized_tunnel_frame(
                 &mut inbound_control_rx,
                 &mut inbound_payload_rx,
+                pending_tun_write.is_none(),
             ) => {
                 counters.decoded_frames = counters.decoded_frames.saturating_add(1);
                 if inbound.frame.header.session_id != session_id {
@@ -3507,11 +3561,6 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     }
 
                     if let Some(reason) = restart_reason {
-                        if !automatic_session_rotation {
-                            bail!(
-                                "XBond server requested restart of fixed authenticated session {session_id}: {reason}"
-                            );
-                        }
                         let previous_session_id = session_id;
                         receiver_payload_pool.recycle(inbound.frame.payload);
                         reset_client_session_runtime(
@@ -3528,6 +3577,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         sequence = 0;
                         primary_send_pending = false;
                         last_primary_queue_full = None;
+                        pending_tun_write = None;
                         let fresh = begin_fresh_authenticated_session(
                             &mut path_runtime,
                             &senders,
@@ -3624,6 +3674,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 &repair,
                                 &server_recovery_status,
                                 tun_packet_rx.len(),
+                                tun_write_tx.queue_depth(),
+                                tun_write_tx.peak_queue_depth(),
                                 inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                             )?;
                         }
@@ -3704,13 +3756,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             monotonic_micros(),
                             0,
                         );
-                        enqueue_reordered_return_packets(
+                        pending_tun_write = start_reordered_return_packet_admission(
                             &tun_write_tx,
                             ready,
-                            &mut counters,
-                            options.json_events,
-                        )
-                        .await?;
+                            TUN_WRITE_ENQUEUE_DEADLINE,
+                        )?;
                         send_repair_requests_for_return_gaps(
                             &mut path_runtime,
                             &senders,
@@ -3780,22 +3830,126 @@ fn advance_pending_fec_source(
     None
 }
 
-async fn enqueue_reordered_return_packets(
+fn start_reordered_return_packet_admission(
     tun_write_tx: &TunWriterHandle,
     packets: Vec<ReorderedPacket>,
-    counters: &mut TunnelCounters,
-    json_events: bool,
-) -> Result<()> {
-    enqueue_reordered_return_packets_with_deadline(
-        tun_write_tx,
-        packets,
-        counters,
-        json_events,
-        TUN_WRITE_ENQUEUE_DEADLINE,
-    )
-    .await
+    enqueue_deadline: Duration,
+) -> Result<Option<PendingTunWriteBatch>> {
+    if packets.is_empty() {
+        return Ok(None);
+    }
+
+    let mut pending = Some(PendingTunWriteBatch::new(packets, enqueue_deadline));
+    if try_enqueue_pending_tun_write(tun_write_tx, &mut pending)? {
+        Ok(None)
+    } else {
+        Ok(pending)
+    }
 }
 
+fn try_enqueue_pending_tun_write(
+    tun_write_tx: &TunWriterHandle,
+    pending: &mut Option<PendingTunWriteBatch>,
+) -> Result<bool> {
+    let pending_packet_count = pending
+        .as_ref()
+        .map(|admission| admission.packets.len())
+        .unwrap_or_default();
+    if pending_packet_count == 0 {
+        return Ok(true);
+    }
+    let available = tun_write_tx
+        .capacity
+        .saturating_sub(tun_write_tx.queue_depth());
+    let packet_count = pending_packet_count.min(available);
+    if packet_count == 0 || !tun_write_tx.try_reserve_packets(packet_count) {
+        if tun_write_tx.tx.is_closed() {
+            bail!("XBond TUN writer queue closed unexpectedly");
+        }
+        return Ok(false);
+    }
+
+    let mut admission = pending.take().expect("pending TUN admission disappeared");
+    let remaining_packets = admission.packets.split_off(packet_count);
+    let remaining_payload_bytes = remaining_packets
+        .iter()
+        .map(|packet| packet.payload.len())
+        .sum();
+    let completed = remaining_packets.is_empty();
+    if !completed {
+        *pending = Some(PendingTunWriteBatch {
+            packets: remaining_packets,
+            payload_bytes: remaining_payload_bytes,
+            deadline: admission.deadline,
+            enqueue_deadline: admission.enqueue_deadline,
+        });
+    }
+    let batch = TunWriteBatch {
+        packets: admission.packets,
+        queued_at: Instant::now(),
+    };
+    match tun_write_tx.tx.try_send(batch) {
+        Ok(()) => Ok(completed),
+        Err(mpsc::error::TrySendError::Closed(batch)) => {
+            tun_write_tx.release_packets(batch.packets.len());
+            bail!("XBond TUN writer queue closed unexpectedly")
+        }
+        Err(mpsc::error::TrySendError::Full(batch)) => {
+            tun_write_tx.release_packets(batch.packets.len());
+            let mut restored_packets = batch.packets;
+            if let Some(remaining) = pending.take() {
+                restored_packets.extend(remaining.packets);
+                *pending = Some(PendingTunWriteBatch {
+                    packets: restored_packets,
+                    payload_bytes: admission.payload_bytes,
+                    deadline: remaining.deadline,
+                    enqueue_deadline: remaining.enqueue_deadline,
+                });
+            } else {
+                *pending = Some(PendingTunWriteBatch {
+                    packets: restored_packets,
+                    payload_bytes: admission.payload_bytes,
+                    deadline: admission.deadline,
+                    enqueue_deadline: admission.enqueue_deadline,
+                });
+            }
+            Ok(false)
+        }
+    }
+}
+
+fn record_tun_admission_timeout(
+    tun_write_tx: &TunWriterHandle,
+    pending: &PendingTunWriteBatch,
+    counters: &mut TunnelCounters,
+    json_events: bool,
+) -> anyhow::Error {
+    let packet_count = pending.packets.len();
+    counters.tun_write_queue_drops = counters
+        .tun_write_queue_drops
+        .saturating_add(packet_count as u64);
+    if json_events {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "tun-writer-primary-backpressure",
+                "packets": packet_count,
+                "bytes": pending.payload_bytes,
+                "queue_capacity": tun_write_tx.capacity,
+                "queue_depth": tun_write_tx.queue_depth(),
+                "queue_peak_depth": tun_write_tx.peak_queue_depth(),
+                "deadline_ms": pending.enqueue_deadline.as_millis(),
+            })
+        );
+    }
+    anyhow::anyhow!(
+        "XBond TUN writer remained saturated and could not atomically admit {packet_count} \
+         reordered packets within {} ms; terminating the tunnel for a clean restart",
+        pending.enqueue_deadline.as_millis()
+    )
+}
+
+#[cfg(test)]
 async fn enqueue_reordered_return_packets_with_deadline(
     tun_write_tx: &TunWriterHandle,
     packets: Vec<ReorderedPacket>,
@@ -3803,97 +3957,27 @@ async fn enqueue_reordered_return_packets_with_deadline(
     json_events: bool,
     enqueue_deadline: Duration,
 ) -> Result<()> {
-    if packets.is_empty() {
-        return Ok(());
-    }
-    let packet_count = packets.len();
-    let payload_bytes = packets
-        .iter()
-        .map(|packet| packet.payload.len())
-        .sum::<usize>();
-    if packet_count > tun_write_tx.capacity {
-        counters.tun_write_queue_drops = counters
-            .tun_write_queue_drops
-            .saturating_add(packet_count as u64);
-        bail!(
-            "XBond TUN writer cannot atomically admit {packet_count} reordered packets within its \
-             {}-packet capacity; terminating the tunnel for a clean restart",
-            tun_write_tx.capacity
-        );
-    }
-    let deadline = Instant::now() + enqueue_deadline;
-    loop {
-        if tun_write_tx.try_reserve_packets(packet_count) {
-            break;
+    let mut pending =
+        start_reordered_return_packet_admission(tun_write_tx, packets, enqueue_deadline)?;
+    while pending.is_some() {
+        if try_enqueue_pending_tun_write(tun_write_tx, &mut pending)? {
+            return Ok(());
         }
-        if tun_write_tx.tx.is_closed() {
-            bail!("XBond TUN writer queue closed unexpectedly");
-        }
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let admission = pending
+            .as_ref()
+            .expect("backpressured TUN admission disappeared");
+        let remaining = admission.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            counters.tun_write_queue_drops = counters
-                .tun_write_queue_drops
-                .saturating_add(packet_count as u64);
-            if json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "tun-writer-primary-backpressure",
-                        "packets": packet_count,
-                        "bytes": payload_bytes,
-                        "queue_capacity": tun_write_tx.capacity,
-                        "queue_depth": tun_write_tx.queue_depth(),
-                        "queue_peak_depth": tun_write_tx.peak_queue_depth(),
-                        "deadline_ms": enqueue_deadline.as_millis(),
-                    })
-                );
-            }
-            bail!(
-                "XBond TUN writer remained saturated and could not atomically admit {packet_count} \
-                 reordered packets within {} ms; terminating the tunnel for a clean restart",
-                enqueue_deadline.as_millis()
-            );
+            return Err(record_tun_admission_timeout(
+                tun_write_tx,
+                admission,
+                counters,
+                json_events,
+            ));
         }
-
         time::sleep(remaining.min(Duration::from_millis(2))).await;
     }
-
-    let batch = TunWriteBatch {
-        packets,
-        queued_at: Instant::now(),
-    };
-    match tun_write_tx.tx.try_send(batch) {
-        Ok(()) => Ok(()),
-        Err(mpsc::error::TrySendError::Closed(batch)) => {
-            tun_write_tx.release_packets(batch.packets.len());
-            bail!("XBond TUN writer queue closed unexpectedly")
-        }
-        Err(mpsc::error::TrySendError::Full(batch)) => {
-            tun_write_tx.release_packets(batch.packets.len());
-            counters.tun_write_queue_drops = counters
-                .tun_write_queue_drops
-                .saturating_add(batch.packets.len() as u64);
-            if json_events {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "event": "tun-writer-primary-backpressure",
-                        "packets": batch.packets.len(),
-                        "bytes": payload_bytes,
-                        "queue_capacity": tun_write_tx.capacity,
-                        "queue_depth": tun_write_tx.queue_depth(),
-                        "queue_peak_depth": tun_write_tx.peak_queue_depth(),
-                        "deadline_ms": enqueue_deadline.as_millis(),
-                    })
-                );
-            }
-            bail!(
-                "XBond TUN writer batch queue is full; reconnecting immediately instead of \
-                 stalling the control loop or dropping unique reordered packets"
-            )
-        }
-    }
+    Ok(())
 }
 
 async fn ensure_tunnel_sockets(
@@ -4150,6 +4234,7 @@ async fn ensure_tunnel_sockets(
             runtime.socket_bind_addr = Some(bind_addr.clone());
             runtime.socket_bind_device = bind_device.map(ToString::to_string);
             runtime.socket_opened_at = Some(Instant::now());
+            reset_sender_metrics_for_socket_generation(runtime);
             runtime.last_socket_error = None;
             runtime.last_rebind_error = None;
             runtime.force_rebind_reason = None;
@@ -4439,6 +4524,10 @@ fn spawn_tunnel_receiver(
             let Ok(header) = decode_sealed_payload_into(&buf[..len], &key, &mut payload) else {
                 continue;
             };
+            if !is_server_originated_frame(&header) {
+                payload.clear();
+                continue;
+            }
             let Some(queued_payload) =
                 copy_bounded_receiver_payload(header.kind, &payload, tun_mtu, &payload_pool)
             else {
@@ -4551,7 +4640,29 @@ fn refresh_sender_queue_metrics(
         runtime.sender_repair_oldest_age_ms = repair.oldest_age_ms;
         runtime.sender_repair_enqueue_drops = repair.enqueue_drops;
         runtime.sender_repair_deadline_drops = repair.deadline_drops;
+        let total_drops = data
+            .enqueue_drops
+            .saturating_add(data.deadline_drops)
+            .saturating_add(control.enqueue_drops)
+            .saturating_add(control.deadline_drops)
+            .saturating_add(repair.enqueue_drops)
+            .saturating_add(repair.deadline_drops);
+        let new_drops = total_drops.saturating_sub(runtime.sender_previous_total_drops);
+        runtime.sender_previous_total_drops = total_drops;
+        runtime.sender_queue_pressure_score = [
+            sender_lane_queue_pressure(&data, DATA_LANE_DEADLINE),
+            sender_lane_queue_pressure(&control, CONTROL_LANE_DEADLINE),
+            sender_lane_queue_pressure(&repair, REPAIR_LANE_DEADLINE),
+            if new_drops > 0 { 1.0 } else { 0.0 },
+        ]
+        .into_iter()
+        .fold(0.0, f64::max);
     }
+}
+
+fn reset_sender_metrics_for_socket_generation(runtime: &mut TunnelPathRuntime) {
+    runtime.sender_previous_total_drops = 0;
+    runtime.sender_queue_pressure_score = 0.0;
 }
 
 fn sender_lane_metrics_json(
@@ -4592,11 +4703,18 @@ fn sender_lane_metrics_json(
 }
 
 fn sender_queue_pressure(runtime: &TunnelPathRuntime) -> f64 {
-    if runtime.sender_queue_capacity == 0 {
+    runtime.sender_queue_pressure_score.clamp(0.0, 1.0)
+}
+
+fn sender_lane_queue_pressure(snapshot: &LaneQueueSnapshot, deadline: Duration) -> f64 {
+    let depth_pressure = if snapshot.capacity == 0 {
         0.0
     } else {
-        (runtime.sender_queue_depth as f64 / runtime.sender_queue_capacity as f64).clamp(0.0, 1.0)
-    }
+        snapshot.depth as f64 / snapshot.capacity as f64
+    };
+    let deadline_ms = deadline.as_millis().max(1) as f64;
+    let age_pressure = snapshot.oldest_age_ms as f64 / deadline_ms;
+    depth_pressure.max(age_pressure).clamp(0.0, 1.0)
 }
 
 fn tunnel_health(
@@ -4733,7 +4851,9 @@ fn drain_sender_completions(
         }
 
         let runtime = path_runtime.entry(*path_id).or_default();
-        runtime.send_failures = 0;
+        if !runtime.remote_ack_required_to_clear_send_failures {
+            runtime.send_failures = 0;
+        }
         runtime.bytes_sent = runtime
             .bytes_sent
             .saturating_add(completed.successful_bytes);
@@ -4810,6 +4930,26 @@ fn path_is_silent_blackhole_candidate(
         && runtime.loss_rate >= SILENT_BLACKHOLE_MIN_LOSS_RATE
         && runtime.send_failures == 0
         && runtime.force_rebind_reason.is_none()
+}
+
+fn aggregate_tunnel_is_confirmed_blackhole(
+    aggregate_health: &TunnelAggregateHealthRuntime,
+    stale_threshold: Duration,
+) -> bool {
+    let enough_failed_samples = aggregate_health.health_window.len() >= 3
+        && aggregate_health
+            .health_window
+            .iter()
+            .rev()
+            .take(3)
+            .all(|delivered| !delivered);
+    let last_success_is_stale = aggregate_health
+        .last_success_at
+        .is_none_or(|last_success| last_success.elapsed() >= stale_threshold);
+
+    enough_failed_samples
+        && last_success_is_stale
+        && aggregate_health.loss_rate.is_some_and(|loss| loss >= 0.9)
 }
 
 fn silent_blackhole_stale_threshold(config: &ClientConfig) -> Duration {
@@ -4914,7 +5054,7 @@ const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
 const AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX: u64 = 0xFFFFu64 << 48;
 const REPAIR_CACHE_CAPACITY: usize = 4096;
 const REPAIR_CACHE_TTL_MICROS: u64 = 3_000_000;
-const REPAIR_CACHE_MIN_BYTES: usize = 1 * 1024 * 1024;
+const REPAIR_CACHE_MIN_BYTES: usize = 1024 * 1024;
 const REPAIR_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
 const REPAIR_REQUEST_INTERVAL_MICROS: u64 = 75_000;
 const PRE_RECOVERY_REPAIR_REQUEST_INTERVAL_MICROS: u64 = 250_000;
@@ -4937,8 +5077,11 @@ const SILENT_BLACKHOLE_CONFIRM_TICKS: u32 = 3;
 const SILENT_BLACKHOLE_MIN_LOSS_RATE: f64 = 0.75;
 const SILENT_BLACKHOLE_MIN_STALE_ACK: Duration = Duration::from_secs(5);
 const SILENT_BLACKHOLE_PROBE_COOLDOWN: Duration = Duration::from_secs(15);
-const SILENT_BLACKHOLE_REBIND_COOLDOWN: Duration = Duration::from_secs(60);
-const SILENT_BLACKHOLE_MAX_INEFFECTIVE_REBINDS: u32 = 3;
+// One hot rebind is the inexpensive recovery attempt. If the rebound socket
+// is still a confirmed blackhole, fail the session cleanly instead of
+// repeatedly masking a dead transport behind local socket recreation.
+const SILENT_BLACKHOLE_REBIND_COOLDOWN: Duration = Duration::from_secs(30);
+const SILENT_BLACKHOLE_MAX_INEFFECTIVE_REBINDS: u32 = 2;
 const SILENT_BLACKHOLE_DIRECT_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const SILENT_BLACKHOLE_DIRECT_PROBE_TARGET: &str = "1.1.1.1:443";
 const SESSION_OPEN_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -5139,7 +5282,7 @@ fn update_return_reorder_hold(
             .then_some(server_recovery_status.ingress_reorder.current_hold_ms)
             .filter(|hold_ms| *hold_ms > 0)
             .unwrap_or(150);
-        server_hold_ms.max(150).min(500).saturating_mul(1_000)
+        server_hold_ms.clamp(150, 500).saturating_mul(1_000)
     } else {
         normal_hold_micros
     };
@@ -5680,6 +5823,7 @@ fn record_tunnel_heartbeat_ack(
 
     let rtt_ms = sent_at.elapsed().as_secs_f64() * 1_000.0;
     runtime.send_failures = 0;
+    runtime.remote_ack_required_to_clear_send_failures = false;
     runtime.last_ack_at = Some(Instant::now());
     runtime.stale_ack_ticks = 0;
     runtime.ineffective_rebinds = 0;
@@ -5898,6 +6042,8 @@ fn write_tunnel_runtime_status(
     repair: &XBondRepairStatus,
     server_recovery_status: &XBondServerRecoveryStatus,
     tun_queue_depth: usize,
+    tun_write_queue_depth: usize,
+    tun_write_queue_peak_depth: usize,
     inbound_queue_depth: usize,
 ) -> Result<()> {
     let paths = roles
@@ -5960,6 +6106,8 @@ fn write_tunnel_runtime_status(
                 tun_queue_capacity: config.tun_queue_capacity.max(1),
                 inbound_queue_capacity: config.inbound_queue_capacity.max(1),
                 tun_queue_depth,
+                tun_write_queue_depth,
+                tun_write_queue_peak_depth,
                 inbound_queue_depth,
                 udp_socket_buffer_bytes: config.udp_socket_buffer_bytes,
                 tun_queue_drops: counters.tun_queue_drops,
@@ -6119,7 +6267,12 @@ fn is_expected_ack(frame: &XBondFrame, session_id: u64, sequence: u64) -> bool {
     frame.header.kind == PacketKind::Heartbeat
         && frame.header.session_id == session_id
         && frame.header.sequence == sequence
+        && frame.header.flags & FLAG_SERVER_TO_CLIENT != 0
         && frame.payload == b"ack"
+}
+
+fn is_server_originated_frame(header: &XBondHeader) -> bool {
+    header.flags & FLAG_SERVER_TO_CLIENT != 0
 }
 
 fn select_probe_paths(
@@ -6291,10 +6444,7 @@ fn resolve_interface_source_bind_addr(server: &str, interface_name: &str) -> Res
 fn bind_addr_from_route_output(route_output: &str, interface_name: &str) -> Result<String> {
     let route_dev = token_after(route_output, "dev");
     if route_dev.as_deref() != Some(interface_name) {
-        bail!(
-            "route output dev {:?} does not match interface {interface_name}",
-            route_dev
-        );
+        bail!("route output dev {route_dev:?} does not match interface {interface_name}");
     }
 
     let source = token_after(route_output, "src").or_else(|| token_after(route_output, "from"));
@@ -6548,10 +6698,7 @@ fn verify_route(
     if route_src.as_deref() != Some(source_ip.as_str()) {
         return RouteVerification::failed(
             "ip-route-get",
-            format!(
-                "route source {:?} does not match bound source {source_ip}",
-                route_src
-            ),
+            format!("route source {route_src:?} does not match bound source {source_ip}"),
         );
     }
 
@@ -6954,14 +7101,7 @@ fn now_micros() -> u64 {
         .unwrap_or_default()
 }
 
-fn resolve_session_id(override_id: Option<u64>) -> Result<u64> {
-    if let Some(session_id) = override_id {
-        if session_id == 0 {
-            bail!("XBond session id must be nonzero");
-        }
-        return Ok(session_id);
-    }
-
+fn resolve_session_id() -> Result<u64> {
     for _ in 0..8 {
         let mut bytes = [0u8; std::mem::size_of::<u64>()];
         getrandom::getrandom(&mut bytes).map_err(|error| {
@@ -7025,7 +7165,7 @@ mod tests {
             .await
             .unwrap();
 
-        let received = receive_prioritized_tunnel_frame(&mut control_rx, &mut payload_rx)
+        let received = receive_prioritized_tunnel_frame(&mut control_rx, &mut payload_rx, true)
             .await
             .unwrap();
         assert_eq!(received.frame.header.kind, PacketKind::Heartbeat);
@@ -7033,6 +7173,31 @@ mod tests {
         assert!(is_prioritized_client_inbound(PacketKind::Control));
         assert!(is_prioritized_client_inbound(PacketKind::Heartbeat));
         assert!(!is_prioritized_client_inbound(PacketKind::Data));
+    }
+
+    #[tokio::test]
+    async fn pending_tun_admission_pauses_payload_but_keeps_control_flowing() {
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (payload_tx, mut payload_rx) = mpsc::channel(1);
+        let frame = |kind, sequence| InboundTunnelFrame {
+            path_id: 1,
+            frame: XBondFrame::new(
+                XBondHeader::new(kind, 7, sequence, now_micros(), 1),
+                vec![0x45],
+            ),
+        };
+
+        payload_tx.send(frame(PacketKind::Data, 1)).await.unwrap();
+        control_tx
+            .send(frame(PacketKind::Control, 2))
+            .await
+            .unwrap();
+
+        let received = receive_prioritized_tunnel_frame(&mut control_rx, &mut payload_rx, false)
+            .await
+            .unwrap();
+        assert_eq!(received.frame.header.kind, PacketKind::Control);
+        assert_eq!(payload_rx.len(), 1);
     }
 
     fn complete_session_handshake(
@@ -7068,8 +7233,8 @@ mod tests {
 
     #[test]
     fn generated_session_ids_are_random_and_nonzero() {
-        let first = resolve_session_id(None).unwrap();
-        let second = resolve_session_id(None).unwrap();
+        let first = resolve_session_id().unwrap();
+        let second = resolve_session_id().unwrap();
         let first_nonce = resolve_session_handshake_nonce().unwrap();
         let second_nonce = resolve_session_handshake_nonce().unwrap();
 
@@ -7079,8 +7244,6 @@ mod tests {
         assert!(first_nonce.iter().any(|byte| *byte != 0));
         assert!(second_nonce.iter().any(|byte| *byte != 0));
         assert_ne!(first_nonce, second_nonce);
-        assert_eq!(resolve_session_id(Some(42)).unwrap(), 42);
-        assert!(resolve_session_id(Some(0)).is_err());
     }
 
     #[test]
@@ -7390,6 +7553,45 @@ mod tests {
             PathSenderCompletionSnapshot::default()
         );
         senders[&9].task.abort();
+    }
+
+    #[tokio::test]
+    async fn local_udp_send_success_does_not_clear_remote_ack_demotion_latch() {
+        let (data_tx, _data_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = mpsc::channel(1);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        let sender = test_sender_handle(data_tx, control_tx, repair_tx, 1, task);
+        sender.metrics.record_success(PacketKind::Data, 1200);
+        let senders = HashMap::from([(9, sender)]);
+        let runtime = TunnelPathRuntime {
+            send_failures: 2,
+            remote_ack_required_to_clear_send_failures: true,
+            ..TunnelPathRuntime::default()
+        };
+        let mut runtimes = HashMap::from([(9, runtime)]);
+        let mut counters = TunnelCounters::default();
+        let mut repair = XBondRepairStatus::default();
+
+        drain_sender_completions(&senders, &mut runtimes, &mut counters, &mut repair);
+
+        assert_eq!(runtimes[&9].send_failures, 2);
+        assert!(runtimes[&9].remote_ack_required_to_clear_send_failures);
+        senders[&9].task.abort();
+    }
+
+    #[test]
+    fn new_socket_generation_resets_sender_drop_baseline_and_pressure() {
+        let mut runtime = TunnelPathRuntime {
+            sender_previous_total_drops: 91,
+            sender_queue_pressure_score: 1.0,
+            ..TunnelPathRuntime::default()
+        };
+
+        reset_sender_metrics_for_socket_generation(&mut runtime);
+
+        assert_eq!(runtime.sender_previous_total_drops, 0);
+        assert_eq!(runtime.sender_queue_pressure_score, 0.0);
     }
 
     #[test]
@@ -7706,6 +7908,29 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_blackhole_requires_recent_failures_and_stale_success() {
+        let threshold = Duration::from_secs(5);
+        let mut aggregate = TunnelAggregateHealthRuntime {
+            health_window: VecDeque::from([false, false, false]),
+            loss_rate: Some(1.0),
+            last_success_at: Some(Instant::now()),
+            ..TunnelAggregateHealthRuntime::default()
+        };
+
+        assert!(!aggregate_tunnel_is_confirmed_blackhole(
+            &aggregate, threshold
+        ));
+        aggregate.last_success_at = Some(Instant::now() - threshold - Duration::from_secs(1));
+        assert!(aggregate_tunnel_is_confirmed_blackhole(
+            &aggregate, threshold
+        ));
+        aggregate.health_window.push_back(true);
+        assert!(!aggregate_tunnel_is_confirmed_blackhole(
+            &aggregate, threshold
+        ));
+    }
+
+    #[test]
     fn runtime_status_json_parses_observed_counters_and_paths() {
         let runtime = toml_or_json_runtime_status(
             r#"{
@@ -7898,9 +8123,31 @@ mod tests {
             b"ack".to_vec(),
         );
         let mut path_runtime = HashMap::from([(1, runtime)]);
+        path_runtime
+            .get_mut(&1)
+            .unwrap()
+            .remote_ack_required_to_clear_send_failures = true;
+        path_runtime.get_mut(&1).unwrap().send_failures = 2;
         record_tunnel_heartbeat_ack(&mut path_runtime, 1, &frame);
 
         assert_eq!(path_runtime[&1].ineffective_rebinds, 0);
+        assert_eq!(path_runtime[&1].send_failures, 0);
+        assert!(!path_runtime[&1].remote_ack_required_to_clear_send_failures);
+    }
+
+    #[test]
+    fn ack_validation_requires_authenticated_server_direction() {
+        let mut ack = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, 91, now_micros(), 1),
+            b"ack".to_vec(),
+        );
+
+        assert!(!is_expected_ack(&ack, 7, 91));
+        assert!(!is_server_originated_frame(&ack.header));
+
+        ack.header.flags = FLAG_SERVER_TO_CLIENT;
+        assert!(is_expected_ack(&ack, 7, 91));
+        assert!(is_server_originated_frame(&ack.header));
     }
 
     #[test]
@@ -8194,7 +8441,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tun_writer_rejects_an_oversized_batch_without_partial_admission() {
+    async fn tun_writer_chunks_an_oversized_batch_without_exceeding_capacity() {
         let (tx, mut rx) = mpsc::channel(3);
         let writer = TunWriterHandle {
             tx,
@@ -8224,7 +8471,29 @@ mod tests {
         .await
         .unwrap();
 
-        let error = enqueue_reordered_return_packets_with_deadline(
+        let release_writer = writer.clone();
+        let releaser = tokio::spawn(async move {
+            let queued = rx.recv().await.unwrap();
+            assert_eq!(
+                queued
+                    .packets
+                    .iter()
+                    .map(|packet| packet.sequence)
+                    .collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+            release_writer.release_packets(queued.packets.len());
+            let mut sequences = Vec::new();
+            while sequences.len() < 4 {
+                let queued = rx.recv().await.unwrap();
+                assert!(queued.packets.len() <= release_writer.capacity);
+                sequences.extend(queued.packets.iter().map(|packet| packet.sequence));
+                release_writer.release_packets(queued.packets.len());
+            }
+            sequences
+        });
+
+        enqueue_reordered_return_packets_with_deadline(
             &writer,
             vec![
                 ReorderedPacket {
@@ -8237,27 +8506,29 @@ mod tests {
                     path_id: 1,
                     payload: vec![4],
                 },
+                ReorderedPacket {
+                    sequence: 5,
+                    path_id: 1,
+                    payload: vec![5],
+                },
+                ReorderedPacket {
+                    sequence: 6,
+                    path_id: 1,
+                    payload: vec![6],
+                },
             ],
             &mut counters,
             false,
             Duration::from_millis(100),
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("atomically admit 2"));
-        assert_eq!(counters.tun_write_queue_drops, 2);
-        assert_eq!(writer.queue_depth(), 2);
-        let queued = rx.recv().await.unwrap();
-        assert_eq!(
-            queued
-                .packets
-                .iter()
-                .map(|packet| packet.sequence)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert!(rx.try_recv().is_err());
+        let sequences = releaser.await.unwrap();
+        assert_eq!(sequences, vec![3, 4, 5, 6]);
+        assert_eq!(counters.tun_write_queue_drops, 0);
+        assert_eq!(writer.queue_depth(), 0);
+        assert!(writer.peak_queue_depth() <= writer.capacity);
     }
 
     #[tokio::test]
@@ -8543,6 +8814,7 @@ mod tests {
         assert_eq!(runtime.sender_control_deadline_drops, 1);
         assert_eq!(runtime.sender_repair_queue_depth, 1);
         assert_eq!(runtime.sender_repair_enqueue_drops, 1);
+        assert_eq!(sender_queue_pressure(runtime), 1.0);
         let json = sender_lane_metrics_json(&runtimes);
         assert_eq!(json[0]["data"]["depth"], 1);
         assert_eq!(json[0]["control"]["deadline_drops"], 1);

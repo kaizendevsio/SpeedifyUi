@@ -59,7 +59,10 @@ Get-ChildItem -LiteralPath $results -Filter "*.json" -File | ForEach-Object {
 
 $gitCommit = (& git -C $xbondRoot rev-parse HEAD).Trim()
 $gitBranch = (& git -C $xbondRoot branch --show-current).Trim()
-$gitDirty = if ((& git -C $xbondRoot status --porcelain).Count -gt 0) { "true" } else { "false" }
+$gitDirty = if ((& git -C $xbondRoot status --porcelain --untracked-files=all -- .).Count -gt 0) { "true" } else { "false" }
+if ($Scenario -eq "matrix" -and $gitDirty -eq "true") {
+    throw "The release validation matrix requires committed XBond sources. Commit tracked changes under '$xbondRoot' before running it."
+}
 $labOrchestratorHash = (Get-FileHash -LiteralPath (Join-Path $labRoot "lab.py") -Algorithm SHA256).Hash.ToLowerInvariant()
 $resultSchemaHash = (Get-FileHash -LiteralPath (Join-Path $labRoot "result.schema.json") -Algorithm SHA256).Hash.ToLowerInvariant()
 $dockerHost = (& docker context inspect $dockerContext --format "{{.Endpoints.docker.Host}}").Trim()
@@ -187,9 +190,11 @@ try {
                 if (
                     $payload.cleanup.namespaces_remaining.Count -gt 0 -or
                     $payload.cleanup.processes_remaining.Count -gt 0 -or
+                    $payload.cleanup.process_groups_remaining.Count -gt 0 -or
+                    $payload.cleanup.namespace_pids_remaining.PSObject.Properties.Count -gt 0 -or
                     -not $payload.cleanup.qdisc_state_removed
                 ) {
-                    throw "Result '$($_.Name)' reports incomplete namespace, process, or qdisc cleanup."
+                    throw "Result '$($_.Name)' reports incomplete namespace, descendant, process-group, or qdisc cleanup."
                 }
             }
         }

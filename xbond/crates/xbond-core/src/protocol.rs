@@ -8,8 +8,11 @@ use crate::session::SessionHandshakeNonce;
 use crate::status::XBondServerRecoveryStatus;
 
 pub const MAGIC: [u8; 4] = *b"XBND";
-pub const VERSION: u8 = 1;
+// Version 2 binds send_micros into the AEAD nonce. Mixed v1/v2 peers must fail
+// during frame parsing instead of surfacing as unexplained authentication loss.
+pub const VERSION: u8 = 2;
 pub const HEADER_LEN: usize = 40;
+pub const FLAG_SERVER_TO_CLIENT: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -517,6 +520,21 @@ mod tests {
         let decoded = XBondFrame::decode(&encoded).unwrap();
 
         assert_eq!(decoded, frame);
+    }
+
+    #[test]
+    fn legacy_wire_version_is_rejected_before_crypto() {
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Data, 42, 7, 123_456, 2),
+            b"hello".to_vec(),
+        );
+        let mut encoded = frame.encode().unwrap();
+        encoded[4] = VERSION - 1;
+
+        assert_eq!(
+            XBondFrame::decode(&encoded),
+            Err(ProtocolError::UnsupportedVersion(VERSION - 1))
+        );
     }
 
     #[test]

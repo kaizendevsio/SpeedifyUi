@@ -484,6 +484,10 @@ pub struct XBondProcessStatus {
     #[serde(default)]
     pub tun_queue_depth: usize,
     #[serde(default)]
+    pub tun_write_queue_depth: usize,
+    #[serde(default)]
+    pub tun_write_queue_peak_depth: usize,
+    #[serde(default)]
     pub inbound_queue_depth: usize,
     #[serde(default)]
     pub udp_socket_buffer_bytes: usize,
