@@ -37,7 +37,7 @@
 - Preferred paired runtime deploy command from Windows is `.\deploy-xbond-paired.ps1`. Use the router-side `./deploy.sh` only for app-only changes that do not affect the Rust XBond runtime.
 
 ## XBond-Only Branch
-- 2026-06-15: Branch `feature/xband-only-runtime` is the tunnel-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion`; user-facing releases use the `ulink-YYYY.MM.N` prefix as of version `ulink-2026.06.111`.
+- 2026-06-15: Branch `feature/xband-only-runtime` is the tunnel-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion`; user-facing releases use the `ulink-YYYY.MM.N` prefix as of version `ulink-2026.06.111`. Rendered changelog prose must also avoid legacy product names; internal service, protocol, storage, config, and compatibility-route identifiers remain unchanged.
 - 2026-06-15: This branch intentionally has no Speedify/XBond toggle, no canary mode, no `speedify_cli` polling, no private reconnect, no auto server switching, no Speedify transport/bonding settings, no Speedify adapter encryption/rate-limit controls, and no `SpeedifyProbeAgent` project reference.
 - 2026-06-18: The old Speedify health-triggered `PrivateReconnectService` is not active on `feature/xband-only-runtime`. Current `ConnectionHealthService` records dashboard/path health only; it does not automatically restart `xbond-client.service` when latency or loss is degraded.
 - 2026-06-18: XNetwork version `xbond-2026.06.52` adds plain-English explanations for the XBond Settings policy selector: Balanced protects small/real-time packets while keeping bulk mostly anchor-first, Reliable duplicates real-time and bulk traffic over anchor plus best backup, and Fast favors anchor-first low-overhead operation.

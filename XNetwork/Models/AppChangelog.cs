@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.111";
+    public const string CurrentVersion = "ulink-2026.06.112";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Finished the visible uLink naming cleanup.",
+            Changes =
+            [
+                "Removed legacy implementation names from rendered historical release notes.",
+                "Kept compatibility routes, service names, status files, and protocol identifiers unchanged internally.",
+                "Expanded the branding audit so future changelog entries cannot expose the retired product name."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.111",
             Date = "2026-07-21",
             Summary = "Completed the uLink product naming transition.",
             Changes =
@@ -408,7 +420,7 @@ public static class AppChangelog
             Changes =
             [
                 "Starlink telemetry now resolves the matching uLink physical path dynamically instead of relying on hardcoded USB adapter IDs.",
-                "Starlink web and gRPC requests are bound to the resolved Linux interface so dish telemetry can work while the default route points through xbond0.",
+                "Starlink web and gRPC requests are bound to the resolved Linux interface so dish telemetry can work while the default route points through the tunnel interface.",
                 "Dashboard Starlink cards again show direct dish stats and open the restored Starlink details/actions sheet."
             ]
         },
@@ -777,9 +789,9 @@ public static class AppChangelog
             Summary = "Bypassed uLink for local Cudy management routes.",
             Changes =
             [
-                "uLink route setup now reads the configured Cudy management URL and pins that local management host to a physical route before making xbond0 the default route.",
+                "uLink route setup now reads the configured Cudy management URL and pins that local management host to a physical route before making the tunnel interface the default route.",
                 "Stale local management bypass routes are cleaned up across uLink client restarts.",
-                "The paired uLink deploy script now installs the route helper scripts and verifies that the configured Cudy host does not route through xbond0."
+                "The paired uLink deploy script now installs the route helper scripts and verifies that the configured Cudy host does not route through the tunnel interface."
             ]
         },
         new ChangelogEntry
@@ -909,8 +921,8 @@ public static class AppChangelog
             Changes =
             [
                 "Operator performance speed test diagnostics now call uLink override commands through non-interactive sudo when configured, matching the root-owned control socket.",
-                "This lets backend diagnostics use live overrides without making /run/xbond/client-control.sock world-writable.",
-                "The user-facing /xbond page remains limited to runtime status and the manual speed test."
+                "This lets backend diagnostics use live overrides without making the runtime control socket world-writable.",
+                "The user-facing diagnostics page remains limited to runtime status and the manual speed test."
             ]
         },
         new ChangelogEntry
@@ -921,7 +933,7 @@ public static class AppChangelog
             Changes =
             [
                 "The Wifi page now responds on both /xrouter and /wifi so operator route checks and navigation use the same user-facing name.",
-                "The manual uLink speed test remains the only user-facing diagnostic action on /xbond.",
+                "The manual uLink speed test remains the only user-facing action on the diagnostics page.",
                 "This is an app-only route fix; uLink runtime binaries remain on the matching deployed scheduler and diagnostics build."
             ]
         },
@@ -1061,7 +1073,7 @@ public static class AppChangelog
             [
                 "Adds a manual Tunnel Speed Test button to the uLink page.",
                 "Runs speedtest-cli through the current default route and reports download, upload, and ping.",
-                "Shows whether the default route was using xbond0 when the test started."
+                "Shows whether the default route was using the tunnel interface when the test started."
             ]
         },
         new ChangelogEntry

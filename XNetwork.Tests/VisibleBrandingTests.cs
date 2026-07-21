@@ -48,11 +48,11 @@ public sealed partial class VisibleBrandingTests
         {
             Assert.False(entry.Version.StartsWith("xbond-", StringComparison.OrdinalIgnoreCase),
                 $"Legacy version prefix found in changelog: {entry.Version}");
-            Assert.DoesNotMatch(LegacyProductName(), RemoveAllowedInternalIdentifiers(entry.Summary));
+            Assert.DoesNotContain("xbond", entry.Summary, StringComparison.OrdinalIgnoreCase);
 
             foreach (var change in entry.Changes)
             {
-                Assert.DoesNotMatch(LegacyProductName(), RemoveAllowedInternalIdentifiers(change));
+                Assert.DoesNotContain("xbond", change, StringComparison.OrdinalIgnoreCase);
             }
         }
     }
