@@ -168,6 +168,8 @@ public class XBondPageSurfaceTests
         Assert.Contains("0%, 74%", styles);
         Assert.Contains("status-pill-exit 220ms", styles);
         Assert.Contains("prefers-reduced-motion: reduce", styles);
+        Assert.Contains("animation: none !important", styles);
+        Assert.Contains("max-width: 20rem", styles);
     }
 
     [Fact]

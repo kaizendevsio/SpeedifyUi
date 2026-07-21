@@ -943,6 +943,21 @@ body {
         animation-delay: 0ms !important;
     }
 
+    .animated-status-pill-shell {
+        max-width: 20rem;
+        opacity: 1;
+        animation: none !important;
+    }
+
+    .animated-status-pill-text {
+        opacity: 1;
+        animation: none !important;
+    }
+
+    .animated-status-pill-shell.animated-status-pill-exiting {
+        opacity: 0;
+    }
+
     .xbond-path-card,
     .adapter-status-dot,
     .adapter-status-dot-button,
