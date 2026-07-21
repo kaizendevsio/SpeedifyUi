@@ -239,7 +239,7 @@
                                 <td class="py-3 pr-4">@RoleLabel(path)</td>
                                 <td class="py-3 pr-4">@path.StateText</td>
                                 <td class="py-3 pr-4">@FormatLatency(path.RttMs)</td>
-                                <td class="py-3 pr-4">@FormatPercent(path.LossPercent)</td>
+                                <td class="py-3 pr-4">@FormatPercent(path.DisplayLossPercent)</td>
                                 <td class="py-3 pr-4">@FormatPercent(path.LatePercent)</td>
                                 <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.DownloadMbps)</td>
                                 <td class="py-3 pr-4">@SpeedFormatter.FormatSpeed(path.UploadMbps)</td>
@@ -458,8 +458,15 @@
                 var id = GetPathChartId(path);
                 downloadData[id] = Math.Round(path.DownloadMbps, 2);
                 uploadData[id] = Math.Round(path.UploadMbps, 2);
-                rttData[id] = Math.Round(path.RttMs ?? 0, 1);
-                lossData[id] = Math.Round(path.LossPercent, 2);
+                if (path.RttMs.HasValue)
+                {
+                    rttData[id] = Math.Round(path.RttMs.Value, 1);
+                }
+
+                if (path.DisplayLossPercent.HasValue)
+                {
+                    lossData[id] = Math.Round(path.DisplayLossPercent.Value, 2);
+                }
             }
 
             rttData[ActualConnectionSeriesId] = Math.Round(snapshot.EffectiveRttMs, 1);

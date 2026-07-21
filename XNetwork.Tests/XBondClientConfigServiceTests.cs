@@ -20,6 +20,11 @@ public class XBondClientConfigServiceTests
             duplicate_loss_threshold = 0.02
             backup_loss_disable_threshold = 0.35
             reorder_hold_ms = 25
+            heartbeat_interval_ms = 200
+            heartbeat_health_window_samples = 100
+            heartbeat_min_quality_samples = 20
+            heartbeat_failure_consecutive = 4
+            heartbeat_recovery_consecutive = 15
             recovery_enabled = true
             recovery_enter_degraded_ticks = 4
             recovery_exit_clean_ticks = 30
@@ -60,6 +65,11 @@ public class XBondClientConfigServiceTests
         Assert.Equal(0.02, config.DuplicateLossThreshold);
         Assert.Equal(0.35, config.BackupLossDisableThreshold);
         Assert.Equal(25, config.ReorderHoldMs);
+        Assert.Equal(200, config.HeartbeatIntervalMs);
+        Assert.Equal(100, config.HeartbeatHealthWindowSamples);
+        Assert.Equal(20, config.HeartbeatMinQualitySamples);
+        Assert.Equal(4, config.HeartbeatFailureConsecutive);
+        Assert.Equal(15, config.HeartbeatRecoveryConsecutive);
         Assert.True(config.RecoveryEnabled);
         Assert.Equal(4, config.RecoveryEnterDegradedTicks);
         Assert.Equal(30, config.RecoveryExitCleanTicks);
@@ -110,6 +120,11 @@ public class XBondClientConfigServiceTests
             duplicate_loss_threshold = 0.05
             backup_loss_disable_threshold = 0.25
             reorder_hold_ms = 15
+            heartbeat_interval_ms = 250
+            heartbeat_health_window_samples = 80
+            heartbeat_min_quality_samples = 16
+            heartbeat_failure_consecutive = 5
+            heartbeat_recovery_consecutive = 12
             recovery_enabled = true
             recovery_enter_degraded_ticks = 5
             recovery_exit_clean_ticks = 25
@@ -148,6 +163,11 @@ public class XBondClientConfigServiceTests
         Assert.Contains("duplicate_loss_threshold = 0.05", rendered);
         Assert.Contains("backup_loss_disable_threshold = 0.25", rendered);
         Assert.Contains("reorder_hold_ms = 15", rendered);
+        Assert.Contains("heartbeat_interval_ms = 250", rendered);
+        Assert.Contains("heartbeat_health_window_samples = 80", rendered);
+        Assert.Contains("heartbeat_min_quality_samples = 16", rendered);
+        Assert.Contains("heartbeat_failure_consecutive = 5", rendered);
+        Assert.Contains("heartbeat_recovery_consecutive = 12", rendered);
         Assert.Contains("recovery_enabled = true", rendered);
         Assert.Contains("recovery_enter_degraded_ticks = 5", rendered);
         Assert.Contains("recovery_exit_clean_ticks = 25", rendered);

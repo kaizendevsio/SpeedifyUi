@@ -456,7 +456,7 @@ fn recovery_status(state: &RecoveryState, eligible_path_ids: Vec<u16>) -> Recove
 
 fn is_recovery_path_eligible(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
     path.hard_demotion_reason().is_none()
-        && path.loss_rate < config.path_loss_exclude_threshold.clamp(0.0, 1.0)
+        && effective_heartbeat_loss_rate(path) < config.path_loss_exclude_threshold.clamp(0.0, 1.0)
 }
 
 fn recovery_duplicate_path_ids(
@@ -501,7 +501,7 @@ fn recovery_duplicate_path_ids(
 
 fn is_harmful_recovery_duplicate(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
     path.hard_demotion_reason().is_some()
-        || path.loss_rate >= config.path_loss_exclude_threshold.clamp(0.0, 1.0)
+        || effective_heartbeat_loss_rate(path) >= config.path_loss_exclude_threshold.clamp(0.0, 1.0)
         || path
             .stale_ack_ms
             .is_some_and(|age| age >= config.degraded_stale_ack_ms.saturating_mul(2).max(3_000))
@@ -515,7 +515,7 @@ fn is_recovery_path_degraded(path: &PathHealthSnapshot, config: RecoveryConfig) 
             .stale_ack_ms
             .is_some_and(|age| age >= config.degraded_stale_ack_ms)
         || path.rtt_ms.is_some_and(|rtt| rtt >= config.degraded_rtt_ms)
-        || path.loss_rate >= config.degraded_loss_threshold
+        || effective_heartbeat_loss_rate(path) >= config.degraded_loss_threshold
         || path.late_rate >= config.degraded_late_threshold
         || path
             .jitter_ms
@@ -528,7 +528,7 @@ fn is_recovery_path_degraded(path: &PathHealthSnapshot, config: RecoveryConfig) 
 }
 
 fn is_soft_heartbeat_loss_only(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
-    path.loss_rate >= config.degraded_loss_threshold
+    effective_heartbeat_loss_rate(path) >= config.degraded_loss_threshold
         && path.rtt_ms.is_none_or(|rtt| rtt < config.degraded_rtt_ms)
         && path.late_rate < config.degraded_late_threshold
         && path
@@ -543,7 +543,7 @@ fn is_soft_heartbeat_loss_only(path: &PathHealthSnapshot, config: RecoveryConfig
 
 fn is_recovery_path_clean(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
     path.rtt_ms.is_some_and(|rtt| rtt < config.clean_rtt_ms)
-        && path.loss_rate < config.clean_loss_threshold
+        && effective_heartbeat_loss_rate(path) < config.clean_loss_threshold
         && path.late_rate < config.clean_late_threshold
         && path
             .jitter_ms
@@ -553,6 +553,14 @@ fn is_recovery_path_clean(path: &PathHealthSnapshot, config: RecoveryConfig) -> 
             .is_none_or(|age| age < config.clean_stale_ack_ms)
         && path.send_failure_streak == 0
         && path.queue_pressure < config.clean_queue_pressure
+}
+
+fn effective_heartbeat_loss_rate(path: &PathHealthSnapshot) -> f64 {
+    if path.heartbeat_warming_up && !path.heartbeat_failed {
+        0.0
+    } else {
+        path.loss_rate
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -761,6 +769,12 @@ mod tests {
             heartbeat_expired: 0,
             heartbeat_late_acks: 0,
             heartbeat_rebind_discarded: 0,
+            pending_probes: 0,
+            heartbeat_sample_count: 0,
+            heartbeat_consecutive_misses: 0,
+            heartbeat_consecutive_successes: 0,
+            heartbeat_warming_up: false,
+            heartbeat_failed: false,
         }
     }
 

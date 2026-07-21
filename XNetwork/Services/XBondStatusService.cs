@@ -114,7 +114,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
                 path.Score = ScorePath(path);
                 path.Role = !path.InterfaceUp
                     ? "unavailable"
-                    : path.InCooldown || path.LossRate >= 1.0
+                    : path.InCooldown || path.HeartbeatFailed
                         ? "cooldown"
                         : "probe";
                 return path;
@@ -211,7 +211,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             {
                 path.Role = "unavailable";
             }
-            else if (path.InCooldown || !string.IsNullOrWhiteSpace(path.DemotionReason))
+            else if (path.InCooldown || path.HeartbeatFailed || !string.IsNullOrWhiteSpace(path.DemotionReason))
             {
                 path.Role = "cooldown";
             }
@@ -231,7 +231,11 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
     }
 
     private static bool IsRealtimeEligible(XBondPathStatus path) =>
-        path.InterfaceUp && !path.InCooldown && path.LossRate < 1.0;
+        path.InterfaceUp &&
+        !path.InCooldown &&
+        !path.HeartbeatFailed &&
+        !path.HeartbeatWarmingUp &&
+        path.HeartbeatSampleCount > 0;
 
     private static double ScorePath(XBondPathStatus path)
     {
@@ -242,7 +246,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
 
         var rttPenalty = Math.Min(path.RttMs ?? 500, 2_000) * 2.0;
         var jitterPenalty = Math.Min(path.JitterMs ?? 100, 1_000) * 2.5;
-        var lossPenalty = Math.Clamp(path.LossRate, 0.0, 1.0) * 800.0;
+        var effectiveLoss = path.HeartbeatWarmingUp && !path.HeartbeatFailed ? 0.0 : path.LossRate;
+        var lossPenalty = Math.Clamp(effectiveLoss, 0.0, 1.0) * 800.0;
         var latePenalty = Math.Clamp(path.LateRate, 0.0, 1.0) * 1_000.0;
         var queuePenalty = Math.Min(path.QueueDepth, 10_000) * 0.1;
         var throughputBonus = path.ThroughputBps == 0
@@ -290,7 +295,13 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             LastRebindReason = path.LastRebindReason,
             LastRebindError = path.LastRebindError,
             LastRebindAtMicros = path.LastRebindAtMicros,
-            RebindCount = path.RebindCount
+            RebindCount = path.RebindCount,
+            PendingProbes = path.PendingProbes,
+            HeartbeatSampleCount = path.HeartbeatSampleCount,
+            HeartbeatConsecutiveMisses = path.HeartbeatConsecutiveMisses,
+            HeartbeatConsecutiveSuccesses = path.HeartbeatConsecutiveSuccesses,
+            HeartbeatWarmingUp = path.HeartbeatWarmingUp,
+            HeartbeatFailed = path.HeartbeatFailed
         };
     }
 

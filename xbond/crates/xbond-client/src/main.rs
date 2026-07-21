@@ -1454,6 +1454,9 @@ struct TunnelPathRuntime {
     rtt_ms: Option<f64>,
     jitter_ms: Option<f64>,
     loss_rate: f64,
+    heartbeat_consecutive_misses: u32,
+    heartbeat_consecutive_successes: u32,
+    heartbeat_failed: bool,
     last_ack_at: Option<Instant>,
     duplicate_useful_packets: u64,
     duplicate_late_packets: u64,
@@ -2804,6 +2807,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         synchronization_started_at,
     );
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
+    let mut path_heartbeat_tick = time::interval(path_heartbeat_interval(&config));
+    path_heartbeat_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     let mut reorder_tick =
         time::interval(Duration::from_millis(config.reorder_hold_ms.clamp(5, 100)));
     let mut tun_admission_tick = time::interval(Duration::from_millis(2));
@@ -2957,16 +2962,6 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     )
                     .await?;
                     synchronization.record_session_open_sent(synchronization_now);
-                }
-                if synchronization.session_accepted() {
-                    send_tunnel_heartbeats(
-                        &config,
-                        &mut path_runtime,
-                        &senders,
-                        session_id,
-                        &mut counters,
-                        options.json_events,
-                    )?;
                 }
                 drain_sender_completions(
                     &senders,
@@ -3171,6 +3166,19 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         })
                     );
                     last_primary_queue_full_reported = counters.primary_queue_full_events;
+                }
+            }
+
+            _ = path_heartbeat_tick.tick() => {
+                if synchronization.session_accepted() {
+                    send_tunnel_heartbeats(
+                        &config,
+                        &mut path_runtime,
+                        &senders,
+                        session_id,
+                        &mut counters,
+                        options.json_events,
+                    )?;
                 }
             }
 
@@ -4111,6 +4119,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         inbound.received_at,
                     );
                     record_tunnel_heartbeat_ack(
+                        &config,
                         &mut path_runtime,
                         inbound.path_id,
                         &inbound.frame,
@@ -5293,6 +5302,12 @@ fn tunnel_health(
                 path.heartbeat_expired = runtime.heartbeat_expired;
                 path.heartbeat_late_acks = runtime.heartbeat_late_acks;
                 path.heartbeat_rebind_discarded = runtime.heartbeat_rebind_discarded;
+                path.pending_probes = runtime.pending_heartbeats.len();
+                path.heartbeat_sample_count = runtime.health_window.len();
+                path.heartbeat_consecutive_misses = runtime.heartbeat_consecutive_misses;
+                path.heartbeat_consecutive_successes = runtime.heartbeat_consecutive_successes;
+                path.heartbeat_warming_up = heartbeat_warming_up(config, runtime);
+                path.heartbeat_failed = runtime.heartbeat_failed;
             }
 
             path
@@ -5626,7 +5641,6 @@ fn direct_interface_tcp_probe_target(
     Ok(())
 }
 
-const PATH_HEALTH_WINDOW: usize = 8;
 const TUNNEL_HEALTH_WINDOW: usize = 20;
 const RECENT_EXPIRED_HEARTBEAT_CAPACITY: usize = 256;
 const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
@@ -6192,6 +6206,7 @@ fn send_tunnel_heartbeats(
     json_events: bool,
 ) -> Result<()> {
     let timeout = tunnel_heartbeat_timeout(config);
+    let pending_capacity = heartbeat_pending_probe_capacity(config, timeout);
     let path_ids = senders.keys().copied().collect::<Vec<_>>();
     for path_id in path_ids {
         let Some(sender) = senders.get(&path_id) else {
@@ -6200,8 +6215,8 @@ fn send_tunnel_heartbeats(
 
         {
             let runtime = path_runtime.entry(path_id).or_default();
-            expire_tunnel_heartbeats(runtime, timeout);
-            if runtime.pending_heartbeats.len() >= 3 {
+            expire_tunnel_heartbeats(config, runtime);
+            if runtime.pending_heartbeats.len() >= pending_capacity {
                 continue;
             }
         }
@@ -6245,7 +6260,7 @@ fn send_tunnel_heartbeats(
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 record_tunnel_send_failure(path_runtime, path_id);
                 if let Some(runtime) = path_runtime.get_mut(&path_id) {
-                    record_tunnel_health_sample(runtime, false, None);
+                    record_tunnel_health_sample(config, runtime, false, None);
                 }
                 if json_events {
                     println!(
@@ -6375,7 +6390,35 @@ fn tunnel_heartbeat_timeout(config: &ClientConfig) -> Duration {
     Duration::from_millis(config.realtime_deadline_ms.saturating_mul(3).max(1_500))
 }
 
-fn expire_tunnel_heartbeats(runtime: &mut TunnelPathRuntime, _timeout: Duration) {
+fn path_heartbeat_interval(config: &ClientConfig) -> Duration {
+    Duration::from_millis(config.heartbeat_interval_ms.max(1))
+}
+
+fn path_health_window_samples(config: &ClientConfig) -> usize {
+    config.heartbeat_health_window_samples.max(1)
+}
+
+fn path_min_quality_samples(config: &ClientConfig) -> usize {
+    config
+        .heartbeat_min_quality_samples
+        .min(path_health_window_samples(config))
+        .max(1)
+}
+
+fn heartbeat_pending_probe_capacity(config: &ClientConfig, timeout: Duration) -> usize {
+    let interval_ms = config.heartbeat_interval_ms.max(1) as u128;
+    let timeout_ms = timeout.as_millis().max(1);
+    let probes_in_timeout = timeout_ms.div_ceil(interval_ms);
+    usize::try_from(probes_in_timeout)
+        .unwrap_or(usize::MAX)
+        .max(10)
+}
+
+fn heartbeat_warming_up(config: &ClientConfig, runtime: &TunnelPathRuntime) -> bool {
+    runtime.health_window.len() < path_min_quality_samples(config)
+}
+
+fn expire_tunnel_heartbeats(config: &ClientConfig, runtime: &mut TunnelPathRuntime) {
     let now = Instant::now();
     let expired = runtime
         .pending_heartbeats
@@ -6385,9 +6428,15 @@ fn expire_tunnel_heartbeats(runtime: &mut TunnelPathRuntime, _timeout: Duration)
 
     for sequence in expired {
         if let Some(probe) = runtime.pending_heartbeats.remove(&sequence) {
+            if probe.socket_generation != runtime.socket_generation {
+                runtime.heartbeat_rebind_discarded =
+                    runtime.heartbeat_rebind_discarded.saturating_add(1);
+                continue;
+            }
+
             runtime.recently_expired_heartbeats.insert(sequence, probe);
             runtime.heartbeat_expired = runtime.heartbeat_expired.saturating_add(1);
-            record_tunnel_heartbeat_health_sample(runtime, sequence, false, None);
+            record_tunnel_heartbeat_health_sample(config, runtime, sequence, false, None);
         }
     }
 }
@@ -6476,6 +6525,7 @@ fn is_aggregate_heartbeat_sequence(sequence: u64) -> bool {
 }
 
 fn record_tunnel_heartbeat_ack(
+    config: &ClientConfig,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
     path_id: u16,
     frame: &XBondFrame,
@@ -6492,7 +6542,7 @@ fn record_tunnel_heartbeat_ack(
                 return;
             }
             runtime.heartbeat_expired = runtime.heartbeat_expired.saturating_sub(1);
-            correct_tunnel_heartbeat_sample(runtime, sequence);
+            correct_tunnel_heartbeat_sample(config, runtime, sequence);
             (probe, true)
         } else {
             return;
@@ -6506,7 +6556,7 @@ fn record_tunnel_heartbeat_ack(
     if received_at > probe.deadline {
         runtime.heartbeat_expired = runtime.heartbeat_expired.saturating_add(1);
         runtime.heartbeat_late_acks = runtime.heartbeat_late_acks.saturating_add(1);
-        record_tunnel_heartbeat_health_sample(runtime, sequence, false, None);
+        record_tunnel_heartbeat_health_sample(config, runtime, sequence, false, None);
         return;
     }
 
@@ -6525,9 +6575,9 @@ fn record_tunnel_heartbeat_ack(
     runtime.stale_ack_ticks = 0;
     runtime.ineffective_rebinds = 0;
     if corrected_expiry {
-        record_tunnel_rtt_sample(runtime, rtt_ms);
+        record_tunnel_rtt_sample(config, runtime, rtt_ms);
     } else {
-        record_tunnel_heartbeat_health_sample(runtime, sequence, true, Some(rtt_ms));
+        record_tunnel_heartbeat_health_sample(config, runtime, sequence, true, Some(rtt_ms));
     }
 }
 
@@ -6679,20 +6729,28 @@ fn classify_tunnel_health(rtt_ms: Option<f64>, loss_rate: Option<f64>) -> (Strin
 }
 
 fn record_tunnel_health_sample(
+    config: &ClientConfig,
     runtime: &mut TunnelPathRuntime,
     delivered: bool,
     rtt_ms: Option<f64>,
 ) {
-    record_tunnel_health_sample_inner(runtime, HeartbeatHealthSample::untagged(delivered), rtt_ms);
+    record_tunnel_health_sample_inner(
+        config,
+        runtime,
+        HeartbeatHealthSample::untagged(delivered),
+        rtt_ms,
+    );
 }
 
 fn record_tunnel_heartbeat_health_sample(
+    config: &ClientConfig,
     runtime: &mut TunnelPathRuntime,
     sequence: u64,
     delivered: bool,
     rtt_ms: Option<f64>,
 ) {
     record_tunnel_health_sample_inner(
+        config,
         runtime,
         HeartbeatHealthSample {
             sequence: Some(sequence),
@@ -6703,42 +6761,77 @@ fn record_tunnel_heartbeat_health_sample(
 }
 
 fn record_tunnel_health_sample_inner(
+    config: &ClientConfig,
     runtime: &mut TunnelPathRuntime,
     sample: HeartbeatHealthSample,
     rtt_ms: Option<f64>,
 ) {
-    if runtime.health_window.len() == PATH_HEALTH_WINDOW {
+    if runtime.health_window.len() == path_health_window_samples(config) {
         runtime.health_window.pop_front();
     }
     runtime.health_window.push_back(sample);
 
-    if let Some(rtt_ms) = rtt_ms.filter(|value| value.is_finite()) {
-        record_tunnel_rtt_sample(runtime, rtt_ms);
+    if sample.delivered {
+        runtime.heartbeat_consecutive_successes =
+            runtime.heartbeat_consecutive_successes.saturating_add(1);
+        runtime.heartbeat_consecutive_misses = 0;
+        if runtime.heartbeat_failed
+            && runtime.heartbeat_consecutive_successes
+                >= config.heartbeat_recovery_consecutive.max(1)
+        {
+            runtime.heartbeat_failed = false;
+        }
+    } else {
+        runtime.heartbeat_consecutive_misses =
+            runtime.heartbeat_consecutive_misses.saturating_add(1);
+        runtime.heartbeat_consecutive_successes = 0;
+        if runtime.heartbeat_consecutive_misses >= config.heartbeat_failure_consecutive.max(1) {
+            runtime.heartbeat_failed = true;
+        }
     }
 
-    refresh_tunnel_health(runtime);
+    if let Some(rtt_ms) = rtt_ms.filter(|value| value.is_finite()) {
+        record_tunnel_rtt_sample(config, runtime, rtt_ms);
+    }
+
+    refresh_tunnel_health(config, runtime);
 }
 
-fn record_tunnel_rtt_sample(runtime: &mut TunnelPathRuntime, rtt_ms: f64) {
-    if runtime.rtt_samples_ms.len() == PATH_HEALTH_WINDOW {
+fn record_tunnel_rtt_sample(config: &ClientConfig, runtime: &mut TunnelPathRuntime, rtt_ms: f64) {
+    if runtime.rtt_samples_ms.len() == path_health_window_samples(config) {
         runtime.rtt_samples_ms.pop_front();
     }
     runtime.rtt_samples_ms.push_back(rtt_ms);
-    refresh_tunnel_health(runtime);
+    refresh_tunnel_health(config, runtime);
 }
 
-fn correct_tunnel_heartbeat_sample(runtime: &mut TunnelPathRuntime, sequence: u64) {
+fn correct_tunnel_heartbeat_sample(
+    config: &ClientConfig,
+    runtime: &mut TunnelPathRuntime,
+    sequence: u64,
+) {
     if let Some(sample) = runtime
         .health_window
         .iter_mut()
         .find(|sample| sample.sequence == Some(sequence))
     {
-        sample.delivered = true;
-        refresh_tunnel_health(runtime);
+        if !sample.delivered {
+            sample.delivered = true;
+            runtime.heartbeat_consecutive_misses = 0;
+            runtime.heartbeat_consecutive_successes =
+                runtime.heartbeat_consecutive_successes.saturating_add(1);
+            if runtime.heartbeat_failed
+                && runtime.heartbeat_consecutive_successes
+                    >= config.heartbeat_recovery_consecutive.max(1)
+            {
+                runtime.heartbeat_failed = false;
+            }
+        }
+        refresh_tunnel_health(config, runtime);
     }
 }
 
-fn refresh_tunnel_health(runtime: &mut TunnelPathRuntime) {
+fn refresh_tunnel_health(_config: &ClientConfig, runtime: &mut TunnelPathRuntime) {
     runtime.loss_rate = if runtime.health_window.is_empty() {
         0.0
     } else {
@@ -7737,6 +7830,12 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             heartbeat_expired: 0,
             heartbeat_late_acks: 0,
             heartbeat_rebind_discarded: 0,
+            pending_probes: 0,
+            heartbeat_sample_count: 0,
+            heartbeat_consecutive_misses: 0,
+            heartbeat_consecutive_successes: 0,
+            heartbeat_warming_up: true,
+            heartbeat_failed: false,
         })
         .collect()
 }
@@ -8918,35 +9017,138 @@ paths = []
 
     #[test]
     fn tunnel_health_samples_track_rtt_jitter_and_loss() {
+        let config = ClientConfig::default();
         let mut runtime = TunnelPathRuntime::default();
 
-        record_tunnel_health_sample(&mut runtime, true, Some(40.0));
-        record_tunnel_health_sample(&mut runtime, false, None);
-        record_tunnel_health_sample(&mut runtime, true, Some(70.0));
+        record_tunnel_health_sample(&config, &mut runtime, true, Some(40.0));
+        record_tunnel_health_sample(&config, &mut runtime, false, None);
+        record_tunnel_health_sample(&config, &mut runtime, true, Some(70.0));
 
         assert_eq!(runtime.rtt_ms, Some(55.0));
         assert_eq!(runtime.jitter_ms, Some(30.0));
         assert!((runtime.loss_rate - (1.0 / 3.0)).abs() < f64::EPSILON);
+        assert!(heartbeat_warming_up(&config, &runtime));
     }
 
     #[test]
-    fn path_health_window_reacts_faster_than_aggregate_tunnel_window() {
+    fn path_health_window_uses_configured_sample_limit() {
+        let config = ClientConfig::default();
         let mut path = TunnelPathRuntime::default();
         let mut aggregate = TunnelAggregateHealthRuntime::default();
 
         for _ in 0..TUNNEL_HEALTH_WINDOW {
-            record_tunnel_health_sample(&mut path, true, Some(40.0));
+            record_tunnel_health_sample(&config, &mut path, true, Some(40.0));
             record_aggregate_tunnel_health_sample(&mut aggregate, true, Some(40.0));
         }
-        for _ in 0..PATH_HEALTH_WINDOW {
-            record_tunnel_health_sample(&mut path, true, Some(240.0));
+        for _ in 0..config.heartbeat_health_window_samples {
+            record_tunnel_health_sample(&config, &mut path, true, Some(240.0));
             record_aggregate_tunnel_health_sample(&mut aggregate, true, Some(240.0));
         }
 
-        assert_eq!(path.rtt_samples_ms.len(), PATH_HEALTH_WINDOW);
+        assert_eq!(
+            path.rtt_samples_ms.len(),
+            config.heartbeat_health_window_samples
+        );
         assert_eq!(path.rtt_ms, Some(240.0));
         assert_eq!(aggregate.rtt_samples_ms.len(), TUNNEL_HEALTH_WINDOW);
-        assert!(aggregate.rtt_ms.is_some_and(|rtt| rtt < 240.0));
+        assert_eq!(aggregate.rtt_ms, Some(240.0));
+    }
+
+    #[test]
+    fn heartbeat_pending_capacity_comes_from_timeout_and_interval_with_minimum_room() {
+        let config = ClientConfig::default();
+        assert_eq!(
+            heartbeat_pending_probe_capacity(&config, tunnel_heartbeat_timeout(&config)),
+            10
+        );
+
+        let fast = ClientConfig {
+            heartbeat_interval_ms: 50,
+            ..ClientConfig::default()
+        };
+        assert_eq!(
+            heartbeat_pending_probe_capacity(&fast, tunnel_heartbeat_timeout(&fast)),
+            30
+        );
+    }
+
+    #[test]
+    fn four_expired_heartbeats_during_warmup_hard_fail_path() {
+        let config = ClientConfig::default();
+        let mut runtime = TunnelPathRuntime::default();
+        for sequence in 1..=config.heartbeat_failure_consecutive as u64 {
+            runtime.pending_heartbeats.insert(
+                sequence,
+                heartbeat_probe(Duration::from_secs(10), Duration::from_millis(1), 0),
+            );
+        }
+
+        expire_tunnel_heartbeats(&config, &mut runtime);
+
+        assert!(heartbeat_warming_up(&config, &runtime));
+        assert!(runtime.heartbeat_failed);
+        assert_eq!(
+            runtime.heartbeat_consecutive_misses,
+            config.heartbeat_failure_consecutive
+        );
+    }
+
+    #[test]
+    fn four_expired_heartbeats_fail_path_after_warmup_and_fifteen_successes_recover() {
+        let config = ClientConfig {
+            heartbeat_min_quality_samples: 4,
+            ..ClientConfig::default()
+        };
+        let mut runtime = TunnelPathRuntime::default();
+
+        for _ in 0..config.heartbeat_failure_consecutive {
+            record_tunnel_health_sample(&config, &mut runtime, false, None);
+        }
+
+        assert!(runtime.heartbeat_failed);
+        assert_eq!(
+            runtime.heartbeat_consecutive_misses,
+            config.heartbeat_failure_consecutive
+        );
+
+        for _ in 0..config.heartbeat_recovery_consecutive.saturating_sub(1) {
+            record_tunnel_health_sample(&config, &mut runtime, true, Some(35.0));
+        }
+        assert!(runtime.heartbeat_failed);
+
+        record_tunnel_health_sample(&config, &mut runtime, true, Some(35.0));
+        assert!(!runtime.heartbeat_failed);
+        assert_eq!(
+            runtime.heartbeat_consecutive_successes,
+            config.heartbeat_recovery_consecutive
+        );
+    }
+
+    #[test]
+    fn stale_generation_heartbeat_expiry_is_discarded_without_loss() {
+        let config = ClientConfig::default();
+        let mut runtime = TunnelPathRuntime {
+            socket_generation: 2,
+            ..TunnelPathRuntime::default()
+        };
+        record_tunnel_health_sample(&config, &mut runtime, true, Some(42.0));
+        for sequence in 1..=4 {
+            runtime.pending_heartbeats.insert(
+                sequence,
+                heartbeat_probe(Duration::from_secs(10), Duration::from_millis(1), 1),
+            );
+        }
+
+        expire_tunnel_heartbeats(&config, &mut runtime);
+
+        assert_eq!(runtime.heartbeat_rebind_discarded, 4);
+        assert_eq!(runtime.heartbeat_expired, 0);
+        assert_eq!(runtime.heartbeat_consecutive_misses, 0);
+        assert!(!runtime.heartbeat_failed);
+        assert_eq!(runtime.pending_heartbeats.len(), 0);
+        assert_eq!(runtime.health_window.len(), 1);
+        assert_eq!(runtime.loss_rate, 0.0);
+        assert_eq!(runtime.rtt_ms, Some(42.0));
     }
 
     #[test]
@@ -9015,7 +9217,13 @@ paths = []
 
         let received_at =
             path_runtime[&1].pending_heartbeats[&sequence].sent_at + Duration::from_millis(25);
-        record_tunnel_heartbeat_ack(&mut path_runtime, 1, &frame, received_at);
+        record_tunnel_heartbeat_ack(
+            &ClientConfig::default(),
+            &mut path_runtime,
+            1,
+            &frame,
+            received_at,
+        );
 
         assert!(path_runtime[&1]
             .rtt_ms
@@ -9041,7 +9249,7 @@ paths = []
 
         let received_at =
             paths[&1].pending_heartbeats[&sequence].sent_at + Duration::from_millis(10);
-        record_tunnel_heartbeat_ack(&mut paths, 1, &frame, received_at);
+        record_tunnel_heartbeat_ack(&ClientConfig::default(), &mut paths, 1, &frame, received_at);
 
         assert_eq!(paths[&1].heartbeat_acked, 1);
         assert_eq!(paths[&1].heartbeat_expired, 0);
@@ -9060,7 +9268,7 @@ paths = []
         let received_at = probe.sent_at + Duration::from_millis(400);
         runtime.pending_heartbeats.insert(sequence, probe);
 
-        expire_tunnel_heartbeats(&mut runtime, Duration::from_secs(1));
+        expire_tunnel_heartbeats(&ClientConfig::default(), &mut runtime);
         assert_eq!(runtime.heartbeat_expired, 1);
         assert_eq!(runtime.loss_rate, 1.0);
 
@@ -9069,12 +9277,13 @@ paths = []
             b"ack".to_vec(),
         );
         let mut paths = HashMap::from([(1, runtime)]);
-        record_tunnel_heartbeat_ack(&mut paths, 1, &frame, received_at);
+        record_tunnel_heartbeat_ack(&ClientConfig::default(), &mut paths, 1, &frame, received_at);
 
         assert_eq!(paths[&1].heartbeat_acked, 1);
         assert_eq!(paths[&1].heartbeat_expired, 0);
         assert_eq!(paths[&1].heartbeat_late_acks, 0);
         assert_eq!(paths[&1].loss_rate, 0.0);
+        assert_eq!(paths[&1].heartbeat_consecutive_successes, 1);
         assert!(paths[&1]
             .rtt_ms
             .is_some_and(|rtt| (399.0..=401.0).contains(&rtt)));
@@ -9088,7 +9297,7 @@ paths = []
             sequence,
             heartbeat_probe(Duration::from_secs(2), Duration::from_millis(1), 0),
         );
-        expire_tunnel_heartbeats(&mut runtime, Duration::from_millis(1));
+        expire_tunnel_heartbeats(&ClientConfig::default(), &mut runtime);
         let frame = XBondFrame::new(
             XBondHeader::new(PacketKind::Heartbeat, 7, sequence, now_micros(), 1),
             b"ack".to_vec(),
@@ -9096,13 +9305,40 @@ paths = []
         let mut paths = HashMap::from([(1, runtime)]);
 
         let received_at = Instant::now();
-        record_tunnel_heartbeat_ack(&mut paths, 1, &frame, received_at);
-        record_tunnel_heartbeat_ack(&mut paths, 1, &frame, received_at);
+        record_tunnel_heartbeat_ack(&ClientConfig::default(), &mut paths, 1, &frame, received_at);
+        record_tunnel_heartbeat_ack(&ClientConfig::default(), &mut paths, 1, &frame, received_at);
 
         assert_eq!(paths[&1].heartbeat_expired, 1);
         assert_eq!(paths[&1].heartbeat_late_acks, 1);
         assert_eq!(paths[&1].heartbeat_acked, 0);
         assert_eq!(paths[&1].loss_rate, 1.0);
+        assert_eq!(paths[&1].heartbeat_consecutive_successes, 0);
+    }
+
+    #[test]
+    fn isolated_late_ack_does_not_hard_demote_path() {
+        let config = ClientConfig::default();
+        let sequence = 790;
+        let mut runtime = TunnelPathRuntime::default();
+        record_tunnel_health_sample(&config, &mut runtime, true, Some(30.0));
+        runtime.pending_heartbeats.insert(
+            sequence,
+            heartbeat_probe(Duration::from_secs(2), Duration::from_millis(1), 0),
+        );
+
+        expire_tunnel_heartbeats(&config, &mut runtime);
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, sequence, now_micros(), 1),
+            b"ack".to_vec(),
+        );
+        let mut paths = HashMap::from([(1, runtime)]);
+        record_tunnel_heartbeat_ack(&config, &mut paths, 1, &frame, Instant::now());
+
+        assert_eq!(paths[&1].heartbeat_expired, 1);
+        assert_eq!(paths[&1].heartbeat_late_acks, 1);
+        assert_eq!(paths[&1].heartbeat_consecutive_misses, 1);
+        assert_eq!(paths[&1].heartbeat_consecutive_successes, 0);
+        assert!(!paths[&1].heartbeat_failed);
     }
 
     #[test]
@@ -9111,7 +9347,7 @@ paths = []
             socket_generation: 8,
             ..TunnelPathRuntime::default()
         };
-        record_tunnel_health_sample(&mut runtime, true, Some(42.0));
+        record_tunnel_health_sample(&ClientConfig::default(), &mut runtime, true, Some(42.0));
         for sequence in 1..=3 {
             runtime.pending_heartbeats.insert(
                 sequence,
@@ -9193,7 +9429,13 @@ paths = []
         path_runtime.get_mut(&1).unwrap().send_failures = 2;
         let received_at =
             path_runtime[&1].pending_heartbeats[&sequence].sent_at + Duration::from_millis(10);
-        record_tunnel_heartbeat_ack(&mut path_runtime, 1, &frame, received_at);
+        record_tunnel_heartbeat_ack(
+            &ClientConfig::default(),
+            &mut path_runtime,
+            1,
+            &frame,
+            received_at,
+        );
 
         assert_eq!(path_runtime[&1].ineffective_rebinds, 0);
         assert_eq!(path_runtime[&1].send_failures, 0);

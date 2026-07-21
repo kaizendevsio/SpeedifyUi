@@ -51,7 +51,7 @@ public sealed class XBondStatsSnapshot
 
     public double MaxLossPercent => Paths
         .Where(path => path.IsActive)
-        .Select(path => path.LossPercent)
+        .Select(path => path.DisplayLossPercent ?? 0)
         .DefaultIfEmpty(0)
         .Max();
 
@@ -297,6 +297,18 @@ public sealed class XBondPathStatsSnapshot
 
     public ulong RebindCount { get; init; }
 
+    public int PendingProbes { get; init; }
+
+    public int HeartbeatSampleCount { get; init; }
+
+    public int HeartbeatConsecutiveMisses { get; init; }
+
+    public int HeartbeatConsecutiveSuccesses { get; init; }
+
+    public bool HeartbeatWarmingUp { get; init; }
+
+    public bool HeartbeatFailed { get; init; }
+
     public ulong? StaleAckMs { get; init; }
 
     public double QueuePressure { get; init; }
@@ -312,6 +324,8 @@ public sealed class XBondPathStatsSnapshot
     public double? JitterMs { get; init; }
 
     public double LossPercent { get; init; }
+
+    public double? DisplayLossPercent => HeartbeatWarmingUp && !HeartbeatFailed ? null : LossPercent;
 
     public double LatePercent { get; init; }
 
@@ -382,6 +396,13 @@ public sealed class XBondPathStatsSnapshot
             if (InCooldown)
             {
                 return string.IsNullOrWhiteSpace(DemotionReason) ? "Cooldown" : DemotionReason;
+            }
+
+            if (HeartbeatWarmingUp && !HeartbeatFailed)
+            {
+                return HeartbeatSampleCount > 0
+                    ? $"Warming up heartbeat quality ({HeartbeatSampleCount} samples)"
+                    : "Warming up heartbeat quality";
             }
 
             return IsActive ? "Active" : "Standby";

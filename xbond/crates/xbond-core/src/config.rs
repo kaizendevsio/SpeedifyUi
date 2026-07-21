@@ -25,6 +25,16 @@ pub struct ClientConfig {
     pub inbound_queue_capacity: usize,
     #[serde(default = "default_udp_socket_buffer_bytes")]
     pub udp_socket_buffer_bytes: usize,
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
+    #[serde(default = "default_heartbeat_health_window_samples")]
+    pub heartbeat_health_window_samples: usize,
+    #[serde(default = "default_heartbeat_min_quality_samples")]
+    pub heartbeat_min_quality_samples: usize,
+    #[serde(default = "default_heartbeat_failure_consecutive")]
+    pub heartbeat_failure_consecutive: u32,
+    #[serde(default = "default_heartbeat_recovery_consecutive")]
+    pub heartbeat_recovery_consecutive: u32,
     #[serde(default)]
     pub silent_blackhole_probe_targets: Vec<String>,
     #[serde(default = "default_recovery_enabled")]
@@ -79,6 +89,11 @@ impl Default for ClientConfig {
             tun_queue_capacity: default_tun_queue_capacity(),
             inbound_queue_capacity: default_inbound_queue_capacity(),
             udp_socket_buffer_bytes: default_udp_socket_buffer_bytes(),
+            heartbeat_interval_ms: default_heartbeat_interval_ms(),
+            heartbeat_health_window_samples: default_heartbeat_health_window_samples(),
+            heartbeat_min_quality_samples: default_heartbeat_min_quality_samples(),
+            heartbeat_failure_consecutive: default_heartbeat_failure_consecutive(),
+            heartbeat_recovery_consecutive: default_heartbeat_recovery_consecutive(),
             silent_blackhole_probe_targets: Vec::new(),
             recovery_enabled: default_recovery_enabled(),
             recovery_enter_degraded_ticks: default_recovery_enter_degraded_ticks(),
@@ -160,6 +175,26 @@ pub fn default_inbound_queue_capacity() -> usize {
 
 pub fn default_udp_socket_buffer_bytes() -> usize {
     4 * 1024 * 1024
+}
+
+pub fn default_heartbeat_interval_ms() -> u64 {
+    200
+}
+
+pub fn default_heartbeat_health_window_samples() -> usize {
+    100
+}
+
+pub fn default_heartbeat_min_quality_samples() -> usize {
+    20
+}
+
+pub fn default_heartbeat_failure_consecutive() -> u32 {
+    4
+}
+
+pub fn default_heartbeat_recovery_consecutive() -> u32 {
+    15
 }
 
 fn default_recovery_enabled() -> bool {

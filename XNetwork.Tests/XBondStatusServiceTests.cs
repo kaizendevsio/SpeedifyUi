@@ -117,6 +117,12 @@ public class XBondStatusServiceTests
                   "queue_pressure": 0.25,
                   "duplicate_usefulness": 0.8,
                   "throughput_collapse_score": 0.1,
+                  "pending_probes": 8,
+                  "heartbeat_sample_count": 100,
+                  "heartbeat_consecutive_misses": 1,
+                  "heartbeat_consecutive_successes": 9,
+                  "heartbeat_warming_up": false,
+                  "heartbeat_failed": false,
                   "role_reason": "Best currently healthy path."
                 }
               ],
@@ -246,6 +252,12 @@ public class XBondStatusServiceTests
         Assert.Equal(0.25, path.QueuePressure);
         Assert.Equal(0.8, path.DuplicateUsefulness);
         Assert.Equal(0.1, path.ThroughputCollapseScore);
+        Assert.Equal(8, path.PendingProbes);
+        Assert.Equal(100, path.HeartbeatSampleCount);
+        Assert.Equal(1, path.HeartbeatConsecutiveMisses);
+        Assert.Equal(9, path.HeartbeatConsecutiveSuccesses);
+        Assert.False(path.HeartbeatWarmingUp);
+        Assert.False(path.HeartbeatFailed);
         Assert.Equal("Best currently healthy path.", path.RoleReason);
 
         var snapshot = XBondStatsService.FromStatus(status);
@@ -253,6 +265,8 @@ public class XBondStatusServiceTests
         Assert.Equal(10, dashboardPath.DownloadMbps);
         Assert.Equal(8, dashboardPath.UsefulDownloadMbps);
         Assert.Equal(2, dashboardPath.DuplicateDownloadMbps);
+        Assert.Equal(1, dashboardPath.LossPercent);
+        Assert.Equal(1, dashboardPath.DisplayLossPercent);
         Assert.True(snapshot.HasTunnelHealth);
         Assert.Equal("Fair Connection", snapshot.ConnectionTitle);
         Assert.Equal(72.5, snapshot.EffectiveRttMs);
@@ -517,6 +531,8 @@ public class XBondStatusServiceTests
                   "jitter_ms": 3.0,
                   "loss_rate": 0.0,
                   "late_rate": 0.0,
+                  "heartbeat_sample_count": 100,
+                  "heartbeat_warming_up": false,
                   "queue_depth": 0,
                   "throughput_bps": 12000000,
                   "interface_up": true,
@@ -530,6 +546,8 @@ public class XBondStatusServiceTests
                   "jitter_ms": 5.0,
                   "loss_rate": 0.0,
                   "late_rate": 0.0,
+                  "heartbeat_sample_count": 100,
+                  "heartbeat_warming_up": false,
                   "queue_depth": 0,
                   "throughput_bps": 8000000,
                   "interface_up": true,
@@ -580,6 +598,7 @@ public class XBondStatusServiceTests
                   "name": "full-loss",
                   "interface_name": "enx1",
                   "loss_rate": 1.0,
+                  "heartbeat_failed": true,
                   "late_rate": 0.0,
                   "queue_depth": 0,
                   "throughput_bps": 0,
@@ -595,6 +614,70 @@ public class XBondStatusServiceTests
         Assert.Empty(status.Schedule.DataPathIds);
         Assert.Empty(status.Schedule.DuplicatePathIds);
         Assert.Equal("cooldown", Assert.Single(status.Paths).Role);
+    }
+
+    [Fact]
+    public void ParseRuntimeStatusJson_ZeroSamplePathDoesNotInferFallbackAnchor()
+    {
+        var status = XBondStatusService.ParseRuntimeStatusJson(
+            """
+            {
+              "running": true,
+              "mode": "anchor-duplicate-1",
+              "paths": [
+                {
+                  "path_id": 1,
+                  "name": "new-path",
+                  "interface_name": "enx1",
+                  "loss_rate": 0.0,
+                  "late_rate": 0.0,
+                  "queue_depth": 0,
+                  "throughput_bps": 0,
+                  "interface_up": true,
+                  "in_cooldown": false
+                }
+              ]
+            }
+            """,
+            new XBondSettings());
+
+        Assert.Null(status.AnchorPathId);
+        Assert.Empty(status.Schedule.DataPathIds);
+        Assert.Equal("probe", Assert.Single(status.Paths).Role);
+    }
+
+    [Fact]
+    public void Snapshot_WarmupPathDisplaysUnknownLoss()
+    {
+        var status = new XBondStatus
+        {
+            Running = true,
+            Schedule = new XBondSchedulePlan
+            {
+                AnchorPathId = 1,
+                DataPathIds = [1]
+            },
+            Paths =
+            [
+                new XBondPathStatus
+                {
+                    PathId = 1,
+                    Name = "warming",
+                    InterfaceName = "enx1",
+                    Role = "anchor",
+                    InterfaceUp = true,
+                    LossRate = 0.75,
+                    HeartbeatSampleCount = 8,
+                    HeartbeatWarmingUp = true
+                }
+            ]
+        };
+
+        var path = Assert.Single(XBondStatsService.FromStatus(status).Paths);
+
+        Assert.Equal(75, path.LossPercent);
+        Assert.Null(path.DisplayLossPercent);
+        Assert.Contains("Warming up", path.StateText);
     }
 
     [Fact]

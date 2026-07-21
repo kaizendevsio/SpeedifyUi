@@ -61,6 +61,18 @@ pub struct PathHealthSnapshot {
     pub heartbeat_late_acks: u64,
     #[serde(default)]
     pub heartbeat_rebind_discarded: u64,
+    #[serde(default)]
+    pub pending_probes: usize,
+    #[serde(default)]
+    pub heartbeat_sample_count: usize,
+    #[serde(default)]
+    pub heartbeat_consecutive_misses: u32,
+    #[serde(default)]
+    pub heartbeat_consecutive_successes: u32,
+    #[serde(default)]
+    pub heartbeat_warming_up: bool,
+    #[serde(default)]
+    pub heartbeat_failed: bool,
 }
 
 impl PathHealthSnapshot {
@@ -77,8 +89,8 @@ impl PathHealthSnapshot {
             return Some("Path is in cooldown after recent failures.");
         }
 
-        if self.loss_rate >= 1.0 {
-            return Some("Path has 100% heartbeat loss.");
+        if self.heartbeat_failed {
+            return Some("Path heartbeat failed after consecutive probe expirations.");
         }
 
         if self.send_failure_streak >= 2 {
@@ -103,7 +115,12 @@ impl PathHealthSnapshot {
 
         let rtt_penalty = self.rtt_ms.unwrap_or(500.0).min(2_000.0) * 2.0;
         let jitter_penalty = self.jitter_ms.unwrap_or(100.0).min(1_000.0) * 2.5;
-        let loss_penalty = self.loss_rate.clamp(0.0, 1.0) * 800.0;
+        let loss_rate = if self.heartbeat_warming_up && !self.heartbeat_failed {
+            0.0
+        } else {
+            self.loss_rate
+        };
+        let loss_penalty = loss_rate.clamp(0.0, 1.0) * 800.0;
         let late_penalty = self.late_rate.clamp(0.0, 1.0) * 1_000.0;
         let queue_penalty = f64::from(self.queue_depth.min(10_000)) * 0.1;
         let queue_pressure_penalty = self.queue_pressure.clamp(0.0, 1.0) * 400.0;
@@ -509,6 +526,12 @@ mod tests {
             heartbeat_expired: 0,
             heartbeat_late_acks: 0,
             heartbeat_rebind_discarded: 0,
+            pending_probes: 0,
+            heartbeat_sample_count: 0,
+            heartbeat_consecutive_misses: 0,
+            heartbeat_consecutive_successes: 0,
+            heartbeat_warming_up: false,
+            heartbeat_failed: false,
         }
     }
 
@@ -559,8 +582,8 @@ mod tests {
     fn all_bad_paths_do_not_get_anchor() {
         let mut offline = path(1, "offline", 15.0, 0.0, 0.0);
         offline.interface_up = false;
-        let mut full_loss = path(2, "full-loss", 40.0, 1.0, 0.0);
-        full_loss.loss_rate = 1.0;
+        let mut full_loss = path(2, "heartbeat-failed", 40.0, 1.0, 0.0);
+        full_loss.heartbeat_failed = true;
 
         let roles = select_path_roles(&[offline, full_loss], 1);
 
@@ -569,20 +592,36 @@ mod tests {
     }
 
     #[test]
-    fn full_loss_path_cannot_be_anchor() {
-        let full_loss = path(1, "full-loss", 15.0, 1.0, 0.0);
-        let roles = select_path_roles(&[full_loss, path(2, "stable", 50.0, 0.0, 0.0)], 1);
+    fn heartbeat_failed_path_cannot_be_anchor() {
+        let mut failed = path(1, "heartbeat-failed", 15.0, 1.0, 0.0);
+        failed.heartbeat_failed = true;
+        let roles = select_path_roles(&[failed, path(2, "stable", 50.0, 0.0, 0.0)], 1);
 
         assert_eq!(roles[0].path.name, "stable");
         assert_eq!(roles[0].role, PathRole::Anchor);
         assert_eq!(
             roles
                 .iter()
-                .find(|path| path.path.name == "full-loss")
+                .find(|path| path.path.name == "heartbeat-failed")
                 .unwrap()
                 .role,
             PathRole::Cooldown
         );
+    }
+
+    #[test]
+    fn warmup_loss_does_not_hard_demote_path() {
+        let mut warming = path(1, "warming", 15.0, 1.0, 0.0);
+        warming.heartbeat_warming_up = true;
+        warming.heartbeat_sample_count = 3;
+        let roles = select_path_roles(&[warming, path(2, "stable", 50.0, 0.0, 0.0)], 1);
+
+        let warming = roles
+            .iter()
+            .find(|path| path.path.name == "warming")
+            .unwrap();
+        assert_ne!(warming.role, PathRole::Cooldown);
+        assert!(warming.path.demotion_reason.is_none());
     }
 
     #[test]

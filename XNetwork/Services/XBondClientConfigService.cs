@@ -337,6 +337,11 @@ public sealed class XBondClientConfigService(
             DuplicateLossThreshold = config.DuplicateLossThreshold,
             BackupLossDisableThreshold = config.BackupLossDisableThreshold,
             ReorderHoldMs = config.ReorderHoldMs,
+            HeartbeatIntervalMs = config.HeartbeatIntervalMs,
+            HeartbeatHealthWindowSamples = config.HeartbeatHealthWindowSamples,
+            HeartbeatMinQualitySamples = config.HeartbeatMinQualitySamples,
+            HeartbeatFailureConsecutive = config.HeartbeatFailureConsecutive,
+            HeartbeatRecoveryConsecutive = config.HeartbeatRecoveryConsecutive,
             Adapters = rows.Values
                 .OrderByDescending(row => row.IsConfigured)
                 .ThenByDescending(row => row.IsConnected)
@@ -413,6 +418,11 @@ public sealed class XBondClientConfigService(
         builder.AppendLine($"duplicate_loss_threshold = {FormatDouble(Math.Clamp(config.DuplicateLossThreshold, 0.0, 1.0))}");
         builder.AppendLine($"backup_loss_disable_threshold = {FormatDouble(Math.Clamp(config.BackupLossDisableThreshold, 0.0, 1.0))}");
         builder.AppendLine($"reorder_hold_ms = {Math.Clamp(config.ReorderHoldMs, 0, 250)}");
+        builder.AppendLine($"heartbeat_interval_ms = {Math.Max(1, config.HeartbeatIntervalMs)}");
+        builder.AppendLine($"heartbeat_health_window_samples = {Math.Max(1, config.HeartbeatHealthWindowSamples)}");
+        builder.AppendLine($"heartbeat_min_quality_samples = {Math.Max(1, config.HeartbeatMinQualitySamples)}");
+        builder.AppendLine($"heartbeat_failure_consecutive = {Math.Max(1, config.HeartbeatFailureConsecutive)}");
+        builder.AppendLine($"heartbeat_recovery_consecutive = {Math.Max(1, config.HeartbeatRecoveryConsecutive)}");
         builder.AppendLine($"recovery_enabled = {FormatBool(config.RecoveryEnabled)}");
         builder.AppendLine($"recovery_enter_degraded_ticks = {Math.Max(1, config.RecoveryEnterDegradedTicks)}");
         builder.AppendLine($"recovery_exit_clean_ticks = {Math.Max(1, config.RecoveryExitCleanTicks)}");
@@ -483,6 +493,21 @@ public sealed class XBondClientConfigService(
                 break;
             case "reorder_hold_ms":
                 config.ReorderHoldMs = ParseInt(value, config.ReorderHoldMs);
+                break;
+            case "heartbeat_interval_ms":
+                config.HeartbeatIntervalMs = ParseInt(value, config.HeartbeatIntervalMs);
+                break;
+            case "heartbeat_health_window_samples":
+                config.HeartbeatHealthWindowSamples = ParseInt(value, config.HeartbeatHealthWindowSamples);
+                break;
+            case "heartbeat_min_quality_samples":
+                config.HeartbeatMinQualitySamples = ParseInt(value, config.HeartbeatMinQualitySamples);
+                break;
+            case "heartbeat_failure_consecutive":
+                config.HeartbeatFailureConsecutive = ParseInt(value, config.HeartbeatFailureConsecutive);
+                break;
+            case "heartbeat_recovery_consecutive":
+                config.HeartbeatRecoveryConsecutive = ParseInt(value, config.HeartbeatRecoveryConsecutive);
                 break;
             case "recovery_enabled":
                 config.RecoveryEnabled = ParseBool(value, config.RecoveryEnabled);
@@ -596,6 +621,31 @@ public sealed class XBondClientConfigService(
         if (config.ReorderHoldMs < 0)
         {
             config.ReorderHoldMs = 25;
+        }
+
+        if (config.HeartbeatIntervalMs <= 0)
+        {
+            config.HeartbeatIntervalMs = 200;
+        }
+
+        if (config.HeartbeatHealthWindowSamples <= 0)
+        {
+            config.HeartbeatHealthWindowSamples = 100;
+        }
+
+        if (config.HeartbeatMinQualitySamples <= 0)
+        {
+            config.HeartbeatMinQualitySamples = 20;
+        }
+
+        if (config.HeartbeatFailureConsecutive <= 0)
+        {
+            config.HeartbeatFailureConsecutive = 4;
+        }
+
+        if (config.HeartbeatRecoveryConsecutive <= 0)
+        {
+            config.HeartbeatRecoveryConsecutive = 15;
         }
 
         if (config.RecoveryEnterDegradedTicks <= 0)

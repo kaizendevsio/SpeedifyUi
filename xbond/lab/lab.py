@@ -3209,9 +3209,17 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
                     "heartbeat_expired",
                     "heartbeat_late_acks",
                     "heartbeat_rebind_discarded",
+                    "pending_probes",
+                    "heartbeat_sample_count",
+                    "heartbeat_consecutive_misses",
+                    "heartbeat_consecutive_successes",
+                    "heartbeat_warming_up",
+                    "heartbeat_failed",
                     "socket_generation",
                     "interface_up",
                     "in_cooldown",
+                    "rtt_ms",
+                    "jitter_ms",
                     "loss_rate",
                     "role",
                 )
@@ -3239,6 +3247,26 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
     def path_counter(status: dict[str, Any], path_id: int, key: str) -> int:
         value = status.get("paths", {}).get(path_id, {}).get(key, 0)
         return int(value) if isinstance(value, (int, float)) else 0
+
+    def path_number(status: dict[str, Any], path_id: int, key: str) -> float:
+        value = status.get("paths", {}).get(path_id, {}).get(key)
+        return float(value) if isinstance(value, (int, float)) else 0.0
+
+    def heartbeat_failed(status: dict[str, Any], path_id: int) -> bool:
+        return bool(status.get("paths", {}).get(path_id, {}).get("heartbeat_failed"))
+
+    def any_path_heartbeat_failed(status: dict[str, Any]) -> bool:
+        return any(heartbeat_failed(status, path_id) for path_id in (1, 2, 3))
+
+    def max_pending_probes(*statuses: dict[str, Any]) -> int:
+        return max(
+            (
+                path_counter(status, path_id, "pending_probes")
+                for status in statuses
+                for path_id in (1, 2, 3)
+            ),
+            default=0,
+        )
 
     def wait_for_new_heartbeat(status: dict[str, Any], path_ids: tuple[int, ...]) -> None:
         wait_for(
@@ -3286,9 +3314,27 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
     )
     pressure_after = snapshot()
 
+    random_loss_before = snapshot()
+    for path_id in (1, 2, 3):
+        lab.apply_netem(path_id, "loss 1%", both_directions=False)
+    time.sleep(5)
+    random_loss_after = snapshot()
+    lab.clear_netem()
+    time.sleep(1)
+
+    simultaneous_degraded_before = snapshot()
+    lab.apply_netem(1, "delay 80ms 20ms distribution normal loss 1%")
+    lab.apply_netem(2, "delay 150ms 40ms distribution normal loss 1%")
+    lab.apply_netem(3, "delay 250ms 60ms distribution normal loss 1%")
+    time.sleep(4)
+    simultaneous_degraded_after = snapshot()
+    lab.clear_netem()
+    time.sleep(1)
+
     lab.apply_netem(2, "delay 1200ms", both_directions=False)
     rebind_before = snapshot()
     wait_for_new_heartbeat(rebind_before, (2,))
+    rebind_pending_before_recreate = snapshot()
     recreate_client_path(lab, 2)
     lab.clear_netem()
     wait_for(
@@ -3322,7 +3368,18 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
     time.sleep(4)
     sustained_after = snapshot()
     lab.clear_netem()
-    time.sleep(4)
+    recovery_started = time.monotonic()
+    wait_for(
+        lambda: not any_path_heartbeat_failed(snapshot())
+        and all(
+            path_counter(snapshot(), path_id, "heartbeat_consecutive_successes") >= 15
+            for path_id in (1, 2, 3)
+        ),
+        6,
+        "clean heartbeat recovery after sustained outage",
+    )
+    sustained_recovery_after = snapshot()
+    sustained_recovery_seconds = round(time.monotonic() - recovery_started, 3)
 
     hard_before = snapshot()
     ns_run(CLIENT_NS, ["ip", "link", "set", "cpath3", "down"])
@@ -3349,11 +3406,13 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
         path_counter(delayed_after, 1, "heartbeat_expired")
         == path_counter(delayed_before, 1, "heartbeat_expired")
     )
-    reordered_clean = (
-        path_counter(reordered_after, 1, "heartbeat_expired")
-        == path_counter(reordered_before, 1, "heartbeat_expired")
-        and path_counter(reordered_after, 1, "heartbeat_late_acks")
-        == path_counter(reordered_before, 1, "heartbeat_late_acks")
+    reordered_ack = reordered_after["server_heartbeat_ack"]
+    reordered_ack_lane_clean = (
+        reordered_ack["heartbeat_ack_drops"] == 0
+        and reordered_ack["heartbeat_ack_failures"] == 0
+    )
+    reordered_no_false_failure = not any_path_heartbeat_failed(reordered_after) and not bool(
+        reordered_after["recovery"].get("active")
     )
     pressure_ack = pressure_after["server_heartbeat_ack"]
     pressure_before_ack = pressure_before["server_heartbeat_ack"]
@@ -3363,17 +3422,29 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
         and pressure_ack["heartbeat_ack_drops"] == 0
         and pressure_ack["heartbeat_ack_failures"] == 0
     )
+    random_loss_clean = not any_path_heartbeat_failed(random_loss_after)
+    simultaneous_degraded_observed = all(
+        path_number(simultaneous_degraded_after, path_id, "rtt_ms") >= 40
+        for path_id in (1, 2, 3)
+    )
+    simultaneous_degraded_no_hard_failure = not any_path_heartbeat_failed(
+        simultaneous_degraded_after
+    )
     rebind_clean = (
         path_counter(rebind_after, 2, "socket_generation")
         > path_counter(rebind_before, 2, "socket_generation")
-        and path_counter(rebind_after, 2, "heartbeat_rebind_discarded")
-        > path_counter(rebind_before, 2, "heartbeat_rebind_discarded")
-        and path_counter(rebind_after, 2, "heartbeat_expired")
-        == path_counter(rebind_before, 2, "heartbeat_expired")
+        and (
+            path_counter(rebind_after, 2, "heartbeat_rebind_discarded")
+            - path_counter(rebind_before, 2, "heartbeat_rebind_discarded")
+        )
+        >= max(1, path_counter(rebind_pending_before_recreate, 2, "pending_probes"))
+        and not heartbeat_failed(rebind_after, 2)
+        and not bool(rebind_after["recovery"].get("active"))
     )
     isolated_no_recovery = not bool(isolated_after["recovery"].get("active")) and not bool(
         isolated_settled["recovery"].get("active")
     )
+    isolated_no_hard_failure = not any_path_heartbeat_failed(isolated_after)
     sustained_evidence = (
         any(
             path_counter(sustained_after, path_id, "heartbeat_expired")
@@ -3384,11 +3455,45 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
             bool(sustained_after["recovery"].get("active"))
             or any(
                 sustained_after.get("paths", {}).get(path_id, {}).get("in_cooldown")
+                or sustained_after.get("paths", {})
+                .get(path_id, {})
+                .get("heartbeat_failed")
                 for path_id in (1, 2, 3)
             )
         )
     )
+    sustained_recovered = (
+        not any_path_heartbeat_failed(sustained_recovery_after)
+        and all(
+            path_counter(
+                sustained_recovery_after,
+                path_id,
+                "heartbeat_consecutive_successes",
+            )
+            >= 15
+            for path_id in (1, 2, 3)
+        )
+    )
     hard_immediate = hard_after.get("paths", {}).get(3, {}).get("interface_up") is False
+    pending_probes_bounded = (
+        max_pending_probes(
+            baseline,
+            normal,
+            pressure_before,
+            pressure_after,
+            random_loss_before,
+            random_loss_after,
+            simultaneous_degraded_before,
+            simultaneous_degraded_after,
+            isolated_before,
+            isolated_after,
+            sustained_before,
+            sustained_after,
+            sustained_recovery_after,
+            final,
+        )
+        <= 10
+    )
 
     result.metrics.update(
         {
@@ -3404,13 +3509,30 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
                 "throughput": pressure_throughput,
                 "ping": pressure_ping,
             },
-            "socket_rebind": {"before": rebind_before, "after": rebind_after},
+            "random_1_percent_loss": {
+                "before": random_loss_before,
+                "after": random_loss_after,
+            },
+            "simultaneous_degraded_paths": {
+                "before": simultaneous_degraded_before,
+                "after": simultaneous_degraded_after,
+            },
+            "socket_rebind": {
+                "before": rebind_before,
+                "pending_before_recreate": rebind_pending_before_recreate,
+                "after": rebind_after,
+            },
             "isolated_loss": {
                 "before": isolated_before,
                 "after": isolated_after,
                 "settled": isolated_settled,
             },
-            "sustained_loss": {"before": sustained_before, "after": sustained_after},
+            "sustained_loss": {
+                "before": sustained_before,
+                "after": sustained_after,
+                "recovery_after": sustained_recovery_after,
+                "recovery_seconds": sustained_recovery_seconds,
+            },
             "hard_failure": {"before": hard_before, "after": hard_after},
             "final": final,
             "tunnel_ping": tunnel,
@@ -3419,11 +3541,17 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
     result.thresholds = {
         "normal_all_paths_progress": True,
         "300ms_ack_delay_must_not_expire": True,
-        "reordered_duplicate_ack_must_not_expire": True,
+        "reordered_duplicate_ack_must_not_false_fail": True,
         "heartbeat_ack_lane_drops_and_failures_max": 0,
+        "pending_probe_capacity_max": 10,
+        "one_percent_random_loss_must_not_hard_fail": True,
+        "simultaneous_degraded_paths_must_be_observed": True,
+        "simultaneous_degraded_paths_must_not_hard_fail": True,
         "rebind_must_advance_generation_and_discard_without_loss": True,
         "isolated_loss_must_not_enter_recovery": True,
+        "isolated_loss_must_not_hard_fail": True,
         "sustained_loss_must_create_recovery_or_hard_demotion_evidence": True,
+        "sustained_loss_must_recover_after_15_clean_successes": True,
         "hard_link_failure_must_be_immediate": True,
         "final_tunnel_ping_loss_percent_max": 5,
     }
@@ -3434,11 +3562,18 @@ def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> No
         "pass"
         if normal_progress
         and delayed_clean
-        and reordered_clean
+        and reordered_ack_lane_clean
+        and reordered_no_false_failure
         and pressure_isolated
+        and pending_probes_bounded
+        and random_loss_clean
+        and simultaneous_degraded_observed
+        and simultaneous_degraded_no_hard_failure
         and rebind_clean
         and isolated_no_recovery
+        and isolated_no_hard_failure
         and sustained_evidence
+        and sustained_recovered
         and hard_immediate
         and tunnel.get("loss_percent", 100) <= 5
         else "fail"

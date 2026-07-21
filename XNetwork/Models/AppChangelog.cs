@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.115";
+    public const string CurrentVersion = "ulink-2026.06.116";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Raised per-path heartbeat frequency.",
+            Changes =
+            [
+                "Bumped the uLink interface version for high-frequency path heartbeat telemetry.",
+                "Changed per-path heartbeats to run every 200 ms while keeping scheduler, role, status, and aggregate tunnel health updates on their one-second cadence.",
+                "Added configurable 100-sample per-path heartbeat windows with warmup handling, four-miss hard demotion, and 15-success recovery.",
+                "Updated dashboard and analytics path loss displays so warming paths show unknown quality instead of misleading early loss."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.115",
             Date = "2026-07-21",
             Summary = "Corrected compact status badge animation geometry.",
             Changes =

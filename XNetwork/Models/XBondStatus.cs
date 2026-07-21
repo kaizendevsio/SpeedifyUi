@@ -273,6 +273,24 @@ public class XBondPathStatus
 
     [JsonPropertyName("rebind_count")]
     public ulong RebindCount { get; set; }
+
+    [JsonPropertyName("pending_probes")]
+    public int PendingProbes { get; set; }
+
+    [JsonPropertyName("heartbeat_sample_count")]
+    public int HeartbeatSampleCount { get; set; }
+
+    [JsonPropertyName("heartbeat_consecutive_misses")]
+    public int HeartbeatConsecutiveMisses { get; set; }
+
+    [JsonPropertyName("heartbeat_consecutive_successes")]
+    public int HeartbeatConsecutiveSuccesses { get; set; }
+
+    [JsonPropertyName("heartbeat_warming_up")]
+    public bool HeartbeatWarmingUp { get; set; }
+
+    [JsonPropertyName("heartbeat_failed")]
+    public bool HeartbeatFailed { get; set; }
 }
 
 public class XBondPathIsolationStatus

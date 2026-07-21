@@ -635,8 +635,16 @@
                 </div>
                 <div class="flex items-center gap-1.5">
                     <i class="fas fa-triangle-exclamation text-xs text-slate-500"></i>
-                    <AnimatedNumber Value="@Math.Round(path.LossPercent, 1)" Decimals="@GetPercentDecimals(path.LossPercent)" CssClass="@GetLossTextClass(path)" AriaLabel="@FormatPercent(path.LossPercent)" />
-                    <span class="text-xs text-slate-400">loss</span>
+                    @if (path.DisplayLossPercent.HasValue)
+                    {
+                        <AnimatedNumber Value="@Math.Round(path.DisplayLossPercent.Value, 1)" Decimals="@GetPercentDecimals(path.DisplayLossPercent.Value)" CssClass="@GetLossTextClass(path)" AriaLabel="@FormatPercent(path.DisplayLossPercent)" />
+                        <span class="text-xs text-slate-400">loss</span>
+                    }
+                    else
+                    {
+                        <span class="font-semibold text-slate-400" aria-label="Heartbeat quality warming up">--</span>
+                        <span class="text-xs text-slate-400">warming</span>
+                    }
                 </div>
             </div>
 
@@ -757,7 +765,7 @@
             return $"{baseClass}{groupClass}{separationClass} border-amber-500/25 bg-amber-500/10{interactionClass}";
         }
 
-        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        if (path.DisplayLossPercent is >= 10 || path.RttMs >= 180)
         {
             return $"{baseClass}{groupClass}{separationClass} border-yellow-500/25 bg-yellow-500/5{interactionClass}";
         }
@@ -793,12 +801,17 @@
 
     private static string GetPathStatusKind(XBondPathStatsSnapshot path)
     {
-        if (!path.InterfaceUp || path.LossPercent >= 99.5)
+        if (!path.InterfaceUp || path.HeartbeatFailed)
         {
             return "disconnected";
         }
 
-        if (path.InCooldown || path.LossPercent >= 10 || path.StaleAckMs is >= StaleAckWarningMs)
+        if (path.HeartbeatWarmingUp && !path.HeartbeatFailed)
+        {
+            return "connecting";
+        }
+
+        if (path.InCooldown || path.DisplayLossPercent is >= 10 || path.StaleAckMs is >= StaleAckWarningMs)
         {
             return "disconnecting";
         }
@@ -818,9 +831,9 @@
             return "No carrier";
         }
 
-        if (path.LossPercent >= 99.5)
+        if (path.HeartbeatFailed)
         {
-            return string.IsNullOrWhiteSpace(path.DemotionReason) ? "Path has 100% heartbeat loss" : path.DemotionReason;
+            return string.IsNullOrWhiteSpace(path.DemotionReason) ? "Path heartbeat failed after consecutive misses" : path.DemotionReason;
         }
 
         if (path.InCooldown)
@@ -828,10 +841,17 @@
             return string.IsNullOrWhiteSpace(path.DemotionReason) ? "Cooldown" : path.DemotionReason;
         }
 
-        if (path.LossPercent >= 10)
+        if (path.HeartbeatWarmingUp)
+        {
+            return path.HeartbeatSampleCount > 0
+                ? $"Heartbeat quality warming up ({path.HeartbeatSampleCount} samples)"
+                : "Heartbeat quality warming up";
+        }
+
+        if (path.DisplayLossPercent is >= 10)
         {
             return string.IsNullOrWhiteSpace(path.DemotionReason)
-                ? $"High heartbeat loss ({FormatPercent(path.LossPercent)})"
+                ? $"High heartbeat loss ({FormatPercent(path.DisplayLossPercent)})"
                 : path.DemotionReason;
         }
 
@@ -879,17 +899,17 @@
             return 0;
         }
 
-        if (path.InCooldown || path.LossPercent >= 25 || path.RttMs >= 300)
+        if (path.InCooldown || path.HeartbeatFailed || path.DisplayLossPercent is >= 25 || path.RttMs >= 300)
         {
             return 1;
         }
 
-        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        if (path.DisplayLossPercent is >= 10 || path.RttMs >= 180)
         {
             return 2;
         }
 
-        if (path.LossPercent >= 2 || path.RttMs >= 120)
+        if (path.DisplayLossPercent is >= 2 || path.RttMs >= 120)
         {
             return 3;
         }
@@ -899,17 +919,17 @@
 
     private static string GetSignalColorClass(XBondPathStatsSnapshot path)
     {
-        if (path.InCooldown || path.LossPercent >= 25 || path.RttMs >= 300)
+        if (path.InCooldown || path.HeartbeatFailed || path.DisplayLossPercent is >= 25 || path.RttMs >= 300)
         {
             return "bg-red-400";
         }
 
-        if (path.LossPercent >= 10 || path.RttMs >= 180)
+        if (path.DisplayLossPercent is >= 10 || path.RttMs >= 180)
         {
             return "bg-yellow-400";
         }
 
-        if (path.LossPercent >= 2 || path.RttMs >= 120)
+        if (path.DisplayLossPercent is >= 2 || path.RttMs >= 120)
         {
             return "bg-yellow-300";
         }
@@ -970,7 +990,12 @@
 
     private static string GetLossTextClass(XBondPathStatsSnapshot path)
     {
-        return path.LossPercent switch
+        if (path.DisplayLossPercent is not { } lossPercent)
+        {
+            return "font-semibold text-slate-400";
+        }
+
+        return lossPercent switch
         {
             >= 10 => "font-semibold text-red-300",
             >= 2 => "font-semibold text-yellow-300",

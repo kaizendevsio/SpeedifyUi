@@ -7,6 +7,11 @@ realtime_deadline_ms = 500
 tun_queue_capacity = 2048
 inbound_queue_capacity = 4096
 udp_socket_buffer_bytes = 4194304
+heartbeat_interval_ms = 200
+heartbeat_health_window_samples = 100
+heartbeat_min_quality_samples = 20
+heartbeat_failure_consecutive = 4
+heartbeat_recovery_consecutive = 15
 runtime_status_path = "/run/xbond/client-status.json"
 
 [[paths]]

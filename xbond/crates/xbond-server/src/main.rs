@@ -7019,6 +7019,12 @@ mod tests {
             heartbeat_expired: 0,
             heartbeat_late_acks: 0,
             heartbeat_rebind_discarded: 0,
+            pending_probes: 0,
+            heartbeat_sample_count: 100,
+            heartbeat_consecutive_misses: 0,
+            heartbeat_consecutive_successes: 100,
+            heartbeat_warming_up: false,
+            heartbeat_failed: false,
         }
     }
 

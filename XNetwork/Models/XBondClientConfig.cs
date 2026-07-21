@@ -24,6 +24,16 @@ public sealed class XBondClientConfig
 
     public int ReorderHoldMs { get; set; } = 25;
 
+    public int HeartbeatIntervalMs { get; set; } = 200;
+
+    public int HeartbeatHealthWindowSamples { get; set; } = 100;
+
+    public int HeartbeatMinQualitySamples { get; set; } = 20;
+
+    public int HeartbeatFailureConsecutive { get; set; } = 4;
+
+    public int HeartbeatRecoveryConsecutive { get; set; } = 15;
+
     public bool RecoveryEnabled { get; set; } = true;
 
     public int RecoveryEnterDegradedTicks { get; set; } = 3;
@@ -95,6 +105,16 @@ public sealed class XBondAdapterConfigStatus
     public double BackupLossDisableThreshold { get; set; } = 0.35;
 
     public int ReorderHoldMs { get; set; } = 25;
+
+    public int HeartbeatIntervalMs { get; set; } = 200;
+
+    public int HeartbeatHealthWindowSamples { get; set; } = 100;
+
+    public int HeartbeatMinQualitySamples { get; set; } = 20;
+
+    public int HeartbeatFailureConsecutive { get; set; } = 4;
+
+    public int HeartbeatRecoveryConsecutive { get; set; } = 15;
 
     public List<XBondAdapterConfigRow> Adapters { get; set; } = new();
 
