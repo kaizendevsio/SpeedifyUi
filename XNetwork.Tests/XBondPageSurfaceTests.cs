@@ -83,8 +83,13 @@ public class XBondPageSurfaceTests
         var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
 
         Assert.True(summary.IndexOf("GetStatusDescription()", StringComparison.Ordinal) <
-                    summary.IndexOf("connection-summary-pills", StringComparison.Ordinal));
+                    summary.IndexOf("connection-summary-pill-row", StringComparison.Ordinal));
         Assert.Contains("<AnimatedStatusPill", summary);
+        Assert.Contains("HasStatusPills", summary);
+        Assert.Contains("GetPillRowClass", summary);
+        Assert.Contains("data-status-pill-row", summary);
+        Assert.Contains("ulink-collapsible-row", styles);
+        Assert.Contains("ulink-collapsible-row-visible", styles);
         Assert.Contains("animated-status-pill-shell", styles);
         Assert.Contains("status-pill-enter-expand", styles);
         Assert.Contains("prefers-reduced-motion: reduce", styles);
@@ -138,6 +143,8 @@ public class XBondPageSurfaceTests
 
         Assert.Contains(">uLink<", layout);
         Assert.Contains("/icons/ulink-logo.svg", layout);
+        Assert.Contains("fa-circle-info", layout);
+        Assert.DoesNotContain("fa-list", layout);
         Assert.DoesNotContain("xnetwork-logo", layout, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("\"name\": \"uLink\"", manifest);
         Assert.Contains("<svg", logo);

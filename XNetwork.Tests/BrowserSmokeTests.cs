@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Playwright;
 
 namespace XNetwork.Tests;
@@ -184,6 +185,73 @@ public class BrowserSmokeTests
         Assert.Equal("1", await reducedMotionPill.EvaluateAsync<string>("element => getComputedStyle(element).opacity"));
     }
 
+    [Fact]
+    public async Task ConnectionSummaryPillRow_CollapsesWithoutPlaceholderAndRespectsReducedMotion()
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+        {
+            Headless = true
+        });
+
+        var context = await browser.NewContextAsync(new BrowserNewContextOptions
+        {
+            ViewportSize = new ViewportSize { Width = 390, Height = 844 },
+            ReducedMotion = ReducedMotion.NoPreference
+        });
+        var page = await context.NewPageAsync();
+        var styles = await File.ReadAllTextAsync(FindRepoFile("XNetwork", "wwwroot", "app.css"));
+        await page.SetContentAsync($$"""
+            <!doctype html>
+            <html>
+            <head><style>{{styles}}</style></head>
+            <body style="margin:0;padding:16px;background:#202020">
+                <section id="card" class="connection-summary-card ulink-dynamic-card" style="width:320px;border:1px solid #555;padding:16px;background:#262626">
+                    <p style="margin:0;color:white">Low latency</p>
+                    <div id="row" class="connection-summary-pill-row ulink-collapsible-row">
+                        <div class="ulink-collapsible-row-inner">
+                            <div class="connection-summary-pills" style="display:flex;flex-wrap:wrap;align-items:center">
+                                <span class="animated-status-pill-shell connection-summary-pill-good">
+                                    <span class="connection-summary-pill">
+                                        <span class="animated-status-pill-icon"><i>&#9679;</i></span>
+                                        <span class="animated-status-pill-text">Protecting from loss</span>
+                                    </span>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="metrics" style="height:48px;margin-top:12px;background:#303030"></div>
+                </section>
+            </body>
+            </html>
+            """);
+
+        var row = page.Locator("#row");
+        var card = page.Locator("#card");
+        var hiddenRow = await row.BoundingBoxAsync();
+        var hiddenCard = await card.BoundingBoxAsync();
+        Assert.NotNull(hiddenRow);
+        Assert.NotNull(hiddenCard);
+        Assert.InRange(hiddenRow!.Height, 0, 1);
+
+        await row.EvaluateAsync("element => element.classList.add('ulink-collapsible-row-visible')");
+        await page.WaitForTimeoutAsync(500);
+
+        var visibleRow = await row.BoundingBoxAsync();
+        var visibleCard = await card.BoundingBoxAsync();
+        Assert.NotNull(visibleRow);
+        Assert.NotNull(visibleCard);
+        Assert.True(visibleRow!.Height >= 23, $"Expected visible pill row height, got {visibleRow.Height}.");
+        Assert.True(visibleCard!.Height > hiddenCard!.Height + 20, "Card height should grow only when the pill row is visible.");
+
+        await page.EmulateMediaAsync(new PageEmulateMediaOptions { ReducedMotion = ReducedMotion.Reduce });
+        var transitionDurations = await row.EvaluateAsync<string>("element => getComputedStyle(element).transitionDuration");
+        foreach (var duration in transitionDurations.Split(',', StringSplitOptions.RemoveEmptyEntries))
+        {
+            Assert.InRange(ParseCssDurationMs(duration), 0, 5);
+        }
+    }
+
     private static string FindRepoFile(params string[] segments)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -211,5 +279,21 @@ public class BrowserSmokeTests
                 }
             }
             """, milliseconds);
+    }
+
+    private static double ParseCssDurationMs(string value)
+    {
+        value = value.Trim();
+        if (value.EndsWith("ms", StringComparison.OrdinalIgnoreCase))
+        {
+            return double.Parse(value[..^2], CultureInfo.InvariantCulture);
+        }
+
+        if (value.EndsWith("s", StringComparison.OrdinalIgnoreCase))
+        {
+            return double.Parse(value[..^1], CultureInfo.InvariantCulture) * 1000;
+        }
+
+        return 0;
     }
 }

@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.116";
+    public const string CurrentVersion = "ulink-2026.06.117";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-22",
+            Summary = "Smoothed dashboard card spacing and app chrome.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the dashboard spacing and chrome polish update.",
+                "Collapsed the connection health status badge row to zero height when no badges are visible.",
+                "Added a reusable reduced-motion-safe collapsible row pattern for dynamic uLink card content.",
+                "Aligned the mobile app header with the page surface and changed the changelog button to a familiar information icon."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.116",
             Date = "2026-07-21",
             Summary = "Raised per-path heartbeat frequency.",
             Changes =

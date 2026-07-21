@@ -15,6 +15,7 @@
                 var (status, statusColor) = GetConnectionStatus();
                 var barCount = GetSignalBarCount(status);
                 var isInitializing = status.ToLowerInvariant().Contains("initializing");
+                var hasStatusPills = HasStatusPills(isInitializing);
             }
             <div class="flex items-end gap-0.5 w-10 h-6">
                 @for (int i = 0; i < 4; i++)
@@ -38,32 +39,36 @@
                     <h3 class="font-semibold text-lg text-white">@ConnectionStatus</h3>
                 </div>
                 <p class="mt-1 text-xs text-slate-400">@GetStatusDescription()</p>
-                <div class="connection-summary-pills mt-2 flex flex-wrap items-center">
-                    <AnimatedStatusPill Visible="@(!IsStable && !isInitializing)"
-                                        Text="Unstable"
-                                        IconClass="fas fa-exclamation-triangle"
-                                        PillClass="connection-summary-pill-warning"
-                                        Title="Tunnel health is currently unstable" />
-                    <AnimatedStatusPill Visible="@(ShowMode && !string.IsNullOrWhiteSpace(Mode))"
-                                        Text="@Mode"
-                                        IconClass="fas fa-layer-group"
-                                        PillClass="connection-summary-pill-neutral"
-                                        Title="uLink redundancy policy" />
-                    <AnimatedStatusPill Visible="@IsProtectingFromLoss"
-                                        Text="Protecting from loss"
-                                        IconClass="fas fa-shield-alt"
-                                        PillClass="connection-summary-pill-good"
-                                        Title="@ProtectionReason" />
-                    <AnimatedStatusPill Visible="@IsRecoveryActive"
-                                        Text="@($"Recovery {RecoveryHoldMs} ms")"
-                                        IconClass="fas fa-heart-pulse"
-                                        PillClass="connection-summary-pill-warning"
-                                        Title="@RecoveryReason" />
-                    <AnimatedStatusPill Visible="@ShowServerHealth"
-                                        Text="@ServerHealthLabel"
-                                        IconClass="fas fa-cloud-arrow-up"
-                                        PillClass="@GetServerHealthStateClass()"
-                                        Title="@ServerHealthDetails" />
+                <div class="@GetPillRowClass(hasStatusPills)" data-status-pill-row="@(hasStatusPills ? "visible" : "empty")">
+                    <div class="ulink-collapsible-row-inner">
+                        <div class="connection-summary-pills flex flex-wrap items-center">
+                            <AnimatedStatusPill Visible="@(!IsStable && !isInitializing)"
+                                                Text="Unstable"
+                                                IconClass="fas fa-exclamation-triangle"
+                                                PillClass="connection-summary-pill-warning"
+                                                Title="Tunnel health is currently unstable" />
+                            <AnimatedStatusPill Visible="@(ShowMode && !string.IsNullOrWhiteSpace(Mode))"
+                                                Text="@Mode"
+                                                IconClass="fas fa-layer-group"
+                                                PillClass="connection-summary-pill-neutral"
+                                                Title="uLink redundancy policy" />
+                            <AnimatedStatusPill Visible="@IsProtectingFromLoss"
+                                                Text="Protecting from loss"
+                                                IconClass="fas fa-shield-alt"
+                                                PillClass="connection-summary-pill-good"
+                                                Title="@ProtectionReason" />
+                            <AnimatedStatusPill Visible="@IsRecoveryActive"
+                                                Text="@($"Recovery {RecoveryHoldMs} ms")"
+                                                IconClass="fas fa-heart-pulse"
+                                                PillClass="connection-summary-pill-warning"
+                                                Title="@RecoveryReason" />
+                            <AnimatedStatusPill Visible="@ShowServerHealth"
+                                                Text="@ServerHealthLabel"
+                                                IconClass="fas fa-cloud-arrow-up"
+                                                PillClass="@GetServerHealthStateClass()"
+                                                Title="@ServerHealthDetails" />
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -271,12 +276,28 @@
             ? "cursor-pointer hover:border-cyan-500/50 hover:bg-slate-800/70 focus:outline-none focus:ring-2 focus:ring-cyan-500/60 transition-colors"
             : "";
 
-        return $"relative isolate bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden {interactiveClass}";
+        return $"connection-summary-card ulink-dynamic-card relative isolate bg-slate-800/50 border border-slate-700 rounded-xl shadow-lg mb-6 overflow-hidden {interactiveClass}";
     }
 
     private bool ShowServerHealth =>
         !string.IsNullOrWhiteSpace(ServerHealthStatus) &&
         !string.Equals(ServerHealthStatus, "healthy", StringComparison.OrdinalIgnoreCase);
+
+    private bool HasStatusPills(bool isInitializing)
+    {
+        return (!IsStable && !isInitializing) ||
+               (ShowMode && !string.IsNullOrWhiteSpace(Mode)) ||
+               IsProtectingFromLoss ||
+               IsRecoveryActive ||
+               ShowServerHealth;
+    }
+
+    private static string GetPillRowClass(bool visible)
+    {
+        return visible
+            ? "connection-summary-pill-row ulink-collapsible-row ulink-collapsible-row-visible"
+            : "connection-summary-pill-row ulink-collapsible-row";
+    }
 
     private string GetServerHealthStateClass()
     {

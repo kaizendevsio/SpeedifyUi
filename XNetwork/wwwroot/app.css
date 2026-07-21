@@ -25,6 +25,8 @@
     --vscode-status-unknown: #a3a3a3;
     --vscode-cyan: #d4d4d4;
     --vscode-pink: #bdbdbd;
+    --ulink-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ulink-card-resize-duration: 420ms;
     color-scheme: dark;
 }
 
@@ -517,7 +519,7 @@ body {
     left: 0;
     z-index: 60;
     padding: calc(0.75rem + env(safe-area-inset-top)) 1rem 0.75rem;
-    background: linear-gradient(180deg, rgba(24, 24, 24, 0.82), rgba(24, 24, 24, 0.58));
+    background: rgba(32, 32, 32, 0.76);
     box-shadow: none;
     backdrop-filter: blur(24px) saturate(170%);
     -webkit-backdrop-filter: blur(24px) saturate(170%);
@@ -759,12 +761,6 @@ body {
     opacity: 0.34;
 }
 
-.connection-summary-pills {
-    width: 100%;
-    min-height: 1.5rem;
-    gap: 0.375rem;
-}
-
 .animated-status-pill-shell {
     --status-pill-size: 1.5rem;
     box-sizing: border-box;
@@ -878,6 +874,50 @@ body {
     to { opacity: 0; }
 }
 
+.ulink-dynamic-card {
+    transition:
+        background-color var(--ulink-card-resize-duration) var(--ulink-ease-out),
+        border-color var(--ulink-card-resize-duration) var(--ulink-ease-out),
+        box-shadow var(--ulink-card-resize-duration) var(--ulink-ease-out);
+}
+
+.ulink-collapsible-row {
+    display: grid;
+    grid-template-rows: 0fr;
+    width: 100%;
+    margin-top: 0;
+    opacity: 0;
+    overflow: hidden;
+    transform: translateY(-0.25rem);
+    transition:
+        grid-template-rows var(--ulink-card-resize-duration) var(--ulink-ease-out),
+        margin-top var(--ulink-card-resize-duration) var(--ulink-ease-out),
+        opacity 220ms ease-out,
+        transform var(--ulink-card-resize-duration) var(--ulink-ease-out);
+}
+
+.ulink-collapsible-row-visible {
+    grid-template-rows: 1fr;
+    margin-top: 0.5rem;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.ulink-collapsible-row-inner {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.connection-summary-pills {
+    width: 100%;
+    min-height: 0;
+    gap: 0.375rem;
+}
+
+.connection-summary-pill-row.ulink-collapsible-row-visible .connection-summary-pills {
+    min-height: 1.5rem;
+}
+
 .connection-summary-pill-good {
     border-color: rgba(134, 239, 172, 0.28);
     background: rgba(134, 239, 172, 0.1);
@@ -961,6 +1001,8 @@ body {
 
     .animated-status-pill-shell,
     .animated-status-pill-text,
+    .ulink-collapsible-row,
+    .ulink-dynamic-card,
     .ulink-signal-bar,
     .ulink-cellular-signal-bar {
         transition-duration: 1ms !important;
@@ -982,6 +1024,10 @@ body {
 
     .animated-status-pill-shell.animated-status-pill-exiting {
         opacity: 0;
+    }
+
+    .ulink-collapsible-row {
+        transform: none !important;
     }
 
     .xbond-path-card,
