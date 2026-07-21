@@ -379,6 +379,8 @@
 - 2026-07-21: uLink keeps active XBond anchor/backup cards as keyed direct grid children so FLIP role changes preserve live metric component identity, while a shared grid backdrop visually groups the `Actively Redundant` heading, count, and current active members. Probe and cooldown cards stay outside that surface.
 - 2026-07-21: uLink adapter technical rows are hidden by default and controlled by the persisted Settings > Appearance preference `Adapter technical details`, stored in app data as `ui-display-preferences.json`.
 - 2026-07-21: uLink version `ulink-2026.06.110` removes the former `/live` route, Three.js asset, and Live navigation item. The four primary tabs are Dashboard, Analytics, Wifi, and Settings; `/live` must return HTTP 404.
+- 2026-07-21: uLink version `ulink-2026.06.113` maintains LAN-only access from the Cudy-facing `eth0` / `192.168.145.0/24` network to Starlink management host `192.168.100.1`. `StarlinkLanAccessService` resolves the current physical Starlink adapter dynamically and uses `/usr/local/sbin/xnetwork-starlink-lan-access-apply` to own a tagged `/32` route plus narrowly scoped forwarding and masquerade rules; it removes stale state when Starlink disconnects or re-enumerates.
+- 2026-07-21: The stock Blazor fatal-error banner is intentionally hidden. `blazorErrorRecovery.js` performs bounded session-scoped automatic reloads, yields to the existing reconnect/session-expired flow, clears its guard after a stable session, and shows a minimalist uLink recovery message when retries are exhausted.
 
 ## Settings Page
 - `Settings.razor` is a large accordion/modal page; reusable controls live in `XNetwork/Components/Custom` and related styles are in `XNetwork/wwwroot/app.css`.

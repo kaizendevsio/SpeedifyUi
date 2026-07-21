@@ -242,21 +242,20 @@
     </NavLink>
 </nav>
 
-<div id="blazor-error-ui" class="fixed inset-0 z-[9999] flex items-end justify-center pointer-events-none sm:items-center" data-nosnippet>
-    <div class="bg-red-600 text-white p-4 rounded-md shadow-lg m-4 max-w-md w-full pointer-events-auto sm:m-6">
-        <div class="flex">
-            <div class="flex-shrink-0">
-                <svg class="h-5 w-5 text-red-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                    <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
-                </svg>
-            </div>
-            <div class="ml-3">
-                <h3 class="text-sm font-medium">An unhandled error has occurred.</h3>
-                <div class="mt-2 text-sm">
-                    <a href="." class="font-medium underline hover:text-red-200">Reload</a>
-                    <button type="button" class="dismiss ml-3 font-medium underline hover:text-red-200">Dismiss</button>
-                </div>
-            </div>
+<div id="blazor-error-ui" aria-hidden="true" data-nosnippet></div>
+<div id="ulink-fatal-recovery"
+     class="ulink-fatal-recovery"
+     role="alert"
+     aria-live="assertive"
+     aria-hidden="true"
+     tabindex="-1"
+     hidden
+     data-nosnippet>
+    <div class="ulink-fatal-recovery-message">
+        <img src="/icons/ulink-logo.svg" alt="" aria-hidden="true" />
+        <div>
+            <strong>uLink could not refresh this page.</strong>
+            <span>Automatic recovery is paused. Please reopen the page in a moment.</span>
         </div>
     </div>
 </div>

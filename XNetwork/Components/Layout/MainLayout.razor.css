@@ -1,20 +1,78 @@
 #blazor-error-ui {
-    color-scheme: light only;
-    background: lightyellow;
-    bottom: 0;
-    box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
-    box-sizing: border-box;
-    display: none;
-    left: 0;
-    padding: 0.6rem 1.25rem 0.7rem 1.25rem;
-    position: fixed;
-    width: 100%;
-    z-index: 1000;
+    display: none !important;
 }
 
-    #blazor-error-ui .dismiss {
-        cursor: pointer;
-        position: absolute;
-        right: 0.75rem;
-        top: 0.5rem;
+.ulink-fatal-recovery {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: grid;
+    place-items: end center;
+    padding: 1.25rem;
+    background: rgba(24, 24, 24, 0.72);
+    backdrop-filter: blur(12px);
+}
+
+.ulink-fatal-recovery[hidden] {
+    display: none;
+}
+
+.ulink-fatal-recovery-message {
+    display: flex;
+    width: min(100%, 26rem);
+    align-items: center;
+    gap: 0.875rem;
+    padding: 0.875rem 1rem;
+    border: 1px solid #4a4a4a;
+    border-radius: 0.5rem;
+    background: #252526;
+    color: #cccccc;
+    animation: ulink-recovery-enter 180ms ease-out both;
+}
+
+.ulink-fatal-recovery-message img {
+    width: 2rem;
+    height: 2rem;
+    flex: 0 0 auto;
+}
+
+.ulink-fatal-recovery-message strong,
+.ulink-fatal-recovery-message span {
+    display: block;
+}
+
+.ulink-fatal-recovery-message strong {
+    color: #f2f2f2;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.ulink-fatal-recovery-message span {
+    margin-top: 0.2rem;
+    color: #a7a7a7;
+    font-size: 0.8rem;
+    line-height: 1.35;
+}
+
+@media (min-width: 640px) {
+    .ulink-fatal-recovery {
+        place-items: center;
     }
+}
+
+@keyframes ulink-recovery-enter {
+    from {
+        opacity: 0;
+        transform: translateY(0.5rem);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ulink-fatal-recovery-message {
+        animation: none;
+    }
+}

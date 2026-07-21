@@ -1,0 +1,107 @@
+#!/bin/sh
+set -eu
+
+ACTION="${1:-}"
+FILTER_CHAIN="ULINK_STARLINK_FWD"
+NAT_CHAIN="ULINK_STARLINK_NAT"
+RULE_COMMENT="ulink-starlink-management"
+ROUTE_PROTOCOL="199"
+
+fail() {
+    echo "$1" >&2
+    exit 2
+}
+
+valid_iface() {
+    case "$1" in
+        ''|*[!A-Za-z0-9_.:@-]*) return 1 ;;
+        *) [ "${#1}" -le 64 ] ;;
+    esac
+}
+
+cleanup_rules() {
+    while iptables -C FORWARD -m comment --comment "$RULE_COMMENT" -j "$FILTER_CHAIN" 2>/dev/null; do
+        iptables -D FORWARD -m comment --comment "$RULE_COMMENT" -j "$FILTER_CHAIN"
+    done
+    iptables -F "$FILTER_CHAIN" 2>/dev/null || true
+    iptables -X "$FILTER_CHAIN" 2>/dev/null || true
+
+    while iptables -t nat -C POSTROUTING -m comment --comment "$RULE_COMMENT" -j "$NAT_CHAIN" 2>/dev/null; do
+        iptables -t nat -D POSTROUTING -m comment --comment "$RULE_COMMENT" -j "$NAT_CHAIN"
+    done
+    iptables -t nat -F "$NAT_CHAIN" 2>/dev/null || true
+    iptables -t nat -X "$NAT_CHAIN" 2>/dev/null || true
+}
+
+remove_state() {
+    destination="$1"
+    cleanup_rules
+    ip -4 route del "$destination/32" proto "$ROUTE_PROTOCOL" 2>/dev/null || true
+    echo "Starlink LAN management state removed."
+}
+
+case "$ACTION" in
+    apply|check)
+        [ "$#" -eq 5 ] || fail "Usage: $0 $ACTION STARLINK_IF LAN_IF LAN_CIDR DESTINATION"
+        STARLINK_IF="$2"
+        LAN_IF="$3"
+        LAN_CIDR="$4"
+        DESTINATION="$5"
+        ;;
+    remove)
+        [ "$#" -eq 4 ] || fail "Usage: $0 remove LAN_IF LAN_CIDR DESTINATION"
+        LAN_IF="$2"
+        LAN_CIDR="$3"
+        DESTINATION="$4"
+        remove_state "$DESTINATION"
+        exit 0
+        ;;
+    *)
+        fail "Usage: $0 {apply|check|remove} ..."
+        ;;
+esac
+
+valid_iface "$STARLINK_IF" || fail "Invalid Starlink interface."
+valid_iface "$LAN_IF" || fail "Invalid LAN interface."
+ip link show dev "$STARLINK_IF" >/dev/null 2>&1 || fail "Starlink interface does not exist."
+ip link show dev "$LAN_IF" >/dev/null 2>&1 || fail "LAN interface does not exist."
+python3 - "$LAN_CIDR" "$DESTINATION" <<'PY'
+import ipaddress
+import sys
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=False)
+    destination = ipaddress.ip_address(sys.argv[2])
+except ValueError as error:
+    raise SystemExit(str(error))
+if network.version != 4 or destination.version != 4:
+    raise SystemExit("IPv4 values are required")
+PY
+
+if [ "$ACTION" = "check" ]; then
+    ip -4 route show exact "$DESTINATION/32" | grep -F "dev $STARLINK_IF" | grep -F "metric 1" >/dev/null
+    iptables -C FORWARD -m comment --comment "$RULE_COMMENT" -j "$FILTER_CHAIN"
+    iptables -C "$FILTER_CHAIN" -i "$LAN_IF" -o "$STARLINK_IF" -s "$LAN_CIDR" -d "$DESTINATION/32" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+    iptables -t nat -C POSTROUTING -m comment --comment "$RULE_COMMENT" -j "$NAT_CHAIN"
+    iptables -t nat -C "$NAT_CHAIN" -o "$STARLINK_IF" -s "$LAN_CIDR" -d "$DESTINATION/32" -j MASQUERADE
+    echo "Starlink LAN management state is current on $STARLINK_IF."
+    exit 0
+fi
+
+carrier="$(cat "/sys/class/net/$STARLINK_IF/carrier" 2>/dev/null || echo 0)"
+[ "$carrier" = "1" ] || fail "Starlink interface has no carrier."
+
+cleanup_rules
+ip -4 route del "$DESTINATION/32" proto "$ROUTE_PROTOCOL" 2>/dev/null || true
+ip -4 route replace "$DESTINATION/32" dev "$STARLINK_IF" scope link proto "$ROUTE_PROTOCOL" metric 1
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+
+iptables -N "$FILTER_CHAIN"
+iptables -A "$FILTER_CHAIN" -i "$LAN_IF" -o "$STARLINK_IF" -s "$LAN_CIDR" -d "$DESTINATION/32" -m conntrack --ctstate NEW,ESTABLISHED,RELATED -j ACCEPT
+iptables -A "$FILTER_CHAIN" -i "$STARLINK_IF" -o "$LAN_IF" -s "$DESTINATION/32" -d "$LAN_CIDR" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+iptables -A FORWARD -m comment --comment "$RULE_COMMENT" -j "$FILTER_CHAIN"
+
+iptables -t nat -N "$NAT_CHAIN"
+iptables -t nat -A "$NAT_CHAIN" -o "$STARLINK_IF" -s "$LAN_CIDR" -d "$DESTINATION/32" -j MASQUERADE
+iptables -t nat -A POSTROUTING -m comment --comment "$RULE_COMMENT" -j "$NAT_CHAIN"
+
+echo "Starlink LAN management access applied through $STARLINK_IF."

@@ -51,10 +51,16 @@
             </div>
         </div>
         <script src="_framework/blazor.web.js" autostart="false"></script>
+        <script src="js/blazorErrorRecovery.js"></script>
         <script src="js/blazorReconnect.js"></script>
         <script>
+            window.UlinkBlazorErrorRecovery.start();
             window.XNetworkBlazorReconnect.start()
-                .catch(error => console.error('[uLink] Blazor startup failed', error));
+                .then(() => window.UlinkBlazorErrorRecovery.markSessionStarted())
+                .catch(error => {
+                    console.error('[uLink] Blazor startup failed', error);
+                    window.UlinkBlazorErrorRecovery.handleFatalError('startup');
+                });
         </script>
         
         <!-- PWA Service Worker Registration -->

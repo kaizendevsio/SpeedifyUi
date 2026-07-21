@@ -25,6 +25,10 @@
     let rejectedReloadTimerId = null;
     let reconnectStateObserver = null;
 
+    function fatalRecoveryIsActive() {
+        return document.documentElement.dataset.ulinkFatalRecovery === 'active';
+    }
+
     function retryIntervalMilliseconds(previousAttempts, maxRetries) {
         if (previousAttempts >= maxRetries) {
             return null;
@@ -48,7 +52,7 @@
     }
 
     function scheduleRejectedReload() {
-        if (rejectedReloadTimerId !== null) {
+        if (rejectedReloadTimerId !== null || fatalRecoveryIsActive()) {
             return;
         }
 
@@ -59,6 +63,10 @@
     }
 
     function scheduleFailedReconnect() {
+        if (fatalRecoveryIsActive()) {
+            return;
+        }
+
         clearFailedRetryTimer();
 
         failedRetryTimerId = window.setTimeout(async () => {
@@ -124,6 +132,12 @@
     }
 
     function handleReconnectState(reconnectState) {
+        if (fatalRecoveryIsActive()) {
+            clearFailedRetryTimer();
+            clearRejectedReloadTimer();
+            return;
+        }
+
         if (reconnectState === 'hide') {
             clearFailedRetryTimer();
             clearRejectedReloadTimer();

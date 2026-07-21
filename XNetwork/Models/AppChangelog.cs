@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.112";
+    public const string CurrentVersion = "ulink-2026.06.113";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Improved Starlink management access and page recovery.",
+            Changes =
+            [
+                "Added dynamic LAN forwarding to the Starlink management endpoint through the currently detected physical adapter.",
+                "Added automatic cleanup and reapplication when Starlink disconnects or re-enumerates on USB.",
+                "Replaced the stock Blazor error banner with bounded automatic page recovery and a minimalist uLink fallback."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.112",
             Date = "2026-07-21",
             Summary = "Finished the visible uLink naming cleanup.",
             Changes =

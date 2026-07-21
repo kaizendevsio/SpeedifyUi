@@ -122,6 +122,11 @@ builder.Services.AddSingleton<StarlinkDeviceClient>();
 builder.Services.AddSingleton<StarlinkTelemetryService>();
 builder.Services.AddSingleton<IStarlinkTelemetryService>(sp => sp.GetRequiredService<StarlinkTelemetryService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<StarlinkTelemetryService>());
+builder.Services.AddSingleton(sp =>
+    builder.Configuration.GetSection("StarlinkLanAccess").Get<StarlinkLanAccessSettings>() ?? new StarlinkLanAccessSettings());
+builder.Services.AddSingleton<IStarlinkLanAccessCommandRunner, StarlinkLanAccessCommandRunner>();
+builder.Services.AddSingleton<StarlinkLanAccessService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StarlinkLanAccessService>());
 
 // Add connection health service (both as singleton and hosted service)
 builder.Services.AddSingleton<ConnectionHealthService>();
