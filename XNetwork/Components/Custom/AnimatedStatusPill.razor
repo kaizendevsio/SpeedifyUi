@@ -2,12 +2,14 @@
 
 @if (_isRendered)
 {
-    <span class="animated-status-pill-shell @(_isExiting ? "animated-status-pill-exiting" : string.Empty)"
+    <span class="animated-status-pill-shell @PillClass @(_isExiting ? "animated-status-pill-exiting" : string.Empty)"
           title="@Title"
           aria-label="@Text"
           data-status-pill="@Text">
-        <span class="connection-summary-pill @PillClass">
-            <i class="@IconClass" aria-hidden="true"></i>
+        <span class="connection-summary-pill">
+            <span class="animated-status-pill-icon" aria-hidden="true">
+                <i class="@IconClass"></i>
+            </span>
             <span class="animated-status-pill-text">@Text</span>
         </span>
     </span>

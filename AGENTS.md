@@ -37,6 +37,7 @@
 - Preferred paired runtime deploy command from Windows is `.\deploy-xbond-paired.ps1`. Use the router-side `./deploy.sh` only for app-only changes that do not affect the Rust XBond runtime.
 
 ## XBond-Only Branch
+- 2026-07-21: uLink version `ulink-2026.06.115` fixes animated connection-status badge geometry. The visible shell owns the border/background and begins as a true 1.5rem circle with a fixed centered icon slot, holds icon-only for one second, then expands without moving the icon; reduced-motion renders the final pill immediately.
 - 2026-07-21: uLink compact release badges display only the date-based portion of `AppChangelog.CurrentVersion` (for example, `2026.06.114`), while stored changelog versions retain the `ulink-` prefix. Generic assembly versions such as `1.0.0` must fall back to the current changelog release instead of appearing in the UI.
 - 2026-07-21: `UiDisplayPreferences.ShowConnectionMode` controls the reliable/balanced/fast dashboard pill and defaults to false, including when loading older preference files that do not contain the property. Recovery, loss-protection, and unhealthy server pills remain independent.
 - 2026-06-15: Branch `feature/xband-only-runtime` is the tunnel-only runtime branch. App version source of truth is `AppChangelog.CurrentVersion`; user-facing releases use the `ulink-YYYY.MM.N` prefix as of version `ulink-2026.06.111`. Rendered changelog prose must also avoid legacy product names; internal service, protocol, storage, config, and compatibility-route identifiers remain unchanged.

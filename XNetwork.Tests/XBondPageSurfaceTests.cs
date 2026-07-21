@@ -183,7 +183,16 @@ public class XBondPageSurfaceTests
         Assert.Contains("status-pill-exit 220ms", styles);
         Assert.Contains("prefers-reduced-motion: reduce", styles);
         Assert.Contains("animation: none !important", styles);
-        Assert.Contains("max-width: 20rem", styles);
+        Assert.Contains("--status-pill-size: 1.5rem", styles);
+        Assert.Contains("min-width: var(--status-pill-size)", styles);
+        Assert.Contains("height: var(--status-pill-size)", styles);
+        Assert.Contains("padding: 0", styles);
+        Assert.Contains("place-items: center", styles);
+        Assert.Contains("max-width: min(20rem, 100%)", styles);
+        Assert.Contains("padding-right: 0.55rem", styles);
+        Assert.Contains("class=\"animated-status-pill-shell @PillClass", component);
+        Assert.Contains("class=\"animated-status-pill-icon\"", component);
+        Assert.DoesNotContain("connection-summary-pill @PillClass", component);
     }
 
     [Fact]

@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.114";
+    public const string CurrentVersion = "ulink-2026.06.115";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Corrected compact status badge animation geometry.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the status badge geometry correction.",
+                "Made newly appearing status badges render as complete centered circles during their icon-only hold.",
+                "Kept icons stationary while badges expand smoothly to reveal their labels after one second.",
+                "Improved independent badge wrapping and reduced-motion behavior on narrow mobile screens."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.114",
             Date = "2026-07-21",
             Summary = "Refined release labels and dashboard appearance controls.",
             Changes =
