@@ -39,36 +39,31 @@
                 </div>
                 <p class="mt-1 text-xs text-slate-400">@GetStatusDescription()</p>
                 <div class="connection-summary-pills mt-2 flex flex-wrap items-center">
-                    <span class="@GetPillSlotClass(!IsStable && !isInitializing)" aria-hidden="@(IsStable || isInitializing)">
-                        <span class="connection-summary-pill connection-summary-pill-warning" title="Tunnel health is currently unstable">
-                            <i class="fas fa-exclamation-triangle"></i>
-                            <span>Unstable</span>
-                        </span>
-                    </span>
-                    <span class="@GetPillSlotClass(!string.IsNullOrWhiteSpace(Mode))" aria-hidden="@string.IsNullOrWhiteSpace(Mode)">
-                        <span class="connection-summary-pill connection-summary-pill-neutral" title="XBond redundancy policy">
-                            <i class="fas fa-layer-group"></i>
-                            <span>@Mode</span>
-                        </span>
-                    </span>
-                    <span class="@GetPillSlotClass(IsProtectingFromLoss)" aria-hidden="@(!IsProtectingFromLoss)">
-                        <span class="connection-summary-pill connection-summary-pill-good" title="@ProtectionReason">
-                            <i class="fas fa-shield-alt"></i>
-                            <span>Protecting from loss</span>
-                        </span>
-                    </span>
-                    <span class="@GetPillSlotClass(IsRecoveryActive)" aria-hidden="@(!IsRecoveryActive)">
-                        <span class="connection-summary-pill connection-summary-pill-warning" title="@RecoveryReason">
-                            <i class="fas fa-heart-pulse"></i>
-                            <span>Recovery @RecoveryHoldMs ms</span>
-                        </span>
-                    </span>
-                    <span class="@GetPillSlotClass(ShowServerHealth)" aria-hidden="@(!ShowServerHealth)">
-                        <span class="@GetServerHealthPillClass()" title="@ServerHealthDetails">
-                            <i class="fas fa-cloud-arrow-up"></i>
-                            <span>@ServerHealthLabel</span>
-                        </span>
-                    </span>
+                    <AnimatedStatusPill Visible="@(!IsStable && !isInitializing)"
+                                        Text="Unstable"
+                                        IconClass="fas fa-exclamation-triangle"
+                                        PillClass="connection-summary-pill-warning"
+                                        Title="Tunnel health is currently unstable" />
+                    <AnimatedStatusPill Visible="@(!string.IsNullOrWhiteSpace(Mode))"
+                                        Text="@Mode"
+                                        IconClass="fas fa-layer-group"
+                                        PillClass="connection-summary-pill-neutral"
+                                        Title="XBond redundancy policy" />
+                    <AnimatedStatusPill Visible="@IsProtectingFromLoss"
+                                        Text="Protecting from loss"
+                                        IconClass="fas fa-shield-alt"
+                                        PillClass="connection-summary-pill-good"
+                                        Title="@ProtectionReason" />
+                    <AnimatedStatusPill Visible="@IsRecoveryActive"
+                                        Text="@($"Recovery {RecoveryHoldMs} ms")"
+                                        IconClass="fas fa-heart-pulse"
+                                        PillClass="connection-summary-pill-warning"
+                                        Title="@RecoveryReason" />
+                    <AnimatedStatusPill Visible="@ShowServerHealth"
+                                        Text="@ServerHealthLabel"
+                                        IconClass="fas fa-cloud-arrow-up"
+                                        PillClass="@GetServerHealthStateClass()"
+                                        Title="@ServerHealthDetails" />
                 </div>
             </div>
         </div>
@@ -282,7 +277,7 @@
         !string.IsNullOrWhiteSpace(ServerHealthStatus) &&
         !string.Equals(ServerHealthStatus, "healthy", StringComparison.OrdinalIgnoreCase);
 
-    private string GetServerHealthPillClass()
+    private string GetServerHealthStateClass()
     {
         var stateClass = ServerHealthStatus?.ToLowerInvariant() switch
         {
@@ -291,11 +286,8 @@
             _ => "connection-summary-pill-neutral"
         };
 
-        return $"connection-summary-pill {stateClass}";
+        return stateClass;
     }
-
-    private static string GetPillSlotClass(bool visible) =>
-        $"connection-summary-pill-slot{(visible ? " connection-summary-pill-slot-visible" : string.Empty)}";
 
     private async Task HandleTrafficDetailsRequested()
     {

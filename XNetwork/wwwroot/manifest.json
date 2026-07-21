@@ -1,7 +1,7 @@
 {
-  "name": "Ulink",
-  "short_name": "Ulink",
-  "description": "Ulink - resilient multi-path network management",
+  "name": "uLink",
+  "short_name": "uLink",
+  "description": "uLink - resilient multi-path network management",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1e1e1e",

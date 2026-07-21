@@ -1,0 +1,82 @@
+@implements IAsyncDisposable
+
+@if (_isRendered)
+{
+    <span class="animated-status-pill-shell @(_isExiting ? "animated-status-pill-exiting" : string.Empty)"
+          title="@Title"
+          aria-label="@Text"
+          data-status-pill="@Text">
+        <span class="connection-summary-pill @PillClass">
+            <i class="@IconClass" aria-hidden="true"></i>
+            <span class="animated-status-pill-text">@Text</span>
+        </span>
+    </span>
+}
+
+@code {
+    private static readonly TimeSpan ExitDuration = TimeSpan.FromMilliseconds(220);
+    private CancellationTokenSource? _transitionCancellation;
+    private bool _isRendered;
+    private bool _isExiting;
+    private bool _lastVisible;
+
+    [Parameter] public bool Visible { get; set; }
+    [Parameter, EditorRequired] public string Text { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string IconClass { get; set; } = string.Empty;
+    [Parameter] public string PillClass { get; set; } = "connection-summary-pill-neutral";
+    [Parameter] public string? Title { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (Visible == _lastVisible)
+        {
+            return;
+        }
+
+        _lastVisible = Visible;
+        _transitionCancellation?.Cancel();
+        _transitionCancellation?.Dispose();
+        _transitionCancellation = new CancellationTokenSource();
+
+        if (Visible)
+        {
+            _isRendered = true;
+            _isExiting = false;
+            return;
+        }
+
+        if (_isRendered)
+        {
+            _isExiting = true;
+            _ = CompleteExitAsync(_transitionCancellation.Token);
+        }
+    }
+
+    private async Task CompleteExitAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(ExitDuration, cancellationToken);
+            await InvokeAsync(() =>
+            {
+                if (!Visible)
+                {
+                    _isRendered = false;
+                    _isExiting = false;
+                    StateHasChanged();
+                }
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            // A quick re-entry keeps the existing pill mounted.
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _transitionCancellation?.Cancel();
+        _transitionCancellation?.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

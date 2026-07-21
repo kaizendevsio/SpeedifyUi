@@ -51,13 +51,12 @@ public sealed class RouteTransitionDirectionService
         return path switch
         {
             "/" => 0,
-            "/live" => 1,
-            "/details" => 2,
-            "/analytics" => 2,
-            "/xrouter" => 3,
-            "/wifi" => 3,
-            "/settings" => 4,
-            "/xbond" => 4,
+            "/details" => 1,
+            "/analytics" => 1,
+            "/xrouter" => 2,
+            "/wifi" => 2,
+            "/settings" => 3,
+            "/xbond" => 3,
             _ => 0
         };
     }

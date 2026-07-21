@@ -52,7 +52,7 @@ public class XBondPageSurfaceTests
         Assert.Contains("Mode=\"@FormatMode(_snapshot.RedundancyPolicy)\"", home);
         Assert.Contains("IsRecoveryActive=\"@_snapshot.IsRecoveryActive\"", home);
         Assert.Contains("ShowServerHealth", summary);
-        Assert.Contains("Recovery @RecoveryHoldMs ms", summary);
+        Assert.Contains("Recovery {RecoveryHoldMs} ms", summary);
         Assert.Contains("\"healthy\"", summary);
     }
 
@@ -77,15 +77,16 @@ public class XBondPageSurfaceTests
     }
 
     [Fact]
-    public void Dashboard_StatusPillsRemainMountedAndAppearBelowSubtitle()
+    public void Dashboard_StatusPillsAnimateIndependentlyBelowSubtitle()
     {
         var summary = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Custom", "ConnectionSummary.razor"));
         var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
 
         Assert.True(summary.IndexOf("GetStatusDescription()", StringComparison.Ordinal) <
                     summary.IndexOf("connection-summary-pills", StringComparison.Ordinal));
-        Assert.Contains("connection-summary-pill-slot", summary);
-        Assert.Contains("connection-summary-pill-slot-visible", styles);
+        Assert.Contains("<AnimatedStatusPill", summary);
+        Assert.Contains("animated-status-pill-shell", styles);
+        Assert.Contains("status-pill-enter-expand", styles);
         Assert.Contains("prefers-reduced-motion: reduce", styles);
     }
 
@@ -115,18 +116,18 @@ public class XBondPageSurfaceTests
     }
 
     [Fact]
-    public void UserFacingShell_UsesUlinkBrandAndVectorLogo()
+    public void UserFacingShell_UsesuLinkBrandAndVectorLogo()
     {
         var layout = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Layout", "MainLayout.razor"));
         var manifest = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "manifest.json"));
         var logo = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "icons", "ulink-logo.svg"));
 
-        Assert.Contains(">Ulink<", layout);
+        Assert.Contains(">uLink<", layout);
         Assert.Contains("/icons/ulink-logo.svg", layout);
         Assert.DoesNotContain("xnetwork-logo", layout, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("\"name\": \"Ulink\"", manifest);
+        Assert.Contains("\"name\": \"uLink\"", manifest);
         Assert.Contains("<svg", logo);
-        Assert.Contains("<title id=\"title\">Ulink</title>", logo);
+        Assert.Contains("<title id=\"title\">uLink</title>", logo);
     }
 
     [Fact]
@@ -143,22 +144,41 @@ public class XBondPageSurfaceTests
     }
 
     [Fact]
-    public void LiveScene_UsesAbstractUlinkTopologyWithCameraControls()
+    public void LiveSurface_IsRemovedFromRoutesNavigationAndAssets()
     {
-        var live = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "js", "liveView.js"));
+        var layout = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Layout", "MainLayout.razor"));
+        var routes = File.ReadAllText(FindRepoFile("XNetwork", "Services", "RouteTransitionDirectionService.cs"));
 
-        Assert.Contains("createUlinkRibbon", live);
-        Assert.Contains("createRelayAperture", live);
-        Assert.Contains("Ulink Core", live);
-        Assert.Contains("rotateCamera", live);
-        Assert.Contains("panCamera", live);
-        Assert.Contains("handleWheel", live);
-        Assert.Contains("1000 / 30", live);
-        Assert.DoesNotContain("createSatelliteEndpoint", live);
-        Assert.Contains("https://lucide.dev/icons/wifi", live);
-        Assert.Contains("new THREE.QuadraticBezierCurve3", live);
-        Assert.Contains("signalEnabled", live);
-        Assert.DoesNotContain("new THREE.TorusGeometry(radius * scale", live);
+        Assert.DoesNotContain("href=\"/live\"", layout, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("\"/live\"", routes, StringComparison.OrdinalIgnoreCase);
+        Assert.False(File.Exists(FindRepoFile("XNetwork", "Components", "Pages", "Live.razor")));
+        Assert.False(File.Exists(FindRepoFile("XNetwork", "wwwroot", "js", "liveView.js")));
+    }
+
+    [Fact]
+    public void ConnectionStatusPills_UseIconHoldExpandAndDelayedFadeRemoval()
+    {
+        var component = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Custom", "AnimatedStatusPill.razor"));
+        var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
+
+        Assert.Contains("TimeSpan.FromMilliseconds(220)", component);
+        Assert.Contains("Task.Delay(ExitDuration", component);
+        Assert.Contains("animated-status-pill-exiting", component);
+        Assert.Contains("status-pill-enter-expand 1.36s", styles);
+        Assert.Contains("0%, 74%", styles);
+        Assert.Contains("status-pill-exit 220ms", styles);
+        Assert.Contains("prefers-reduced-motion: reduce", styles);
+    }
+
+    [Fact]
+    public void Dashboard_SeparatesFirstNonredundantAdapterFromActiveGroup()
+    {
+        var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));
+        var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
+
+        Assert.Contains("first-nonredundant-adapter", home);
+        Assert.Contains(".adapter-flip-list > .first-nonredundant-adapter", styles);
+        Assert.Contains("margin-top: 1rem", styles);
     }
 
     [Fact]

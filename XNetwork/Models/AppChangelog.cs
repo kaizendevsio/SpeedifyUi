@@ -13,10 +13,22 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.109";
+    public const string CurrentVersion = "xbond-2026.06.110";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
+        new ChangelogEntry
+        {
+            Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Simplified navigation and refined connection status motion.",
+            Changes =
+            [
+                "Removed the Live page and navigation item so Dashboard, Analytics, Wifi, and Settings remain the focused primary workflow.",
+                "Added independent icon-first connection status pills that pause briefly before expanding and fade cleanly when removed.",
+                "Added clearer adapter separation below the Actively Redundant group and standardized the user-facing brand casing as uLink."
+            ]
+        },
         new ChangelogEntry
         {
             Version = CurrentVersion,
@@ -65,12 +77,12 @@ public static class AppChangelog
         {
             Version = "xbond-2026.06.105",
             Date = "2026-07-21",
-            Summary = "Introduced the Ulink identity and a cleaner live topology.",
+            Summary = "Introduced the uLink identity and a cleaner live topology.",
             Changes =
             [
-                "Renamed the user-facing application to Ulink and replaced the router artwork with a purpose-built vector logo across the header, favicon, and PWA metadata.",
+                "Renamed the user-facing application to uLink and replaced the router artwork with a purpose-built vector logo across the header, favicon, and PWA metadata.",
                 "Consolidated tunnel mode, protection, recovery, and actionable server health into the connection summary to reduce dashboard height.",
-                "Rebuilt Live as an interactive abstract flow topology with energy gates, a linked Ulink core, a secure relay aperture, and mobile-aware rendering.",
+                "Rebuilt Live as an interactive abstract flow topology with energy gates, a linked uLink core, a secure relay aperture, and mobile-aware rendering.",
                 "Adapter state colors now fade without layout movement, the top bar is flat, and changelog sheets animate both opening and closing."
             ]
         },

@@ -10,7 +10,6 @@ public class BrowserSmokeTests
         "/details",
         "/xrouter",
         "/settings",
-        "/live",
         "/xbond"
     ];
 
@@ -60,8 +59,18 @@ public class BrowserSmokeTests
                 Timeout = 10_000
             });
 
-            Assert.Contains("Ulink", await page.TitleAsync(), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("uLink", await page.TitleAsync(), StringComparison.Ordinal);
         }
+
+        var removedLiveRoute = new Uri(new Uri(baseUrl.TrimEnd('/') + "/"), "live");
+        var liveResponse = await page.GotoAsync(removedLiveRoute.ToString(), new PageGotoOptions
+        {
+            WaitUntil = WaitUntilState.DOMContentLoaded,
+            Timeout = 15_000
+        });
+
+        Assert.NotNull(liveResponse);
+        Assert.Equal(404, liveResponse!.Status);
 
         Assert.True(pageErrors.Count == 0, string.Join(Environment.NewLine, pageErrors));
     }
