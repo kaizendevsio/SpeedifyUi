@@ -102,6 +102,20 @@ public class XBondPageSurfaceTests
     }
 
     [Fact]
+    public void Dashboard_ConnectionModeFollowsPersistedAppearancePreference()
+    {
+        var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));
+        var summary = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Custom", "ConnectionSummary.razor"));
+        var settings = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Settings.razor"));
+
+        Assert.Contains("ShowMode=\"@UiDisplayPreferences.ShowConnectionMode\"", home);
+        Assert.Contains("ShowMode && !string.IsNullOrWhiteSpace(Mode)", summary);
+        Assert.Contains("Connection mode", settings);
+        Assert.Contains("ToggleConnectionModeAsync", settings);
+        Assert.Contains("UiDisplayPreferences.ShowConnectionMode", settings);
+    }
+
+    [Fact]
     public void Dashboard_SignalBarsAnimateInsideStableSlots()
     {
         var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));

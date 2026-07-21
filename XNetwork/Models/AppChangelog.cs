@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.113";
+    public const string CurrentVersion = "ulink-2026.06.114";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Refined release labels and dashboard appearance controls.",
+            Changes =
+            [
+                "Changed compact version badges to show the date-based release number without the product prefix.",
+                "Added a persisted Appearance setting for showing the dashboard connection mode, defaulting to hidden.",
+                "Kept recovery, loss protection, and server health status pills independent from the mode preference."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.113",
             Date = "2026-07-21",
             Summary = "Improved Starlink management access and page recovery.",
             Changes =

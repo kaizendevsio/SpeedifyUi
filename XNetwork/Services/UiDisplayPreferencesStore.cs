@@ -36,6 +36,7 @@ public sealed class UiDisplayPreferencesStore
             if (persisted is not null)
             {
                 preferences.AdapterTechnicalDetails = persisted.AdapterTechnicalDetails;
+                preferences.ShowConnectionMode = persisted.ShowConnectionMode;
             }
         }
         catch (Exception ex)

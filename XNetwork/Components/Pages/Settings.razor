@@ -65,6 +65,17 @@
                        disabled="@_appearanceBusy"
                        @onchange="ToggleAdapterTechnicalDetailsAsync" />
             </label>
+            <label class="settings-toggle-row">
+                <span class="min-w-0">
+                    <span class="block text-sm font-semibold text-white">Connection mode</span>
+                    <span class="mt-1 block text-xs leading-relaxed text-slate-400">Show the current reliable, balanced, or fast mode on the dashboard connection card.</span>
+                </span>
+                <input type="checkbox"
+                       class="settings-toggle-input"
+                       checked="@UiDisplayPreferences.ShowConnectionMode"
+                       disabled="@_appearanceBusy"
+                       @onchange="ToggleConnectionModeAsync" />
+            </label>
         </div>
     </Accordion>
 
@@ -1219,7 +1230,9 @@
     private bool _mssExpanded;
     private bool _monitorExpanded;
     private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
-    private string AppearanceBadge => UiDisplayPreferences.AdapterTechnicalDetails ? "Detailed" : "Simple";
+    private string AppearanceBadge => UiDisplayPreferences.AdapterTechnicalDetails || UiDisplayPreferences.ShowConnectionMode
+        ? "Customized"
+        : "Simple";
 
     protected override async Task OnInitializedAsync()
     {
@@ -1280,6 +1293,32 @@
         try
         {
             UiDisplayPreferences.AdapterTechnicalDetails = args.Value is true ||
+                string.Equals(args.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+            await UiDisplayPreferencesStore.SaveAsync(UiDisplayPreferences, _refreshCts.Token);
+            _message = "Appearance preference saved.";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not save appearance preference: {ex.Message}";
+        }
+        finally
+        {
+            _appearanceBusy = false;
+        }
+    }
+
+    private async Task ToggleConnectionModeAsync(ChangeEventArgs args)
+    {
+        if (_appearanceBusy)
+        {
+            return;
+        }
+
+        _appearanceBusy = true;
+        _error = null;
+        try
+        {
+            UiDisplayPreferences.ShowConnectionMode = args.Value is true ||
                 string.Equals(args.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
             await UiDisplayPreferencesStore.SaveAsync(UiDisplayPreferences, _refreshCts.Token);
             _message = "Appearance preference saved.";

@@ -44,7 +44,7 @@
                                         IconClass="fas fa-exclamation-triangle"
                                         PillClass="connection-summary-pill-warning"
                                         Title="Tunnel health is currently unstable" />
-                    <AnimatedStatusPill Visible="@(!string.IsNullOrWhiteSpace(Mode))"
+                    <AnimatedStatusPill Visible="@(ShowMode && !string.IsNullOrWhiteSpace(Mode))"
                                         Text="@Mode"
                                         IconClass="fas fa-layer-group"
                                         PillClass="connection-summary-pill-neutral"
@@ -110,6 +110,7 @@
     [Parameter] public double? BackupDownload { get; set; }
     [Parameter] public bool IsStable { get; set; } = true;
     [Parameter] public string? Mode { get; set; }
+    [Parameter] public bool ShowMode { get; set; }
     [Parameter] public bool IsProtectingFromLoss { get; set; }
     [Parameter] public string? ProtectionReason { get; set; }
     [Parameter] public bool IsRecoveryActive { get; set; }

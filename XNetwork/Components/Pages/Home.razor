@@ -101,6 +101,7 @@
             BackupDownload="@GetBackupDownloadMbps()"
             IsStable="@IsConnectionStable()"
             Mode="@FormatMode(_snapshot.RedundancyPolicy)"
+            ShowMode="@UiDisplayPreferences.ShowConnectionMode"
             IsProtectingFromLoss="@_snapshot.IsProtectingFromLoss"
             ProtectionReason="@_snapshot.ProtectionReason"
             IsRecoveryActive="@_snapshot.IsRecoveryActive"
