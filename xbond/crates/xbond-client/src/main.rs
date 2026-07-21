@@ -1426,6 +1426,12 @@ enum PrimaryEnqueueResult {
     Pending,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PayloadThroughputSample {
+    recorded_at: Instant,
+    bps: u64,
+}
+
 #[derive(Debug, Default)]
 struct TunnelPathRuntime {
     send_failures: u32,
@@ -1460,7 +1466,11 @@ struct TunnelPathRuntime {
     last_ack_at: Option<Instant>,
     duplicate_useful_packets: u64,
     duplicate_late_packets: u64,
-    peak_throughput_bps: u64,
+    payload_traffic_opportunities: u64,
+    last_payload_traffic_opportunities: u64,
+    recent_payload_throughput_samples: VecDeque<PayloadThroughputSample>,
+    recent_peak_throughput_bps: u64,
+    throughput_collapse_score: f64,
     socket_generation: u64,
     socket_ifindex: Option<u32>,
     socket_bind_addr: Option<String>,
@@ -2589,6 +2599,10 @@ fn reset_client_session_runtime(
     for runtime in path_runtime.values_mut() {
         runtime.pending_heartbeats.clear();
         runtime.recently_expired_heartbeats.clear();
+        runtime.last_payload_traffic_opportunities = runtime.payload_traffic_opportunities;
+        runtime.recent_payload_throughput_samples.clear();
+        runtime.recent_peak_throughput_bps = 0;
+        runtime.throughput_collapse_score = 0.0;
     }
 }
 
@@ -3666,6 +3680,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     .iter()
                     .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
                 {
+                    record_payload_traffic_opportunity(&mut path_runtime, transmission.path_id);
                     let Some(sender) = senders.get(&transmission.path_id) else {
                         continue;
                     };
@@ -3761,6 +3776,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             .iter()
                             .filter(|transmission| transmission.packet_kind == PacketKind::Fec)
                         {
+                            record_payload_traffic_opportunity(&mut path_runtime, transmission.path_id);
                             let Some(sender) = senders.get(&transmission.path_id) else {
                                 counters.fec_packets_skipped += 1;
                                 counters.fec_send_skips =
@@ -5283,8 +5299,7 @@ fn tunnel_health(
                 } else {
                     runtime.duplicate_useful_packets as f64 / duplicate_total as f64
                 };
-                path.throughput_collapse_score =
-                    throughput_collapse_score(runtime.peak_throughput_bps, runtime.throughput_bps);
+                path.throughput_collapse_score = runtime.throughput_collapse_score;
                 if runtime.send_failures >= 2 {
                     path.in_cooldown = true;
                     path.loss_rate = 1.0;
@@ -5315,13 +5330,70 @@ fn tunnel_health(
         .collect()
 }
 
+const THROUGHPUT_COLLAPSE_MIN_PEAK_BPS: u64 = 1_000_000;
+const THROUGHPUT_COLLAPSE_WINDOW: Duration = Duration::from_secs(30);
+const THROUGHPUT_COLLAPSE_MAX_SAMPLES: usize = 60;
+const THROUGHPUT_COLLAPSE_MIN_OPPORTUNITY_SAMPLES: usize = 2;
+
 fn throughput_collapse_score(peak_bps: u64, current_bps: u64) -> f64 {
-    if peak_bps < 1_000_000 {
+    if peak_bps < THROUGHPUT_COLLAPSE_MIN_PEAK_BPS {
         return 0.0;
     }
 
     let current_ratio = current_bps as f64 / peak_bps as f64;
     (1.0 - current_ratio).clamp(0.0, 1.0)
+}
+
+fn record_payload_traffic_opportunity(
+    path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
+    path_id: u16,
+) {
+    let runtime = path_runtime.entry(path_id).or_default();
+    runtime.payload_traffic_opportunities = runtime.payload_traffic_opportunities.saturating_add(1);
+}
+
+fn refresh_payload_throughput_collapse(
+    runtime: &mut TunnelPathRuntime,
+    now: Instant,
+    had_payload_opportunity: bool,
+) {
+    while runtime
+        .recent_payload_throughput_samples
+        .front()
+        .is_some_and(|sample| {
+            now.saturating_duration_since(sample.recorded_at) > THROUGHPUT_COLLAPSE_WINDOW
+        })
+    {
+        runtime.recent_payload_throughput_samples.pop_front();
+    }
+
+    if had_payload_opportunity {
+        runtime
+            .recent_payload_throughput_samples
+            .push_back(PayloadThroughputSample {
+                recorded_at: now,
+                bps: runtime.throughput_bps,
+            });
+        while runtime.recent_payload_throughput_samples.len() > THROUGHPUT_COLLAPSE_MAX_SAMPLES {
+            runtime.recent_payload_throughput_samples.pop_front();
+        }
+    }
+
+    runtime.recent_peak_throughput_bps = runtime
+        .recent_payload_throughput_samples
+        .iter()
+        .map(|sample| sample.bps)
+        .max()
+        .unwrap_or_default();
+
+    runtime.throughput_collapse_score = if had_payload_opportunity
+        && runtime.recent_payload_throughput_samples.len()
+            >= THROUGHPUT_COLLAPSE_MIN_OPPORTUNITY_SAMPLES
+    {
+        throughput_collapse_score(runtime.recent_peak_throughput_bps, runtime.throughput_bps)
+    } else {
+        0.0
+    };
 }
 
 fn current_process_rss_bytes() -> Option<u64> {
@@ -6870,7 +6942,8 @@ fn update_tunnel_throughput(
     counters: &mut TunnelCounters,
     last_sample: &mut Instant,
 ) {
-    let elapsed = last_sample.elapsed().as_secs_f64().max(0.001);
+    let now = Instant::now();
+    let elapsed = now.duration_since(*last_sample).as_secs_f64().max(0.001);
     for runtime in path_runtime.values_mut() {
         let outbound_delta = runtime.bytes_sent.saturating_sub(runtime.last_bytes_sent);
         let inbound_delta = runtime
@@ -6889,7 +6962,11 @@ fn update_tunnel_throughput(
         runtime.throughput_bps = runtime
             .outbound_throughput_bps
             .saturating_add(runtime.raw_inbound_throughput_bps);
-        runtime.peak_throughput_bps = runtime.peak_throughput_bps.max(runtime.throughput_bps);
+        let payload_opportunity_delta = runtime
+            .payload_traffic_opportunities
+            .saturating_sub(runtime.last_payload_traffic_opportunities);
+        runtime.last_payload_traffic_opportunities = runtime.payload_traffic_opportunities;
+        refresh_payload_throughput_collapse(runtime, now, payload_opportunity_delta > 0);
         runtime.last_bytes_sent = runtime.bytes_sent;
         runtime.last_bytes_received = runtime.bytes_received;
         runtime.last_duplicate_bytes_received = runtime.duplicate_bytes_received;
@@ -6904,7 +6981,7 @@ fn update_tunnel_throughput(
     counters.inbound_throughput_bps = ((inbound_delta as f64 * 8.0) / elapsed) as u64;
     counters.last_data_bytes_sent = counters.data_bytes_sent;
     counters.last_data_bytes_received = counters.data_bytes_received;
-    *last_sample = Instant::now();
+    *last_sample = now;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -8519,6 +8596,92 @@ mod tests {
         assert_eq!(runtimes[&9].send_failures, 2);
         assert!(runtimes[&9].remote_ack_required_to_clear_send_failures);
         senders[&9].task.abort();
+    }
+
+    #[test]
+    fn idle_path_with_historical_payload_peak_has_no_collapse_penalty() {
+        let mut runtime = TunnelPathRuntime {
+            throughput_bps: 5_000_000,
+            payload_traffic_opportunities: 1,
+            ..TunnelPathRuntime::default()
+        };
+        let start = Instant::now();
+        refresh_payload_throughput_collapse(&mut runtime, start, true);
+        assert_eq!(runtime.throughput_collapse_score, 0.0);
+
+        runtime.throughput_bps = 0;
+        refresh_payload_throughput_collapse(&mut runtime, start + Duration::from_secs(1), false);
+
+        assert_eq!(runtime.recent_peak_throughput_bps, 5_000_000);
+        assert_eq!(runtime.throughput_collapse_score, 0.0);
+    }
+
+    #[test]
+    fn active_path_with_recent_payload_opportunity_reports_collapse() {
+        let mut runtime = TunnelPathRuntime {
+            throughput_bps: 8_000_000,
+            payload_traffic_opportunities: 1,
+            ..TunnelPathRuntime::default()
+        };
+        let start = Instant::now();
+        refresh_payload_throughput_collapse(&mut runtime, start, true);
+
+        runtime.throughput_bps = 800_000;
+        runtime.payload_traffic_opportunities = 2;
+        refresh_payload_throughput_collapse(&mut runtime, start + Duration::from_secs(1), true);
+
+        assert_eq!(runtime.recent_peak_throughput_bps, 8_000_000);
+        assert!(runtime.throughput_collapse_score > 0.85);
+    }
+
+    #[test]
+    fn recent_payload_peak_decays_after_window() {
+        let mut runtime = TunnelPathRuntime {
+            throughput_bps: 8_000_000,
+            payload_traffic_opportunities: 1,
+            ..TunnelPathRuntime::default()
+        };
+        let start = Instant::now();
+        refresh_payload_throughput_collapse(&mut runtime, start, true);
+
+        runtime.throughput_bps = 800_000;
+        runtime.payload_traffic_opportunities = 2;
+        refresh_payload_throughput_collapse(
+            &mut runtime,
+            start + THROUGHPUT_COLLAPSE_WINDOW + Duration::from_secs(1),
+            true,
+        );
+
+        assert_eq!(runtime.recent_peak_throughput_bps, 800_000);
+        assert_eq!(runtime.throughput_collapse_score, 0.0);
+    }
+
+    #[test]
+    fn throughput_sampler_uses_payload_opportunity_delta_for_collapse() {
+        let mut runtimes = HashMap::from([(
+            1,
+            TunnelPathRuntime {
+                bytes_sent: 1_000_000,
+                payload_traffic_opportunities: 1,
+                ..TunnelPathRuntime::default()
+            },
+        )]);
+        let mut counters = TunnelCounters::default();
+        let mut last_sample = Instant::now() - Duration::from_secs(1);
+        update_tunnel_throughput(&mut runtimes, &mut counters, &mut last_sample);
+        assert_eq!(runtimes[&1].throughput_collapse_score, 0.0);
+
+        {
+            let runtime = runtimes.get_mut(&1).unwrap();
+            runtime.payload_traffic_opportunities = runtime.payload_traffic_opportunities + 1;
+        }
+        last_sample = Instant::now() - Duration::from_secs(1);
+        update_tunnel_throughput(&mut runtimes, &mut counters, &mut last_sample);
+        assert!(runtimes[&1].throughput_collapse_score > 0.9);
+
+        last_sample = Instant::now() - Duration::from_secs(1);
+        update_tunnel_throughput(&mut runtimes, &mut counters, &mut last_sample);
+        assert_eq!(runtimes[&1].throughput_collapse_score, 0.0);
     }
 
     #[test]

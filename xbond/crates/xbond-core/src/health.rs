@@ -561,6 +561,40 @@ mod tests {
     }
 
     #[test]
+    fn idle_standby_without_collapse_penalty_can_outrank_higher_rtt_active_path() {
+        let mut wifi = path(1, "wifi", 45.0, 0.0, 0.0);
+        wifi.outbound_throughput_bps = 0;
+        wifi.inbound_throughput_bps = 0;
+        wifi.raw_inbound_throughput_bps = 0;
+        wifi.throughput_bps = 0;
+        wifi.throughput_collapse_score = 0.0;
+        let mut cellular = path(2, "cellular", 150.0, 0.0, 0.0);
+        cellular.outbound_throughput_bps = 64_000;
+        cellular.inbound_throughput_bps = 16_000;
+        cellular.raw_inbound_throughput_bps = 16_000;
+        cellular.throughput_bps = 80_000;
+
+        let roles = select_path_roles(&[cellular, wifi], 1);
+
+        assert_eq!(roles[0].path.name, "wifi");
+        assert_eq!(roles[0].role, PathRole::Anchor);
+    }
+
+    #[test]
+    fn active_payload_collapse_penalty_can_demote_otherwise_good_path() {
+        let mut collapsed = path(1, "collapsed", 35.0, 0.0, 0.0);
+        collapsed.throughput_bps = 80_000;
+        collapsed.throughput_collapse_score = 1.0;
+        let mut stable = path(2, "stable", 90.0, 0.0, 0.0);
+        stable.throughput_bps = 800_000;
+
+        let roles = select_path_roles(&[collapsed, stable], 1);
+
+        assert_eq!(roles[0].path.name, "stable");
+        assert_eq!(roles[0].role, PathRole::Anchor);
+    }
+
+    #[test]
     fn cooldown_path_cannot_be_anchor() {
         let mut stable = path(1, "fiber", 15.0, 0.0, 0.0);
         stable.in_cooldown = true;

@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.117";
+    public const string CurrentVersion = "ulink-2026.06.118";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-22",
+            Summary = "Fixed tunnel scheduler path collapse scoring.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the tunnel scheduler scoring fix.",
+                "Stopped idle standby paths from being penalized as throughput-collapsed just because they are not currently scheduled for payload traffic.",
+                "Changed path collapse scoring to use recent payload traffic opportunities instead of an all-time per-process peak, while still penalizing active paths that genuinely collapse under offered load."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.117",
             Date = "2026-07-22",
             Summary = "Smoothed dashboard card spacing and app chrome.",
             Changes =

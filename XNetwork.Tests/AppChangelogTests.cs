@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("ulink-2026.06.117", AppChangelog.CurrentVersion);
+        Assert.Equal("ulink-2026.06.118", AppChangelog.CurrentVersion);
         Assert.Matches(@"^ulink-\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 
