@@ -76,7 +76,7 @@ public class LocalProcessTrafficService(ILogger<LocalProcessTrafficService> logg
             {
                 IsSupported = true,
                 Source = $"nethogs on {DefaultInterface}",
-                Message = processes.Count == 0 ? "No local process traffic was observed in this sample." : "Live local process throughput sampled from the XBond tunnel interface.",
+                Message = processes.Count == 0 ? "No local process traffic was observed in this sample." : "Live local process throughput sampled from the uLink tunnel interface.",
                 Processes = processes
             };
         }

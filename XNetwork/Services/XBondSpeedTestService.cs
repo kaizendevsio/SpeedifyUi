@@ -34,7 +34,7 @@ public sealed class XBondSpeedTestService(
 
         if (!OperatingSystem.IsLinux())
         {
-            result.Error = "XBond speed tests are only available on Linux.";
+            result.Error = "uLink speed tests are only available on Linux.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -42,7 +42,7 @@ public sealed class XBondSpeedTestService(
 
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            result.Error = "Another XBond speed test is already running.";
+            result.Error = "Another uLink speed test is already running.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -68,22 +68,22 @@ public sealed class XBondSpeedTestService(
 
             if (!result.ServerTestSucceeded && !result.PublicTestSucceeded)
             {
-                result.Error = "Both XBond server and public speed tests failed.";
-                result.Message = "XBond speed tests failed.";
+                result.Error = "Both uLink server and public speed tests failed.";
+                result.Message = "uLink speed tests failed.";
                 return result;
             }
 
             result.Message = result.RouteUsesXBond
                 ? result.Succeeded
-                    ? "XBond speed tests completed."
-                    : "XBond speed tests completed with partial results."
+                    ? "uLink speed tests completed."
+                    : "uLink speed tests completed with partial results."
                 : $"Speed tests completed, but the default route was not using {settings.TunnelDevice}.";
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond speed test failed");
+            logger.LogWarning(ex, "uLink speed test failed");
             result.Error = ex.Message;
-            result.Message = "XBond speed test failed.";
+            result.Message = "uLink speed test failed.";
         }
         finally
         {
@@ -104,7 +104,7 @@ public sealed class XBondSpeedTestService(
 
         if (!OperatingSystem.IsLinux())
         {
-            result.Error = "XBond network simulations are only available on Linux.";
+            result.Error = "uLink network simulations are only available on Linux.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -112,7 +112,7 @@ public sealed class XBondSpeedTestService(
 
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            result.Error = "Another XBond speed test is already running.";
+            result.Error = "Another uLink speed test is already running.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -169,7 +169,7 @@ public sealed class XBondSpeedTestService(
                 result.Error = string.IsNullOrWhiteSpace(tcApply.Output)
                     ? $"Unable to apply netem on {simulatedInterface}."
                     : tcApply.Output;
-                result.Message = "XBond degraded-path simulation failed.";
+                result.Message = "uLink degraded-path simulation failed.";
                 return result;
             }
 
@@ -180,9 +180,9 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond degraded-path simulation failed");
+            logger.LogWarning(ex, "uLink degraded-path simulation failed");
             result.Error = ex.Message;
-            result.Message = "XBond degraded-path simulation failed.";
+            result.Message = "uLink degraded-path simulation failed.";
         }
         finally
         {
@@ -207,7 +207,7 @@ public sealed class XBondSpeedTestService(
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "Failed to cleanup XBond degraded-path simulation on {Interface}", simulatedInterface);
+                    logger.LogWarning(ex, "Failed to cleanup uLink degraded-path simulation on {Interface}", simulatedInterface);
                     result.SimulationCleanupSucceeded = false;
                     result.Error = string.IsNullOrWhiteSpace(result.Error)
                         ? $"Simulation cleanup failed: {ex.Message}"
@@ -231,7 +231,7 @@ public sealed class XBondSpeedTestService(
 
         if (!OperatingSystem.IsLinux())
         {
-            result.Error = "XBond performance matrix is only available on Linux.";
+            result.Error = "uLink performance matrix is only available on Linux.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -239,7 +239,7 @@ public sealed class XBondSpeedTestService(
 
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            result.Error = "Another XBond diagnostic is already running.";
+            result.Error = "Another uLink diagnostic is already running.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -258,9 +258,9 @@ public sealed class XBondSpeedTestService(
 
             foreach (var (mode, name) in new[]
                      {
-                         ("anchor-only", "XBond anchor only"),
-                         ("anchor-duplicate-1", "XBond anchor + 1 duplicate"),
-                         ("anchor-fec", "XBond anchor + FEC")
+                         ("anchor-only", "uLink anchor only"),
+                         ("anchor-duplicate-1", "uLink anchor + 1 duplicate"),
+                         ("anchor-fec", "uLink anchor + FEC")
                      })
             {
                 await SetDiagnosticOverrideAsync(mode, cancellationToken).ConfigureAwait(false);
@@ -275,15 +275,15 @@ public sealed class XBondSpeedTestService(
             result.After = await CaptureSystemSampleAsync(cancellationToken).ConfigureAwait(false);
             result.BottleneckSummary = AnalyzeBottleneck(result);
             result.Message = result.Succeeded
-                ? "XBond performance matrix completed."
-                : "XBond performance matrix completed without successful throughput samples.";
+                ? "uLink performance matrix completed."
+                : "uLink performance matrix completed without successful throughput samples.";
             result.ArtifactPath = await WriteArtifactAsync("performance-matrix", result, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond performance matrix failed");
+            logger.LogWarning(ex, "uLink performance matrix failed");
             result.Error = ex.Message;
-            result.Message = "XBond performance matrix failed.";
+            result.Message = "uLink performance matrix failed.";
         }
         finally
         {
@@ -323,7 +323,7 @@ public sealed class XBondSpeedTestService(
         if (command.ExitCode != 0)
         {
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(command.Output)
-                ? $"Failed to set XBond diagnostic override {mode}."
+                ? $"Failed to set uLink diagnostic override {mode}."
                 : command.Output);
         }
     }
@@ -348,7 +348,7 @@ public sealed class XBondSpeedTestService(
             if (command.ExitCode != 0)
             {
                 var error = string.IsNullOrWhiteSpace(command.Output)
-                    ? "Failed to clear XBond diagnostic override."
+                    ? "Failed to clear uLink diagnostic override."
                     : command.Output;
                 result.Error = string.IsNullOrWhiteSpace(result.Error)
                     ? error
@@ -357,7 +357,7 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to clear XBond diagnostic override");
+            logger.LogWarning(ex, "Failed to clear uLink diagnostic override");
             result.Error = string.IsNullOrWhiteSpace(result.Error)
                 ? $"Clear override failed: {ex.Message}"
                 : $"{result.Error} Clear override failed: {ex.Message}";
@@ -373,7 +373,7 @@ public sealed class XBondSpeedTestService(
 
         if (!OperatingSystem.IsLinux())
         {
-            result.Error = "XBond MTU sweep is only available on Linux.";
+            result.Error = "uLink MTU sweep is only available on Linux.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -381,7 +381,7 @@ public sealed class XBondSpeedTestService(
 
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            result.Error = "Another XBond diagnostic is already running.";
+            result.Error = "Another uLink diagnostic is already running.";
             result.Message = result.Error;
             result.CompletedAtUtc = DateTime.UtcNow;
             return result;
@@ -429,9 +429,9 @@ public sealed class XBondSpeedTestService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond MTU sweep failed");
+            logger.LogWarning(ex, "uLink MTU sweep failed");
             result.Error = ex.Message;
-            result.Message = "XBond MTU sweep failed.";
+            result.Message = "uLink MTU sweep failed.";
         }
         finally
         {
@@ -651,7 +651,7 @@ public sealed class XBondSpeedTestService(
     {
         var run = new XBondPerformanceMatrixRun
         {
-            Name = "Public speedtest through XBond",
+            Name = "Public speedtest through uLink",
             Kind = "public-speedtest",
             MssClampEnabled = settings.MssClampEnabled
         };
@@ -804,7 +804,7 @@ public sealed class XBondSpeedTestService(
     {
         var adapter = string.IsNullOrWhiteSpace(interfaceName) ? "adapter" : $"adapter {interfaceName}";
         var message = $"{phase} failed for native {adapter}: {details}";
-        return $"{message}. Native per-adapter iperf requires an iperf3 listener reachable outside XBond at {nativeHost}:{nativePort}; the standard XBond iperf endpoint is tunnel-only at {tunnelHost}:{tunnelPort}.";
+        return $"{message}. Native per-adapter iperf requires an iperf3 listener reachable outside uLink at {nativeHost}:{nativePort}; the standard uLink iperf endpoint is tunnel-only at {tunnelHost}:{tunnelPort}.";
     }
 
     public static string SummarizeIperfFailureDetails(string output)
@@ -967,7 +967,7 @@ public sealed class XBondSpeedTestService(
             return null;
         }
 
-        throw new IOException($"Unable to write XBond diagnostic artifact. {string.Join(" ", errors)}");
+        throw new IOException($"Unable to write uLink diagnostic artifact. {string.Join(" ", errors)}");
     }
 
     public static IReadOnlyList<string> ResolveArtifactDirectoryCandidates(string? configuredDirectory)

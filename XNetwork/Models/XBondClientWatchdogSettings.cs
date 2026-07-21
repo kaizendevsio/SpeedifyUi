@@ -67,7 +67,7 @@ public sealed class XBondClientWatchdogStatus
 
     public string ProbeTarget { get; set; } = "";
 
-    public string Message { get; set; } = "XBond client watchdog has not run yet.";
+    public string Message { get; set; } = "uLink client watchdog has not run yet.";
 
     public string? LastRestartReason { get; set; }
 

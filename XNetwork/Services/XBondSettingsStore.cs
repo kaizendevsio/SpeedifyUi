@@ -44,11 +44,11 @@ public class XBondSettingsStore
             }
 
             Apply(persistedSettings, settings);
-            _logger.LogInformation("Loaded persisted XBond settings from {Path}", _filePath);
+            _logger.LogInformation("Loaded persisted uLink settings from {Path}", _filePath);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not load persisted XBond settings from {Path}", _filePath);
+            _logger.LogWarning(ex, "Could not load persisted uLink settings from {Path}", _filePath);
         }
     }
 
@@ -70,7 +70,7 @@ public class XBondSettingsStore
             RestrictOwnerAccess(temporaryPath);
             File.Move(temporaryPath, _filePath, overwrite: true);
             RestrictOwnerAccess(_filePath);
-            _logger.LogInformation("Persisted XBond settings to {Path}", _filePath);
+            _logger.LogInformation("Persisted uLink settings to {Path}", _filePath);
         }
         finally
         {

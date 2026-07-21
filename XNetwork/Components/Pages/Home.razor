@@ -84,7 +84,7 @@
                 <div class="flex items-start gap-3">
                     <i class="fas fa-terminal mt-0.5 text-red-300"></i>
                     <div class="min-w-0">
-                        <p class="font-semibold text-white">XBond status</p>
+                        <p class="font-semibold text-white">uLink status</p>
                         <p class="mt-1 text-sm text-red-100">@_snapshot.Error</p>
                     </div>
                 </div>
@@ -115,7 +115,7 @@
             @if (_snapshot?.DashboardPaths.Any() != true)
             {
                 <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-5 text-slate-400 shadow-lg">
-                    No XBond adapters found.
+                    No uLink adapters found.
                 </div>
             }
             else
@@ -841,7 +841,7 @@
 
         if (!path.IsConfigured)
         {
-            return "Available, not in XBond";
+            return "Available, not in uLink";
         }
 
         return path.IsActive ? $"Active {RoleLabel(path)} path" : "Standby path";
@@ -943,7 +943,7 @@
     {
         if (!path.IsConfigured)
         {
-            return "not in XBond";
+            return "not in uLink";
         }
 
         if (path.IsActive && !path.IsAnchor && string.Equals(path.Role, "probe", StringComparison.OrdinalIgnoreCase))
@@ -1001,7 +1001,7 @@
     {
         if (string.IsNullOrWhiteSpace(mode))
         {
-            return "XBond";
+            return "uLink";
         }
 
         return mode.Replace('-', ' ');

@@ -19,7 +19,7 @@ public class XBondLabService(
     {
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorResult("Another XBond diagnostic is already running.");
+            return ErrorResult("Another uLink diagnostic is already running.");
         }
 
         var result = new XBondPublicTestResult
@@ -36,9 +36,9 @@ public class XBondLabService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond heartbeat diagnostic failed");
+            logger.LogWarning(ex, "uLink heartbeat diagnostic failed");
             result.Error = ex.Message;
-            result.Message = "XBond heartbeat diagnostic failed.";
+            result.Message = "uLink heartbeat diagnostic failed.";
         }
         finally
         {
@@ -52,14 +52,14 @@ public class XBondLabService(
     public static XBondProbeResult ParseMultiPingJson(string json)
     {
         return JsonSerializer.Deserialize<XBondProbeResult>(json, JsonOptions)
-            ?? throw new JsonException("XBond multi-ping JSON was empty.");
+            ?? throw new JsonException("uLink multi-ping JSON was empty.");
     }
 
     public async Task<XBondProbeResult> RunPublicMultiPathTestAsync(CancellationToken cancellationToken = default)
     {
         if (!await _testLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorProbeResult("Another XBond diagnostic is already running.");
+            return ErrorProbeResult("Another uLink diagnostic is already running.");
         }
 
         var result = new XBondProbeResult
@@ -83,7 +83,7 @@ public class XBondLabService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "XBond multi-path diagnostic failed");
+            logger.LogWarning(ex, "uLink multi-path diagnostic failed");
             result.Error = ex.Message;
             result.Message = "Multi-path diagnostic failed.";
         }
@@ -104,14 +104,14 @@ public class XBondLabService(
         var pathId = diagnosticPath?.PathId > 0 ? diagnosticPath.PathId : settings.PublicTestPathId;
         if (pathId <= 0)
         {
-            return ErrorResult("No live XBond path is available for heartbeat diagnostics.");
+            return ErrorResult("No live uLink path is available for heartbeat diagnostics.");
         }
 
         var probe = await RunMultiPingAsync(key, timeoutCts.Token, [pathId]).ConfigureAwait(false);
         var path = probe.Paths.FirstOrDefault(path => path.PathId == pathId) ?? probe.Paths.FirstOrDefault();
         if (path is null)
         {
-            return ErrorResult("XBond heartbeat diagnostic returned no path result.");
+            return ErrorResult("uLink heartbeat diagnostic returned no path result.");
         }
 
         var received = path.Acks;
@@ -188,20 +188,20 @@ public class XBondLabService(
     {
         if (path.Sent > 0 && path.Acks == path.Sent && path.RouteVerified)
         {
-            return "XBond heartbeat completed successfully.";
+            return "uLink heartbeat completed successfully.";
         }
 
         if (path.Sent > 0 && path.Acks == path.Sent)
         {
-            return "XBond heartbeat completed with route-verification warnings.";
+            return "uLink heartbeat completed with route-verification warnings.";
         }
 
         if (probe.HasAnyPathResponse)
         {
-            return "XBond heartbeat completed with path loss or degradation.";
+            return "uLink heartbeat completed with path loss or degradation.";
         }
 
-        return "XBond heartbeat completed with packet loss.";
+        return "uLink heartbeat completed with packet loss.";
     }
 
     private static async Task<T> RunJsonCommandAsync<T>(
@@ -256,7 +256,7 @@ public class XBondLabService(
             }
         }
 
-        throw new InvalidOperationException("XBond diagnostic key is not configured.");
+        throw new InvalidOperationException("uLink diagnostic key is not configured.");
     }
 
     private async Task<XBondPathStatsSnapshot?> SelectHeartbeatPathAsync(CancellationToken cancellationToken)
@@ -362,7 +362,7 @@ public class XBondLabService(
 
             if (process.ExitCode != 0)
             {
-                logger.LogDebug("Unable to read XBond diagnostic key from {Path} with sudo: {Error}", path, process.StandardError.ReadToEnd().Trim());
+                logger.LogDebug("Unable to read uLink diagnostic key from {Path} with sudo: {Error}", path, process.StandardError.ReadToEnd().Trim());
                 return null;
             }
 
@@ -370,7 +370,7 @@ public class XBondLabService(
         }
         catch (Exception ex)
         {
-            logger.LogDebug(ex, "Unable to read XBond diagnostic key from {Path} with sudo", path);
+            logger.LogDebug(ex, "Unable to read uLink diagnostic key from {Path} with sudo", path);
             return null;
         }
     }

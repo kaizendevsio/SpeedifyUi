@@ -78,7 +78,7 @@ public class XBondTrafficEngineService
         if (!_isLinux())
         {
             status.ClientServiceState = "unsupported";
-            status.Message = "XBond service control is only available on Linux.";
+            status.Message = "uLink service control is only available on Linux.";
             return status;
         }
 
@@ -141,17 +141,17 @@ public class XBondTrafficEngineService
     {
         if (!_settings.AllowServiceControl)
         {
-            return ErrorStatus("XBond service control is disabled in configuration.");
+            return ErrorStatus("uLink service control is disabled in configuration.");
         }
 
         if (!_isLinux())
         {
-            return ErrorStatus("XBond service control is only available on Linux.");
+            return ErrorStatus("uLink service control is only available on Linux.");
         }
 
         if (!await _operationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorStatus("Another XBond service operation is already running.");
+            return ErrorStatus("Another uLink service operation is already running.");
         }
 
         try
@@ -167,14 +167,14 @@ public class XBondTrafficEngineService
                 status.Error = string.IsNullOrWhiteSpace(result.Output)
                     ? $"{ServiceCommandLabel(action)} exited with code {result.ExitCode}."
                     : result.Output;
-                status.Message = $"XBond service {action} failed.";
+                status.Message = $"uLink service {action} failed.";
             }
 
             return status;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "XBond service {Action} failed", action);
+            _logger.LogWarning(ex, "uLink service {Action} failed", action);
             return ErrorStatus(ex.Message);
         }
         finally
@@ -278,12 +278,12 @@ public class XBondTrafficEngineService
     {
         if (!status.ServiceControlAllowed)
         {
-            return "XBond service control is locked by configuration.";
+            return "uLink service control is locked by configuration.";
         }
 
         return status.ClientServiceRunning
-            ? "XBond tunnel service is running."
-            : "XBond tunnel service is stopped.";
+            ? "uLink tunnel service is running."
+            : "uLink tunnel service is stopped.";
     }
 
     private string ServiceCommandLabel(string action)

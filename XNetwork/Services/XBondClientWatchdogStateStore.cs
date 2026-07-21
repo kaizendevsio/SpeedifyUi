@@ -65,7 +65,7 @@ public sealed class XBondClientWatchdogStateStore : IXBondClientWatchdogStateSto
             if (state is not null)
             {
                 Normalize(state, nowUtc);
-                _logger.LogInformation("Loaded persisted XBond client watchdog state from {Path}", _filePath);
+                _logger.LogInformation("Loaded persisted uLink client watchdog state from {Path}", _filePath);
                 return new XBondClientWatchdogStateLoadResult(
                     state,
                     CanRestartAutomatically: !state.AutomaticRestartsBlocked,
@@ -78,7 +78,7 @@ public sealed class XBondClientWatchdogStateStore : IXBondClientWatchdogStateSto
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not load XBond client watchdog state from {Path}", _filePath);
+            _logger.LogWarning(ex, "Could not load uLink client watchdog state from {Path}", _filePath);
             return LoadFailure($"Watchdog state could not be read: {ex.Message}");
         }
     }
@@ -178,7 +178,7 @@ public sealed class XBondClientWatchdogStateStore : IXBondClientWatchdogStateSto
     private XBondClientWatchdogStateLoadResult LoadFailure(string reason)
     {
         _logger.LogError(
-            "{Reason} Automatic XBond client watchdog restarts are disabled until the state is repaired.",
+            "{Reason} Automatic uLink client watchdog restarts are disabled until the state is repaired.",
             reason);
         return new XBondClientWatchdogStateLoadResult(
             new XBondClientWatchdogState { AutomaticRestartsBlocked = true },

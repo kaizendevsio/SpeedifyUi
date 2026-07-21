@@ -136,7 +136,7 @@ public class InterfaceMetadataServiceTests
         var wifi = Assert.Single(snapshot.StandbyPaths, path => path.InterfaceName == "wlan0");
         Assert.False(wifi.IsConfigured);
         Assert.Equal("XNetwork Wi-Fi Asia", wifi.Name);
-        Assert.Equal("Connected, not in XBond", wifi.StateText);
+        Assert.Equal("Connected, not in uLink", wifi.StateText);
     }
 
     [Fact]

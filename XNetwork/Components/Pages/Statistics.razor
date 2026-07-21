@@ -13,14 +13,14 @@
 <div class="p-4 md:p-6">
     <div class="mb-6 hidden md:block">
         <h2 class="mb-1 text-3xl font-bold text-white">Analytics</h2>
-        <p class="text-slate-400">Monitor connection health, path quality, and real-time XBond performance.</p>
+        <p class="text-slate-400">Monitor connection health, path quality, and real-time uLink performance.</p>
     </div>
 
     @if (_snapshot is null)
     {
         <div class="mb-6 rounded-lg border border-blue-500/50 bg-blue-500/10 px-4 py-3 text-blue-400">
             <strong class="font-bold">Initializing...</strong>
-            <span class="block sm:inline"> XBond analytics are starting up, please wait.</span>
+            <span class="block sm:inline"> uLink analytics are starting up, please wait.</span>
         </div>
         <div class="space-y-6" aria-label="Loading analytics data">
             <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-6 shadow-lg">
@@ -92,7 +92,7 @@
                         <AnimatedNumber Value="@Math.Round(_snapshot.EffectiveRttMs)" Decimals="0" CssClass="@($"text-2xl font-bold {GetLatencyTextColor(_snapshot.EffectiveRttMs)}")" AriaLabel="@($"{Math.Round(_snapshot.EffectiveRttMs)} milliseconds tunnel RTT")" />
                         <span class="text-sm text-slate-400">ms</span>
                     </div>
-                    <p class="mt-1 text-xs text-slate-500">XBond tunnel</p>
+                    <p class="mt-1 text-xs text-slate-500">uLink tunnel</p>
                 </div>
 
                 <div class="rounded-lg bg-slate-900/50 p-4">
@@ -149,7 +149,7 @@
             <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                     <h3 class="mb-1 text-xl font-semibold text-white">Traffic Statistics</h3>
-                    <p class="text-sm text-slate-400">Real-time XBond path performance over the last @_chartPeriod seconds.</p>
+                    <p class="text-sm text-slate-400">Real-time uLink path performance over the last @_chartPeriod seconds.</p>
                 </div>
                 <div class="flex gap-1 rounded-lg border border-slate-700 bg-slate-800/50 p-1">
                     @foreach (var period in _periodOptions)
@@ -171,7 +171,7 @@
 
             @if (!_snapshot.DashboardPaths.Any())
             {
-                <p class="my-6 text-slate-400">XBond path information is not available, charts cannot be displayed.</p>
+                <p class="my-6 text-slate-400">uLink path information is not available, charts cannot be displayed.</p>
             }
             else
             {
@@ -254,7 +254,7 @@
 
 @code {
     private const string ActualConnectionSeriesId = "__actual_connection";
-    private const string ActualConnectionSeriesLabel = "XBond Tunnel";
+    private const string ActualConnectionSeriesLabel = "uLink Tunnel";
     private const string ActualConnectionSeriesColor = "#e5e5e5";
     private const string RecoveryHoldSeriesId = "__server_recovery_hold";
     private const string RecoveryHoldSeriesLabel = "Server hold";
@@ -620,12 +620,12 @@
     {
         return GetStatusText() switch
         {
-            "Good" => "XBond tunnel health is good and suitable for real-time traffic.",
-            "Fair" => "XBond tunnel is usable, but latency or loss is starting to fluctuate.",
-            "Poor" => "XBond tunnel quality is degraded and may affect streaming or remote desktop.",
-            "Critical" => "XBond tunnel is unstable; aggregate tunnel RTT or loss is high.",
-            "Initializing" => "XBond tunnel health is still collecting heartbeat samples.",
-            _ => "XBond runtime is not currently reporting an active tunnel."
+            "Good" => "uLink tunnel health is good and suitable for real-time traffic.",
+            "Fair" => "uLink tunnel is usable, but latency or loss is starting to fluctuate.",
+            "Poor" => "uLink tunnel quality is degraded and may affect streaming or remote desktop.",
+            "Critical" => "uLink tunnel is unstable; aggregate tunnel RTT or loss is high.",
+            "Initializing" => "uLink tunnel health is still collecting heartbeat samples.",
+            _ => "uLink runtime is not currently reporting an active tunnel."
         };
     }
 
@@ -691,7 +691,7 @@
     {
         if (!path.IsConfigured)
         {
-            return "not in XBond";
+            return "not in uLink";
         }
 
         if (path.IsActive && !path.IsAnchor && string.Equals(path.Role, "probe", StringComparison.OrdinalIgnoreCase))

@@ -78,7 +78,7 @@ public sealed class XBondStatsSnapshot
         EffectiveRttMs < 180;
 
     public string ProtectionReason => IsProtectingFromLoss
-        ? $"Active paths report up to {MaxLossPercent:0.#}% loss while the XBond tunnel is holding at {EffectiveLossPercent:0.#}% loss."
+        ? $"Active paths report up to {MaxLossPercent:0.#}% loss while the uLink tunnel is holding at {EffectiveLossPercent:0.#}% loss."
         : string.Empty;
 
     public string ConnectionTitle
@@ -371,7 +371,7 @@ public sealed class XBondPathStatsSnapshot
         {
             if (!IsConfigured && InterfaceUp)
             {
-                return "Connected, not in XBond";
+                return "Connected, not in uLink";
             }
 
             if (!InterfaceUp)

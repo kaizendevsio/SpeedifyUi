@@ -243,7 +243,7 @@ public sealed partial class F50ModemRecoveryService(
         {
             _cooldowns.Remove(entry.Id);
             result.State = "healthy";
-            result.LastResult = "Modem and XBond path look usable.";
+            result.LastResult = "Modem and uLink path look usable.";
             return result;
         }
 
@@ -252,8 +252,8 @@ public sealed partial class F50ModemRecoveryService(
             result.LastAction = "rebind";
             var rebind = await RebindPathAsync(path?.PathId, interfaceName, cancellationToken).ConfigureAwait(false);
             result.LastResult = rebind.ExitCode == 0
-                ? "XBond path socket rebind requested."
-                : "XBond path socket rebind failed.";
+                ? "uLink path socket rebind requested."
+                : "uLink path socket rebind failed.";
             result.LastError = rebind.ExitCode == 0 ? null : FirstNonEmpty(rebind.Error, rebind.Output);
             result.State = rebind.ExitCode == 0 ? "rebound" : "failed";
             if (rebind.ExitCode != 0)
@@ -291,13 +291,13 @@ public sealed partial class F50ModemRecoveryService(
         {
             _cooldowns.Remove(entry.Id);
             result.State = "recovered";
-            result.LastResult = $"USB reset {resetTarget} completed and XBond path was rebound.";
+            result.LastResult = $"USB reset {resetTarget} completed and uLink path was rebound.";
             return result;
         }
 
         result.State = "failed";
         result.LastResult = recovered
-            ? "Modem recovered, but XBond socket rebind failed."
+            ? "Modem recovered, but uLink socket rebind failed."
             : "Modem did not recover before the settle timeout.";
         result.LastError = recovered
             ? FirstNonEmpty(postResetRebind.Error, postResetRebind.Output)

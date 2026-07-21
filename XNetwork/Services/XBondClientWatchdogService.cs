@@ -87,8 +87,8 @@ public sealed class XBondClientWatchdogService : BackgroundService
             status.Message = _automaticRestartsBlocked
                 ? BuildPersistenceBlockMessage()
                 : settings.Enabled
-                ? "XBond client watchdog settings saved."
-                : "XBond client watchdog is disabled.";
+                ? "uLink client watchdog settings saved."
+                : "uLink client watchdog is disabled.";
         });
     }
 
@@ -114,7 +114,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
             catch (Exception ex)
             {
                 SetAutomaticRestartBlock($"Watchdog safety state could not be reinitialized: {ex.Message}");
-                logger.LogError(ex, "Could not reinitialize XBond client watchdog safety state");
+                logger.LogError(ex, "Could not reinitialize uLink client watchdog safety state");
                 throw new InvalidOperationException(
                     "Could not reinitialize watchdog safety state; automatic restarts remain disabled.",
                     ex);
@@ -127,7 +127,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
                 status.ConsecutiveMismatchChecks = 0;
                 status.Message = "Watchdog safety state reinitialized; automatic restart protection is available.";
             });
-            logger.LogWarning("XBond client watchdog safety state was reinitialized by an operator");
+            logger.LogWarning("uLink client watchdog safety state was reinitialized by an operator");
             return GetStatus();
         }
         finally
@@ -140,7 +140,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
     {
         _serviceStartedAtUtc = DateTimeOffset.UtcNow;
         logger.LogInformation(
-            "XBond client watchdog started; enabled={Enabled}, interval={IntervalSeconds}s",
+            "uLink client watchdog started; enabled={Enabled}, interval={IntervalSeconds}s",
             settings.Enabled,
             settings.CheckIntervalSeconds);
 
@@ -162,7 +162,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "XBond client watchdog loop failed");
+                logger.LogWarning(ex, "uLink client watchdog loop failed");
                 UpdateStatus(status =>
                 {
                     status.IsRunning = false;
@@ -177,7 +177,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
     {
         if (!OperatingSystem.IsLinux())
         {
-            UpdateStatus(status => status.Message = "XBond client watchdog runs only on Linux.");
+            UpdateStatus(status => status.Message = "uLink client watchdog runs only on Linux.");
             return;
         }
 
@@ -200,7 +200,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
                 status.Enabled = settings.Enabled;
                 status.IsRunning = true;
                 status.LastStartedAtUtc = startedAt;
-                status.Message = manual ? "Running manual watchdog check." : "Checking XBond tunnel health.";
+                status.Message = manual ? "Running manual watchdog check." : "Checking uLink tunnel health.";
             });
 
             if (!manual && IsWithinStartupGrace(_serviceStartedAtUtc, startedAt, settings.PostRestartGraceSeconds))
@@ -321,7 +321,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
         {
             SetAutomaticRestartBlock($"Watchdog restart state could not be reserved: {ex.Message}");
             var blockedMessage =
-                "XBond client restart skipped because its safety state could not be persisted; automatic restarts are disabled.";
+                "uLink client restart skipped because its safety state could not be persisted; automatic restarts are disabled.";
             logger.LogError(ex, "{Message}", blockedMessage);
             return blockedMessage;
         }
@@ -336,7 +336,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
             return await RollBackRestartReservationAsync(
                 previousState,
                 startedAt,
-                $"XBond client restart failed: {ex.Message}",
+                $"uLink client restart failed: {ex.Message}",
                 ex).ConfigureAwait(false);
         }
 
@@ -346,7 +346,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
             return await RollBackRestartReservationAsync(
                 previousState,
                 startedAt,
-                $"XBond client restart failed: {serviceStatus.Error ?? serviceStatus.Message}")
+                $"uLink client restart failed: {serviceStatus.Error ?? serviceStatus.Message}")
                 .ConfigureAwait(false);
         }
 
@@ -360,7 +360,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
 
         var finalizedState = CloneState(reservedState);
         finalizedState.AutomaticRestartsBlocked = false;
-        var message = $"Restarted XBond client: {decision.Reason}";
+        var message = $"Restarted uLink client: {decision.Reason}";
         try
         {
             await stateStore.SaveAsync(finalizedState, startedAt, CancellationToken.None).ConfigureAwait(false);
@@ -370,7 +370,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
         {
             SetAutomaticRestartBlock($"Successful restart state could not be finalized: {ex.Message}");
             message =
-                $"Restarted XBond client, but its safety state could not be finalized; automatic restarts remain disabled. {decision.Reason}";
+                $"Restarted uLink client, but its safety state could not be finalized; automatic restarts remain disabled. {decision.Reason}";
             logger.LogError(ex, "{Message}", message);
         }
 
@@ -400,7 +400,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
         {
             SetAutomaticRestartBlock($"Failed restart reservation could not be rolled back: {rollbackException.Message}");
             failureMessage += " Its safety-state rollback also failed, so automatic restarts remain disabled.";
-            logger.LogError(rollbackException, "Could not roll back XBond client watchdog restart state");
+            logger.LogError(rollbackException, "Could not roll back uLink client watchdog restart state");
         }
 
         if (restartException is not null)
@@ -430,7 +430,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
 
         if (!tunnelUnhealthy)
         {
-            return new(false, healthyPhysicalPaths, 0, false, "XBond tunnel health is within configured limits.");
+            return new(false, healthyPhysicalPaths, 0, false, "uLink tunnel health is within configured limits.");
         }
 
         if (healthyPhysicalPaths < settings.MinimumHealthyPhysicalPaths)
@@ -567,7 +567,7 @@ public sealed class XBondClientWatchdogService : BackgroundService
     }
 
     private string BuildPersistenceBlockMessage() =>
-        $"Automatic XBond client restarts are disabled because watchdog safety state is unavailable or uncertain. " +
+        $"Automatic uLink client restarts are disabled because watchdog safety state is unavailable or uncertain. " +
         $"{_automaticRestartBlockReason ?? "Repair or remove the state file, then restart uLink."}";
 
     private static XBondClientWatchdogState CloneState(XBondClientWatchdogState state) => new()
@@ -594,8 +594,8 @@ public sealed class XBondClientWatchdogService : BackgroundService
         {
             Enabled = settings.Enabled,
             Message = settings.Enabled
-                ? "XBond client watchdog is waiting for its first check."
-                : "XBond client watchdog is disabled."
+                ? "uLink client watchdog is waiting for its first check."
+                : "uLink client watchdog is disabled."
         };
     }
 

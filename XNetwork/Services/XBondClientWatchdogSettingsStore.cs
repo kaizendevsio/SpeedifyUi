@@ -48,13 +48,13 @@ public sealed class XBondClientWatchdogSettingsStore
             if (persisted is not null)
             {
                 Apply(persisted, settings);
-                _logger.LogInformation("Loaded persisted XBond client watchdog settings from {Path}", _filePath);
+                _logger.LogInformation("Loaded persisted uLink client watchdog settings from {Path}", _filePath);
                 return;
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not load XBond client watchdog settings from {Path}", _filePath);
+            _logger.LogWarning(ex, "Could not load uLink client watchdog settings from {Path}", _filePath);
         }
 
         Normalize(settings);

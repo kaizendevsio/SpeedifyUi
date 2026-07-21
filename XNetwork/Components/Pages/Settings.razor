@@ -27,12 +27,12 @@
         <div>
             <p class="settings-eyebrow">Control Center</p>
             <h1 class="settings-title">Settings</h1>
-            <p class="settings-subtitle">Tune XBond, adapter membership, Wi-Fi, Cudy management, and router safeguards.</p>
+            <p class="settings-subtitle">Tune uLink, adapter membership, Wi-Fi, Cudy management, and router safeguards.</p>
         </div>
         <div class="settings-hero-badges">
             <span class="settings-pill settings-pill-green">@ServiceStateLabel</span>
             <span class="settings-pill settings-pill-blue">@FormatPolicy(_policy)</span>
-            <span class="settings-pill settings-pill-muted">@ConfiguredAdapterCount in XBond</span>
+            <span class="settings-pill settings-pill-muted">@ConfiguredAdapterCount in uLink</span>
         </div>
     </section>
 
@@ -68,20 +68,20 @@
         </div>
     </Accordion>
 
-    <Accordion Title="XBond Tunnel" IsExpanded="_tunnelExpanded" OnToggle="(expanded) => _tunnelExpanded = expanded" BadgeText="@ServiceStateLabel">
+    <Accordion Title="uLink Tunnel" IsExpanded="_tunnelExpanded" OnToggle="(expanded) => _tunnelExpanded = expanded" BadgeText="@ServiceStateLabel">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
-                <h2 class="text-lg font-semibold text-white">XBond Tunnel</h2>
+                <h2 class="text-lg font-semibold text-white">uLink Tunnel</h2>
                 <p class="mt-1 text-sm text-slate-400">@(_trafficStatus?.Message ?? "Loading service status")</p>
             </div>
             <span class="@ServicePillClass">@ServiceStateLabel</span>
         </div>
 
         <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            @Info("Service", _trafficStatus?.ClientServiceName ?? "xbond-client.service")
+            @Info("Service", ServiceStateLabel)
             @Info("Boot", _trafficStatus?.ClientServiceEnableState ?? "unknown")
-            @Info("Tunnel", _xbondStatus?.Tunnel.DeviceName ?? "xbond0")
+            @Info("Tunnel", _xbondStatus?.Running == true ? "Available" : "Unavailable")
             @Info("IPv6", "Unsupported")
         </div>
 
@@ -99,18 +99,18 @@
                 Disable boot
             </button>
             <button type="button" class="rounded-lg border border-cyan-500/35 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/20" @onclick="OpenXBondDiagnostics">
-                XBond diagnostics
+                uLink diagnostics
             </button>
         </div>
         </div>
     </Accordion>
 
-    <Accordion Title="XBond Policy" IsExpanded="_policyExpanded" OnToggle="(expanded) => _policyExpanded = expanded" BadgeText="@FormatPolicy(_policy)">
+    <Accordion Title="uLink Policy" IsExpanded="_policyExpanded" OnToggle="(expanded) => _policyExpanded = expanded" BadgeText="@FormatPolicy(_policy)">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
-                <h2 class="text-lg font-semibold text-white">XBond Policy</h2>
-                <p class="mt-1 text-sm text-slate-400">Choose how aggressively XBond duplicates packets across backup paths.</p>
+                <h2 class="text-lg font-semibold text-white">uLink Policy</h2>
+                <p class="mt-1 text-sm text-slate-400">Choose how aggressively uLink duplicates packets across backup paths.</p>
             </div>
             <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">
                 @FormatPolicy(_policy)
@@ -153,15 +153,15 @@
         </div>
     </Accordion>
 
-    <Accordion Title="XBond Adapters" IsExpanded="_adaptersExpanded" OnToggle="(expanded) => _adaptersExpanded = expanded" BadgeText="@ConfiguredAdapterBadge">
+    <Accordion Title="uLink Adapters" IsExpanded="_adaptersExpanded" OnToggle="(expanded) => _adaptersExpanded = expanded" BadgeText="@ConfiguredAdapterBadge">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
-                <h2 class="text-lg font-semibold text-white">XBond Adapters</h2>
-                <p class="mt-1 text-sm text-slate-400">Add or remove connected WAN and Wi-Fi adapters from the XBond tunnel without editing client.toml.</p>
+                <h2 class="text-lg font-semibold text-white">uLink Adapters</h2>
+                <p class="mt-1 text-sm text-slate-400">Add or remove connected WAN and Wi-Fi adapters from the uLink tunnel without editing client.toml.</p>
             </div>
             <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">
-                @ConfiguredAdapterCount in XBond
+                @ConfiguredAdapterCount in uLink
             </span>
         </div>
 
@@ -572,12 +572,12 @@
         </div>
     </Accordion>
 
-    <Accordion Title="XBond Client Watchdog" IsExpanded="_clientWatchdogExpanded" OnToggle="(expanded) => _clientWatchdogExpanded = expanded" BadgeText="@ClientWatchdogBadge">
+    <Accordion Title="uLink Client Watchdog" IsExpanded="_clientWatchdogExpanded" OnToggle="(expanded) => _clientWatchdogExpanded = expanded" BadgeText="@ClientWatchdogBadge">
         <div class="space-y-4 pt-2">
             <div class="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                    <h2 class="text-lg font-semibold text-white">XBond Client Watchdog</h2>
-                    <p class="mt-1 text-sm text-slate-400">Restarts the XBond client only when the tunnel stays unhealthy while independent interface-bound probes prove physical uplinks can still reach the server.</p>
+                    <h2 class="text-lg font-semibold text-white">uLink Client Watchdog</h2>
+                    <p class="mt-1 text-sm text-slate-400">Restarts the uLink client only when the tunnel stays unhealthy while independent interface-bound probes prove physical uplinks can still reach the server.</p>
                 </div>
                 <span class="@ClientWatchdogPillClass">@ClientWatchdogBadge</span>
             </div>
@@ -645,7 +645,7 @@
                 </label>
                 <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
                     <span class="text-xs uppercase tracking-wide text-slate-500">Direct probe target</span>
-                    <input class="settings-number-input" placeholder="Auto: XBond server" @bind="_clientWatchdogDraft.PhysicalProbeTarget" />
+                    <input class="settings-number-input" placeholder="Auto: uLink server" @bind="_clientWatchdogDraft.PhysicalProbeTarget" />
                     <span class="mt-1 block text-xs text-slate-500">Blank uses the configured Vultr endpoint.</span>
                 </label>
                 <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
@@ -725,7 +725,7 @@
             <div class="flex flex-wrap items-start justify-between gap-4">
                 <div>
                     <h2 class="text-lg font-semibold text-white">F50 Modem Recovery</h2>
-                    <p class="mt-1 text-sm text-slate-400">Automatically hot-rebinds stale XBond modem sockets and can USB-reset a modem when its data link does not recover.</p>
+                    <p class="mt-1 text-sm text-slate-400">Automatically hot-rebinds stale uLink modem sockets and can USB-reset a modem when its data link does not recover.</p>
                 </div>
                 <span class="@F50RecoveryPillClass">@F50RecoveryBadge</span>
             </div>
@@ -833,7 +833,7 @@
             <div class="flex flex-wrap items-start justify-between gap-4">
                 <div>
                     <h2 class="text-lg font-semibold text-white">Traffic Bypass Rules</h2>
-                    <p class="mt-1 text-sm text-slate-400">Send selected destinations or ports outside XBond through a physical adapter.</p>
+                    <p class="mt-1 text-sm text-slate-400">Send selected destinations or ports outside uLink through a physical adapter.</p>
                 </div>
                 <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">@TrafficBypassBadge</span>
             </div>
@@ -917,7 +917,7 @@
             <span class="@MssClampPillClass">@MssClampStateLabel</span>
         </div>
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
-            @Info("Device", _mssClampStatus?.TunnelDevice ?? "xbond0")
+            @Info("Tunnel", _xbondStatus?.Running == true ? "Available" : "Unavailable")
             @Info("MSS", (_mssClampStatus?.MssValue ?? 1360).ToString())
         </div>
         <div class="mt-4 flex flex-wrap gap-2">
@@ -1049,7 +1049,7 @@
 
 <ActionSheet IsOpen="_showBypassEditor"
              Title="@(_editingBypassId is null ? "Add bypass rule" : "Edit bypass rule")"
-             Description="Match selected traffic and send it outside XBond through a physical adapter."
+             Description="Match selected traffic and send it outside uLink through a physical adapter."
              CloseLabel="Close bypass rule editor"
              MaxWidthClass="md:max-w-2xl"
              OnClose="CloseBypassEditorAsync">
@@ -1093,7 +1093,7 @@
                     <option value="@TrafficBypassEgressModes.AutoPhysical">Auto physical</option>
                     <option value="@TrafficBypassEgressModes.Interface">Choose adapter</option>
                 </select>
-                <span class="mt-1 block text-xs text-slate-500">Auto physical uses the current best non-XBond default route.</span>
+                <span class="mt-1 block text-xs text-slate-500">Auto physical uses the current best non-uLink default route.</span>
             </label>
             @if (_bypassDraft.EgressMode == TrafficBypassEgressModes.Interface)
             {
@@ -1439,13 +1439,13 @@
         }
     }
 
-    private async Task StartTunnelAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.StartAsync(), "XBond start requested.");
+    private async Task StartTunnelAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.StartAsync(), "uLink start requested.");
 
-    private async Task StopTunnelAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.StopAsync(), "XBond stop requested.");
+    private async Task StopTunnelAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.StopAsync(), "uLink stop requested.");
 
-    private async Task EnableBootAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.EnableAtBootAsync(), "XBond enabled at boot.");
+    private async Task EnableBootAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.EnableAtBootAsync(), "uLink enabled at boot.");
 
-    private async Task DisableBootAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.DisableAtBootAsync(), "XBond disabled at boot.");
+    private async Task DisableBootAsync() => await RunServiceActionAsync(() => XBondTrafficEngineService.DisableAtBootAsync(), "uLink disabled at boot.");
 
     private async Task RunServiceActionAsync(Func<Task<XBondTrafficEngineStatus>> action, string successMessage)
     {
@@ -1801,7 +1801,7 @@
             ShowClientWatchdogMessage(
                 _clientWatchdogStatus.AutomaticRestartsBlocked
                     ? $"Watchdog settings saved, but automatic restarts remain blocked: {_clientWatchdogStatus.AutomaticRestartBlockReason}"
-                    : "XBond client watchdog settings saved.",
+                    : "uLink client watchdog settings saved.",
                 isError: _clientWatchdogStatus.AutomaticRestartsBlocked);
         }
         catch (Exception ex)
@@ -2506,7 +2506,7 @@
         const string helperPath = "/usr/local/sbin/xbond-client-route-apply";
         if (!File.Exists(helperPath))
         {
-            return "Local route helper is not installed; restart XBond if the URL is outside a directly connected subnet.";
+            return "Local route helper is not installed; restart uLink if the URL is outside a directly connected subnet.";
         }
 
         try
@@ -2530,7 +2530,7 @@
             using var process = System.Diagnostics.Process.Start(startInfo);
             if (process == null)
             {
-                return "Local route helper could not be started; restart XBond if Cudy is still unreachable.";
+                return "Local route helper could not be started; restart uLink if Cudy is still unreachable.";
             }
 
             var outputTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
@@ -2546,12 +2546,12 @@
 
             var detail = string.IsNullOrWhiteSpace(error) ? output : error;
             return string.IsNullOrWhiteSpace(detail)
-                ? "Local route helper failed; restart XBond if Cudy is still unreachable."
+                ? "Local route helper failed; restart uLink if Cudy is still unreachable."
                 : $"Local route helper failed: {detail}";
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return "Local route helper timed out; restart XBond if Cudy is still unreachable.";
+            return "Local route helper timed out; restart uLink if Cudy is still unreachable.";
         }
         catch (Exception ex)
         {
@@ -2635,7 +2635,7 @@
 
     private int ConfiguredAdapterCount => _xbondAdapterStatus?.Adapters.Count(adapter => adapter.IsConfigured) ?? 0;
 
-    private string ConfiguredAdapterBadge => $"{ConfiguredAdapterCount} in XBond";
+    private string ConfiguredAdapterBadge => $"{ConfiguredAdapterCount} in uLink";
 
     private string NetworkMonitorBadge => _networkMonitorStatus?.IsEnabled == true ? "Enabled" : "Disabled";
 
@@ -2666,7 +2666,7 @@
     {
         if (adapter.IsConfigured)
         {
-            return "In XBond";
+            return "In uLink";
         }
 
         return adapter.IsEligible ? "Available" : "Unavailable";

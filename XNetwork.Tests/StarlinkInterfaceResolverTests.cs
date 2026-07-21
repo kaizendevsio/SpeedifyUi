@@ -29,7 +29,7 @@ public class StarlinkInterfaceResolverTests
 
         Assert.True(resolution.IsAvailable);
         Assert.Equal("enx-dynamic-starlink", resolution.InterfaceName);
-        Assert.Contains("XBond path", resolution.Reason);
+        Assert.Contains("uLink path", resolution.Reason);
     }
 
     [Fact]

@@ -13,7 +13,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
     public static XBondStatus ParseStatusJson(string json)
     {
         var status = JsonSerializer.Deserialize<XBondStatus>(json, JsonOptions)
-            ?? throw new JsonException("XBond status JSON was empty");
+            ?? throw new JsonException("uLink status JSON was empty");
         status.UpdatedAtUtc = DateTime.UtcNow;
         return status;
     }
@@ -27,7 +27,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         DateTime updatedAtUtc)
     {
         var runtime = JsonSerializer.Deserialize<XBondRuntimeStatusDocument>(json, JsonOptions)
-            ?? throw new JsonException("XBond runtime status JSON was empty");
+            ?? throw new JsonException("uLink runtime status JSON was empty");
 
         return FromRuntimeStatus(runtime, settings, updatedAtUtc);
     }
@@ -36,7 +36,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
     {
         if (!settings.Enabled)
         {
-            return DisabledStatus("XBond runtime is disabled. Enable xbond-client on this host.");
+            return DisabledStatus("uLink runtime is disabled. Enable xbond-client on this host.");
         }
 
         try
@@ -50,7 +50,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            logger.LogWarning(ex, "Failed to read XBond runtime status file {Path}", settings.RuntimeStatusPath);
+            logger.LogWarning(ex, "Failed to read uLink runtime status file {Path}", settings.RuntimeStatusPath);
             return ErrorStatus(ex.Message);
         }
     }
@@ -99,7 +99,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             ServerHealth = runtime.ServerHealth ?? runtime.ServerRecovery?.ServerHealth ?? new XBondServerHealthStatus(),
             Recovery = runtime.Recovery ?? new XBondRecoveryStatus(),
             Message = string.IsNullOrWhiteSpace(runtime.Message)
-                ? "XBond runtime status loaded."
+                ? "uLink runtime status loaded."
                 : runtime.Message,
             UpdatedAtUtc = updatedAtUtc
         };
@@ -315,7 +315,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             Running = false,
             Mode = "anchor-duplicate-1",
             RedundancyPolicy = "balanced",
-            Message = "XBond runtime status is unavailable",
+            Message = "uLink runtime status is unavailable",
             Error = error,
             UpdatedAtUtc = DateTime.UtcNow
         };

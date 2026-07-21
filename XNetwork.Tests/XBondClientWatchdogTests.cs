@@ -214,7 +214,7 @@ public class XBondClientWatchdogTests
         await harness.Cache.GetSnapshotAsync();
         var status = harness.Service.GetStatus();
 
-        Assert.Contains("Restarted XBond client", message, StringComparison.Ordinal);
+        Assert.Contains("Restarted uLink client", message, StringComparison.Ordinal);
         Assert.Equal(1, harness.RestartCalls());
         Assert.Equal(0, GetPrivateField<int>(harness.Service, "_consecutiveMismatchChecks"));
         Assert.Single(GetPrivateField<Queue<DateTimeOffset>>(harness.Service, "_restartHistory"));
@@ -394,7 +394,7 @@ public class XBondClientWatchdogTests
             reloaded.Service,
             restartedAt.AddMinutes(11));
 
-        Assert.Contains("automatic XBond client restarts are disabled", suppressedMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("automatic uLink client restarts are disabled", suppressedMessage, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, reloaded.RestartCalls());
     }
 

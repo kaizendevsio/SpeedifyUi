@@ -66,13 +66,13 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
                 .FirstOrDefault(path => StarlinkAdapterDetector.HasStarlinkMetadata(path, _settings.AdapterNameHints));
 
             return match is null
-                ? StarlinkInterfaceResolution.Unavailable("No live XBond Starlink path matched the configured adapter hints.")
-                : StarlinkInterfaceResolution.Available(match.InterfaceName, $"Matched live XBond path {match.Name}.");
+                ? StarlinkInterfaceResolution.Unavailable("No live uLink Starlink path matched the configured adapter hints.")
+                : StarlinkInterfaceResolution.Available(match.InterfaceName, $"Matched live uLink path {match.Name}.");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogDebug(ex, "Could not resolve Starlink interface from XBond paths");
-            return StarlinkInterfaceResolution.Unavailable($"Could not read XBond paths: {ex.Message}");
+            _logger.LogDebug(ex, "Could not resolve Starlink interface from uLink paths");
+            return StarlinkInterfaceResolution.Unavailable($"Could not read uLink paths: {ex.Message}");
         }
     }
 

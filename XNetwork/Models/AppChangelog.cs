@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.110";
+    public const string CurrentVersion = "ulink-2026.06.111";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Completed the uLink product naming transition.",
+            Changes =
+            [
+                "Changed the visible version prefix to ulink and removed remaining legacy product names from the current interface.",
+                "Updated dashboard, adapter cards, analytics, Wifi, Settings, diagnostics, accessibility text, and changelog branding to uLink.",
+                "Kept internal tunnel services, protocol identifiers, configuration keys, and compatibility routes unchanged."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.110",
             Date = "2026-07-21",
             Summary = "Simplified navigation and refined connection status motion.",
             Changes =
@@ -31,7 +43,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = CurrentVersion,
+            Version = "ulink-2026.06.109",
             Date = "2026-07-21",
             Summary = "Refined dashboard grouping and Live signal nodes.",
             Changes =
@@ -43,7 +55,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.108",
+            Version = "ulink-2026.06.108",
             Date = "2026-07-21",
             Summary = "Smoothed live adapter role changes.",
             Changes =
@@ -55,7 +67,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.107",
+            Version = "ulink-2026.06.107",
             Date = "2026-07-21",
             Summary = "Tightened the compact Live viewport.",
             Changes =
@@ -65,7 +77,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.106",
+            Version = "ulink-2026.06.106",
             Date = "2026-07-21",
             Summary = "Polished Live topology labels.",
             Changes =
@@ -75,7 +87,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.105",
+            Version = "ulink-2026.06.105",
             Date = "2026-07-21",
             Summary = "Introduced the uLink identity and a cleaner live topology.",
             Changes =
@@ -88,48 +100,48 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.104",
+            Version = "ulink-2026.06.104",
             Date = "2026-07-21",
             Summary = "Simplified dashboard tunnel status.",
             Changes =
             [
-                "Removed the duplicate recovery badge from the connection summary while keeping recovery state on the XBond tunnel card.",
-                "Removed the redundant XBond active badge.",
+                "Removed the duplicate recovery badge from the connection summary while keeping recovery state on the uLink tunnel card.",
+                "Removed the redundant uLink active badge.",
                 "Server health now stays hidden while healthy and appears only when degraded, down, or unknown."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.103",
+            Version = "ulink-2026.06.103",
             Date = "2026-07-20",
-            Summary = "Tightened XBond runtime accounting and release validation.",
+            Summary = "Tightened uLink runtime accounting and release validation.",
             Changes =
             [
                 "Packet-pool and sender-lane telemetry now reports bounded live occupancy, generation-aware drops, and socket-rebind state without adding work to the packet hot path.",
                 "Client and server repair-cache status now exposes authoritative retained entries and accounted bytes for memory and quiescence validation.",
-                "The validation lab compares clean and impaired XBond runs fairly, rejects incomplete samples, and uses robust long-run memory evidence instead of a single noisy slope.",
+                "The validation lab compares clean and impaired uLink runs fairly, rejects incomplete samples, and uses robust long-run memory evidence instead of a single noisy slope.",
                 "Anchor impairment tests now require sustained scheduler state, healthy anchor evidence, degraded backups, and clean network-emulation cleanup."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.102",
+            Version = "ulink-2026.06.102",
             Date = "2026-07-20",
-            Summary = "Hardened XBond performance, control paths, and automatic recovery.",
+            Summary = "Hardened uLink performance, control paths, and automatic recovery.",
             Changes =
             [
                 "Client and server packet pools are bounded and reusable to reduce allocation pressure without retaining excess memory.",
                 "Server control lanes stay nonblocking under load while preserving distinct peer and session responses.",
-                "Silent-blackhole detection uses robust interface-bound probes against the XBond endpoint and independent targets.",
+                "Silent-blackhole detection uses robust interface-bound probes against the uLink endpoint and independent targets.",
                 "The fail-closed watchdog persists restart safety state and exposes Settings recovery when durable state is unavailable.",
                 "Soak validation now requires multiple complete throughput baselines and stricter cleanup, provenance, and growth checks."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.101",
+            Version = "ulink-2026.06.101",
             Date = "2026-07-20",
-            Summary = "Hardened XBond recovery, session handling, and bounded packet queues.",
+            Summary = "Hardened uLink recovery, session handling, and bounded packet queues.",
             Changes =
             [
                 "Client and server now fail closed on saturated TUN batches instead of stalling the tunnel supervisor one packet at a time.",
@@ -139,19 +151,19 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.100",
+            Version = "ulink-2026.06.100",
             Date = "2026-07-12",
-            Summary = "Added guarded automatic recovery for a stalled XBond client.",
+            Summary = "Added guarded automatic recovery for a stalled uLink client.",
             Changes =
             [
-                "A configurable watchdog now compares logical tunnel health with interface-bound probes from each configured physical XBond path.",
+                "A configurable watchdog now compares logical tunnel health with interface-bound probes from each configured physical uLink path.",
                 "The client service restarts only after a sustained tunnel/physical mismatch, with cooldown, post-restart grace, and hourly restart limits.",
                 "Settings now show watchdog evidence, direct path probe results, current mismatch count, and a manual check action."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.99",
+            Version = "ulink-2026.06.99",
             Date = "2026-07-03",
             Summary = "Moved XNetwork to a monochrome dark theme.",
             Changes =
@@ -163,43 +175,43 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.98",
+            Version = "ulink-2026.06.98",
             Date = "2026-07-03",
             Summary = "Tucked the dashboard sparkline behind the summary metrics.",
             Changes =
             [
                 "The dashboard connection card sparkline now renders as a background layer instead of taking its own vertical space.",
                 "The Tunnel, Internet, Download, and Upload metrics remain visible while the card height stays tighter on mobile.",
-                "No tunnel routing, server health, or XBond runtime behavior changed."
+                "No tunnel routing, server health, or uLink runtime behavior changed."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.97",
+            Version = "ulink-2026.06.97",
             Date = "2026-07-03",
             Summary = "Added dashboard internet latency.",
             Changes =
             [
-                "The dashboard connection card now shows XBond tunnel latency and internet latency as separate values.",
+                "The dashboard connection card now shows uLink tunnel latency and internet latency as separate values.",
                 "Internet latency reuses the existing Pi-side rolling ping to 8.8.8.8 through the current default route.",
-                "The tunnel latency remains the XBond heartbeat RTT to Vultr and is still used for tunnel health status."
+                "The tunnel latency remains the uLink heartbeat RTT to Vultr and is still used for tunnel health status."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.96",
+            Version = "ulink-2026.06.96",
             Date = "2026-07-03",
             Summary = "Added Vultr server egress health telemetry.",
             Changes =
             [
-                "XBond server now probes configurable external TCP targets from Vultr and reports server egress health without changing routing or QoS.",
-                "The Pi client relays server health through the normal XBond runtime status so the dashboard can show Server OK, degraded, down, or unknown.",
+                "uLink server now probes configurable external TCP targets from Vultr and reports server egress health without changing routing or QoS.",
+                "The Pi client relays server health through the normal uLink runtime status so the dashboard can show Server OK, degraded, down, or unknown.",
                 "Analytics now includes a server egress latency view to compare Vultr-side connectivity against tunnel RTT."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.95",
+            Version = "ulink-2026.06.95",
             Date = "2026-06-28",
             Summary = "Tuned Live satellite mobile framing.",
             Changes =
@@ -211,7 +223,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.94",
+            Version = "ulink-2026.06.94",
             Date = "2026-06-28",
             Summary = "Improved Live hardware spacing and satellite endpoint.",
             Changes =
@@ -223,43 +235,43 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.93",
+            Version = "ulink-2026.06.93",
             Date = "2026-06-28",
             Summary = "Changed Live nodes into network hardware glyphs.",
             Changes =
             [
                 "Replaced planet-like Live adapter orbs with dish and cell-tower style 3D glyphs.",
                 "Cellular/F50 provider paths render as tower silhouettes with pulsing signal arcs, while Wi-Fi/Starlink-like paths render as dish emitters.",
-                "Kept the XBond energy beams, topology framing, and 3D pan/rotate camera behavior."
+                "Kept the uLink energy beams, topology framing, and 3D pan/rotate camera behavior."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.92",
+            Version = "ulink-2026.06.92",
             Date = "2026-06-28",
             Summary = "Fixed Live mobile topology framing.",
             Changes =
             [
-                "Pulled Live adapter nodes back inside the compact mobile viewport so local adapters, XBond core, and server endpoint are all visible by default.",
+                "Pulled Live adapter nodes back inside the compact mobile viewport so local adapters, uLink core, and server endpoint are all visible by default.",
                 "Kept the energy-topology geometry, role-colored beams, and 3D pan/rotate controls from the previous Live rebuild.",
                 "Adjusted only the compact scene framing; desktop topology remains unchanged."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.91",
+            Version = "ulink-2026.06.91",
             Date = "2026-06-28",
             Summary = "Rebuilt Live as an energy topology.",
             Changes =
             [
                 "Replaced the large globe-like Live core with smaller reactor rings and shield bands so the view no longer reads as a decorative orb.",
-                "Reframed the Three.js scene around explicit local adapter nodes, the XBond core, the Vultr server endpoint, and stronger role-colored energy beams.",
+                "Reframed the Three.js scene around explicit local adapter nodes, the uLink core, the Vultr server endpoint, and stronger role-colored energy beams.",
                 "Preserved 3D pan, zoom, rotate, and adapter tap selection while keeping the default mobile camera framed on the full topology."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.90",
+            Version = "ulink-2026.06.90",
             Date = "2026-06-28",
             Summary = "Raised Live adapter nodes above the HUD.",
             Changes =
@@ -271,7 +283,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.89",
+            Version = "ulink-2026.06.89",
             Date = "2026-06-28",
             Summary = "Made Live adapter energy nodes visible.",
             Changes =
@@ -283,72 +295,72 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.88",
+            Version = "ulink-2026.06.88",
             Date = "2026-06-28",
             Summary = "Fixed Live cockpit beam visibility.",
             Changes =
             [
                 "Changed Live cockpit energy beams, path emitters, labels, and shield materials to render without depth hiding so active paths remain visible through the transparent core.",
-                "Kept the adapter-left, XBond-core, server-right 3D cockpit layout and orbit/pan/zoom camera controls.",
+                "Kept the adapter-left, uLink-core, server-right 3D cockpit layout and orbit/pan/zoom camera controls.",
                 "Preserved the operational role colors for anchor, backup, standby, warning, and down paths."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.87",
+            Version = "ulink-2026.06.87",
             Date = "2026-06-28",
             Summary = "Improved Live cockpit adapter visibility.",
             Changes =
             [
                 "Moved mobile Live adapter emitters into the visible cockpit lane so the local side reads clearly without panning.",
-                "Strengthened active path energy beams from adapters to the XBond core and from the core to the server endpoint.",
+                "Strengthened active path energy beams from adapters to the uLink core and from the core to the server endpoint.",
                 "Kept the existing 3D orbit, zoom, pan, and tap-to-select scene controls."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.86",
+            Version = "ulink-2026.06.86",
             Date = "2026-06-28",
             Summary = "Tuned Live cockpit mobile framing.",
             Changes =
             [
-                "Adjusted the Live cockpit default mobile camera framing so local adapters, the XBond core, and the server endpoint are visible without panning first.",
+                "Adjusted the Live cockpit default mobile camera framing so local adapters, the uLink core, and the server endpoint are visible without panning first.",
                 "Reduced the core shield size so the energy beams and endpoint layout read more clearly on narrow screens.",
                 "Kept the 3D orbit, zoom, pan, and adapter selection controls from the previous Live cockpit update."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.85",
+            Version = "ulink-2026.06.85",
             Date = "2026-06-28",
-            Summary = "Reworked Live into a 3D XBond cockpit.",
+            Summary = "Reworked Live into a 3D uLink cockpit.",
             Changes =
             [
-                "Replaced the primitive Live tab geometry with a Three.js cockpit layout: local adapters on the left, XBond core in the center, and the Vultr server endpoint on the right.",
+                "Replaced the primitive Live tab geometry with a Three.js cockpit layout: local adapters on the left, uLink core in the center, and the Vultr server endpoint on the right.",
                 "Live beams now use the operational color language: orange anchor, pink redundant backup, dim standby/probe, and red or amber degraded paths.",
                 "Added orbit-style scene controls so drag rotates the camera, mouse wheel or pinch zooms, and Shift/right-drag or two-finger drag pans around the cockpit."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.84",
+            Version = "ulink-2026.06.84",
             Date = "2026-06-28",
             Summary = "Reworked Live into an energy-wave view.",
             Changes =
             [
                 "Replaced the primitive Live tab geometry with an abstract Three.js energy visualization using glowing tunnel cores, flowing beams, wave rings, and particle packets.",
-                "Path emitters now read as signal sources instead of toy adapter objects while keeping the existing XBond status, path selection, and metric bindings.",
+                "Path emitters now read as signal sources instead of toy adapter objects while keeping the existing uLink status, path selection, and metric bindings.",
                 "The canvas fallback was updated to use the same energy-beam visual language."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.83",
+            Version = "ulink-2026.06.83",
             Date = "2026-06-28",
-            Summary = "Added the animated XBond Live view.",
+            Summary = "Added the animated uLink Live view.",
             Changes =
             [
-                "Added a Live tab with an animated Three.js scene for XBond tunnel health, active paths, recovery, and loss-protection state.",
+                "Added a Live tab with an animated Three.js scene for uLink tunnel health, active paths, recovery, and loss-protection state.",
                 "Live adapter nodes can be selected to inspect path latency, loss, and throughput without changing the operational dashboard.",
                 "Primary route transitions now include the Live tab between Dashboard and Analytics.",
                 "Tightened the mobile Live HUD metric sizing so values fit without truncation."
@@ -356,7 +368,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.81",
+            Version = "ulink-2026.06.81",
             Date = "2026-06-26",
             Summary = "Fixed F50 USB target resolution.",
             Changes =
@@ -367,54 +379,54 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.80",
+            Version = "ulink-2026.06.80",
             Date = "2026-06-26",
             Summary = "Added F50 recovery observability.",
             Changes =
             [
                 "F50 modem recovery now logs service start, scheduled/manual check start, and each modem recovery decision.",
-                "The logs make it clear whether automation is rebinding a stale XBond path, resetting a modem, cooling down, or taking no action."
+                "The logs make it clear whether automation is rebinding a stale uLink path, resetting a modem, cooling down, or taking no action."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.79",
+            Version = "ulink-2026.06.79",
             Date = "2026-06-26",
-            Summary = "Added F50 modem recovery and XBond hot rebind.",
+            Summary = "Added F50 modem recovery and uLink hot rebind.",
             Changes =
             [
-                "XBond client paths can now be manually hot-rebound through the client control socket after a USB modem re-enumerates.",
+                "uLink client paths can now be manually hot-rebound through the client control socket after a USB modem re-enumerates.",
                 "Settings now includes configurable F50 modem recovery checks with interval, cooldown, ping target, and USB reset controls.",
-                "The background recovery worker can rebind a stale XBond path or USB-reset a failed modem, then skips the next check after a failed recovery attempt."
+                "The background recovery worker can rebind a stale uLink path or USB-reset a failed modem, then skips the next check after a failed recovery attempt."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.78",
+            Version = "ulink-2026.06.78",
             Date = "2026-06-25",
-            Summary = "Restored Starlink telemetry on XBond.",
+            Summary = "Restored Starlink telemetry on uLink.",
             Changes =
             [
-                "Starlink telemetry now resolves the matching XBond physical path dynamically instead of relying on hardcoded USB adapter IDs.",
+                "Starlink telemetry now resolves the matching uLink physical path dynamically instead of relying on hardcoded USB adapter IDs.",
                 "Starlink web and gRPC requests are bound to the resolved Linux interface so dish telemetry can work while the default route points through xbond0.",
                 "Dashboard Starlink cards again show direct dish stats and open the restored Starlink details/actions sheet."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.77",
+            Version = "ulink-2026.06.77",
             Date = "2026-06-25",
             Summary = "Added transparent modem admin ports.",
             Changes =
             [
                 "Local device proxies can now run in port mode so modem admin UIs stay mounted at / on dedicated ports.",
                 "Smart, DITO, and GOMO modem defaults use ports 18081, 18082, and 18083 instead of fragile path rewriting.",
-                "Dashboard adapter admin buttons open the matching configured modem admin page instead of XBond diagnostics."
+                "Dashboard adapter admin buttons open the matching configured modem admin page instead of uLink diagnostics."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.76",
+            Version = "ulink-2026.06.76",
             Date = "2026-06-25",
             Summary = "Fixed modem proxy browser redirects.",
             Changes =
@@ -426,20 +438,20 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.75",
+            Version = "ulink-2026.06.75",
             Date = "2026-06-25",
             Summary = "Added traffic bypass rules and fixed modem proxy paths.",
             Changes =
             [
                 "Settings now includes configurable traffic bypass rules for destination IP/CIDR and port matches with Auto physical or selected-adapter egress.",
-                "Traffic bypass rules are applied by a Linux route helper using nftables marks and per-rule policy routes outside XBond.",
+                "Traffic bypass rules are applied by a Linux route helper using nftables marks and per-rule policy routes outside uLink.",
                 "Local device proxies now keep modem mobile redirects inside their configured route so pages such as /gomo/mobile.html do not escape to the app root.",
                 "Remaining top bar, Settings modal, and action sheet surfaces now use the VS Code modern dark palette more consistently."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.74",
+            Version = "ulink-2026.06.74",
             Date = "2026-06-25",
             Summary = "Refined Cudy controls and XNetwork shell UI.",
             Changes =
@@ -447,13 +459,13 @@ public static class AppChangelog
                 "Wifi page now reads Cudy radio state and exposes manual 2.4 GHz / 5 GHz radio controls.",
                 "Local device proxy add and edit fields now open in a modal instead of staying inline.",
                 "Router Wi-Fi settings can select any NetworkManager Wi-Fi adapter, including USB Wi-Fi adapters.",
-                "Primary navigation now keeps XBond diagnostics inside Settings and uses a four-item mobile tab bar.",
+                "Primary navigation now keeps uLink diagnostics inside Settings and uses a four-item mobile tab bar.",
                 "The dark theme now follows a VS Code modern dark palette."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.73",
+            Version = "ulink-2026.06.73",
             Date = "2026-06-25",
             Summary = "Fixed F50 telemetry firmware compatibility.",
             Changes =
@@ -464,7 +476,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.72",
+            Version = "ulink-2026.06.72",
             Date = "2026-06-25",
             Summary = "Added local device proxies and F50 signal badges.",
             Changes =
@@ -476,18 +488,18 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.71",
+            Version = "ulink-2026.06.71",
             Date = "2026-06-20",
             Summary = "Hardened IPv4 interface binding.",
             Changes =
             [
-                "XBond now refuses to bind a path to a route source IP unless that IP is actually assigned to the requested interface.",
-                "Configured WAN interfaces are treated as unavailable until they have an IPv4 address, preventing IPv6-only or DHCP-stalled links from being counted as usable XBond paths."
+                "uLink now refuses to bind a path to a route source IP unless that IP is actually assigned to the requested interface.",
+                "Configured WAN interfaces are treated as unavailable until they have an IPv4 address, preventing IPv6-only or DHCP-stalled links from being counted as usable uLink paths."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.70",
+            Version = "ulink-2026.06.70",
             Date = "2026-06-20",
             Summary = "Fixed recovery duplicate pruning.",
             Changes =
@@ -498,18 +510,18 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.69",
+            Version = "ulink-2026.06.69",
             Date = "2026-06-20",
             Summary = "Added active redundancy count.",
             Changes =
             [
-                "The dashboard Actively Redundant header now shows the number of paths currently included in the live XBond schedule.",
+                "The dashboard Actively Redundant header now shows the number of paths currently included in the live uLink schedule.",
                 "The count uses the same runtime schedule-backed membership as the adapter cards, so it follows normal and recovery-mode schedule changes."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.68",
+            Version = "ulink-2026.06.68",
             Date = "2026-06-19",
             Summary = "Smoothed live chart left-edge exits.",
             Changes =
@@ -521,7 +533,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.66",
+            Version = "ulink-2026.06.66",
             Date = "2026-06-19",
             Summary = "Fixed route path normalization on the router.",
             Changes =
@@ -532,7 +544,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.65",
+            Version = "ulink-2026.06.65",
             Date = "2026-06-19",
             Summary = "Smoothed tab direction and live charts.",
             Changes =
@@ -545,30 +557,30 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.64",
+            Version = "ulink-2026.06.64",
             Date = "2026-06-19",
             Summary = "Moved the loss-protection badge to the tunnel card.",
             Changes =
             [
-                "The Protecting from loss badge now appears beside the XBond mode label in the tunnel card.",
+                "The Protecting from loss badge now appears beside the uLink mode label in the tunnel card.",
                 "The connection summary card returns to showing only the current tunnel status, description, and metrics."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.63",
+            Version = "ulink-2026.06.63",
             Date = "2026-06-19",
             Summary = "Switched public speed tests to Ookla and surfaced loss protection.",
             Changes =
             [
                 "Public speed tests now call the official Ookla Speedtest CLI and parse its JSON result format.",
-                "The dashboard connection card can show a Protecting from loss badge when active path loss is being absorbed by stable XBond tunnel health.",
-                "The XBond speed test panel now labels the public test as the official Ookla speedtest."
+                "The dashboard connection card can show a Protecting from loss badge when active path loss is being absorbed by stable uLink tunnel health.",
+                "The uLink speed test panel now labels the public test as the official Ookla speedtest."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.62",
+            Version = "ulink-2026.06.62",
             Date = "2026-06-19",
             Summary = "Simplified dashboard motion and health tiers.",
             Changes =
@@ -580,54 +592,54 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.61",
+            Version = "ulink-2026.06.61",
             Date = "2026-06-19",
             Summary = "Refined dashboard and settings motion.",
             Changes =
             [
-                "The dashboard XBond panel now hides the raw server endpoint and tunnel device while keeping policy and recovery context visible.",
+                "The dashboard uLink panel now hides the raw server endpoint and tunnel device while keeping policy and recovery context visible.",
                 "Settings sections now open as focused launchers instead of showing every control inline, and the on-board Wi-Fi connector is restored.",
                 "Dashboard cards, settings launchers, and page transitions now use softer rubber-style motion with tab-order-aware transition direction."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.60",
+            Version = "ulink-2026.06.60",
             Date = "2026-06-18",
-            Summary = "Surfaced XBond recovery hold telemetry.",
+            Summary = "Surfaced uLink recovery hold telemetry.",
             Changes =
             [
-                "XBond server recovery and ingress reorder hold telemetry now flows into the router client status JSON.",
+                "uLink server recovery and ingress reorder hold telemetry now flows into the router client status JSON.",
                 "The dashboard connection card shows a Recovery badge with the current server hold time while recovery is active.",
                 "Analytics now includes a Recovery Hold chart so adaptive hold changes can be reviewed over time."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.59",
+            Version = "ulink-2026.06.59",
             Date = "2026-06-18",
             Summary = "Removed path-derived connection health substitution.",
             Changes =
             [
-                "Dashboard and Analytics connection-level health now require aggregate XBond tunnel heartbeat telemetry instead of substituting active physical-path RTT and loss.",
-                "Analytics now labels the connection-level RTT and loss as tunnel metrics, and its connection chart series is labeled XBond Tunnel.",
+                "Dashboard and Analytics connection-level health now require aggregate uLink tunnel heartbeat telemetry instead of substituting active physical-path RTT and loss.",
+                "Analytics now labels the connection-level RTT and loss as tunnel metrics, and its connection chart series is labeled uLink Tunnel.",
                 "Per-adapter cards and chart lines still show physical path RTT and loss for troubleshooting."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.58",
+            Version = "ulink-2026.06.58",
             Date = "2026-06-18",
             Summary = "Moved dashboard health to tunnel telemetry.",
             Changes =
             [
-                "The dashboard top connection card now uses aggregate XBond tunnel heartbeat RTT and loss when available instead of worst active physical-path health.",
+                "The dashboard top connection card now uses aggregate uLink tunnel heartbeat RTT and loss when available instead of worst active physical-path health.",
                 "Adapter cards still show per-path RTT and loss so degraded backups remain visible without automatically downgrading the top tunnel status."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.57",
+            Version = "ulink-2026.06.57",
             Date = "2026-06-18",
             Summary = "Simplified dashboard throughput labels.",
             Changes =
@@ -637,7 +649,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.56",
+            Version = "ulink-2026.06.56",
             Date = "2026-06-18",
             Summary = "Clarified dashboard tunnel throughput.",
             Changes =
@@ -648,7 +660,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.55",
+            Version = "ulink-2026.06.55",
             Date = "2026-06-18",
             Summary = "Clarified dashboard chart path colors.",
             Changes =
@@ -659,7 +671,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.54",
+            Version = "ulink-2026.06.54",
             Date = "2026-06-18",
             Summary = "Smoothed adapter status color changes.",
             Changes =
@@ -670,7 +682,7 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.53",
+            Version = "ulink-2026.06.53",
             Date = "2026-06-18",
             Summary = "Fixed dashboard sparkline after tab navigation.",
             Changes =
@@ -681,51 +693,51 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.52",
+            Version = "ulink-2026.06.52",
             Date = "2026-06-18",
-            Summary = "Explained XBond policy modes in Settings.",
+            Summary = "Explained uLink policy modes in Settings.",
             Changes =
             [
-                "The XBond policy selector now describes what Balanced, Reliable, and Fast modes do.",
+                "The uLink policy selector now describes what Balanced, Reliable, and Fast modes do.",
                 "The policy save hint now follows the selected mode instead of always describing Balanced mode."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.51",
+            Version = "ulink-2026.06.51",
             Date = "2026-06-18",
-            Summary = "Fixed stale XBond modem sockets after adapter churn.",
+            Summary = "Fixed stale uLink modem sockets after adapter churn.",
             Changes =
             [
-                "XBond interface-only paths now bind to the current IPv4 source address for that interface instead of relying on an unspecified source.",
-                "Old XBond per-path sender and receiver tasks are stopped when path sockets are removed or recreated, preventing stale modem sockets from keeping adapters stuck at 100% loss."
+                "uLink interface-only paths now bind to the current IPv4 source address for that interface instead of relying on an unspecified source.",
+                "Old uLink per-path sender and receiver tasks are stopped when path sockets are removed or recreated, preventing stale modem sockets from keeping adapters stuck at 100% loss."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.50",
+            Version = "ulink-2026.06.50",
             Date = "2026-06-18",
             Summary = "Stopped showing stale RTT as live latency.",
             Changes =
             [
                 "Paths with stale ACKs or effectively 100% heartbeat loss now show unavailable latency instead of a frozen last-known RTT.",
-                "Dashboard status dots now warn or disconnect high-loss XBond paths instead of presenting them as healthy connected paths."
+                "Dashboard status dots now warn or disconnect high-loss uLink paths instead of presenting them as healthy connected paths."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.49",
+            Version = "ulink-2026.06.49",
             Date = "2026-06-18",
             Summary = "Hid the Cudy WAN handoff from adapter lists.",
             Changes =
             [
-                "The Raspberry Pi eth0 Cudy WAN handoff no longer appears as a live XBond dashboard adapter.",
+                "The Raspberry Pi eth0 Cudy WAN handoff no longer appears as a live uLink dashboard adapter.",
                 "The live adapter count now reflects usable WAN paths instead of the local Cudy management/upstream link."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.48",
+            Version = "ulink-2026.06.48",
             Date = "2026-06-18",
             Summary = "Fixed Cudy LAN management compatibility.",
             Changes =
@@ -736,20 +748,20 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.47",
+            Version = "ulink-2026.06.47",
             Date = "2026-06-18",
             Summary = "Restored Cudy management settings.",
             Changes =
             [
                 "Settings now has a Cudy Management card for editing the Cudy admin URL, updating the local runtime password, scanning trusted home Wi-Fi, and testing Cudy login.",
-                "Saving Cudy settings now attempts to refresh the local XBond bypass route immediately so changed management URLs do not have to wait for an XBond restart.",
+                "Saving Cudy settings now attempts to refresh the local uLink bypass route immediately so changed management URLs do not have to wait for an uLink restart.",
                 "The Wifi page now reports which configured Cudy management URL failed when the client table times out.",
                 "Cudy configuration checks now require an actual configured password instead of treating a default environment-variable name as enough."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.46",
+            Version = "ulink-2026.06.46",
             Date = "2026-06-18",
             Summary = "Compacted the mobile bottom navigation.",
             Changes =
@@ -760,31 +772,31 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.45",
+            Version = "ulink-2026.06.45",
             Date = "2026-06-17",
-            Summary = "Bypassed XBond for local Cudy management routes.",
+            Summary = "Bypassed uLink for local Cudy management routes.",
             Changes =
             [
-                "XBond route setup now reads the configured Cudy management URL and pins that local management host to a physical route before making xbond0 the default route.",
-                "Stale local management bypass routes are cleaned up across XBond client restarts.",
-                "The paired XBond deploy script now installs the route helper scripts and verifies that the configured Cudy host does not route through xbond0."
+                "uLink route setup now reads the configured Cudy management URL and pins that local management host to a physical route before making xbond0 the default route.",
+                "Stale local management bypass routes are cleaned up across uLink client restarts.",
+                "The paired uLink deploy script now installs the route helper scripts and verifies that the configured Cudy host does not route through xbond0."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.44",
+            Version = "ulink-2026.06.44",
             Date = "2026-06-17",
             Summary = "Restored Analytics styling and unblocked Wifi loading.",
             Changes =
             [
-                "The Analytics page now uses the restored dashboard-era card, chart, legend, and refresh rhythm while still reading XBond snapshots only.",
+                "The Analytics page now uses the restored dashboard-era card, chart, legend, and refresh rhythm while still reading uLink snapshots only.",
                 "The Wifi page now renders immediately instead of waiting for a slow Cudy management login before first paint.",
                 "Cudy client refreshes now fail visibly after a bounded timeout and clear the warning once a refresh succeeds."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.43",
+            Version = "ulink-2026.06.43",
             Date = "2026-06-17",
             Summary = "Hardened network monitor sysfs reads.",
             Changes =
@@ -795,33 +807,33 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.42",
+            Version = "ulink-2026.06.42",
             Date = "2026-06-17",
-            Summary = "Restored the dashboard visual rhythm for XBond.",
+            Summary = "Restored the dashboard visual rhythm for uLink.",
             Changes =
             [
-                "The XBond dashboard now reuses the previous dashboard summary card, animated numbers, skeleton loading states, and adapter-list animation patterns.",
+                "The uLink dashboard now reuses the previous dashboard summary card, animated numbers, skeleton loading states, and adapter-list animation patterns.",
                 "Adapter cards return to the compact dashboard typography with signal bars, status dots, hover/tap popovers, and separate animated down/up/latency/loss values.",
-                "The dashboard remains XBond-only; no legacy tunnel runtime polling or controls were reintroduced."
+                "The dashboard remains uLink-only; no legacy tunnel runtime polling or controls were reintroduced."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.41",
+            Version = "ulink-2026.06.41",
             Date = "2026-06-17",
-            Summary = "Added adaptive XBond recovery reorder hold.",
+            Summary = "Added adaptive uLink recovery reorder hold.",
             Changes =
             [
-                "The XBond server now starts recovery ingress reordering at a lower hold and grows toward the reliability maximum only when reorder or repair pressure continues.",
+                "The uLink server now starts recovery ingress reordering at a lower hold and grows toward the reliability maximum only when reorder or repair pressure continues.",
                 "Recovery exit resets the server ingress reorder hold back to normal immediately.",
                 "Operator status now reports the adaptive hold range, calm sample count, and last hold adjustment reason."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.40",
+            Version = "ulink-2026.06.40",
             Date = "2026-06-17",
-            Summary = "Added XBond recovery packet repair.",
+            Summary = "Added uLink recovery packet repair.",
             Changes =
             [
                 "Recovery mode now requests targeted packet repair for reorder gaps before the normal timeout releases them.",
@@ -831,34 +843,34 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.39",
+            Version = "ulink-2026.06.39",
             Date = "2026-06-17",
-            Summary = "Reduced XBond polling and dataplane overhead.",
+            Summary = "Reduced uLink polling and dataplane overhead.",
             Changes =
             [
-                "Dashboard, analytics, health, and diagnostics now share a short-lived XBond snapshot cache instead of independently reading runtime status.",
+                "Dashboard, analytics, health, and diagnostics now share a short-lived uLink snapshot cache instead of independently reading runtime status.",
                 "Interface provider enrichment now caches slower modem gateway probes separately and probes gateways in parallel with shorter timeouts.",
-                "XBond reorder release timing now uses local monotonic receive deadlines instead of peer timestamps, and sender workers reuse per-path encode buffers.",
+                "uLink reorder release timing now uses local monotonic receive deadlines instead of peer timestamps, and sender workers reuse per-path encode buffers.",
                 "Recovery duplicate scheduling now prunes harmful backup paths while still keeping one usable backup duplicate when available."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.38",
+            Version = "ulink-2026.06.38",
             Date = "2026-06-16",
-            Summary = "Improved XBond recovery reorder behavior.",
+            Summary = "Improved uLink recovery reorder behavior.",
             Changes =
             [
-                "XBond clients now tell the server when recovery mode is active so the server can use a longer ingress reorder hold during degraded all-path recovery.",
+                "uLink clients now tell the server when recovery mode is active so the server can use a longer ingress reorder hold during degraded all-path recovery.",
                 "The server now writes operator-only ingress reorder counters to a status artifact for intermittent-path collapse captures.",
                 "Recovery schedule updates now keep duplicate path membership stable across minor score churn unless a path is hard-demoted."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.37",
+            Version = "ulink-2026.06.37",
             Date = "2026-06-16",
-            Summary = "Added XBond full-redundant recovery mode.",
+            Summary = "Added uLink full-redundant recovery mode.",
             Changes =
             [
                 "Balanced and Reliable policies now enter recovery when every usable live path is degraded.",
@@ -868,90 +880,90 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.36",
+            Version = "ulink-2026.06.36",
             Date = "2026-06-16",
-            Summary = "Aligned XBond route checks with the dashboard latency target.",
+            Summary = "Aligned uLink route checks with the dashboard latency target.",
             Changes =
             [
-                "XBond speed test route verification now checks the route to Google DNS at 8.8.8.8.",
+                "uLink speed test route verification now checks the route to Google DNS at 8.8.8.8.",
                 "Hidden operator scoped-route defaults also use 8.8.8.8 so app diagnostics no longer keep a stale Cloudflare target."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.35",
+            Version = "ulink-2026.06.35",
             Date = "2026-06-16",
-            Summary = "Tightened XBond operator tooling boundaries.",
+            Summary = "Tightened uLink operator tooling boundaries.",
             Changes =
             [
                 "Operator performance speed test deployments now have a paired deploy script for app, client, and server runtime changes.",
                 "Normal Settings no longer exposes the persisted Diagnostic policy or scoped route diagnostics.",
-                "Backend diagnostic overrides use an absolute XBond client path when running through sudo."
+                "Backend diagnostic overrides use an absolute uLink client path when running through sudo."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.34",
+            Version = "ulink-2026.06.34",
             Date = "2026-06-16",
             Summary = "Fixed operator diagnostic override permissions.",
             Changes =
             [
-                "Operator performance speed test diagnostics now call XBond override commands through non-interactive sudo when configured, matching the root-owned control socket.",
+                "Operator performance speed test diagnostics now call uLink override commands through non-interactive sudo when configured, matching the root-owned control socket.",
                 "This lets backend diagnostics use live overrides without making /run/xbond/client-control.sock world-writable.",
                 "The user-facing /xbond page remains limited to runtime status and the manual speed test."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.33",
+            Version = "ulink-2026.06.33",
             Date = "2026-06-16",
             Summary = "Added the Wifi route alias.",
             Changes =
             [
                 "The Wifi page now responds on both /xrouter and /wifi so operator route checks and navigation use the same user-facing name.",
-                "The manual XBond speed test remains the only user-facing diagnostic action on /xbond.",
-                "This is an app-only route fix; XBond runtime binaries remain on the matching deployed scheduler and diagnostics build."
+                "The manual uLink speed test remains the only user-facing diagnostic action on /xbond.",
+                "This is an app-only route fix; uLink runtime binaries remain on the matching deployed scheduler and diagnostics build."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.32",
+            Version = "ulink-2026.06.32",
             Date = "2026-06-16",
-            Summary = "Improved XBond performance diagnostics and scheduling.",
+            Summary = "Improved uLink performance diagnostics and scheduling.",
             Changes =
             [
-                "Operator performance speed test diagnostics can temporarily override the live XBond mode without rewriting config or restarting the tunnel.",
-                "The XBond scheduler now uses hysteresis so a better path must stay better before replacing the current anchor, while hard-demoted paths are replaced immediately.",
+                "Operator performance speed test diagnostics can temporarily override the live uLink mode without rewriting config or restarting the tunnel.",
+                "The uLink scheduler now uses hysteresis so a better path must stay better before replacing the current anchor, while hard-demoted paths are replaced immediately.",
                 "Client and server packet sends avoid an extra payload clone before encryption on the hot path."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.31",
+            Version = "ulink-2026.06.31",
             Date = "2026-06-15",
-            Summary = "Removed remaining XBond page controls.",
+            Summary = "Removed remaining uLink page controls.",
             Changes =
             [
-                "The XBond page is now read-only except for the manual tunnel speed test.",
+                "The uLink page is now read-only except for the manual tunnel speed test.",
                 "Service start, stop, boot, and deep diagnostic controls remain operator tooling instead of normal UI."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.30",
+            Version = "ulink-2026.06.30",
             Date = "2026-06-15",
-            Summary = "Simplified the XBond diagnostics page.",
+            Summary = "Simplified the uLink diagnostics page.",
             Changes =
             [
-                "The XBond page now exposes the manual tunnel speed test as the only user-facing diagnostic action.",
+                "The uLink page now exposes the manual tunnel speed test as the only user-facing diagnostic action.",
                 "Heartbeat, multi-path, bad-backup simulation, performance matrix, MTU sweep, and scoped-route controls remain operator tooling instead of normal UI."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.29",
+            Version = "ulink-2026.06.29",
             Date = "2026-06-15",
-            Summary = "Polished XBond native iperf diagnostic messages.",
+            Summary = "Polished uLink native iperf diagnostic messages.",
             Changes =
             [
                 "Native adapter iperf errors now show the concise iperf error instead of a raw JSON body.",
@@ -960,9 +972,9 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.28",
+            Version = "ulink-2026.06.28",
             Date = "2026-06-15",
-            Summary = "Fixed XBond performance matrix artifact and native endpoint reporting.",
+            Summary = "Fixed uLink performance matrix artifact and native endpoint reporting.",
             Changes =
             [
                 "Performance Matrix artifacts now fall back to a writable local diagnostics directory if /var/lib/xnetwork is not writable.",
@@ -972,179 +984,179 @@ public static class AppChangelog
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.27",
+            Version = "ulink-2026.06.27",
             Date = "2026-06-15",
-            Summary = "Added XBond performance matrix diagnostics.",
+            Summary = "Added uLink performance matrix diagnostics.",
             Changes =
             [
-                "XBond diagnostics can now run native adapter, anchor-only, duplicate, FEC, and public speed tests from one matrix.",
+                "uLink diagnostics can now run native adapter, anchor-only, duplicate, FEC, and public speed tests from one matrix.",
                 "Runtime status now exposes reorder counters, path demotion reasons, stale ACK age, send failures, duplicate usefulness, throughput collapse, and process memory.",
                 "Added an MTU sweep diagnostic with a recommended MTU/MSS result."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.26",
+            Version = "ulink-2026.06.26",
             Date = "2026-06-15",
             Summary = "Changed dashboard latency probe target.",
             Changes =
             [
                 "Dashboard connection health now probes Google DNS at 8.8.8.8 instead of Cloudflare DNS at 1.1.1.1.",
-                "XBond route diagnostics keep their separate target control unchanged."
+                "uLink route diagnostics keep their separate target control unchanged."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.25",
+            Version = "ulink-2026.06.25",
             Date = "2026-06-15",
-            Summary = "Added adaptive XBond redundancy and degraded-path diagnostics.",
+            Summary = "Added adaptive uLink redundancy and degraded-path diagnostics.",
             Changes =
             [
-                "XBond now supports redundancy policies so healthy bulk traffic can avoid unnecessary duplicate sends while small or lossy traffic stays protected.",
+                "uLink now supports redundancy policies so healthy bulk traffic can avoid unnecessary duplicate sends while small or lossy traffic stays protected.",
                 "Client and server tunnel receive paths now use a bounded reorder buffer before writing packets to the tunnel device.",
-                "Settings exposes XBond policy thresholds, and the XBond diagnostics page can run a bounded bad-backup simulation."
+                "Settings exposes uLink policy thresholds, and the uLink diagnostics page can run a bounded bad-backup simulation."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.24",
+            Version = "ulink-2026.06.24",
             Date = "2026-06-15",
-            Summary = "Fixed XBond return scheduling and duplicate receive visibility.",
+            Summary = "Fixed uLink return scheduling and duplicate receive visibility.",
             Changes =
             [
-                "XBond clients now send their live schedule to the server so return traffic follows the current anchor and backup paths.",
+                "uLink clients now send their live schedule to the server so return traffic follows the current anchor and backup paths.",
                 "Per-adapter Down values now include duplicate receive load, while the connection summary still shows useful tunnel download.",
                 "Path cards show duplicate downlink details when duplicate return traffic is present."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.23",
+            Version = "ulink-2026.06.23",
             Date = "2026-06-15",
             Summary = "Clarified dashboard path throughput labels.",
             Changes =
             [
-                "Dashboard adapter cards now label per-path XBond throughput as Down and Up.",
-                "Keeps the split XBond path throughput and dual server/public speed test from the prior revision."
+                "Dashboard adapter cards now label per-path uLink throughput as Down and Up.",
+                "Keeps the split uLink path throughput and dual server/public speed test from the prior revision."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.22",
+            Version = "ulink-2026.06.22",
             Date = "2026-06-15",
-            Summary = "Split XBond path throughput and added server speed testing.",
+            Summary = "Split uLink path throughput and added server speed testing.",
             Changes =
             [
                 "Dashboard and analytics now show per-path download and upload separately.",
-                "XBond runtime status now reports per-path inbound and outbound throughput.",
+                "uLink runtime status now reports per-path inbound and outbound throughput.",
                 "Tunnel Speed Test now runs Pi to Vultr iperf throughput before the public speedtest."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.21",
+            Version = "ulink-2026.06.21",
             Date = "2026-06-15",
-            Summary = "Added XBond tunnel speed testing.",
+            Summary = "Added uLink tunnel speed testing.",
             Changes =
             [
-                "Adds a manual Tunnel Speed Test button to the XBond page.",
+                "Adds a manual Tunnel Speed Test button to the uLink page.",
                 "Runs speedtest-cli through the current default route and reports download, upload, and ping.",
                 "Shows whether the default route was using xbond0 when the test started."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.20",
+            Version = "ulink-2026.06.20",
             Date = "2026-06-15",
-            Summary = "Made XBond heartbeat diagnostics route-aware.",
+            Summary = "Made uLink heartbeat diagnostics route-aware.",
             Changes =
             [
-                "The Heartbeat diagnostic now uses the same route-aware XBond multi-ping verifier as the multi-path diagnostic.",
-                "This avoids false packet-loss reports from the older single-socket ping diagnostic while the live XBond tunnel is running.",
-                "Heartbeat results still show ACK count and RTT for the selected live XBond path."
+                "The Heartbeat diagnostic now uses the same route-aware uLink multi-ping verifier as the multi-path diagnostic.",
+                "This avoids false packet-loss reports from the older single-socket ping diagnostic while the live uLink tunnel is running.",
+                "Heartbeat results still show ACK count and RTT for the selected live uLink path."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.19",
+            Version = "ulink-2026.06.19",
             Date = "2026-06-15",
-            Summary = "Added XBond adapter selection in Settings.",
+            Summary = "Added uLink adapter selection in Settings.",
             Changes =
             [
-                "Settings can now show connected ethernet and Wi-Fi adapters that are available for XBond.",
-                "Adapters can be added to or removed from the XBond tunnel without manually editing client.toml.",
-                "Saving adapter membership rewrites the XBond client config and restarts the XBond client service."
+                "Settings can now show connected ethernet and Wi-Fi adapters that are available for uLink.",
+                "Adapters can be added to or removed from the uLink tunnel without manually editing client.toml.",
+                "Saving adapter membership rewrites the uLink client config and restarts the uLink client service."
             ]
         },
         new ChangelogEntry
         {
-            Version = "xbond-2026.06.18",
+            Version = "ulink-2026.06.18",
             Date = "2026-06-15",
-            Summary = "XBond-only runtime branch.",
+            Summary = "uLink-only runtime branch.",
             Changes =
             [
-                "Removes the legacy tunnel runtime services and makes XBond the only traffic engine in this branch.",
-                "Dashboard and analytics now read XBond runtime status and path telemetry.",
-                "Renames tunnel controls and diagnostics to XBond active mode."
+                "Removes the legacy tunnel runtime services and makes uLink the only traffic engine in this branch.",
+                "Dashboard and analytics now read uLink runtime status and path telemetry.",
+                "Renames tunnel controls and diagnostics to uLink active mode."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.16",
             Date = "2026-06-14",
-            Summary = "Made the XBond tunnel bidirectional.",
+            Summary = "Made the uLink tunnel bidirectional.",
             Changes =
             [
-                "The XBond client now writes return packets from the server back into the client TUN.",
-                "The XBond server now reads its TUN and sends return packets back to the latest known client path peers.",
-                "This enables a real XBond TUN ping test without changing the router default route."
+                "The uLink client now writes return packets from the server back into the client TUN.",
+                "The uLink server now reads its TUN and sends return packets back to the latest known client path peers.",
+                "This enables a real uLink TUN ping test without changing the router default route."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.15",
             Date = "2026-06-14",
-            Summary = "Added XBond FEC recovery.",
+            Summary = "Added uLink FEC recovery.",
             Changes =
             [
-                "Added XOR parity FEC blocks for XBond AnchorFec traffic.",
-                "The XBond server can recover one missing packet from each two-packet parity block when the paired data packet and parity arrive.",
-                "Keeps FEC in the XBond tunnel path only; production routing is still disabled by default."
+                "Added XOR parity FEC blocks for uLink AnchorFec traffic.",
+                "The uLink server can recover one missing packet from each two-packet parity block when the paired data packet and parity arrive.",
+                "Keeps FEC in the uLink tunnel path only; production routing is still disabled by default."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.14",
             Date = "2026-06-14",
-            Summary = "Added XBond traffic-engine controls.",
+            Summary = "Added uLink traffic-engine controls.",
             Changes =
             [
-                "Added a persisted XBond traffic-engine mode for staged tunnel testing.",
-                "Added guarded XBond service controls that stay locked unless explicitly enabled in configuration.",
-                "Locks XBond primary mode behind a separate configuration flag so production routing cannot change by accident.",
-                "Changed multi-path XBond probes to use bind-device physical path isolation instead of the legacy tunnel bypass by default."
+                "Added a persisted uLink traffic-engine mode for staged tunnel testing.",
+                "Added guarded uLink service controls that stay locked unless explicitly enabled in configuration.",
+                "Locks uLink primary mode behind a separate configuration flag so production routing cannot change by accident.",
+                "Changed multi-path uLink probes to use bind-device physical path isolation instead of the legacy tunnel bypass by default."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.13",
             Date = "2026-06-14",
-            Summary = "Added XBond multi-path shadow probing.",
+            Summary = "Added uLink multi-path shadow probing.",
             Changes =
             [
-                "Added an XBond multi-path probe command that duplicates heartbeat packets across configured paths.",
-                "Shows first-arrival, ACK, packet loss, and route-verification details for each XBond path.",
-                "Added structured XBond server packet events for first arrivals and duplicate or late drops."
+                "Added an uLink multi-path probe command that duplicates heartbeat packets across configured paths.",
+                "Shows first-arrival, ACK, packet loss, and route-verification details for each uLink path.",
+                "Added structured uLink server packet events for first arrivals and duplicate or late drops."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.12",
             Date = "2026-06-14",
-            Summary = "Stabilized the XBond public lab test.",
+            Summary = "Stabilized the uLink public lab test.",
             Changes =
             [
-                "Added a short settle window after creating the temporary legacy tunnel bypass before sending XBond heartbeat packets.",
+                "Added a short settle window after creating the temporary legacy tunnel bypass before sending uLink heartbeat packets.",
                 "Keeps the public lab test cleanup behavior unchanged after the run completes."
             ]
         },
@@ -1152,36 +1164,36 @@ public static class AppChangelog
         {
             Version = "2026.06.11",
             Date = "2026-06-14",
-            Summary = "Added XBond public heartbeat lab controls.",
+            Summary = "Added uLink public heartbeat lab controls.",
             Changes =
             [
-                "Added an XBond Lab public test button that temporarily bypasses UDP 8444 through legacy tunnel.",
-                "Shows XBond heartbeat packet loss, RTT, client bind address, and bypass cleanup status in the dashboard.",
-                "Keeps XBond in shadow-test mode without routing production traffic."
+                "Added an uLink Lab public test button that temporarily bypasses UDP 8444 through legacy tunnel.",
+                "Shows uLink heartbeat packet loss, RTT, client bind address, and bypass cleanup status in the dashboard.",
+                "Keeps uLink in shadow-test mode without routing production traffic."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.10",
             Date = "2026-06-14",
-            Summary = "Added disabled XBond live-test deployment support.",
+            Summary = "Added disabled uLink live-test deployment support.",
             Changes =
             [
-                "Added an XBond client heartbeat ping command for sealed UDP server/client smoke tests.",
-                "Fixed XBond duplicate detection so separate sessions can reuse packet sequence numbers safely.",
-                "Prepared XBond for disabled deployment on the router and private server without routing production traffic."
+                "Added an uLink client heartbeat ping command for sealed UDP server/client smoke tests.",
+                "Fixed uLink duplicate detection so separate sessions can reuse packet sequence numbers safely.",
+                "Prepared uLink for disabled deployment on the router and private server without routing production traffic."
             ]
         },
         new ChangelogEntry
         {
             Version = "2026.06.9",
             Date = "2026-06-13",
-            Summary = "Added XBond prototype planning and observability.",
+            Summary = "Added uLink prototype planning and observability.",
             Changes =
             [
-                "Saved the XBond Rust dataplane and Blazor control-plane implementation plan in the repository.",
-                "Added a Rust XBond workspace with protocol framing, duplicate detection, path-health scoring, and scheduler foundations.",
-                "Added a read-only XBond page in XNetwork for prototype status, anchor path, packet counters, and path roles."
+                "Saved the uLink Rust dataplane and Blazor control-plane implementation plan in the repository.",
+                "Added a Rust uLink workspace with protocol framing, duplicate detection, path-health scoring, and scheduler foundations.",
+                "Added a read-only uLink page in XNetwork for prototype status, anchor path, packet counters, and path roles."
             ]
         },
         new ChangelogEntry

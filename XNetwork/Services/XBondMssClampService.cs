@@ -30,8 +30,8 @@ public sealed class XBondMssClampService(
             MssValue = settings.MssClampValue,
             TunnelDevice = settings.TunnelDevice,
             Message = check.ExitCode == 0
-                ? "MSS clamp is enabled for XBond."
-                : "MSS clamp is disabled for XBond."
+                ? "MSS clamp is enabled for uLink."
+                : "MSS clamp is disabled for uLink."
         };
     }
 
@@ -39,12 +39,12 @@ public sealed class XBondMssClampService(
     {
         if (!settings.AllowServiceControl)
         {
-            return Error("XBond MSS clamp changes are locked by configuration.");
+            return Error("uLink MSS clamp changes are locked by configuration.");
         }
 
         if (!await _lock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return Error("Another XBond MSS clamp change is already running.");
+            return Error("Another uLink MSS clamp change is already running.");
         }
 
         try
@@ -65,7 +65,7 @@ public sealed class XBondMssClampService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to enable XBond MSS clamp");
+            logger.LogWarning(ex, "Failed to enable uLink MSS clamp");
             return Error(ex.Message);
         }
         finally
@@ -78,12 +78,12 @@ public sealed class XBondMssClampService(
     {
         if (!settings.AllowServiceControl)
         {
-            return Error("XBond MSS clamp changes are locked by configuration.");
+            return Error("uLink MSS clamp changes are locked by configuration.");
         }
 
         if (!await _lock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return Error("Another XBond MSS clamp change is already running.");
+            return Error("Another uLink MSS clamp change is already running.");
         }
 
         try
@@ -101,7 +101,7 @@ public sealed class XBondMssClampService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to disable XBond MSS clamp");
+            logger.LogWarning(ex, "Failed to disable uLink MSS clamp");
             return Error(ex.Message);
         }
         finally
@@ -173,7 +173,7 @@ public sealed class XBondMssClampService(
         IsEnabled = false,
         MssValue = settings.MssClampValue,
         TunnelDevice = settings.TunnelDevice,
-        Message = "XBond MSS clamp command failed.",
+        Message = "uLink MSS clamp command failed.",
         Error = error
     };
 

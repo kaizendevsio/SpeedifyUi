@@ -86,7 +86,7 @@ public class XBondStatus
     public XBondRecoveryStatus Recovery { get; set; } = new();
 
     [JsonPropertyName("message")]
-    public string Message { get; set; } = "XBond status is unavailable";
+    public string Message { get; set; } = "uLink status is unavailable";
 
     [JsonIgnore]
     public string? Error { get; set; }
@@ -128,7 +128,7 @@ public class XBondTunnelStatus
     public int? Mtu { get; set; }
 
     [JsonPropertyName("message")]
-    public string Message { get; set; } = "XBond tunnel is not reporting runtime status.";
+    public string Message { get; set; } = "uLink tunnel is not reporting runtime status.";
 
     [JsonPropertyName("rtt_ms")]
     public double? RttMs { get; set; }

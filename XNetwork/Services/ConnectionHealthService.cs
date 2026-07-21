@@ -42,7 +42,7 @@ public class ConnectionHealthService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        logger.LogInformation("ConnectionHealthService starting with XBond path health");
+        logger.LogInformation("ConnectionHealthService starting with uLink path health");
 
         var pingTask = RunPingLoopAsync(stoppingToken);
         var xbondTask = RunXBondPathLoopAsync(stoppingToken);
@@ -97,7 +97,7 @@ public class ConnectionHealthService(
             }
             catch (Exception ex)
             {
-                logger.LogDebug(ex, "Error in XBond path health loop");
+                logger.LogDebug(ex, "Error in uLink path health loop");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken).ConfigureAwait(false);

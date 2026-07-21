@@ -23,7 +23,7 @@ public sealed class XBondClientConfigService(
     {
         if (!settings.AllowServiceControl)
         {
-            return ErrorStatus("XBond config changes are locked by configuration.");
+            return ErrorStatus("uLink config changes are locked by configuration.");
         }
 
         await WriteConfigAsync(config, cancellationToken).ConfigureAwait(false);
@@ -34,7 +34,7 @@ public sealed class XBondClientConfigService(
         if (serviceStatus.HasError)
         {
             status.Error = serviceStatus.Error;
-            status.Message = "XBond config was saved, but restarting the tunnel failed.";
+            status.Message = "uLink config was saved, but restarting the tunnel failed.";
         }
 
         return status;
@@ -50,12 +50,12 @@ public sealed class XBondClientConfigService(
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            logger.LogWarning(ex, "Unable to read XBond client adapter config");
+            logger.LogWarning(ex, "Unable to read uLink client adapter config");
             return new XBondAdapterConfigStatus
             {
                 CanEdit = false,
                 Error = ex.Message,
-                Message = "XBond adapter config is unavailable."
+                Message = "uLink adapter config is unavailable."
             };
         }
     }
@@ -67,7 +67,7 @@ public sealed class XBondClientConfigService(
     {
         if (!settings.AllowServiceControl)
         {
-            return ErrorStatus("XBond adapter changes are locked by configuration.");
+            return ErrorStatus("uLink adapter changes are locked by configuration.");
         }
 
         if (!IsSafeInterfaceName(interfaceName))
@@ -77,7 +77,7 @@ public sealed class XBondClientConfigService(
 
         if (!await _operationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorStatus("Another XBond adapter change is already running.");
+            return ErrorStatus("Another uLink adapter change is already running.");
         }
 
         try
@@ -95,7 +95,7 @@ public sealed class XBondClientConfigService(
             {
                 if (!candidates.TryGetValue(interfaceName, out var metadata))
                 {
-                    return BuildStatus(config, interfaces, "Only connected ethernet or Wi-Fi adapters can be added to XBond.");
+                    return BuildStatus(config, interfaces, "Only connected ethernet or Wi-Fi adapters can be added to uLink.");
                 }
 
                 if (existing is null)
@@ -118,12 +118,12 @@ public sealed class XBondClientConfigService(
             {
                 if (existing is null)
                 {
-                    return BuildStatus(config, interfaces, "Adapter is already outside XBond.");
+                    return BuildStatus(config, interfaces, "Adapter is already outside uLink.");
                 }
 
                 if (config.Paths.Count(path => path.Enabled && !string.Equals(path.InterfaceName, interfaceName, StringComparison.OrdinalIgnoreCase)) == 0)
                 {
-                    return BuildStatus(config, interfaces, "Keep at least one XBond adapter configured.");
+                    return BuildStatus(config, interfaces, "Keep at least one uLink adapter configured.");
                 }
 
                 config.Paths.Remove(existing);
@@ -133,18 +133,18 @@ public sealed class XBondClientConfigService(
             var serviceStatus = await trafficEngineService.RestartAsync(cancellationToken).ConfigureAwait(false);
             var refreshed = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
             var refreshedInterfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
-            var status = BuildStatus(refreshed, refreshedInterfaces, enabled ? "Adapter added to XBond." : "Adapter removed from XBond.");
+            var status = BuildStatus(refreshed, refreshedInterfaces, enabled ? "Adapter added to uLink." : "Adapter removed from uLink.");
             if (serviceStatus.HasError)
             {
                 status.Error = serviceStatus.Error;
-                status.Message = "XBond config was saved, but restarting the tunnel failed.";
+                status.Message = "uLink config was saved, but restarting the tunnel failed.";
             }
 
             return status;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException)
         {
-            logger.LogWarning(ex, "Failed to change XBond adapter membership for {Interface}", interfaceName);
+            logger.LogWarning(ex, "Failed to change uLink adapter membership for {Interface}", interfaceName);
             return ErrorStatus(ex.Message);
         }
         finally
@@ -163,12 +163,12 @@ public sealed class XBondClientConfigService(
     {
         if (!settings.AllowServiceControl)
         {
-            return ErrorStatus("XBond policy changes are locked by configuration.");
+            return ErrorStatus("uLink policy changes are locked by configuration.");
         }
 
         if (!await _operationLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return ErrorStatus("Another XBond config change is already running.");
+            return ErrorStatus("Another uLink config change is already running.");
         }
 
         try
@@ -184,18 +184,18 @@ public sealed class XBondClientConfigService(
             var serviceStatus = await trafficEngineService.RestartAsync(cancellationToken).ConfigureAwait(false);
             var refreshed = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
             var refreshedInterfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
-            var status = BuildStatus(refreshed, refreshedInterfaces, "XBond policy saved.");
+            var status = BuildStatus(refreshed, refreshedInterfaces, "uLink policy saved.");
             if (serviceStatus.HasError)
             {
                 status.Error = serviceStatus.Error;
-                status.Message = "XBond policy was saved, but restarting the tunnel failed.";
+                status.Message = "uLink policy was saved, but restarting the tunnel failed.";
             }
 
             return status;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException)
         {
-            logger.LogWarning(ex, "Failed to change XBond policy");
+            logger.LogWarning(ex, "Failed to change uLink policy");
             return ErrorStatus(ex.Message);
         }
         finally
@@ -255,7 +255,7 @@ public sealed class XBondClientConfigService(
             cancellationToken).ConfigureAwait(false);
         if (chmod.ExitCode != 0)
         {
-            logger.LogDebug("Unable to chmod XBond client config {Path}: {Error}", path, chmod.Error.Trim());
+            logger.LogDebug("Unable to chmod uLink client config {Path}: {Error}", path, chmod.Error.Trim());
         }
     }
 
@@ -300,7 +300,7 @@ public sealed class XBondClientConfigService(
                 Detail = metadata is null
                     ? "Configured path is not currently visible to NetworkManager."
                     : path.Enabled
-                        ? "Included in XBond."
+                        ? "Included in uLink."
                         : "Configured but disabled."
             };
         }
@@ -328,7 +328,7 @@ public sealed class XBondClientConfigService(
         return new XBondAdapterConfigStatus
         {
             CanEdit = settings.AllowServiceControl && OperatingSystem.IsLinux(),
-            Message = message ?? "Choose which connected adapters XBond should use.",
+            Message = message ?? "Choose which connected adapters uLink should use.",
             Mode = config.Mode,
             RedundancyPolicy = config.RedundancyPolicy,
             MaxActiveBackups = config.MaxActiveBackups,

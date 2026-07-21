@@ -25,7 +25,7 @@ public partial class XBondScopedRouteService(
 
         if (!OperatingSystem.IsLinux())
         {
-            status.Error = "Scoped XBond routes are only available on Linux.";
+            status.Error = "Scoped uLink routes are only available on Linux.";
             status.Message = status.Error;
             return status;
         }
@@ -65,14 +65,14 @@ public partial class XBondScopedRouteService(
 
         if (!OperatingSystem.IsLinux())
         {
-            status.Error = "Scoped XBond routes are only available on Linux.";
+            status.Error = "Scoped uLink routes are only available on Linux.";
             status.Message = status.Error;
             return status;
         }
 
         if (!await _routeLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            status.Error = "Another scoped XBond route operation is already running.";
+            status.Error = "Another scoped uLink route operation is already running.";
             status.Message = status.Error;
             return status;
         }
@@ -85,7 +85,7 @@ public partial class XBondScopedRouteService(
                 status.Error = string.IsNullOrWhiteSpace(result.Output)
                     ? $"ip route replace exited with code {result.ExitCode}."
                     : result.Output;
-                status.Message = "Unable to apply scoped XBond route.";
+                status.Message = "Unable to apply scoped uLink route.";
                 return status;
             }
 
@@ -93,9 +93,9 @@ public partial class XBondScopedRouteService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to apply XBond scoped route to {Target}", normalizedTarget);
+            logger.LogWarning(ex, "Failed to apply uLink scoped route to {Target}", normalizedTarget);
             status.Error = ex.Message;
-            status.Message = "Unable to apply scoped XBond route.";
+            status.Message = "Unable to apply scoped uLink route.";
             return status;
         }
         finally
@@ -115,14 +115,14 @@ public partial class XBondScopedRouteService(
 
         if (!OperatingSystem.IsLinux())
         {
-            status.Error = "Scoped XBond routes are only available on Linux.";
+            status.Error = "Scoped uLink routes are only available on Linux.";
             status.Message = status.Error;
             return status;
         }
 
         if (!await _routeLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            status.Error = "Another scoped XBond route operation is already running.";
+            status.Error = "Another scoped uLink route operation is already running.";
             status.Message = status.Error;
             return status;
         }
@@ -134,9 +134,9 @@ public partial class XBondScopedRouteService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to clear XBond scoped route to {Target}", normalizedTarget);
+            logger.LogWarning(ex, "Failed to clear uLink scoped route to {Target}", normalizedTarget);
             status.Error = ex.Message;
-            status.Message = "Unable to clear scoped XBond route.";
+            status.Message = "Unable to clear scoped uLink route.";
             return status;
         }
         finally
@@ -170,14 +170,14 @@ public partial class XBondScopedRouteService(
 
         if (!OperatingSystem.IsLinux())
         {
-            result.Error = "Scoped XBond route tests are only available on Linux.";
+            result.Error = "Scoped uLink route tests are only available on Linux.";
             result.Message = result.Error;
             return result;
         }
 
         if (!await _routeLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            result.Error = "Another scoped XBond route operation is already running.";
+            result.Error = "Another scoped uLink route operation is already running.";
             result.Message = result.Error;
             return result;
         }
@@ -190,7 +190,7 @@ public partial class XBondScopedRouteService(
                 result.Error = string.IsNullOrWhiteSpace(routeResult.Output)
                     ? $"ip route replace exited with code {routeResult.ExitCode}."
                     : routeResult.Output;
-                result.Message = "Unable to apply scoped XBond route for the test.";
+                result.Message = "Unable to apply scoped uLink route for the test.";
                 return result;
             }
 
@@ -213,8 +213,8 @@ public partial class XBondScopedRouteService(
             result.RouteOutput = (await GetStatusAsync(normalizedTarget, cancellationToken).ConfigureAwait(false)).RouteOutput;
             result.RouteUsesXBond = result.RouteOutput.Contains($"dev {settings.TunnelDevice}", StringComparison.Ordinal);
             result.Message = result.Succeeded
-                ? "Scoped XBond route test passed and the temporary route was removed."
-                : "Scoped XBond route test completed with loss or errors; the temporary route was removed.";
+                ? "Scoped uLink route test passed and the temporary route was removed."
+                : "Scoped uLink route test completed with loss or errors; the temporary route was removed.";
 
             if (ping.ExitCode != 0 && result.Sent == 0)
             {
@@ -225,9 +225,9 @@ public partial class XBondScopedRouteService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to run XBond scoped route test to {Target}", normalizedTarget);
+            logger.LogWarning(ex, "Failed to run uLink scoped route test to {Target}", normalizedTarget);
             result.Error = ex.Message;
-            result.Message = "Scoped XBond route test failed; cleanup was attempted.";
+            result.Message = "Scoped uLink route test failed; cleanup was attempted.";
         }
         finally
         {
@@ -239,7 +239,7 @@ public partial class XBondScopedRouteService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Failed to remove temporary XBond scoped route to {Target}", normalizedTarget);
+                logger.LogWarning(ex, "Failed to remove temporary uLink scoped route to {Target}", normalizedTarget);
                 result.RouteRemoved = false;
             }
 
@@ -254,7 +254,7 @@ public partial class XBondScopedRouteService(
         var trimmed = target.Trim();
         if (trimmed.Contains('/'))
         {
-            throw new ArgumentException("Only a single IPv4 address is allowed for scoped XBond routes.");
+            throw new ArgumentException("Only a single IPv4 address is allowed for scoped uLink routes.");
         }
 
         if (!IPAddress.TryParse(trimmed, out var address) ||
