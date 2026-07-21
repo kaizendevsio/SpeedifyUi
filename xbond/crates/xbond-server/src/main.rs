@@ -31,7 +31,7 @@ const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_INBOUND_QUEUE_CAPACITY: usize = 4096;
 const CONTROL_QUEUE_CAPACITY: usize = 256;
 const HEARTBEAT_ACK_QUEUE_CAPACITY: usize = 256;
-const HEARTBEAT_ACK_BACKPRESSURE_TIMEOUT: Duration = Duration::from_millis(5);
+const HEARTBEAT_ACK_RETRY_SEND_TIMEOUT: Duration = Duration::from_millis(10);
 const SEND_REPORT_QUEUE_CAPACITY: usize = 256;
 const TUN_WORKER_EXIT_QUEUE_CAPACITY: usize = 4;
 const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
@@ -376,57 +376,94 @@ struct ControlSendWork {
 
 #[derive(Debug, Default)]
 struct HeartbeatAckMetrics {
-    enqueued: AtomicU64,
-    sent: AtomicU64,
-    backpressure: AtomicU64,
-    dropped: AtomicU64,
-    failures: AtomicU64,
+    immediate_sent: AtomicU64,
+    retry_queued: AtomicU64,
+    retry_sent: AtomicU64,
+    would_block: AtomicU64,
+    retry_overflow: AtomicU64,
+    retry_timeouts: AtomicU64,
+    immediate_failures: AtomicU64,
+    retry_failures: AtomicU64,
     depth: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
 struct HeartbeatAckSender {
-    tx: mpsc::Sender<ControlSendWork>,
+    socket: Arc<UdpSocket>,
+    retry_tx: mpsc::Sender<ControlSendWork>,
     metrics: Arc<HeartbeatAckMetrics>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeartbeatAckRetryResult {
+    Sent,
+    Timeout,
+    Failed,
+}
+
+async fn await_heartbeat_ack_retry<F>(
+    send: F,
+    expected_len: usize,
+    timeout: Duration,
+) -> HeartbeatAckRetryResult
+where
+    F: std::future::Future<Output = std::io::Result<usize>>,
+{
+    match time::timeout(timeout, send).await {
+        Ok(Ok(sent)) if sent == expected_len => HeartbeatAckRetryResult::Sent,
+        Ok(Ok(_)) | Ok(Err(_)) => HeartbeatAckRetryResult::Failed,
+        Err(_) => HeartbeatAckRetryResult::Timeout,
+    }
+}
+
 impl HeartbeatAckSender {
-    async fn enqueue(&self, work: ControlSendWork) -> bool {
-        self.metrics.depth.fetch_add(1, Ordering::Relaxed);
-        match self.tx.try_send(work) {
-            Ok(()) => {
-                self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+    fn dispatch(&self, work: ControlSendWork) -> bool {
+        match self.socket.try_send_to(&work.encoded, work.peer) {
+            Ok(sent) if sent == work.encoded.len() => {
+                self.metrics.immediate_sent.fetch_add(1, Ordering::Relaxed);
                 true
             }
-            Err(mpsc::error::TrySendError::Full(work)) => {
-                self.metrics.backpressure.fetch_add(1, Ordering::Relaxed);
-                match time::timeout(HEARTBEAT_ACK_BACKPRESSURE_TIMEOUT, self.tx.send(work)).await {
-                    Ok(Ok(())) => {
-                        self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
-                        true
-                    }
-                    Ok(Err(_)) => {
-                        self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
-                        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
-                        false
-                    }
-                    Err(_) => {
-                        self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
-                        self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
-                        false
-                    }
-                }
+            Ok(_) => {
+                self.metrics
+                    .immediate_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                false
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
-                self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+            Err(error) if error.kind() == ErrorKind::WouldBlock => self.enqueue_retry(work),
+            Err(_) => {
+                self.metrics
+                    .immediate_failures
+                    .fetch_add(1, Ordering::Relaxed);
                 false
             }
         }
     }
 
-    fn record_failure(&self) {
-        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+    fn enqueue_retry(&self, work: ControlSendWork) -> bool {
+        self.metrics.would_block.fetch_add(1, Ordering::Relaxed);
+        self.metrics.depth.fetch_add(1, Ordering::Relaxed);
+        match self.retry_tx.try_send(work) {
+            Ok(()) => {
+                self.metrics.retry_queued.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
+                self.metrics.retry_overflow.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
+                self.metrics.retry_failures.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
+    fn record_encode_failure(&self) {
+        self.metrics
+            .immediate_failures
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -857,6 +894,14 @@ struct ServerControlPlaneStatus {
     heartbeat_ack_drops: u64,
     heartbeat_ack_failures: u64,
     heartbeat_ack_queue_depth: u64,
+    heartbeat_ack_immediate_sent: u64,
+    heartbeat_ack_retry_queued: u64,
+    heartbeat_ack_retry_sent: u64,
+    heartbeat_ack_would_block: u64,
+    heartbeat_ack_retry_overflow: u64,
+    heartbeat_ack_retry_timeouts: u64,
+    heartbeat_ack_immediate_failures: u64,
+    heartbeat_ack_retry_failures: u64,
     tun_write_queue_depth: u64,
     tun_write_queue_peak_depth: u64,
     tun_write_queue_capacity: u64,
@@ -1349,25 +1394,44 @@ fn spawn_control_sender(
 }
 
 fn spawn_heartbeat_ack_sender(socket: Arc<UdpSocket>, json_events: bool) -> HeartbeatAckSender {
-    let (tx, mut rx) = mpsc::channel::<ControlSendWork>(HEARTBEAT_ACK_QUEUE_CAPACITY);
+    let (retry_tx, mut retry_rx) = mpsc::channel::<ControlSendWork>(HEARTBEAT_ACK_QUEUE_CAPACITY);
     let metrics = Arc::new(HeartbeatAckMetrics::default());
     let task_metrics = metrics.clone();
+    let task_socket = socket.clone();
     tokio::spawn(async move {
-        while let Some(work) = rx.recv().await {
+        while let Some(work) = retry_rx.recv().await {
             task_metrics.depth.fetch_sub(1, Ordering::Relaxed);
-            match socket.send_to(&work.encoded, work.peer).await {
-                Ok(_) => {
-                    task_metrics.sent.fetch_add(1, Ordering::Relaxed);
+            match await_heartbeat_ack_retry(
+                task_socket.send_to(&work.encoded, work.peer),
+                work.encoded.len(),
+                HEARTBEAT_ACK_RETRY_SEND_TIMEOUT,
+            )
+            .await
+            {
+                HeartbeatAckRetryResult::Sent => {
+                    task_metrics.retry_sent.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(error) => {
-                    task_metrics.failures.fetch_add(1, Ordering::Relaxed);
+                HeartbeatAckRetryResult::Failed => {
+                    task_metrics.retry_failures.fetch_add(1, Ordering::Relaxed);
                     if json_events {
                         println!(
                             "{}",
                             serde_json::json!({
                                 "event": "heartbeat-ack-send-failed",
                                 "peer": work.peer.to_string(),
-                                "error": error.to_string(),
+                            })
+                        );
+                    }
+                }
+                HeartbeatAckRetryResult::Timeout => {
+                    task_metrics.retry_timeouts.fetch_add(1, Ordering::Relaxed);
+                    if json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "heartbeat-ack-send-timeout",
+                                "peer": work.peer.to_string(),
+                                "timeout_ms": HEARTBEAT_ACK_RETRY_SEND_TIMEOUT.as_millis(),
                             })
                         );
                     }
@@ -1375,22 +1439,72 @@ fn spawn_heartbeat_ack_sender(socket: Arc<UdpSocket>, json_events: bool) -> Hear
             }
         }
     });
-    HeartbeatAckSender { tx, metrics }
+
+    if json_events {
+        let report_metrics = metrics.clone();
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            let mut last_overflow = 0;
+            let mut last_immediate_failures = 0;
+            loop {
+                interval.tick().await;
+                let overflow = report_metrics.retry_overflow.load(Ordering::Relaxed);
+                let immediate_failures = report_metrics.immediate_failures.load(Ordering::Relaxed);
+                if overflow != last_overflow || immediate_failures != last_immediate_failures {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "heartbeat-ack-delivery-pressure",
+                            "retry_overflow_total": overflow,
+                            "retry_overflow_delta": overflow.saturating_sub(last_overflow),
+                            "immediate_failures_total": immediate_failures,
+                            "immediate_failures_delta": immediate_failures.saturating_sub(last_immediate_failures),
+                            "retry_queue_depth": report_metrics.depth.load(Ordering::Relaxed),
+                        })
+                    );
+                    last_overflow = overflow;
+                    last_immediate_failures = immediate_failures;
+                }
+            }
+        });
+    }
+
+    HeartbeatAckSender {
+        socket,
+        retry_tx,
+        metrics,
+    }
 }
 
 fn sync_heartbeat_ack_metrics(
     sender: &HeartbeatAckSender,
     control_plane: &mut ServerControlPlaneStatus,
 ) {
-    control_plane.heartbeat_acks_queued = sender.metrics.enqueued.load(Ordering::Relaxed);
-    control_plane.heartbeat_acks_sent = sender.metrics.sent.load(Ordering::Relaxed);
-    control_plane.heartbeat_ack_backpressure = sender.metrics.backpressure.load(Ordering::Relaxed);
-    control_plane.heartbeat_ack_drops = sender.metrics.dropped.load(Ordering::Relaxed);
-    control_plane.heartbeat_ack_failures = sender.metrics.failures.load(Ordering::Relaxed);
+    let immediate_sent = sender.metrics.immediate_sent.load(Ordering::Relaxed);
+    let retry_sent = sender.metrics.retry_sent.load(Ordering::Relaxed);
+    let immediate_failures = sender.metrics.immediate_failures.load(Ordering::Relaxed);
+    let retry_failures = sender.metrics.retry_failures.load(Ordering::Relaxed);
+    let retry_timeouts = sender.metrics.retry_timeouts.load(Ordering::Relaxed);
+    control_plane.heartbeat_acks_queued = sender.metrics.retry_queued.load(Ordering::Relaxed);
+    control_plane.heartbeat_acks_sent = immediate_sent.saturating_add(retry_sent);
+    control_plane.heartbeat_ack_backpressure = sender.metrics.would_block.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_drops = sender.metrics.retry_overflow.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_failures = immediate_failures
+        .saturating_add(retry_failures)
+        .saturating_add(retry_timeouts);
     control_plane.heartbeat_ack_queue_depth = sender.metrics.depth.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_immediate_sent = immediate_sent;
+    control_plane.heartbeat_ack_retry_queued = sender.metrics.retry_queued.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_retry_sent = retry_sent;
+    control_plane.heartbeat_ack_would_block = sender.metrics.would_block.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_retry_overflow =
+        sender.metrics.retry_overflow.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_retry_timeouts = retry_timeouts;
+    control_plane.heartbeat_ack_immediate_failures = immediate_failures;
+    control_plane.heartbeat_ack_retry_failures = retry_failures;
 }
 
-async fn acknowledge_authenticated_heartbeat(
+fn acknowledge_authenticated_heartbeat(
     header: &XBondHeader,
     key: &XBondKey,
     peer: SocketAddr,
@@ -1399,9 +1513,9 @@ async fn acknowledge_authenticated_heartbeat(
 ) -> bool {
     let reply = build_ack_frame_from_header(header);
     match reply.encode_sealed(key) {
-        Ok(encoded) => sender.enqueue(ControlSendWork { encoded, peer }).await,
+        Ok(encoded) => sender.dispatch(ControlSendWork { encoded, peer }),
         Err(error) => {
-            sender.record_failure();
+            sender.record_encode_failure();
             if json_events {
                 println!(
                     "{}",
@@ -2163,8 +2277,7 @@ async fn main() -> Result<()> {
                     peer,
                     &recv_heartbeat_ack_sender,
                     recv_json_events,
-                )
-                .await;
+                );
             }
             let duplicate_class = pre_admission_duplicate_class(header.kind);
             if duplicate_class.is_some_and(|class| {
@@ -5195,9 +5308,13 @@ mod tests {
 
         for sequence in [10, 11] {
             let header = XBondHeader::new(PacketKind::Heartbeat, 4, sequence, now_micros(), 2);
-            assert!(
-                acknowledge_authenticated_heartbeat(&header, &key, peer, &ack_sender, false,).await
-            );
+            assert!(acknowledge_authenticated_heartbeat(
+                &header,
+                &key,
+                peer,
+                &ack_sender,
+                false,
+            ));
             dispatch_inbound_frame(
                 &critical,
                 &schedules,
@@ -5227,8 +5344,13 @@ mod tests {
 
         assert_eq!(received_sequences, vec![10, 11]);
         assert_eq!(coalesced.load(Ordering::Relaxed), 1);
-        assert_eq!(ack_sender.metrics.enqueued.load(Ordering::Relaxed), 2);
-        assert_eq!(ack_sender.metrics.sent.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            ack_sender.metrics.immediate_sent.load(Ordering::Relaxed)
+                + ack_sender.metrics.retry_sent.load(Ordering::Relaxed),
+            2
+        );
+        assert_eq!(ack_sender.metrics.retry_overflow.load(Ordering::Relaxed), 0);
+        assert_eq!(ack_sender.metrics.depth.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -5243,9 +5365,13 @@ mod tests {
         for (path_id, sequence) in [(3, sequences[0]), (1, sequences[1])] {
             let header =
                 XBondHeader::new(PacketKind::Heartbeat, 9, sequence, now_micros(), path_id);
-            assert!(
-                acknowledge_authenticated_heartbeat(&header, &key, peer, &ack_sender, false,).await
-            );
+            assert!(acknowledge_authenticated_heartbeat(
+                &header,
+                &key,
+                peer,
+                &ack_sender,
+                false,
+            ));
         }
 
         let mut observed = Vec::new();
@@ -5276,9 +5402,13 @@ mod tests {
         let ack_sender = spawn_heartbeat_ack_sender(send_socket, false);
         let header = XBondHeader::new(PacketKind::Heartbeat, 5, 7, now_micros(), 1);
 
-        assert!(
-            acknowledge_authenticated_heartbeat(&header, &key, peer, &ack_sender, false,).await
-        );
+        assert!(acknowledge_authenticated_heartbeat(
+            &header,
+            &key,
+            peer,
+            &ack_sender,
+            false,
+        ));
         let mut buffer = [0u8; 512];
         let received = time::timeout(
             Duration::from_millis(100),
@@ -5289,11 +5419,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn heartbeat_ack_queue_accounts_for_backpressure_drop_and_failure() {
-        let (tx, rx) = mpsc::channel(1);
+    async fn heartbeat_ack_retry_lane_is_nonblocking_and_accounts_for_saturation() {
+        let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let (retry_tx, _retry_rx) = mpsc::channel(1);
         let metrics = Arc::new(HeartbeatAckMetrics::default());
         let sender = HeartbeatAckSender {
-            tx,
+            socket,
+            retry_tx,
             metrics: metrics.clone(),
         };
         let work = || ControlSendWork {
@@ -5301,23 +5433,67 @@ mod tests {
             peer: "127.0.0.1:9".parse().unwrap(),
         };
 
-        assert!(sender.enqueue(work()).await);
-        assert!(!sender.enqueue(work()).await);
-        assert_eq!(metrics.backpressure.load(Ordering::Relaxed), 1);
-        assert_eq!(metrics.dropped.load(Ordering::Relaxed), 1);
+        let started = Instant::now();
+        assert!(sender.enqueue_retry(work()));
+        assert!(!sender.enqueue_retry(work()));
+        assert!(started.elapsed() < Duration::from_millis(5));
+        assert_eq!(metrics.would_block.load(Ordering::Relaxed), 2);
+        assert_eq!(metrics.retry_queued.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.retry_overflow.load(Ordering::Relaxed), 1);
         assert_eq!(metrics.depth.load(Ordering::Relaxed), 1);
+    }
 
-        drop(rx);
-        let (closed_tx, closed_rx) = mpsc::channel(1);
-        drop(closed_rx);
-        let closed_metrics = Arc::new(HeartbeatAckMetrics::default());
-        let closed_sender = HeartbeatAckSender {
-            tx: closed_tx,
-            metrics: closed_metrics.clone(),
-        };
-        assert!(!closed_sender.enqueue(work()).await);
-        assert_eq!(closed_metrics.failures.load(Ordering::Relaxed), 1);
-        assert_eq!(closed_metrics.depth.load(Ordering::Relaxed), 0);
+    #[tokio::test]
+    async fn heartbeat_ack_retry_send_is_bounded_by_timeout() {
+        let result = await_heartbeat_ack_retry(
+            std::future::pending::<std::io::Result<usize>>(),
+            1,
+            Duration::from_millis(2),
+        )
+        .await;
+        assert_eq!(result, HeartbeatAckRetryResult::Timeout);
+    }
+
+    #[tokio::test]
+    async fn normal_heartbeat_rate_uses_immediate_send_without_retry_saturation() {
+        let key = XBondKey::from_passphrase("heartbeat-rate-test");
+        let send_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receive_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = receive_socket.local_addr().unwrap();
+        let ack_sender = spawn_heartbeat_ack_sender(send_socket, false);
+        let heartbeat_count = HEARTBEAT_ACK_QUEUE_CAPACITY as u64 * 2;
+        let receiver = tokio::spawn(async move {
+            let mut buffer = [0u8; 512];
+            for _ in 0..heartbeat_count {
+                receive_socket.recv_from(&mut buffer).await.unwrap();
+            }
+        });
+
+        for sequence in 0..heartbeat_count {
+            let header = XBondHeader::new(PacketKind::Heartbeat, 5, sequence, now_micros(), 1);
+            assert!(acknowledge_authenticated_heartbeat(
+                &header,
+                &key,
+                peer,
+                &ack_sender,
+                false,
+            ));
+            time::sleep(Duration::from_millis(1)).await;
+        }
+        time::timeout(Duration::from_secs(2), receiver)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            ack_sender.metrics.immediate_sent.load(Ordering::Relaxed)
+                + ack_sender.metrics.retry_sent.load(Ordering::Relaxed),
+            heartbeat_count
+        );
+        assert_eq!(ack_sender.metrics.retry_overflow.load(Ordering::Relaxed), 0);
+        assert_eq!(ack_sender.metrics.retry_timeouts.load(Ordering::Relaxed), 0);
+        assert_eq!(ack_sender.metrics.retry_failures.load(Ordering::Relaxed), 0);
+        assert_eq!(ack_sender.metrics.depth.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
