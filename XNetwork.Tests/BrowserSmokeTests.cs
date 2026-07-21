@@ -59,6 +59,10 @@ public class BrowserSmokeTests
                 Timeout = 10_000
             });
 
+            await page.WaitForFunctionAsync("() => document.title.includes('uLink')", null, new PageWaitForFunctionOptions
+            {
+                Timeout = 10_000
+            });
             Assert.Contains("uLink", await page.TitleAsync(), StringComparison.Ordinal);
         }
 
@@ -118,7 +122,7 @@ public class BrowserSmokeTests
 
         var first = page.Locator("[data-test-pill='first']");
         var icon = first.Locator(".animated-status-pill-icon");
-        await page.WaitForTimeoutAsync(220);
+        await SetAnimationTimeAsync(page, 220);
 
         var collapsed = await first.BoundingBoxAsync();
         var collapsedIcon = await icon.BoundingBoxAsync();
@@ -146,12 +150,12 @@ public class BrowserSmokeTests
         Assert.Equal("0px", collapsedStyle[4]);
         Assert.Contains(collapsedStyle[5], new[] { "hidden", "clip" });
 
-        await page.WaitForTimeoutAsync(720);
+        await SetAnimationTimeAsync(page, 940);
         var held = await first.BoundingBoxAsync();
         Assert.NotNull(held);
         Assert.InRange(Math.Abs(held!.Width - held.Height), 0, 1.0);
 
-        await page.WaitForTimeoutAsync(500);
+        await SetAnimationTimeAsync(page, 1_360);
         var expanded = await first.BoundingBoxAsync();
         var expandedIcon = await icon.BoundingBoxAsync();
         Assert.NotNull(expanded);
@@ -195,5 +199,17 @@ public class BrowserSmokeTests
         }
 
         throw new FileNotFoundException($"Could not locate {Path.Combine(segments)} from {AppContext.BaseDirectory}.");
+    }
+
+    private static Task SetAnimationTimeAsync(IPage page, double milliseconds)
+    {
+        return page.EvaluateAsync("""
+            milliseconds => {
+                for (const animation of document.getAnimations()) {
+                    animation.pause();
+                    animation.currentTime = milliseconds;
+                }
+            }
+            """, milliseconds);
     }
 }
