@@ -102,11 +102,18 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
 
             foreach (var candidate in candidates)
             {
-                if (await _probeInterfaceAsync(candidate, cancellationToken).ConfigureAwait(false))
+                try
                 {
-                    return CacheProbe(StarlinkInterfaceResolution.Available(
-                        candidate,
-                        $"Starlink management host {_settings.Host} answered on {candidate}."));
+                    if (await _probeInterfaceAsync(candidate, cancellationToken).ConfigureAwait(false))
+                    {
+                        return CacheProbe(StarlinkInterfaceResolution.Available(
+                            candidate,
+                            $"Starlink management host {_settings.Host} answered on {candidate}."));
+                    }
+                }
+                catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogDebug(ex, "Starlink probe timed out on interface {InterfaceName}", candidate);
                 }
             }
 

@@ -25,7 +25,22 @@ public sealed class StarlinkLanAccessService(
             return;
         }
 
-        var resolution = await interfaceResolver.ResolveAsync(cancellationToken).ConfigureAwait(false);
+        StarlinkInterfaceResolution resolution;
+        try
+        {
+            resolution = await interfaceResolver.ResolveAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Could not resolve the current Starlink interface; removing stale LAN access state");
+            await RemoveAsync(cancellationToken).ConfigureAwait(false);
+            _initialized = true;
+            return;
+        }
         if (!resolution.IsAvailable || string.IsNullOrWhiteSpace(resolution.InterfaceName))
         {
             if (!_initialized || _appliedInterface is not null)

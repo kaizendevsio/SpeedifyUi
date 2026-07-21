@@ -80,6 +80,17 @@ public sealed class StarlinkLanAccessServiceTests
         Assert.Equal(["remove"], runner.Calls);
     }
 
+    [Fact]
+    public async Task ReconcileOnceAsync_RemovesStaleStateWhenResolverFails()
+    {
+        var runner = new RecordingRunner();
+        var service = CreateService(new ThrowingResolver(), runner);
+
+        await service.ReconcileOnceAsync();
+
+        Assert.Equal(["remove"], runner.Calls);
+    }
+
     private static StarlinkLanAccessService CreateService(
         IStarlinkInterfaceResolver resolver,
         IStarlinkLanAccessCommandRunner runner) =>
@@ -105,6 +116,12 @@ public sealed class StarlinkLanAccessServiceTests
             _index++;
             return Task.FromResult(result);
         }
+    }
+
+    private sealed class ThrowingResolver : IStarlinkInterfaceResolver
+    {
+        public Task<StarlinkInterfaceResolution> ResolveAsync(CancellationToken cancellationToken = default) =>
+            Task.FromException<StarlinkInterfaceResolution>(new TimeoutException("probe failed"));
     }
 
     private sealed class RecordingRunner : IStarlinkLanAccessCommandRunner

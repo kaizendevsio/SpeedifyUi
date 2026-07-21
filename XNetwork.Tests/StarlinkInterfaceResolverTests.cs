@@ -85,6 +85,28 @@ public class StarlinkInterfaceResolverTests
     }
 
     [Fact]
+    public async Task ResolveAsync_TreatsBoundProbeTimeoutAsUnavailable()
+    {
+        var resolver = CreateResolver(
+            new XBondStatsSnapshot(),
+            interfaces:
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-timeout",
+                    Type: "ethernet",
+                    State: "connected",
+                    ConnectionName: "USB WAN",
+                    DisplayName: "USB WAN")
+            ],
+            probe: (_, _) => Task.FromException<bool>(new TaskCanceledException("probe timeout")));
+
+        var resolution = await resolver.ResolveAsync();
+
+        Assert.False(resolution.IsAvailable);
+        Assert.Contains("failed", resolution.Reason);
+    }
+
+    [Fact]
     public async Task BoundFactory_FailsClosedWhenResolverHasNoInterface()
     {
         var factory = new StarlinkBoundHttpClientFactory(
