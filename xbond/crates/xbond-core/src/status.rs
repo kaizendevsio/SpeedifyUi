@@ -96,6 +96,16 @@ pub struct XBondPathStatus {
     pub last_rebind_at_micros: Option<u64>,
     #[serde(default)]
     pub rebind_count: u64,
+    #[serde(default)]
+    pub heartbeat_sent: u64,
+    #[serde(default)]
+    pub heartbeat_acked: u64,
+    #[serde(default)]
+    pub heartbeat_expired: u64,
+    #[serde(default)]
+    pub heartbeat_late_acks: u64,
+    #[serde(default)]
+    pub heartbeat_rebind_discarded: u64,
 }
 
 impl From<ScoredPath> for XBondPathStatus {
@@ -136,6 +146,11 @@ impl From<ScoredPath> for XBondPathStatus {
             last_rebind_error: value.path.last_rebind_error,
             last_rebind_at_micros: value.path.last_rebind_at_micros,
             rebind_count: value.path.rebind_count,
+            heartbeat_sent: value.path.heartbeat_sent,
+            heartbeat_acked: value.path.heartbeat_acked,
+            heartbeat_expired: value.path.heartbeat_expired,
+            heartbeat_late_acks: value.path.heartbeat_late_acks,
+            heartbeat_rebind_discarded: value.path.heartbeat_rebind_discarded,
         }
     }
 }

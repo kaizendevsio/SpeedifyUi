@@ -125,6 +125,7 @@ def telemetry_subset(status: dict[str, Any] | None) -> dict[str, Any]:
         "repair",
         "rebind",
         "socket_generation",
+        "heartbeat_",
         "reorder",
         "late",
         "drop",
@@ -3193,6 +3194,257 @@ def scenario_usb_reenumeration(lab: XBondLab, result: LabResult, _: int) -> None
     )
 
 
+def scenario_heartbeat_integrity(lab: XBondLab, result: LabResult, _: int) -> None:
+    """Bounded end-to-end heartbeat validation with targeted return-path faults."""
+
+    def snapshot() -> dict[str, Any]:
+        client = json_file(lab.client_status) or {}
+        server = json_file(lab.server_status) or {}
+        paths = {
+            int(path["path_id"]): {
+                key: path.get(key, 0)
+                for key in (
+                    "heartbeat_sent",
+                    "heartbeat_acked",
+                    "heartbeat_expired",
+                    "heartbeat_late_acks",
+                    "heartbeat_rebind_discarded",
+                    "socket_generation",
+                    "interface_up",
+                    "in_cooldown",
+                    "loss_rate",
+                    "role",
+                )
+            }
+            for path in client.get("paths", [])
+            if isinstance(path.get("path_id"), int)
+        }
+        control = server.get("control_plane") or {}
+        return {
+            "paths": paths,
+            "recovery": client.get("recovery") or {},
+            "server_heartbeat_ack": {
+                key: control.get(key, 0)
+                for key in (
+                    "heartbeat_acks_queued",
+                    "heartbeat_acks_sent",
+                    "heartbeat_ack_backpressure",
+                    "heartbeat_ack_drops",
+                    "heartbeat_ack_failures",
+                    "heartbeat_ack_queue_depth",
+                )
+            },
+        }
+
+    def path_counter(status: dict[str, Any], path_id: int, key: str) -> int:
+        value = status.get("paths", {}).get(path_id, {}).get(key, 0)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    def wait_for_new_heartbeat(status: dict[str, Any], path_ids: tuple[int, ...]) -> None:
+        wait_for(
+            lambda: all(
+                path_counter(snapshot(), path_id, "heartbeat_sent")
+                > path_counter(status, path_id, "heartbeat_sent")
+                for path_id in path_ids
+            ),
+            5,
+            f"new heartbeat on paths {path_ids}",
+        )
+
+    lab.setup_topology()
+    lab.start_runtime(queue_capacity=16, inbound_capacity=32)
+    time.sleep(2.5)
+
+    baseline = snapshot()
+    time.sleep(3)
+    normal = snapshot()
+
+    lab.apply_netem(1, "delay 300ms", both_directions=False)
+    delayed_before = snapshot()
+    time.sleep(3)
+    lab.clear_netem()
+    time.sleep(1)
+    delayed_after = snapshot()
+
+    lab.apply_netem(
+        1,
+        "delay 80ms 20ms duplicate 30% reorder 25% 50%",
+        both_directions=False,
+    )
+    reordered_before = snapshot()
+    time.sleep(3)
+    lab.clear_netem()
+    time.sleep(1)
+    reordered_after = snapshot()
+
+    pressure_before = snapshot()
+    pressure_throughput, _, pressure_ping = concurrent_bidirectional_throughput(
+        lab,
+        seconds=3,
+        parallel=4,
+        sample_interval=0.2,
+    )
+    pressure_after = snapshot()
+
+    lab.apply_netem(2, "delay 1200ms", both_directions=False)
+    rebind_before = snapshot()
+    wait_for_new_heartbeat(rebind_before, (2,))
+    recreate_client_path(lab, 2)
+    lab.clear_netem()
+    wait_for(
+        lambda: path_counter(snapshot(), 2, "socket_generation")
+        > path_counter(rebind_before, 2, "socket_generation"),
+        15,
+        "path 2 socket generation advance",
+    )
+    wait_for(
+        lambda: path_counter(snapshot(), 2, "heartbeat_rebind_discarded")
+        > path_counter(rebind_before, 2, "heartbeat_rebind_discarded"),
+        5,
+        "pending heartbeat discard during rebind",
+    )
+    time.sleep(2)
+    rebind_after = snapshot()
+
+    isolated_before = snapshot()
+    for path_id in (1, 2, 3):
+        lab.apply_netem(path_id, "loss 100%", both_directions=False)
+    wait_for_new_heartbeat(isolated_before, (1, 2, 3))
+    lab.clear_netem()
+    time.sleep(3)
+    isolated_after = snapshot()
+    time.sleep(1.2)
+    isolated_settled = snapshot()
+
+    sustained_before = snapshot()
+    for path_id in (1, 2, 3):
+        lab.apply_netem(path_id, "loss 100%", both_directions=False)
+    time.sleep(4)
+    sustained_after = snapshot()
+    lab.clear_netem()
+    time.sleep(4)
+
+    hard_before = snapshot()
+    ns_run(CLIENT_NS, ["ip", "link", "set", "cpath3", "down"])
+    wait_for(
+        lambda: snapshot().get("paths", {}).get(3, {}).get("interface_up") is False,
+        4,
+        "hard path failure demotion",
+    )
+    hard_after = snapshot()
+    ns_run(CLIENT_NS, ["ip", "link", "set", "cpath3", "up"])
+    time.sleep(2)
+
+    final = snapshot()
+    tunnel = lab.tunnel_ping(count=6)
+
+    normal_progress = all(
+        path_counter(normal, path_id, "heartbeat_sent")
+        > path_counter(baseline, path_id, "heartbeat_sent")
+        and path_counter(normal, path_id, "heartbeat_acked")
+        > path_counter(baseline, path_id, "heartbeat_acked")
+        for path_id in (1, 2, 3)
+    )
+    delayed_clean = (
+        path_counter(delayed_after, 1, "heartbeat_expired")
+        == path_counter(delayed_before, 1, "heartbeat_expired")
+    )
+    reordered_clean = (
+        path_counter(reordered_after, 1, "heartbeat_expired")
+        == path_counter(reordered_before, 1, "heartbeat_expired")
+        and path_counter(reordered_after, 1, "heartbeat_late_acks")
+        == path_counter(reordered_before, 1, "heartbeat_late_acks")
+    )
+    pressure_ack = pressure_after["server_heartbeat_ack"]
+    pressure_before_ack = pressure_before["server_heartbeat_ack"]
+    pressure_isolated = (
+        pressure_ack["heartbeat_acks_sent"]
+        > pressure_before_ack["heartbeat_acks_sent"]
+        and pressure_ack["heartbeat_ack_drops"] == 0
+        and pressure_ack["heartbeat_ack_failures"] == 0
+    )
+    rebind_clean = (
+        path_counter(rebind_after, 2, "socket_generation")
+        > path_counter(rebind_before, 2, "socket_generation")
+        and path_counter(rebind_after, 2, "heartbeat_rebind_discarded")
+        > path_counter(rebind_before, 2, "heartbeat_rebind_discarded")
+        and path_counter(rebind_after, 2, "heartbeat_expired")
+        == path_counter(rebind_before, 2, "heartbeat_expired")
+    )
+    isolated_no_recovery = not bool(isolated_after["recovery"].get("active")) and not bool(
+        isolated_settled["recovery"].get("active")
+    )
+    sustained_evidence = (
+        any(
+            path_counter(sustained_after, path_id, "heartbeat_expired")
+            > path_counter(sustained_before, path_id, "heartbeat_expired")
+            for path_id in (1, 2, 3)
+        )
+        and (
+            bool(sustained_after["recovery"].get("active"))
+            or any(
+                sustained_after.get("paths", {}).get(path_id, {}).get("in_cooldown")
+                for path_id in (1, 2, 3)
+            )
+        )
+    )
+    hard_immediate = hard_after.get("paths", {}).get(3, {}).get("interface_up") is False
+
+    result.metrics.update(
+        {
+            "normal": {"before": baseline, "after": normal},
+            "delayed_ack": {"before": delayed_before, "after": delayed_after},
+            "reordered_duplicated_ack": {
+                "before": reordered_before,
+                "after": reordered_after,
+            },
+            "unrelated_queue_pressure": {
+                "before": pressure_before,
+                "after": pressure_after,
+                "throughput": pressure_throughput,
+                "ping": pressure_ping,
+            },
+            "socket_rebind": {"before": rebind_before, "after": rebind_after},
+            "isolated_loss": {
+                "before": isolated_before,
+                "after": isolated_after,
+                "settled": isolated_settled,
+            },
+            "sustained_loss": {"before": sustained_before, "after": sustained_after},
+            "hard_failure": {"before": hard_before, "after": hard_after},
+            "final": final,
+            "tunnel_ping": tunnel,
+        }
+    )
+    result.thresholds = {
+        "normal_all_paths_progress": True,
+        "300ms_ack_delay_must_not_expire": True,
+        "reordered_duplicate_ack_must_not_expire": True,
+        "heartbeat_ack_lane_drops_and_failures_max": 0,
+        "rebind_must_advance_generation_and_discard_without_loss": True,
+        "isolated_loss_must_not_enter_recovery": True,
+        "sustained_loss_must_create_recovery_or_hard_demotion_evidence": True,
+        "hard_link_failure_must_be_immediate": True,
+        "final_tunnel_ping_loss_percent_max": 5,
+    }
+    result.notes.append(
+        "Exact general-control queue saturation, aggregate/per-path namespaces, and two-round soft-loss transitions are also covered by deterministic Rust unit tests; this scenario validates the real binaries and network stack."
+    )
+    result.status = (
+        "pass"
+        if normal_progress
+        and delayed_clean
+        and reordered_clean
+        and pressure_isolated
+        and rebind_clean
+        and isolated_no_recovery
+        and sustained_evidence
+        and hard_immediate
+        and tunnel.get("loss_percent", 100) <= 5
+        else "fail"
+    )
+
+
 def log_tail(scenario: str, process_name: str, limit: int = 8000) -> str:
     path = LOG_ROOT / f"{scenario}-{process_name}.log"
     try:
@@ -4895,6 +5147,7 @@ SCENARIOS: dict[str, Callable[[XBondLab, LabResult, int], None]] = {
     "heavy-bidirectional": scenario_heavy_bidirectional,
     "silent-blackhole": scenario_silent_blackhole,
     "usb-reenumeration": scenario_usb_reenumeration,
+    "heartbeat-integrity": scenario_heartbeat_integrity,
     "tun-read-failure": scenario_tun_read_failure,
     "server-process-restart": scenario_server_process_restart,
     "tun-write-backpressure": scenario_tun_write_backpressure,

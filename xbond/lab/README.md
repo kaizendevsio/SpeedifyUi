@@ -33,6 +33,7 @@ Run one validation scenario:
 .\run.ps1 all-intermittent
 .\run.ps1 heavy-bidirectional
 .\run.ps1 silent-blackhole
+.\run.ps1 heartbeat-integrity
 .\run.ps1 server-process-restart
 .\run.ps1 server-tun-write-backpressure
 .\run.ps1 mtu-sweep
@@ -74,6 +75,7 @@ never relies on a Windows bind path being visible to the remote daemon.
 | `heavy-bidirectional` | Saturated upload/download with concurrent tunnel health checks |
 | `silent-blackhole` | Drops only XBond UDP on one path while direct path ICMP remains healthy |
 | `usb-reenumeration` | Deletes/recreates a client veth with the same name and a new ifindex |
+| `heartbeat-integrity` | Short ACK delay/reorder/duplication, queue pressure, pending-probe rebind, isolated/sustained loss, and hard-failure checks with explicit heartbeat counters |
 | `tun-read-failure` | Injects a client TUN read failure after 32 packets and verifies prompt non-zero exit without taking down the server |
 | `server-process-restart` | Restarts the server under traffic and verifies authenticated automatic session replacement without restarting the client process |
 | `tun-write-backpressure` | Adds client TUN write delay under load and verifies bounded queue pressure without blocking status/control progress |

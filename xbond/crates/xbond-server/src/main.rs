@@ -30,6 +30,8 @@ use xbond_core::{
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_INBOUND_QUEUE_CAPACITY: usize = 4096;
 const CONTROL_QUEUE_CAPACITY: usize = 256;
+const HEARTBEAT_ACK_QUEUE_CAPACITY: usize = 256;
+const HEARTBEAT_ACK_BACKPRESSURE_TIMEOUT: Duration = Duration::from_millis(5);
 const SEND_REPORT_QUEUE_CAPACITY: usize = 256;
 const TUN_WORKER_EXIT_QUEUE_CAPACITY: usize = 4;
 const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
@@ -370,6 +372,62 @@ enum InboundDispatchOutcome {
 struct ControlSendWork {
     encoded: Vec<u8>,
     peer: SocketAddr,
+}
+
+#[derive(Debug, Default)]
+struct HeartbeatAckMetrics {
+    enqueued: AtomicU64,
+    sent: AtomicU64,
+    backpressure: AtomicU64,
+    dropped: AtomicU64,
+    failures: AtomicU64,
+    depth: AtomicU64,
+}
+
+#[derive(Debug, Clone)]
+struct HeartbeatAckSender {
+    tx: mpsc::Sender<ControlSendWork>,
+    metrics: Arc<HeartbeatAckMetrics>,
+}
+
+impl HeartbeatAckSender {
+    async fn enqueue(&self, work: ControlSendWork) -> bool {
+        self.metrics.depth.fetch_add(1, Ordering::Relaxed);
+        match self.tx.try_send(work) {
+            Ok(()) => {
+                self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            Err(mpsc::error::TrySendError::Full(work)) => {
+                self.metrics.backpressure.fetch_add(1, Ordering::Relaxed);
+                match time::timeout(HEARTBEAT_ACK_BACKPRESSURE_TIMEOUT, self.tx.send(work)).await {
+                    Ok(Ok(())) => {
+                        self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+                        true
+                    }
+                    Ok(Err(_)) => {
+                        self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
+                        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                    Err(_) => {
+                        self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
+                        self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.metrics.depth.fetch_sub(1, Ordering::Relaxed);
+                self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }
+    }
+
+    fn record_failure(&self) {
+        self.metrics.failures.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -793,6 +851,12 @@ struct ServerControlPlaneStatus {
     control_send_queue_full: u64,
     control_datagrams_sent: u64,
     control_send_failures: u64,
+    heartbeat_acks_queued: u64,
+    heartbeat_acks_sent: u64,
+    heartbeat_ack_backpressure: u64,
+    heartbeat_ack_drops: u64,
+    heartbeat_ack_failures: u64,
+    heartbeat_ack_queue_depth: u64,
     tun_write_queue_depth: u64,
     tun_write_queue_peak_depth: u64,
     tun_write_queue_capacity: u64,
@@ -1282,6 +1346,75 @@ fn spawn_control_sender(
         }
     });
     (tx, sent, failures)
+}
+
+fn spawn_heartbeat_ack_sender(socket: Arc<UdpSocket>, json_events: bool) -> HeartbeatAckSender {
+    let (tx, mut rx) = mpsc::channel::<ControlSendWork>(HEARTBEAT_ACK_QUEUE_CAPACITY);
+    let metrics = Arc::new(HeartbeatAckMetrics::default());
+    let task_metrics = metrics.clone();
+    tokio::spawn(async move {
+        while let Some(work) = rx.recv().await {
+            task_metrics.depth.fetch_sub(1, Ordering::Relaxed);
+            match socket.send_to(&work.encoded, work.peer).await {
+                Ok(_) => {
+                    task_metrics.sent.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error) => {
+                    task_metrics.failures.fetch_add(1, Ordering::Relaxed);
+                    if json_events {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "heartbeat-ack-send-failed",
+                                "peer": work.peer.to_string(),
+                                "error": error.to_string(),
+                            })
+                        );
+                    }
+                }
+            }
+        }
+    });
+    HeartbeatAckSender { tx, metrics }
+}
+
+fn sync_heartbeat_ack_metrics(
+    sender: &HeartbeatAckSender,
+    control_plane: &mut ServerControlPlaneStatus,
+) {
+    control_plane.heartbeat_acks_queued = sender.metrics.enqueued.load(Ordering::Relaxed);
+    control_plane.heartbeat_acks_sent = sender.metrics.sent.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_backpressure = sender.metrics.backpressure.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_drops = sender.metrics.dropped.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_failures = sender.metrics.failures.load(Ordering::Relaxed);
+    control_plane.heartbeat_ack_queue_depth = sender.metrics.depth.load(Ordering::Relaxed);
+}
+
+async fn acknowledge_authenticated_heartbeat(
+    header: &XBondHeader,
+    key: &XBondKey,
+    peer: SocketAddr,
+    sender: &HeartbeatAckSender,
+    json_events: bool,
+) -> bool {
+    let reply = build_ack_frame_from_header(header);
+    match reply.encode_sealed(key) {
+        Ok(encoded) => sender.enqueue(ControlSendWork { encoded, peer }).await,
+        Err(error) => {
+            sender.record_failure();
+            if json_events {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "event": "heartbeat-ack-encode-failed",
+                        "peer": peer.to_string(),
+                        "error": error.to_string(),
+                    })
+                );
+            }
+            false
+        }
+    }
 }
 
 fn enqueue_control_datagram(
@@ -1905,6 +2038,7 @@ async fn main() -> Result<()> {
     let socket = Arc::new(bind_udp_socket(&args.bind, args.udp_socket_buffer_bytes).await?);
     let (control_send_tx, control_datagrams_sent, control_send_failures) =
         spawn_control_sender(socket.clone(), args.json_events);
+    let heartbeat_ack_sender = spawn_heartbeat_ack_sender(socket.clone(), args.json_events);
     let mut receiver = FrameReceiver::new(args.realtime_deadline_ms * 1_000, 8192);
     let tun = match args.tun_name.as_deref() {
         Some(name) => Some(XBondTun::open(name, args.tun_mtu)?),
@@ -1998,6 +2132,8 @@ async fn main() -> Result<()> {
     let recv_duplicates_coalesced = ingress_duplicates_coalesced.clone();
     let recv_payload_recycle = payload_recycle.clone();
     let recv_payload_pool_telemetry = payload_pool_telemetry.clone();
+    let recv_heartbeat_ack_sender = heartbeat_ack_sender.clone();
+    let recv_json_events = args.json_events;
     let mut udp_receiver_task = tokio::spawn(async move {
         let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
         let mut payload =
@@ -2019,6 +2155,16 @@ async fn main() -> Result<()> {
             if !is_client_originated_frame(&header) {
                 payload.clear();
                 continue;
+            }
+            if header.kind == PacketKind::Heartbeat {
+                acknowledge_authenticated_heartbeat(
+                    &header,
+                    &recv_key,
+                    peer,
+                    &recv_heartbeat_ack_sender,
+                    recv_json_events,
+                )
+                .await;
             }
             let duplicate_class = pre_admission_duplicate_class(header.kind);
             if duplicate_class.is_some_and(|class| {
@@ -2417,10 +2563,7 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                let should_ack = matches!(
-                    inbound.frame.header.kind,
-                    PacketKind::Heartbeat | PacketKind::Control
-                );
+                let should_ack = inbound.frame.header.kind == PacketKind::Control;
                 let outcome = if pre_admission_deduplicated {
                     receiver.accept_prechecked()
                 } else {
@@ -2941,6 +3084,7 @@ async fn main() -> Result<()> {
                     control_datagrams_sent.load(Ordering::Relaxed);
                 control_plane.control_send_failures =
                     control_send_failures.load(Ordering::Relaxed);
+                sync_heartbeat_ack_metrics(&heartbeat_ack_sender, &mut control_plane);
                 control_plane.receive_payload_pool = payload_recycle.status();
                 sync_tun_writer_telemetry(
                     tun_writer.as_ref(),
@@ -3727,12 +3871,16 @@ fn write_server_status(
 }
 
 fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
+    build_ack_frame_from_header(&frame.header)
+}
+
+fn build_ack_frame_from_header(header: &XBondHeader) -> XBondFrame {
     let mut header = XBondHeader::new(
-        frame.header.kind,
-        frame.header.session_id,
-        frame.header.sequence,
-        frame.header.send_micros,
-        frame.header.path_id,
+        header.kind,
+        header.session_id,
+        header.sequence,
+        header.send_micros,
+        header.path_id,
     );
     header.flags = FLAG_SERVER_TO_CLIENT;
     XBondFrame::new(header, b"ack".to_vec())
@@ -5027,6 +5175,149 @@ mod tests {
             .unwrap();
         assert_eq!(queued.frame.header.sequence, 11);
         assert_eq!(coalesced.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn every_authenticated_heartbeat_is_acked_before_coalescing() {
+        let key = XBondKey::from_passphrase("heartbeat-integrity-test");
+        let send_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receive_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = receive_socket.local_addr().unwrap();
+        let ack_sender = spawn_heartbeat_ack_sender(send_socket, false);
+        let critical = BoundedCoalescingQueue::new(1, false);
+        let schedules = BoundedCoalescingQueue::new(1, false);
+        let heartbeats = BoundedCoalescingQueue::new(1, true);
+        let (repair_tx, _repair_rx) = mpsc::channel(1);
+        let (payload_tx, _payload_rx) = mpsc::channel(1);
+        let payload_drops = AtomicU64::new(0);
+        let repair_drops = AtomicU64::new(0);
+        let coalesced = AtomicU64::new(0);
+
+        for sequence in [10, 11] {
+            let header = XBondHeader::new(PacketKind::Heartbeat, 4, sequence, now_micros(), 2);
+            assert!(
+                acknowledge_authenticated_heartbeat(&header, &key, peer, &ack_sender, false,).await
+            );
+            dispatch_inbound_frame(
+                &critical,
+                &schedules,
+                &heartbeats,
+                &repair_tx,
+                &payload_tx,
+                inbound_frame(PacketKind::Heartbeat, 4, sequence, 2, Vec::new()),
+                &payload_drops,
+                &repair_drops,
+                &coalesced,
+            );
+        }
+
+        let mut received_sequences = Vec::new();
+        let mut buffer = [0u8; 512];
+        for _ in 0..2 {
+            let (length, _) = time::timeout(
+                Duration::from_millis(100),
+                receive_socket.recv_from(&mut buffer),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let ack = XBondFrame::decode_sealed(&buffer[..length], &key).unwrap();
+            received_sequences.push(ack.header.sequence);
+        }
+
+        assert_eq!(received_sequences, vec![10, 11]);
+        assert_eq!(coalesced.load(Ordering::Relaxed), 1);
+        assert_eq!(ack_sender.metrics.enqueued.load(Ordering::Relaxed), 2);
+        assert_eq!(ack_sender.metrics.sent.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ack_preserves_per_path_and_aggregate_namespaces() {
+        let key = XBondKey::from_passphrase("heartbeat-namespace-test");
+        let send_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receive_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = receive_socket.local_addr().unwrap();
+        let ack_sender = spawn_heartbeat_ack_sender(send_socket, false);
+        let sequences = [0x0001_0000_0000_0042, 0xffff_0000_0000_0042];
+
+        for (path_id, sequence) in [(3, sequences[0]), (1, sequences[1])] {
+            let header =
+                XBondHeader::new(PacketKind::Heartbeat, 9, sequence, now_micros(), path_id);
+            assert!(
+                acknowledge_authenticated_heartbeat(&header, &key, peer, &ack_sender, false,).await
+            );
+        }
+
+        let mut observed = Vec::new();
+        let mut buffer = [0u8; 512];
+        for _ in 0..2 {
+            let (length, _) = receive_socket.recv_from(&mut buffer).await.unwrap();
+            let ack = XBondFrame::decode_sealed(&buffer[..length], &key).unwrap();
+            observed.push((ack.header.path_id, ack.header.sequence));
+        }
+        assert_eq!(observed, vec![(3, sequences[0]), (1, sequences[1])]);
+    }
+
+    #[tokio::test]
+    async fn saturated_general_control_queue_cannot_drop_heartbeat_ack() {
+        let (general_tx, _general_rx) = mpsc::channel(1);
+        general_tx
+            .try_send(ControlSendWork {
+                encoded: vec![1],
+                peer: "127.0.0.1:9".parse().unwrap(),
+            })
+            .unwrap();
+        assert!(general_tx.try_reserve().is_err());
+
+        let key = XBondKey::from_passphrase("isolated-ack-lane-test");
+        let send_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let receive_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = receive_socket.local_addr().unwrap();
+        let ack_sender = spawn_heartbeat_ack_sender(send_socket, false);
+        let header = XBondHeader::new(PacketKind::Heartbeat, 5, 7, now_micros(), 1);
+
+        assert!(
+            acknowledge_authenticated_heartbeat(&header, &key, peer, &ack_sender, false,).await
+        );
+        let mut buffer = [0u8; 512];
+        let received = time::timeout(
+            Duration::from_millis(100),
+            receive_socket.recv_from(&mut buffer),
+        )
+        .await;
+        assert!(received.is_ok());
+    }
+
+    #[tokio::test]
+    async fn heartbeat_ack_queue_accounts_for_backpressure_drop_and_failure() {
+        let (tx, rx) = mpsc::channel(1);
+        let metrics = Arc::new(HeartbeatAckMetrics::default());
+        let sender = HeartbeatAckSender {
+            tx,
+            metrics: metrics.clone(),
+        };
+        let work = || ControlSendWork {
+            encoded: vec![1],
+            peer: "127.0.0.1:9".parse().unwrap(),
+        };
+
+        assert!(sender.enqueue(work()).await);
+        assert!(!sender.enqueue(work()).await);
+        assert_eq!(metrics.backpressure.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.dropped.load(Ordering::Relaxed), 1);
+        assert_eq!(metrics.depth.load(Ordering::Relaxed), 1);
+
+        drop(rx);
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        let closed_metrics = Arc::new(HeartbeatAckMetrics::default());
+        let closed_sender = HeartbeatAckSender {
+            tx: closed_tx,
+            metrics: closed_metrics.clone(),
+        };
+        assert!(!closed_sender.enqueue(work()).await);
+        assert_eq!(closed_metrics.failures.load(Ordering::Relaxed), 1);
+        assert_eq!(closed_metrics.depth.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]
@@ -6547,6 +6838,11 @@ mod tests {
             last_rebind_error: None,
             last_rebind_at_micros: None,
             rebind_count: 0,
+            heartbeat_sent: 0,
+            heartbeat_acked: 0,
+            heartbeat_expired: 0,
+            heartbeat_late_acks: 0,
+            heartbeat_rebind_discarded: 0,
         }
     }
 

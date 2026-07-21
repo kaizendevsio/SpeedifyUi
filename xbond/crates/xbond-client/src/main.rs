@@ -1357,6 +1357,41 @@ struct PrimarySendCompletion {
     success: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingHeartbeatProbe {
+    sent_at: Instant,
+    socket_generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct RecentlyExpiredHeartbeatSequences {
+    sequences: VecDeque<u64>,
+}
+
+impl RecentlyExpiredHeartbeatSequences {
+    fn insert(&mut self, sequence: u64) {
+        if let Some(index) = self.sequences.iter().position(|value| *value == sequence) {
+            self.sequences.remove(index);
+        }
+        if self.sequences.len() == RECENT_EXPIRED_HEARTBEAT_CAPACITY {
+            self.sequences.pop_front();
+        }
+        self.sequences.push_back(sequence);
+    }
+
+    fn take(&mut self, sequence: u64) -> bool {
+        let Some(index) = self.sequences.iter().position(|value| *value == sequence) else {
+            return false;
+        };
+        self.sequences.remove(index);
+        true
+    }
+
+    fn clear(&mut self) {
+        self.sequences.clear();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrimaryEnqueueResult {
     Enqueued,
@@ -1379,7 +1414,13 @@ struct TunnelPathRuntime {
     raw_inbound_throughput_bps: u64,
     throughput_bps: u64,
     health_sequence: u64,
-    pending_heartbeats: HashMap<u64, Instant>,
+    pending_heartbeats: HashMap<u64, PendingHeartbeatProbe>,
+    recently_expired_heartbeats: RecentlyExpiredHeartbeatSequences,
+    heartbeat_sent: u64,
+    heartbeat_acked: u64,
+    heartbeat_expired: u64,
+    heartbeat_late_acks: u64,
+    heartbeat_rebind_discarded: u64,
     health_window: VecDeque<bool>,
     rtt_samples_ms: VecDeque<f64>,
     rtt_ms: Option<f64>,
@@ -2515,6 +2556,7 @@ fn reset_client_session_runtime(
     *pending_fec_source = None;
     for runtime in path_runtime.values_mut() {
         runtime.pending_heartbeats.clear();
+        runtime.recently_expired_heartbeats.clear();
     }
 }
 
@@ -4584,6 +4626,19 @@ fn remove_tunnel_path(
     receivers: &mut HashMap<u16, JoinHandle<()>>,
     path_runtime: &mut HashMap<u16, TunnelPathRuntime>,
 ) {
+    let had_transport = sockets.contains_key(&path_id)
+        || senders.contains_key(&path_id)
+        || receivers.contains_key(&path_id);
+    let removed_generation = path_runtime
+        .get(&path_id)
+        .map(|runtime| runtime.socket_generation);
+    if had_transport {
+        if let (Some(runtime), Some(generation)) =
+            (path_runtime.get_mut(&path_id), removed_generation)
+        {
+            discard_pending_heartbeats_for_generation(runtime, generation);
+        }
+    }
     sockets.remove(&path_id);
     if let Some(sender) = senders.remove(&path_id) {
         if let Some(runtime) = path_runtime.get_mut(&path_id) {
@@ -4595,6 +4650,21 @@ fn remove_tunnel_path(
     if let Some(receiver) = receivers.remove(&path_id) {
         receiver.abort();
     }
+}
+
+fn discard_pending_heartbeats_for_generation(
+    runtime: &mut TunnelPathRuntime,
+    socket_generation: u64,
+) -> usize {
+    let before = runtime.pending_heartbeats.len();
+    runtime
+        .pending_heartbeats
+        .retain(|_, probe| probe.socket_generation != socket_generation);
+    let discarded = before.saturating_sub(runtime.pending_heartbeats.len());
+    runtime.heartbeat_rebind_discarded = runtime
+        .heartbeat_rebind_discarded
+        .saturating_add(discarded as u64);
+    discarded
 }
 
 fn try_enqueue_sender_lane(
@@ -5186,6 +5256,11 @@ fn tunnel_health(
                 path.last_rebind_error = runtime.last_rebind_error.clone();
                 path.last_rebind_at_micros = runtime.last_rebind_at_micros;
                 path.rebind_count = runtime.rebind_count;
+                path.heartbeat_sent = runtime.heartbeat_sent;
+                path.heartbeat_acked = runtime.heartbeat_acked;
+                path.heartbeat_expired = runtime.heartbeat_expired;
+                path.heartbeat_late_acks = runtime.heartbeat_late_acks;
+                path.heartbeat_rebind_discarded = runtime.heartbeat_rebind_discarded;
             }
 
             path
@@ -5521,6 +5596,7 @@ fn direct_interface_tcp_probe_target(
 
 const PATH_HEALTH_WINDOW: usize = 8;
 const TUNNEL_HEALTH_WINDOW: usize = 20;
+const RECENT_EXPIRED_HEARTBEAT_CAPACITY: usize = 256;
 const HEARTBEAT_SEQUENCE_MASK: u64 = (1u64 << 48) - 1;
 const AGGREGATE_HEARTBEAT_SEQUENCE_PREFIX: u64 = 0xFFFFu64 << 48;
 const REPAIR_CACHE_CAPACITY: usize = 4096;
@@ -6119,7 +6195,14 @@ fn send_tunnel_heartbeats(
         match try_enqueue_sender_lane(&sender.control_tx, &sender.metrics, work) {
             Ok(()) => {
                 let runtime = path_runtime.entry(path_id).or_default();
-                runtime.pending_heartbeats.insert(sequence, Instant::now());
+                runtime.pending_heartbeats.insert(
+                    sequence,
+                    PendingHeartbeatProbe {
+                        sent_at: Instant::now(),
+                        socket_generation: sender.socket_generation,
+                    },
+                );
+                runtime.heartbeat_sent = runtime.heartbeat_sent.saturating_add(1);
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 sender.metrics.record_enqueue_drop(PathSendLane::Control);
@@ -6257,13 +6340,15 @@ fn expire_tunnel_heartbeats(runtime: &mut TunnelPathRuntime, timeout: Duration) 
     let expired = runtime
         .pending_heartbeats
         .iter()
-        .filter_map(|(sequence, sent_at)| {
-            (now.duration_since(*sent_at) >= timeout).then_some(*sequence)
+        .filter_map(|(sequence, probe)| {
+            (now.duration_since(probe.sent_at) >= timeout).then_some(*sequence)
         })
         .collect::<Vec<_>>();
 
     for sequence in expired {
         if runtime.pending_heartbeats.remove(&sequence).is_some() {
+            runtime.recently_expired_heartbeats.insert(sequence);
+            runtime.heartbeat_expired = runtime.heartbeat_expired.saturating_add(1);
             record_tunnel_health_sample(runtime, false, None);
         }
     }
@@ -6324,11 +6409,23 @@ fn record_tunnel_heartbeat_ack(
     frame: &XBondFrame,
 ) {
     let runtime = path_runtime.entry(path_id).or_default();
-    let Some(sent_at) = runtime.pending_heartbeats.remove(&frame.header.sequence) else {
+    let Some(probe) = runtime.pending_heartbeats.remove(&frame.header.sequence) else {
+        if runtime
+            .recently_expired_heartbeats
+            .take(frame.header.sequence)
+        {
+            runtime.heartbeat_late_acks = runtime.heartbeat_late_acks.saturating_add(1);
+        }
         return;
     };
 
-    let rtt_ms = sent_at.elapsed().as_secs_f64() * 1_000.0;
+    if probe.socket_generation != runtime.socket_generation {
+        runtime.heartbeat_rebind_discarded = runtime.heartbeat_rebind_discarded.saturating_add(1);
+        return;
+    }
+
+    let rtt_ms = probe.sent_at.elapsed().as_secs_f64() * 1_000.0;
+    runtime.heartbeat_acked = runtime.heartbeat_acked.saturating_add(1);
     runtime.send_failures = 0;
     runtime.remote_ack_required_to_clear_send_failures = false;
     runtime.last_ack_at = Some(Instant::now());
@@ -7448,6 +7545,11 @@ fn config_health(config: &ClientConfig) -> Vec<PathHealthSnapshot> {
             last_rebind_error: None,
             last_rebind_at_micros: None,
             rebind_count: 0,
+            heartbeat_sent: 0,
+            heartbeat_acked: 0,
+            heartbeat_expired: 0,
+            heartbeat_late_acks: 0,
+            heartbeat_rebind_discarded: 0,
         })
         .collect()
 }
@@ -8249,11 +8351,13 @@ mod tests {
         try_enqueue_sender_lane(&sender.data_tx, &sender.metrics, primary_send_work(2)).unwrap();
         let mut senders = HashMap::from([(1, sender)]);
         let mut path_runtime = HashMap::from([(1, TunnelPathRuntime::default())]);
-        path_runtime
-            .get_mut(&1)
-            .unwrap()
-            .pending_heartbeats
-            .insert(9, Instant::now());
+        path_runtime.get_mut(&1).unwrap().pending_heartbeats.insert(
+            9,
+            PendingHeartbeatProbe {
+                sent_at: Instant::now(),
+                socket_generation: 0,
+            },
+        );
 
         refresh_sender_queue_metrics(&mut path_runtime, &senders);
 
@@ -8279,7 +8383,13 @@ mod tests {
         let mut senders = HashMap::from([(1, sender)]);
         let mut runtime = TunnelPathRuntime::default();
         for sequence in 1..=3 {
-            runtime.pending_heartbeats.insert(sequence, Instant::now());
+            runtime.pending_heartbeats.insert(
+                sequence,
+                PendingHeartbeatProbe {
+                    sent_at: Instant::now(),
+                    socket_generation: runtime.socket_generation,
+                },
+            );
         }
         let mut path_runtime = HashMap::from([(1, runtime)]);
 
@@ -8662,9 +8772,13 @@ paths = []
     fn path_rtt_uses_pending_monotonic_instant_not_wire_timestamp() {
         let sequence = 77;
         let mut runtime = TunnelPathRuntime::default();
-        runtime
-            .pending_heartbeats
-            .insert(sequence, Instant::now() - Duration::from_millis(25));
+        runtime.pending_heartbeats.insert(
+            sequence,
+            PendingHeartbeatProbe {
+                sent_at: Instant::now() - Duration::from_millis(25),
+                socket_generation: 0,
+            },
+        );
         let mut path_runtime = HashMap::from([(1, runtime)]);
         let frame = XBondFrame::new(
             XBondHeader::new(
@@ -8682,6 +8796,100 @@ paths = []
         assert!(path_runtime[&1]
             .rtt_ms
             .is_some_and(|value| (15.0..100.0).contains(&value)));
+    }
+
+    #[test]
+    fn pre_timeout_path_heartbeat_ack_records_one_success() {
+        let sequence = 78;
+        let mut runtime = TunnelPathRuntime {
+            socket_generation: 4,
+            ..TunnelPathRuntime::default()
+        };
+        runtime.pending_heartbeats.insert(
+            sequence,
+            PendingHeartbeatProbe {
+                sent_at: Instant::now() - Duration::from_millis(10),
+                socket_generation: 4,
+            },
+        );
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, sequence, now_micros(), 1),
+            b"ack".to_vec(),
+        );
+        let mut paths = HashMap::from([(1, runtime)]);
+
+        record_tunnel_heartbeat_ack(&mut paths, 1, &frame);
+
+        assert_eq!(paths[&1].heartbeat_acked, 1);
+        assert_eq!(paths[&1].heartbeat_expired, 0);
+        assert_eq!(paths[&1].heartbeat_late_acks, 0);
+        assert_eq!(paths[&1].loss_rate, 0.0);
+    }
+
+    #[test]
+    fn post_timeout_ack_is_classified_late_exactly_once() {
+        let sequence = 79;
+        let mut runtime = TunnelPathRuntime::default();
+        runtime.pending_heartbeats.insert(
+            sequence,
+            PendingHeartbeatProbe {
+                sent_at: Instant::now() - Duration::from_secs(2),
+                socket_generation: 0,
+            },
+        );
+        expire_tunnel_heartbeats(&mut runtime, Duration::from_millis(1));
+        let frame = XBondFrame::new(
+            XBondHeader::new(PacketKind::Heartbeat, 7, sequence, now_micros(), 1),
+            b"ack".to_vec(),
+        );
+        let mut paths = HashMap::from([(1, runtime)]);
+
+        record_tunnel_heartbeat_ack(&mut paths, 1, &frame);
+        record_tunnel_heartbeat_ack(&mut paths, 1, &frame);
+
+        assert_eq!(paths[&1].heartbeat_expired, 1);
+        assert_eq!(paths[&1].heartbeat_late_acks, 1);
+        assert_eq!(paths[&1].heartbeat_acked, 0);
+        assert_eq!(paths[&1].loss_rate, 1.0);
+    }
+
+    #[test]
+    fn socket_rebind_discards_pending_generation_without_recording_loss() {
+        let mut runtime = TunnelPathRuntime {
+            socket_generation: 8,
+            ..TunnelPathRuntime::default()
+        };
+        record_tunnel_health_sample(&mut runtime, true, Some(42.0));
+        for sequence in 1..=3 {
+            runtime.pending_heartbeats.insert(
+                sequence,
+                PendingHeartbeatProbe {
+                    sent_at: Instant::now(),
+                    socket_generation: 8,
+                },
+            );
+        }
+
+        let discarded = discard_pending_heartbeats_for_generation(&mut runtime, 8);
+
+        assert_eq!(discarded, 3);
+        assert_eq!(runtime.heartbeat_rebind_discarded, 3);
+        assert!(runtime.pending_heartbeats.is_empty());
+        assert_eq!(runtime.health_window.len(), 1);
+        assert_eq!(runtime.loss_rate, 0.0);
+        assert_eq!(runtime.rtt_ms, Some(42.0));
+    }
+
+    #[test]
+    fn recently_expired_heartbeat_sequences_are_bounded() {
+        let mut expired = RecentlyExpiredHeartbeatSequences::default();
+        for sequence in 0..(RECENT_EXPIRED_HEARTBEAT_CAPACITY as u64 + 20) {
+            expired.insert(sequence);
+        }
+
+        assert_eq!(expired.sequences.len(), RECENT_EXPIRED_HEARTBEAT_CAPACITY);
+        assert!(!expired.take(0));
+        assert!(expired.take(RECENT_EXPIRED_HEARTBEAT_CAPACITY as u64 + 19));
     }
 
     #[test]
@@ -8715,9 +8923,13 @@ paths = []
         }
         assert!(record_ineffective_rebind(&mut runtime));
 
-        runtime
-            .pending_heartbeats
-            .insert(sequence, Instant::now() - Duration::from_millis(10));
+        runtime.pending_heartbeats.insert(
+            sequence,
+            PendingHeartbeatProbe {
+                sent_at: Instant::now() - Duration::from_millis(10),
+                socket_generation: 0,
+            },
+        );
         let frame = XBondFrame::new(
             XBondHeader::new(PacketKind::Heartbeat, 7, sequence, now_micros(), 1),
             b"ack".to_vec(),

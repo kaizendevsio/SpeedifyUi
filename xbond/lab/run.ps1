@@ -8,6 +8,7 @@ param(
         "heavy-bidirectional",
         "silent-blackhole",
         "usb-reenumeration",
+        "heartbeat-integrity",
         "tun-read-failure",
         "server-process-restart",
         "tun-write-backpressure",

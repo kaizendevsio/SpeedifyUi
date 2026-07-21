@@ -51,6 +51,16 @@ pub struct PathHealthSnapshot {
     pub last_rebind_at_micros: Option<u64>,
     #[serde(default)]
     pub rebind_count: u64,
+    #[serde(default)]
+    pub heartbeat_sent: u64,
+    #[serde(default)]
+    pub heartbeat_acked: u64,
+    #[serde(default)]
+    pub heartbeat_expired: u64,
+    #[serde(default)]
+    pub heartbeat_late_acks: u64,
+    #[serde(default)]
+    pub heartbeat_rebind_discarded: u64,
 }
 
 impl PathHealthSnapshot {
@@ -494,6 +504,11 @@ mod tests {
             last_rebind_error: None,
             last_rebind_at_micros: None,
             rebind_count: 0,
+            heartbeat_sent: 0,
+            heartbeat_acked: 0,
+            heartbeat_expired: 0,
+            heartbeat_late_acks: 0,
+            heartbeat_rebind_discarded: 0,
         }
     }
 

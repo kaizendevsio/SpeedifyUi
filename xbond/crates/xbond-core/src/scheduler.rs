@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
+
 use crate::health::{PathHealthSnapshot, PathRole, ScoredPath};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +100,8 @@ pub struct RecoveryStatus {
     pub eligible_path_ids: Vec<u16>,
     pub degraded_ticks: u32,
     pub clean_ticks: u32,
+    #[serde(default)]
+    pub soft_loss_ticks: u32,
 }
 
 impl Default for RecoveryStatus {
@@ -108,6 +112,7 @@ impl Default for RecoveryStatus {
             eligible_path_ids: Vec::new(),
             degraded_ticks: 0,
             clean_ticks: 0,
+            soft_loss_ticks: 0,
         }
     }
 }
@@ -118,6 +123,8 @@ pub struct RecoveryState {
     pub degraded_ticks: u32,
     pub clean_ticks: u32,
     pub reason: String,
+    pub soft_loss_ticks: u32,
+    soft_loss_expired_by_path: BTreeMap<u16, u64>,
 }
 
 impl Default for RecoveryState {
@@ -127,6 +134,8 @@ impl Default for RecoveryState {
             degraded_ticks: 0,
             clean_ticks: 0,
             reason: "Recovery redundancy is inactive.".to_string(),
+            soft_loss_ticks: 0,
+            soft_loss_expired_by_path: BTreeMap::new(),
         }
     }
 }
@@ -258,11 +267,25 @@ pub fn update_recovery_state(
     let all_degraded = eligible_paths
         .iter()
         .all(|path| is_recovery_path_degraded(path, config));
+    let soft_loss_only = all_degraded
+        && eligible_paths
+            .iter()
+            .all(|path| is_soft_heartbeat_loss_only(path, config));
+    let soft_loss_has_new_expiry = soft_loss_only
+        && eligible_paths.iter().any(|path| {
+            path.heartbeat_expired
+                > state
+                    .soft_loss_expired_by_path
+                    .get(&path.path_id)
+                    .copied()
+                    .unwrap_or_default()
+        });
     let any_clean = eligible_paths
         .iter()
         .any(|path| is_recovery_path_clean(path, config));
 
     if state.active {
+        state.soft_loss_ticks = 0;
         if any_clean {
             state.clean_ticks = state.clean_ticks.saturating_add(1);
             state.reason = format!(
@@ -280,7 +303,29 @@ pub fn update_recovery_state(
             state.clean_ticks = 0;
             state.reason = "Recovery active because all usable paths remain degraded.".to_string();
         }
+    } else if soft_loss_only && soft_loss_has_new_expiry {
+        state.soft_loss_ticks = state.soft_loss_ticks.saturating_add(1);
+        state.clean_ticks = 0;
+        state.degraded_ticks = 0;
+        state.reason = format!(
+            "Heartbeat loss persists across scheduler rounds ({}/2).",
+            state.soft_loss_ticks
+        );
+        if state.soft_loss_ticks >= 2 {
+            state.active = true;
+            state.soft_loss_ticks = 0;
+            state.reason =
+                "Recovery active after heartbeat loss persisted for two scheduler rounds."
+                    .to_string();
+        }
+    } else if soft_loss_only {
+        state.soft_loss_ticks = 0;
+        state.degraded_ticks = 0;
+        state.clean_ticks = 0;
+        state.reason =
+            "Recovery inactive; the retained heartbeat-loss window has no new misses.".to_string();
     } else if all_degraded {
+        state.soft_loss_ticks = 0;
         state.degraded_ticks = state.degraded_ticks.saturating_add(1);
         state.clean_ticks = 0;
         state.reason = format!(
@@ -294,10 +339,16 @@ pub fn update_recovery_state(
                 "Recovery active; duplicating all traffic across usable paths.".to_string();
         }
     } else {
+        state.soft_loss_ticks = 0;
         state.degraded_ticks = 0;
         state.clean_ticks = 0;
         state.reason = "Recovery inactive; at least one usable path is healthy.".to_string();
     }
+
+    state.soft_loss_expired_by_path = paths
+        .iter()
+        .map(|path| (path.path_id, path.heartbeat_expired))
+        .collect();
 
     recovery_status(state, eligible_path_ids)
 }
@@ -399,6 +450,7 @@ fn recovery_status(state: &RecoveryState, eligible_path_ids: Vec<u16>) -> Recove
         eligible_path_ids,
         degraded_ticks: state.degraded_ticks,
         clean_ticks: state.clean_ticks,
+        soft_loss_ticks: state.soft_loss_ticks,
     }
 }
 
@@ -473,6 +525,20 @@ fn is_recovery_path_degraded(path: &PathHealthSnapshot, config: RecoveryConfig) 
             .is_some_and(|age| age >= config.degraded_stale_ack_ms)
         || path.send_failure_streak >= 1
         || path.queue_pressure >= config.degraded_queue_pressure
+}
+
+fn is_soft_heartbeat_loss_only(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
+    path.loss_rate >= config.degraded_loss_threshold
+        && path.rtt_ms.is_none_or(|rtt| rtt < config.degraded_rtt_ms)
+        && path.late_rate < config.degraded_late_threshold
+        && path
+            .jitter_ms
+            .is_none_or(|jitter| jitter < config.degraded_jitter_ms)
+        && path
+            .stale_ack_ms
+            .is_none_or(|age| age < config.degraded_stale_ack_ms)
+        && path.send_failure_streak == 0
+        && path.queue_pressure < config.degraded_queue_pressure
 }
 
 fn is_recovery_path_clean(path: &PathHealthSnapshot, config: RecoveryConfig) -> bool {
@@ -690,6 +756,11 @@ mod tests {
             last_rebind_error: None,
             last_rebind_at_micros: None,
             rebind_count: 0,
+            heartbeat_sent: 0,
+            heartbeat_acked: 0,
+            heartbeat_expired: 0,
+            heartbeat_late_acks: 0,
+            heartbeat_rebind_discarded: 0,
         }
     }
 
@@ -1244,6 +1315,61 @@ mod tests {
     }
 
     #[test]
+    fn one_soft_heartbeat_loss_round_does_not_enter_recovery() {
+        let config = RecoveryConfig::default();
+        let mut state = RecoveryState::default();
+        let mut paths = [
+            path_with_loss(1, 50.0, 0.125),
+            path_with_loss(2, 70.0, 0.125),
+        ];
+        paths[0].heartbeat_expired = 1;
+        paths[1].heartbeat_expired = 1;
+
+        let first = update_recovery_state(&mut state, RedundancyPolicy::Balanced, &paths, config);
+        let second = update_recovery_state(&mut state, RedundancyPolicy::Balanced, &paths, config);
+
+        assert!(!first.active);
+        assert_eq!(first.soft_loss_ticks, 1);
+        assert!(!second.active);
+        assert_eq!(second.soft_loss_ticks, 0);
+        assert!(second.reason.contains("no new misses"));
+    }
+
+    #[test]
+    fn two_soft_heartbeat_loss_rounds_enter_recovery() {
+        let config = RecoveryConfig::default();
+        let mut state = RecoveryState::default();
+        let mut paths = [
+            path_with_loss(1, 50.0, 0.125),
+            path_with_loss(2, 70.0, 0.125),
+        ];
+        paths[0].heartbeat_expired = 1;
+        paths[1].heartbeat_expired = 1;
+
+        let first = update_recovery_state(&mut state, RedundancyPolicy::Balanced, &paths, config);
+        paths[0].heartbeat_expired = 2;
+        paths[1].heartbeat_expired = 2;
+        let second = update_recovery_state(&mut state, RedundancyPolicy::Balanced, &paths, config);
+
+        assert!(!first.active);
+        assert!(second.active);
+        assert!(second.reason.contains("persisted"));
+    }
+
+    #[test]
+    fn hard_path_failure_is_demoted_immediately() {
+        let mut failed = path(1, 40.0, 0.0);
+        failed.interface_up = false;
+
+        assert_eq!(
+            failed.hard_demotion_reason(),
+            Some("No carrier or interface is down.")
+        );
+        assert!(!failed.is_realtime_eligible());
+        assert_eq!(failed.score(), -1_000_000.0);
+    }
+
+    #[test]
     fn recovery_keeps_a_harmful_backup_only_when_duplicates_still_help() {
         let config = RecoveryConfig::default();
         let mut useful_but_pressured = path_with_queue_pressure(2, 90.0, 0.99);
@@ -1402,11 +1528,13 @@ mod tests {
     #[test]
     fn recovery_exits_after_clean_path_hysteresis() {
         let config = RecoveryConfig::default();
-        let degraded = vec![path_with_loss(1, 40.0, 0.10), path_with_loss(2, 90.0, 0.20)];
+        let mut degraded = vec![path_with_loss(1, 40.0, 0.10), path_with_loss(2, 90.0, 0.20)];
         let clean = vec![path(1, 25.0, 0.0), path_with_loss(2, 90.0, 0.20)];
         let mut state = RecoveryState::default();
 
-        for _ in 0..config.enter_degraded_ticks {
+        for round in 0..config.enter_degraded_ticks {
+            degraded[0].heartbeat_expired = u64::from(round) + 1;
+            degraded[1].heartbeat_expired = u64::from(round) + 1;
             update_recovery_state(&mut state, RedundancyPolicy::Balanced, &degraded, config);
         }
         assert!(state.active);
