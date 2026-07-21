@@ -72,6 +72,32 @@ public class XBondPageSurfaceTests
         Assert.Contains("item.animate", animation);
         Assert.Contains("cubic-bezier(0.16, 1, 0.3, 1)", animation);
         Assert.Contains("prefersReducedMotion()", animation);
+        Assert.Contains("active-redundant-group-surface", home);
+        Assert.Contains("active-redundant-member", home);
+    }
+
+    [Fact]
+    public void Dashboard_StatusPillsRemainMountedAndAppearBelowSubtitle()
+    {
+        var summary = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Custom", "ConnectionSummary.razor"));
+        var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
+
+        Assert.True(summary.IndexOf("GetStatusDescription()", StringComparison.Ordinal) <
+                    summary.IndexOf("connection-summary-pills", StringComparison.Ordinal));
+        Assert.Contains("connection-summary-pill-slot", summary);
+        Assert.Contains("connection-summary-pill-slot-visible", styles);
+        Assert.Contains("prefers-reduced-motion: reduce", styles);
+    }
+
+    [Fact]
+    public void Dashboard_TechnicalRowsFollowPersistedAppearancePreference()
+    {
+        var home = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Home.razor"));
+        var settings = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Pages", "Settings.razor"));
+
+        Assert.Contains("UiDisplayPreferences.AdapterTechnicalDetails", home);
+        Assert.Contains("Adapter technical details", settings);
+        Assert.Contains("UiDisplayPreferencesStore.SaveAsync", settings);
     }
 
     [Fact]
@@ -129,6 +155,25 @@ public class XBondPageSurfaceTests
         Assert.Contains("handleWheel", live);
         Assert.Contains("1000 / 30", live);
         Assert.DoesNotContain("createSatelliteEndpoint", live);
+        Assert.Contains("https://lucide.dev/icons/wifi", live);
+        Assert.Contains("new THREE.QuadraticBezierCurve3", live);
+        Assert.Contains("signalEnabled", live);
+        Assert.DoesNotContain("new THREE.TorusGeometry(radius * scale", live);
+    }
+
+    [Fact]
+    public void NavigationAndDashboardChartUseNeutralStates()
+    {
+        var layout = File.ReadAllText(FindRepoFile("XNetwork", "Components", "Layout", "MainLayout.razor"));
+        var styles = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "app.css"));
+        var charts = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "js", "statisticsCharts.js"));
+
+        Assert.Contains("desktop-nav-item-active", layout);
+        Assert.Contains(".mobile-tabbar-item-active:hover", styles);
+        Assert.DoesNotContain("rgba(30, 41, 59, 0.62)", styles);
+        Assert.Contains("DASHBOARD_TUNNEL_COLOR = 'rgba(126, 126, 126, 0.78)'", charts);
+        Assert.Contains("borderDash: [6, 5]", charts);
+        Assert.Contains("borderDash: [2, 5]", charts);
     }
 
     private static string FindRepoFile(params string[] pathParts)

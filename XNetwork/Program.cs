@@ -16,6 +16,14 @@ builder.Services.AddRazorComponents()
 builder.Services.AddScoped<BlazorTransitionableRoute.IRouteTransitionInvoker, BlazorTransitionableRoute.DefaultRouteTransitionInvoker>();
 builder.Services.AddScoped<RouteTransitionDirectionService>();
 
+builder.Services.AddSingleton<UiDisplayPreferencesStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var preferences = builder.Configuration.GetSection("UiDisplay").Get<UiDisplayPreferences>() ?? new UiDisplayPreferences();
+    sp.GetRequiredService<UiDisplayPreferencesStore>().Load(preferences);
+    return preferences;
+});
+
 // Add network monitor service
 builder.Services.AddSingleton<NetworkMonitorSettingsStore>();
 builder.Services.AddSingleton(sp =>

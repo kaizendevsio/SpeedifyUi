@@ -16,6 +16,8 @@
 @inject F50ModemRecoveryService F50ModemRecoveryService
 @inject XBondClientWatchdogService XBondClientWatchdogService
 @inject TrafficBypassService TrafficBypassService
+@inject UiDisplayPreferences UiDisplayPreferences
+@inject UiDisplayPreferencesStore UiDisplayPreferencesStore
 @inject NavigationManager NavigationManager
 
 <PageTitle>Settings - Ulink</PageTitle>
@@ -46,6 +48,26 @@
 
     <div class="settings-layout">
         <div class="settings-accordion-stack">
+    <Accordion Title="Appearance" IsExpanded="_appearanceExpanded" OnToggle="(expanded) => _appearanceExpanded = expanded" BadgeText="@AppearanceBadge">
+        <div class="space-y-4 pt-2">
+            <div>
+                <h2 class="text-lg font-semibold text-white">Appearance</h2>
+                <p class="mt-1 text-sm text-slate-400">Choose how much operational detail appears on the dashboard.</p>
+            </div>
+            <label class="settings-toggle-row">
+                <span class="min-w-0">
+                    <span class="block text-sm font-semibold text-white">Adapter technical details</span>
+                    <span class="mt-1 block text-xs leading-relaxed text-slate-400">Show role, scheduler score, late packets, and queue depth on adapter cards.</span>
+                </span>
+                <input type="checkbox"
+                       class="settings-toggle-input"
+                       checked="@UiDisplayPreferences.AdapterTechnicalDetails"
+                       disabled="@_appearanceBusy"
+                       @onchange="ToggleAdapterTechnicalDetailsAsync" />
+            </label>
+        </div>
+    </Accordion>
+
     <Accordion Title="XBond Tunnel" IsExpanded="_tunnelExpanded" OnToggle="(expanded) => _tunnelExpanded = expanded" BadgeText="@ServiceStateLabel">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
@@ -1180,9 +1202,11 @@
     private bool _isWifiRefreshing;
     private bool _isWifiScanning;
     private bool _isWifiConnecting;
+    private bool _appearanceBusy;
     private bool _showProxyEditor;
     private bool _showBypassEditor;
     private bool _showClientWatchdogRecoveryConfirmation;
+    private bool _appearanceExpanded;
     private bool _tunnelExpanded;
     private bool _policyExpanded;
     private bool _adaptersExpanded;
@@ -1195,6 +1219,7 @@
     private bool _mssExpanded;
     private bool _monitorExpanded;
     private bool _isWifiBusy => _isWifiRefreshing || _isWifiScanning || _isWifiConnecting;
+    private string AppearanceBadge => UiDisplayPreferences.AdapterTechnicalDetails ? "Detailed" : "Simple";
 
     protected override async Task OnInitializedAsync()
     {
@@ -1241,6 +1266,32 @@
         _bypassStatus = TrafficBypassService.GetLastApplyStatus();
         InitializePolicyFields();
         StateHasChanged();
+    }
+
+    private async Task ToggleAdapterTechnicalDetailsAsync(ChangeEventArgs args)
+    {
+        if (_appearanceBusy)
+        {
+            return;
+        }
+
+        _appearanceBusy = true;
+        _error = null;
+        try
+        {
+            UiDisplayPreferences.AdapterTechnicalDetails = args.Value is true ||
+                string.Equals(args.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+            await UiDisplayPreferencesStore.SaveAsync(UiDisplayPreferences, _refreshCts.Token);
+            _message = "Appearance preference saved.";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not save appearance preference: {ex.Message}";
+        }
+        finally
+        {
+            _appearanceBusy = false;
+        }
     }
 
     private async Task LoadWifiStatusAsync()

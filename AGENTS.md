@@ -377,6 +377,9 @@
 - 2026-07-21: The user-facing application brand is `Ulink`; internal .NET namespaces, Linux service names, persisted `XNetwork` storage paths, and the `XBond` tunnel product name remain unchanged. The canonical vector brand asset is `XNetwork/wwwroot/icons/ulink-logo.svg` and is used by the app header, favicon, and PWA manifest.
 - 2026-07-21: Ulink `/live` is an abstract, data-driven Three.js flow topology rather than a literal tower/satellite illustration. Its primary canvas is unframed and edge-to-edge within the operational page, supports orbit rotate/pan/zoom, caps rendering to 30 FPS on mobile and 45 FPS on desktop, and pauses through normal browser visibility behavior.
 - 2026-07-21: Ulink branding, dashboard composition, CSS animation, and Three.js presentation changes are app-only changes. They deploy only `xnetwork.service` on `xeon-network`; paired Rust client/server deployment is still required only when XBond protocol/runtime code changes.
+- 2026-07-21: Ulink keeps active XBond anchor/backup cards as keyed direct grid children so FLIP role changes preserve live metric component identity, while a shared grid backdrop visually groups the `Actively Redundant` heading, count, and current active members. Probe and cooldown cards stay outside that surface.
+- 2026-07-21: Ulink adapter technical rows are hidden by default and controlled by the persisted Settings > Appearance preference `Adapter technical details`, stored in app data as `ui-display-preferences.json`.
+- 2026-07-21: Ulink `/live` adapter nodes use data-driven three-dimensional WiFi signal geometry derived from the official Lucide WiFi path pattern (ISC), with animated signal strength/state and retained orbit, pan, and zoom controls. This remains an app-only presentation change.
 
 ## Settings Page
 - `Settings.razor` is a large accordion/modal page; reusable controls live in `XNetwork/Components/Custom` and related styles are in `XNetwork/wwwroot/app.css`.

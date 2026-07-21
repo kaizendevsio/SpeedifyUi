@@ -9,10 +9,10 @@ const LIVE_CHART_ANIMATION_DURATION = 240;
 const ACTUAL_CONNECTION_ID = '__actual_connection';
 const ACTUAL_CONNECTION_COLOR = '#e5e5e5';
 const DASHBOARD_CHART_PREFIX = 'dashboard-chart-';
-const DASHBOARD_TUNNEL_COLOR = '#e5e5e5';
+const DASHBOARD_TUNNEL_COLOR = 'rgba(126, 126, 126, 0.78)';
 const DASHBOARD_ANCHOR_COLOR = 'rgba(190, 190, 190, 0.78)';
 const DASHBOARD_BACKUP_COLOR = 'rgba(150, 150, 150, 0.72)';
-const DASHBOARD_FILL_COLOR = 'rgba(229, 229, 229, 0.08)';
+const DASHBOARD_FILL_COLOR = 'rgba(82, 82, 82, 0.07)';
 
 // Dark theme colors
 const GRID_COLOR = 'rgba(255, 255, 255, 0.08)';

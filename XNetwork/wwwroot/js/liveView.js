@@ -581,37 +581,69 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     const active = Boolean(path.active);
     const scale = selected ? 1.16 : 1;
     const opacity = active ? 0.92 : path.up ? 0.55 : 0.35;
+    const signal = Math.max(0, Math.min(4, Number(path.signal) || 0));
 
     const glow = createGlowSprite(THREE, glowTexture, color, opacity * 0.62, (active ? 1.08 : 0.76) * scale);
     node.add(glow);
 
-    const rings = [];
-    [0.22, 0.34, 0.46].forEach((radius, index) => {
-        const ring = new THREE.Mesh(
-            new THREE.TorusGeometry(radius * scale, (active ? 0.015 : 0.01) * scale, 8, 96),
-            getBasicMaterial(cache, THREE, color, Math.max(0.16, opacity - index * 0.18))
+    // Three-dimensional geometry follows Lucide's official WiFi icon proportions.
+    // Source: https://lucide.dev/icons/wifi (ISC License).
+    const pulseParts = [];
+    const arcSpecs = [
+        { width: 0.92, y: 0.02, lift: 0.62, threshold: 4 },
+        { width: 0.64, y: -0.08, lift: 0.4, threshold: 3 },
+        { width: 0.34, y: -0.18, lift: 0.2, threshold: 2 }
+    ];
+
+    arcSpecs.forEach((spec, index) => {
+        const enabled = signal >= spec.threshold;
+        const curve = new THREE.QuadraticBezierCurve3(
+            new THREE.Vector3(-spec.width * scale, spec.y * scale, 0),
+            new THREE.Vector3(0, (spec.y + spec.lift) * scale, 0.035 * index),
+            new THREE.Vector3(spec.width * scale, spec.y * scale, 0)
         );
-        ring.rotation.set(Math.PI / 2 + index * 0.24, index * 0.12, 0);
-        ring.userData.spin = index % 2 === 0 ? 1 : -1;
-        rings.push(ring);
-        node.add(ring);
+        const material = new THREE.MeshBasicMaterial({
+            color,
+            transparent: true,
+            opacity: enabled ? opacity : 0.1,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+        const arc = new THREE.Mesh(
+            new THREE.TubeGeometry(curve, 30, (active ? 0.018 : 0.013) * scale, 7, false),
+            material
+        );
+        arc.userData.baseOpacity = material.opacity;
+        arc.userData.signalEnabled = enabled;
+        pulseParts.push(arc);
+        node.add(arc);
     });
 
-    const gate = new THREE.LineSegments(
-        new THREE.EdgesGeometry(new THREE.OctahedronGeometry(0.18 * scale, 0)),
-        getLineMaterial(cache, THREE, color, active ? 0.84 : 0.38)
-    );
-    gate.rotation.z = Math.PI / 4;
-    node.add(gate);
+    const dotEnabled = signal >= 1;
+    const dotMaterial = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: dotEnabled ? opacity : 0.12,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.065 * scale, 16, 12), dotMaterial);
+    dot.position.set(0, -0.34 * scale, 0);
+    dot.userData.baseOpacity = dotMaterial.opacity;
+    dot.userData.signalEnabled = dotEnabled;
+    pulseParts.push(dot);
+    node.add(dot);
 
     if (selected) {
-        const selectedHalo = new THREE.Mesh(
-            new THREE.TorusGeometry(0.58, 0.012, 8, 128),
-            getBasicMaterial(cache, THREE, LIVE_COLORS.neutralBright, 0.86)
-        );
-        selectedHalo.rotation.x = Math.PI / 2;
-        selectedHalo.userData.spin = 1.4;
-        node.add(selectedHalo);
+        const markerMaterial = new THREE.MeshBasicMaterial({
+            color: LIVE_COLORS.neutralBright,
+            transparent: true,
+            opacity: 0.86,
+            depthWrite: false
+        });
+        const marker = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.018, 0.018), markerMaterial);
+        marker.position.set(0, -0.52, 0);
+        node.add(marker);
     }
 
     const hitTarget = new THREE.Mesh(
@@ -627,8 +659,9 @@ function createPathEmitter(THREE, glowTexture, cache, path, color, selected) {
     hitTarget.name = path.name || path.iface || 'adapter';
     node.add(hitTarget);
 
-    node.userData.rings = rings;
-    node.userData.pulseParts = [];
+    node.userData.rings = [];
+    node.userData.pulseParts = pulseParts;
+    node.userData.signal = signal;
     return node;
 }
 
@@ -1093,7 +1126,10 @@ function animateThree(state) {
         });
         node.userData.pulseParts?.forEach((part, pulseIndex) => {
             if (part.material && Number.isFinite(part.userData?.baseOpacity)) {
-                part.material.opacity = part.userData.baseOpacity * (0.72 + Math.sin(time * 2.4 + index + pulseIndex * 0.7) * 0.28);
+                const pulseAmount = part.userData.signalEnabled ? 0.22 : 0.08;
+                part.material.opacity = part.userData.baseOpacity * (1 - pulseAmount + Math.sin(time * 2.4 + index + pulseIndex * 0.7) * pulseAmount);
+                const signalScale = 1 + (part.userData.signalEnabled ? 0.018 : 0.006) * Math.sin(time * 2.4 + index + pulseIndex * 0.7);
+                part.scale.setScalar(signalScale);
             }
         });
     });

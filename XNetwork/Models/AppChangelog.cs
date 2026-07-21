@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "xbond-2026.06.108";
+    public const string CurrentVersion = "xbond-2026.06.109";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-21",
+            Summary = "Refined dashboard grouping and Live signal nodes.",
+            Changes =
+            [
+                "Restored a shared Actively Redundant surface while preserving keyed adapter movement between active and standby roles.",
+                "Moved animated connection status pills below the summary and added a persisted Adapter technical details preference.",
+                "Darkened dashboard tunnel charts, neutralized navigation states, and replaced Live adapter rings with animated three-dimensional WiFi signal nodes."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "xbond-2026.06.108",
             Date = "2026-07-21",
             Summary = "Smoothed live adapter role changes.",
             Changes =

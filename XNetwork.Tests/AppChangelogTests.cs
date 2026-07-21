@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("xbond-2026.06.108", AppChangelog.CurrentVersion);
+        Assert.Equal("xbond-2026.06.109", AppChangelog.CurrentVersion);
         Assert.Matches(@"^xbond-\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 

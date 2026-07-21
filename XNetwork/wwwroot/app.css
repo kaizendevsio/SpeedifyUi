@@ -623,8 +623,8 @@ body {
 }
 
 .mobile-tabbar-item:hover {
-    color: #e2e8f0;
-    background: rgba(30, 41, 59, 0.62);
+    color: #f5f5f5;
+    background: rgba(82, 82, 82, 0.5);
 }
 
 .mobile-tabbar-item-active {
@@ -635,6 +635,28 @@ body {
 
 .mobile-tabbar-item-active .mobile-tabbar-icon {
     transform: translateY(-1px);
+}
+
+.mobile-tabbar-item-active:hover {
+    color: #ffffff;
+    background: rgba(115, 115, 115, 0.62);
+}
+
+.desktop-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+    color: #a3a3a3;
+    transition: color 180ms ease-out, background-color 180ms ease-out;
+}
+
+.desktop-nav-item:hover,
+.desktop-nav-item-active,
+.desktop-nav-item-active:hover {
+    color: #f5f5f5;
+    background: rgba(82, 82, 82, 0.5);
 }
 
 .live-page {
@@ -924,21 +946,40 @@ body {
 }
 
 .adapter-flip-list {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.75rem;
     position: relative;
 }
 
+.active-redundant-group-surface {
+    grid-column: 1;
+    z-index: 0;
+    margin: -0.45rem 0;
+    border: 1px solid rgba(163, 163, 163, 0.26);
+    border-radius: 1rem;
+    background: rgba(64, 64, 64, 0.16);
+    pointer-events: none;
+}
+
 .active-redundant-header {
+    grid-column: 1;
+    z-index: 1;
     display: flex;
     min-height: 2.75rem;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.45rem 0.75rem;
-    border: 1px solid rgba(163, 163, 163, 0.2);
-    border-radius: 0.75rem;
-    background: rgba(64, 64, 64, 0.2);
+    margin-inline: 0.7rem;
+    padding: 0.45rem 0.2rem;
+}
+
+.adapter-flip-list > .xbond-path-card {
+    grid-column: 1;
+    z-index: 1;
+}
+
+.adapter-flip-list > .active-redundant-member {
+    margin-inline: 0.7rem;
 }
 
 .xbond-path-card[data-active="true"] {
@@ -987,6 +1028,28 @@ body {
 
 .connection-summary-pills {
     min-height: 1.5rem;
+    gap: 0;
+}
+
+.connection-summary-pill-slot {
+    display: inline-grid;
+    max-width: 0;
+    margin-right: 0;
+    opacity: 0;
+    overflow: hidden;
+    transform: translateY(-0.2rem) scale(0.96);
+    transition:
+        max-width 300ms cubic-bezier(0.22, 1, 0.36, 1),
+        margin-right 300ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 180ms ease-out,
+        transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.connection-summary-pill-slot-visible {
+    max-width: 20rem;
+    margin-right: 0.375rem;
+    opacity: 1;
+    transform: translateY(0) scale(1);
 }
 
 .connection-summary-pill {
@@ -1030,6 +1093,57 @@ body {
     color: #d4d4d4;
 }
 
+.settings-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.9rem;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.65rem;
+    background: rgba(45, 45, 48, 0.62);
+}
+
+.settings-toggle-input {
+    position: relative;
+    appearance: none;
+    width: 2.75rem;
+    height: 1.45rem;
+    flex: 0 0 auto;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+    background: #3f3f46;
+    cursor: pointer;
+    transition: background-color 180ms ease-out, border-color 180ms ease-out;
+}
+
+.settings-toggle-input::after {
+    content: "";
+    position: absolute;
+    top: 0.16rem;
+    left: 0.17rem;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 50%;
+    background: #d4d4d4;
+    transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease-out;
+}
+
+.settings-toggle-input:checked {
+    border-color: rgba(212, 212, 212, 0.42);
+    background: #737373;
+}
+
+.settings-toggle-input:checked::after {
+    transform: translateX(1.28rem);
+    background: #ffffff;
+}
+
+.settings-toggle-input:focus-visible {
+    outline: 2px solid #a3a3a3;
+    outline-offset: 2px;
+}
+
 @media (min-width: 768px) {
     .live-stage {
         margin-inline: -1.5rem;
@@ -1042,6 +1156,12 @@ body {
     .action-sheet-panel-opening,
     .action-sheet-panel-closing {
         animation-duration: 1ms !important;
+    }
+
+    .connection-summary-pill-slot,
+    .ulink-signal-bar,
+    .ulink-cellular-signal-bar {
+        transition-duration: 1ms !important;
     }
 
     .xbond-path-card,
