@@ -1,0 +1,11 @@
+[package]
+name = "xbond-loadgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0"
+libc = "0.2"
+serde_json = "1.0"
+xbond-core = { path = "../xbond-core" }

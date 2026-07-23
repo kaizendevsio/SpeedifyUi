@@ -21,6 +21,8 @@ import signal
 import statistics
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -48,6 +50,67 @@ SOAK_SAMPLE_PERIOD_SECONDS = 5.0
 ANCHOR_STABILITY_REQUIRED_UPDATES = 8
 ANCHOR_STABILITY_TIMEOUT_SECONDS = 45.0
 ANCHOR_STABILITY_POLL_SECONDS = 0.1
+IPERF_CAPTURE_LIMIT_BYTES = 4 * 1024 * 1024
+
+
+class BoundedProcessCapture:
+    """Drain subprocess pipes without allowing unbounded memory or artifacts."""
+
+    def __init__(self, process: subprocess.Popen[bytes], limit: int) -> None:
+        self.process = process
+        self.limit = limit
+        self.paths: dict[str, pathlib.Path] = {}
+        self.oversize: dict[str, bool] = {"stdout": False, "stderr": False}
+        self.threads: list[threading.Thread] = []
+        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+            if stream is None:
+                continue
+            handle = tempfile.NamedTemporaryFile(
+                prefix=f"xbond-{name}-",
+                suffix=".tmp",
+                dir=LOG_ROOT,
+                delete=False,
+            )
+            path = pathlib.Path(handle.name)
+            handle.close()
+            self.paths[name] = path
+            thread = threading.Thread(
+                target=self._drain,
+                args=(name, stream, path),
+                daemon=True,
+            )
+            thread.start()
+            self.threads.append(thread)
+
+    def _drain(self, name: str, stream: Any, path: pathlib.Path) -> None:
+        written = 0
+        with path.open("wb") as target:
+            while True:
+                chunk = stream.read(64 * 1024)
+                if not chunk:
+                    break
+                remaining = max(0, self.limit - written)
+                if remaining:
+                    retained = chunk[:remaining]
+                    target.write(retained)
+                    written += len(retained)
+                if len(chunk) > remaining:
+                    self.oversize[name] = True
+
+    def finish(self) -> tuple[str, str, bool]:
+        for thread in self.threads:
+            thread.join(timeout=5)
+        outputs: dict[str, str] = {}
+        for name in ("stdout", "stderr"):
+            path = self.paths.get(name)
+            outputs[name] = (
+                path.read_text(encoding="utf-8", errors="replace") if path else ""
+            )
+        return outputs["stdout"], outputs["stderr"], any(self.oversize.values())
+
+    def cleanup(self) -> None:
+        for path in self.paths.values():
+            path.unlink(missing_ok=True)
 
 
 def utc_now() -> str:
@@ -143,6 +206,13 @@ def telemetry_subset(status: dict[str, Any] | None) -> dict[str, Any]:
         "tun_write_micros",
         "packet_pool",
         "payload_pool",
+        "socket_buffer",
+        "kernel_network",
+        "saturation",
+        "stage_timing",
+        "receive_batch",
+        "pacing",
+        "drain_packets",
     )
     return {
         key: value
@@ -286,6 +356,10 @@ def parse_ping(output: str, command: list[str]) -> dict[str, Any]:
         output,
     )
     result: dict[str, Any] = {"command": command, "raw": output[-4000:]}
+    samples_ms = [
+        float(value)
+        for value in re.findall(r"time[=<]([\d.]+)\s*ms", output)
+    ]
     if packets:
         result.update(
             {
@@ -303,6 +377,11 @@ def parse_ping(output: str, command: list[str]) -> dict[str, Any]:
                 "jitter_ms": float(timing.group(4)),
             }
         )
+    if samples_ms:
+        ordered = sorted(samples_ms)
+        result["p50_ms"] = statistics.median(ordered)
+        result["p95_ms"] = ordered[max(0, min(len(ordered) - 1, int(len(ordered) * 0.95) - 1))]
+        result["sample_count"] = len(ordered)
     return result
 
 
@@ -388,6 +467,16 @@ def tcp_retransmits(namespace: str) -> int | None:
     completed = ns_run(
         namespace,
         ["sh", "-lc", "nstat -az 2>/dev/null | awk '$1 == \"TcpRetransSegs\" {print $2}'"],
+        check=False,
+    )
+    value = completed.stdout.strip()
+    return int(value) if value.isdigit() else None
+
+
+def udp_receive_buffer_errors(namespace: str) -> int | None:
+    completed = ns_run(
+        namespace,
+        ["sh", "-lc", "nstat -az 2>/dev/null | awk '$1 == \"UdpRcvbufErrors\" {print $2}'"],
         check=False,
     )
     value = completed.stdout.strip()
@@ -1059,6 +1148,10 @@ class XBondLab:
             ns_run(namespace, ["ip", "link", "set", "lo", "up"])
             ns_run(namespace, ["sysctl", "-qw", "net.ipv4.conf.all.rp_filter=0"])
             ns_run(namespace, ["sysctl", "-qw", "net.ipv4.conf.default.rp_filter=0"])
+        ns_run(CLIENT_NS, ["sysctl", "-qw", "net.core.rmem_max=16777216"])
+        ns_run(CLIENT_NS, ["sysctl", "-qw", "net.core.wmem_max=16777216"])
+        ns_run(SERVER_NS, ["sysctl", "-qw", "net.core.rmem_max=33554432"])
+        ns_run(SERVER_NS, ["sysctl", "-qw", "net.core.wmem_max=33554432"])
 
         for index, router in enumerate(ROUTER_NAMES, start=1):
             client_if = f"cpath{index}"
@@ -1182,7 +1275,8 @@ class XBondLab:
                 "reorder_hold_ms = 25",
                 f"tun_queue_capacity = {queue_capacity}",
                 f"inbound_queue_capacity = {inbound_capacity}",
-                "udp_socket_buffer_bytes = 4194304",
+                "udp_socket_buffer_bytes = 8388608",
+                "udp_receive_batch_size = 32",
                 "recovery_enabled = true",
                 "recovery_enter_degraded_ticks = 3",
                 "recovery_exit_clean_ticks = 20",
@@ -1256,6 +1350,10 @@ class XBondLab:
                 str(queue_capacity),
                 "--inbound-queue-capacity",
                 str(inbound_capacity),
+                "--udp-socket-buffer-bytes",
+                str(16 * 1024 * 1024),
+                "--udp-receive-batch-size",
+                "32",
                 "--server-health-enabled",
                 "false",
                 "--json-events",
@@ -2174,7 +2272,8 @@ def concurrent_bidirectional_throughput(
         lab.start_iperf_server(port=port, log_name=f"iperf-{name}-server")
 
     commands: dict[str, list[str]] = {}
-    processes: dict[str, subprocess.Popen[str]] = {}
+    processes: dict[str, subprocess.Popen[bytes]] = {}
+    captures: dict[str, BoundedProcessCapture] = {}
     for name, reverse in (("upload", False), ("download", True)):
         command = [
             "iperf3",
@@ -2197,11 +2296,11 @@ def concurrent_bidirectional_throughput(
             ns_cmd(CLIENT_NS, *command),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             start_new_session=True,
         )
         lab.track_process(process)
         processes[name] = process
+        captures[name] = BoundedProcessCapture(process, IPERF_CAPTURE_LIMIT_BYTES)
 
     ping_command = [
         "ping",
@@ -2241,14 +2340,31 @@ def concurrent_bidirectional_throughput(
 
     outputs: dict[str, Any] = {}
     for name, process in processes.items():
-        stdout, stderr = process.communicate(timeout=5)
-        outputs[name] = parse_iperf_output(
-            stdout,
-            stderr,
-            reverse=name == "download",
-            command=commands[name],
-            return_code=process.returncode,
-        )
+        capture = captures[name]
+        try:
+            stdout, stderr, oversize = capture.finish()
+            outputs[name] = parse_iperf_output(
+                stdout,
+                stderr,
+                reverse=name == "download",
+                command=commands[name],
+                return_code=process.returncode,
+            )
+            outputs[name]["capture_limit_bytes"] = IPERF_CAPTURE_LIMIT_BYTES
+            outputs[name]["output_oversize"] = oversize
+            if oversize:
+                outputs[name].update(
+                    {
+                        "valid_complete_json": False,
+                        "mbps": 0.0,
+                        "error": (
+                            "iperf output exceeded the 4 MiB bounded capture limit; "
+                            "result is explicitly invalid"
+                        ),
+                    }
+                )
+        finally:
+            capture.cleanup()
     if ping_process.poll() is None:
         with contextlib.suppress(subprocess.TimeoutExpired):
             ping_process.wait(timeout=5)
@@ -2268,6 +2384,197 @@ def concurrent_bidirectional_throughput(
         }
     )
     return outputs, samples, ping_result
+
+
+def four_client_bidirectional_throughput(
+    lab: XBondLab,
+    *,
+    seconds: int = 6,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    jobs: dict[str, tuple[subprocess.Popen[bytes], BoundedProcessCapture, list[str], bool]] = {}
+    for client_index in range(4):
+        for direction, reverse in (("upload", False), ("download", True)):
+            port = 5400 + client_index * 2 + int(reverse)
+            name = f"client-{client_index + 1}-{direction}"
+            lab.start_iperf_server(port=port, log_name=f"iperf-{name}-server")
+            command = [
+                "iperf3", "-c", SERVER_TUN_IP, "-p", str(port), "-J",
+                "-t", str(seconds), "-O", "1",
+            ]
+            if reverse:
+                command.append("-R")
+            process = subprocess.Popen(
+                ns_cmd(CLIENT_NS, *command),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            lab.track_process(process)
+            jobs[name] = (
+                process,
+                BoundedProcessCapture(process, IPERF_CAPTURE_LIMIT_BYTES),
+                command,
+                reverse,
+            )
+
+    ping_command = [
+        "ping", "-n", "-i", "0.1", "-c", str(seconds * 10),
+        "-w", str(seconds + 5), "-I", "xbond0", SERVER_TUN_IP,
+    ]
+    ping_process = subprocess.Popen(
+        ns_cmd(CLIENT_NS, *ping_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    lab.track_process(ping_process)
+    samples: list[dict[str, Any]] = []
+    deadline = time.monotonic() + seconds + 30
+    while any(process.poll() is None for process, *_ in jobs.values()):
+        samples.append(lab.sample_runtime())
+        if time.monotonic() >= deadline:
+            for process, *_ in jobs.values():
+                if process.poll() is None:
+                    lab.stop_process(process)
+            break
+        time.sleep(0.25)
+
+    results: dict[str, Any] = {}
+    try:
+        for name, (process, capture, command, reverse) in jobs.items():
+            stdout, stderr, oversize = capture.finish()
+            item = parse_iperf_output(
+                stdout,
+                stderr,
+                reverse=reverse,
+                command=command,
+                return_code=process.returncode,
+            )
+            item["output_oversize"] = oversize
+            item["capture_limit_bytes"] = IPERF_CAPTURE_LIMIT_BYTES
+            if oversize:
+                item.update(
+                    valid_complete_json=False,
+                    mbps=0.0,
+                    error="iperf output exceeded the 4 MiB bounded capture limit",
+                )
+            results[name] = item
+    finally:
+        for _, capture, _, _ in jobs.values():
+            capture.cleanup()
+    if ping_process.poll() is None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            ping_process.wait(timeout=5)
+    if ping_process.poll() is None:
+        lab.stop_process(ping_process, signal_number=signal.SIGINT)
+    ping_stdout, ping_stderr = ping_process.communicate(timeout=5)
+    ping_result = parse_ping(
+        "\n".join(part for part in (ping_stdout, ping_stderr) if part),
+        ping_command,
+    )
+    ping_result.update(exit_code=ping_process.returncode, target=SERVER_TUN_IP, interface="xbond0")
+    return (
+        {
+            "clients": results,
+            "aggregate_mbps": sum(item.get("mbps", 0.0) for item in results.values()),
+            "valid_complete": all(item.get("valid_complete_json") for item in results.values()),
+            "retransmits": sum(item.get("retransmits") or 0 for item in results.values()),
+        },
+        samples,
+        ping_result,
+    )
+
+
+def udp_throughput_stage(
+    lab: XBondLab,
+    offered_mbps: int,
+    *,
+    seconds: int = 6,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    rcvbuf_before = {
+        "client": udp_receive_buffer_errors(CLIENT_NS),
+        "server": udp_receive_buffer_errors(SERVER_NS),
+    }
+    port = 5600 + offered_mbps
+    lab.start_iperf_server(port=port, log_name=f"iperf-udp-{offered_mbps}-server")
+    command = [
+        "iperf3", "-c", SERVER_TUN_IP, "-p", str(port), "-J", "-u",
+        "-b", f"{offered_mbps}M", "-l", "1200", "-t", str(seconds), "-O", "1",
+    ]
+    process = subprocess.Popen(
+        ns_cmd(CLIENT_NS, *command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    lab.track_process(process)
+    capture = BoundedProcessCapture(process, IPERF_CAPTURE_LIMIT_BYTES)
+    ping_command = [
+        "ping", "-n", "-i", "0.1", "-c", str(seconds * 10),
+        "-w", str(seconds + 5), "-I", "xbond0", SERVER_TUN_IP,
+    ]
+    ping_process = subprocess.Popen(
+        ns_cmd(CLIENT_NS, *ping_command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    lab.track_process(ping_process)
+    samples: list[dict[str, Any]] = []
+    deadline = time.monotonic() + seconds + 20
+    while process.poll() is None:
+        samples.append(lab.sample_runtime())
+        if time.monotonic() >= deadline:
+            lab.stop_process(process)
+            break
+        time.sleep(0.25)
+    try:
+        stdout, stderr, oversize = capture.finish()
+    finally:
+        capture.cleanup()
+    item = parse_iperf_output(
+        stdout,
+        stderr,
+        reverse=False,
+        command=command,
+        return_code=process.returncode,
+    )
+    raw = item.get("raw") or {}
+    receiver = (raw.get("end") or {}).get("sum_received") or {}
+    item.update(
+        offered_mbps=offered_mbps,
+        achieved_mbps=float(receiver.get("bits_per_second", 0.0)) / 1_000_000,
+        loss_percent=float(receiver.get("lost_percent", 100.0)),
+        jitter_ms=float(receiver.get("jitter_ms", 0.0)),
+        output_oversize=oversize,
+        capture_limit_bytes=IPERF_CAPTURE_LIMIT_BYTES,
+    )
+    if oversize:
+        item.update(valid_complete_json=False, error="iperf output exceeded the 4 MiB bounded capture limit")
+    if ping_process.poll() is None:
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            ping_process.wait(timeout=5)
+    if ping_process.poll() is None:
+        lab.stop_process(ping_process, signal_number=signal.SIGINT)
+    ping_stdout, ping_stderr = ping_process.communicate(timeout=5)
+    ping_result = parse_ping(
+        "\n".join(part for part in (ping_stdout, ping_stderr) if part),
+        ping_command,
+    )
+    ping_result.update(exit_code=ping_process.returncode, target=SERVER_TUN_IP, interface="xbond0")
+    rcvbuf_after = {
+        "client": udp_receive_buffer_errors(CLIENT_NS),
+        "server": udp_receive_buffer_errors(SERVER_NS),
+    }
+    item["udp_rcvbuf_errors_before"] = rcvbuf_before
+    item["udp_rcvbuf_errors_after"] = rcvbuf_after
+    item["udp_rcvbuf_error_delta"] = sum(
+        counter_delta(rcvbuf_before[side], rcvbuf_after[side]) or 0
+        for side in rcvbuf_before
+    )
+    return item, samples, ping_result
 
 
 def capture_outer_packets(
@@ -2946,6 +3253,211 @@ def scenario_heavy_bidirectional(lab: XBondLab, result: LabResult, _: int) -> No
         and processes["server"].get("running")
         else "fail"
     )
+
+
+def scenario_throughput_stress(lab: XBondLab, result: LabResult, _: int) -> None:
+    lab.setup_topology()
+    lab.start_runtime()
+    initial = lab.collect_runtime_metrics()
+    idle = {
+        "ping": lab.tunnel_ping(count=20),
+        "runtime": lab.sample_runtime(),
+    }
+    tcp_stages: dict[str, Any] = {}
+    all_samples: list[dict[str, Any]] = []
+    retransmit_before = tcp_retransmits(CLIENT_NS)
+    for parallel in (1, 4, 8, 16):
+        throughput, samples, ping_during = concurrent_bidirectional_throughput(
+            lab,
+            seconds=5,
+            parallel=parallel,
+            sample_interval=0.25,
+        )
+        tcp_stages[str(parallel)] = {
+            "parallel_streams_per_direction": parallel,
+            "throughput": throughput,
+            "ping": ping_during,
+            "valid_complete": all(
+                direction.get("valid_complete_json")
+                and not direction.get("output_oversize")
+                for direction in throughput.values()
+            ),
+            "aggregate_mbps": sum(
+                direction.get("mbps", 0.0) for direction in throughput.values()
+            ),
+            "retransmits": sum(
+                direction.get("retransmits") or 0 for direction in throughput.values()
+            ),
+        }
+        all_samples.extend(samples)
+    four_client, four_client_samples, four_client_ping = (
+        four_client_bidirectional_throughput(lab, seconds=5)
+    )
+    all_samples.extend(four_client_samples)
+
+    udp_stages: dict[str, Any] = {}
+    for rate in (100, 250, 500, 750):
+        item, samples, ping_during = udp_throughput_stage(lab, rate, seconds=5)
+        udp_stages[str(rate)] = {"throughput": item, "ping": ping_during}
+        all_samples.extend(samples)
+    final = lab.collect_runtime_metrics()
+    retransmit_delta = counter_delta(retransmit_before, tcp_retransmits(CLIENT_NS))
+    client_status = final.get("client_status") or {}
+    server_status = final.get("server_status") or {}
+    client_process = client_status.get("process") or {}
+    server_kernel = server_status.get("kernel_network") or {}
+    server_control = server_status.get("control_plane") or {}
+    kernel_udp_rcvbuf_errors = int(
+        client_process.get("kernel_network", {}).get("udp_rcvbuf_errors", 0)
+    ) + int(server_kernel.get("udp_rcvbuf_errors", 0))
+    control_heartbeat_drops = sum(
+        int(value or 0)
+        for value in (
+            client_process.get("control_lane_drops", 0),
+            server_control.get("heartbeat_ack_drops", 0),
+            server_control.get("control_send_failures", 0),
+        )
+    )
+    false_recovery = any(sample.get("recovery_active") for sample in all_samples)
+    processes_stable = (
+        (initial.get("processes") or {}).get("client", {}).get("pid")
+        == (final.get("processes") or {}).get("client", {}).get("pid")
+        and (initial.get("processes") or {}).get("server", {}).get("pid")
+        == (final.get("processes") or {}).get("server", {}).get("pid")
+        and (final.get("processes") or {}).get("client", {}).get("running")
+        and (final.get("processes") or {}).get("server", {}).get("running")
+    )
+    udp_500 = udp_stages["500"]
+    result.metrics.update(
+        {
+            "idle": idle,
+            "tcp_stages": tcp_stages,
+            "four_client_stage": {
+                **four_client,
+                "ping": four_client_ping,
+            },
+            "udp_stages": udp_stages,
+            "tcp_retransmit_delta": retransmit_delta,
+            "kernel_udp_rcvbuf_error_delta": kernel_udp_rcvbuf_errors,
+            "accepted_rate_udp_rcvbuf_error_delta": udp_500["throughput"].get(
+                "udp_rcvbuf_error_delta"
+            ),
+            "control_heartbeat_drops": control_heartbeat_drops,
+            "false_recovery_observed": false_recovery,
+            "processes_stable": processes_stable,
+            "peak_cpu_percent": {
+                side: max(
+                    (sample[f"{side}_process"].get("cpu_percent", 0.0) for sample in all_samples),
+                    default=0.0,
+                )
+                for side in ("client", "server")
+            },
+            "peak_rss_kib": {
+                side: max(
+                    (sample[f"{side}_process"].get("rss_kib", 0) for sample in all_samples),
+                    default=0,
+                )
+                for side in ("client", "server")
+            },
+            "initial_runtime": initial,
+            "final_runtime": final,
+        }
+    )
+    result.thresholds = {
+        "tcp_4_8_16_complete_valid_required": True,
+        "four_client_aggregate_mbps_min": 533,
+        "tcp_retransmit_delta_max": 7475,
+        "udp_500_loss_percent_max": 0.1,
+        "udp_500_ping_loss_percent_max": 0,
+        "udp_500_ping_p95_ms_max": 20,
+        "kernel_udp_rcvbuf_error_delta_max": 0,
+        "control_heartbeat_drops_max": 0,
+        "false_recovery_allowed": False,
+        "process_restarts_allowed": False,
+    }
+    result.status = (
+        "pass"
+        if all(tcp_stages[str(parallel)]["valid_complete"] for parallel in (4, 8, 16))
+        and four_client["valid_complete"]
+        and four_client["aggregate_mbps"] >= 533
+        and retransmit_delta is not None
+        and retransmit_delta <= 7475
+        and udp_500["throughput"].get("valid_complete_json")
+        and udp_500["throughput"].get("loss_percent", 100.0) <= 0.1
+        and udp_500["ping"].get("loss_percent", 100.0) <= 0
+        and udp_500["ping"].get("p95_ms", 9999.0) < 20
+        and udp_500["throughput"].get("udp_rcvbuf_error_delta", 1) == 0
+        and control_heartbeat_drops == 0
+        and not false_recovery
+        and processes_stable
+        else "fail"
+    )
+    if result.status == "fail":
+        result.reason = "throughput stress acceptance threshold not met"
+
+
+def scenario_multi_session_scale(lab: XBondLab, result: LabResult, _: int) -> None:
+    lab.clean_existing()
+    command = [
+        "/opt/xbond/bin/xbond-loadgen",
+        "--sessions", "500",
+        "--active", "50",
+        "--per-active-mbps", "10",
+        "--duration-seconds", "8",
+        "--churn-per-second", "10",
+    ]
+    completed = run(
+        command,
+        check=False,
+        timeout=30,
+        env={**os.environ, "XBOND_PSK": PSK},
+    )
+    try:
+        metrics = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        metrics = {
+            "parse_error": str(error),
+            "stdout_tail": completed.stdout[-4000:],
+            "stderr_tail": completed.stderr[-4000:],
+        }
+    result.metrics.update(
+        {
+            "load_generator": metrics,
+            "command": command,
+            "exit_code": completed.returncode,
+            "generator_scope": (
+                "in-process real XBond authentication/framing/crypto approximation; "
+                "no per-session TUN or namespace"
+            ),
+        }
+    )
+    result.thresholds = {
+        "authenticated_sessions_min": 500,
+        "responsive_sessions_min": 500,
+        "active_sessions": 50,
+        "offered_aggregate_bps_min": 500_000_000,
+        "achieved_crypto_dataplane_bps_min": 500_000_000,
+        "control_latency_p95_ms_max": 100,
+        "control_failures_max": 0,
+        "memory_growth_remaining_percent_max": 10,
+        "connection_churn_required": True,
+    }
+    result.status = (
+        "pass"
+        if completed.returncode == 0
+        and metrics.get("sessions") == 500
+        and metrics.get("responsive_sessions") == 500
+        and metrics.get("active_sessions") == 50
+        and metrics.get("offered_bps", 0) >= 500_000_000
+        and metrics.get("achieved_bps", 0) >= 500_000_000
+        and metrics.get("control_latency_p95_ms", 9999) < 100
+        and metrics.get("control_failures", 1) == 0
+        and metrics.get("churned_sessions", 0) > 0
+        and metrics.get("memory_return_percent", 100) <= 10
+        else "fail"
+    )
+    if result.status == "fail":
+        result.reason = "multi-session protocol load acceptance threshold not met"
 
 
 def scenario_silent_blackhole(lab: XBondLab, result: LabResult, _: int) -> None:
@@ -5280,6 +5792,8 @@ SCENARIOS: dict[str, Callable[[XBondLab, LabResult, int], None]] = {
     "anchor-bad-backup": scenario_anchor_bad_backup,
     "all-intermittent": scenario_all_intermittent,
     "heavy-bidirectional": scenario_heavy_bidirectional,
+    "throughput-stress": scenario_throughput_stress,
+    "multi-session-scale": scenario_multi_session_scale,
     "silent-blackhole": scenario_silent_blackhole,
     "usb-reenumeration": scenario_usb_reenumeration,
     "heartbeat-integrity": scenario_heartbeat_integrity,

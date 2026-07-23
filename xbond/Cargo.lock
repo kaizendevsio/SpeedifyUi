@@ -719,6 +719,7 @@ dependencies = [
  "anyhow",
  "clap",
  "getrandom",
+ "libc",
  "serde",
  "serde_json",
  "socket2 0.5.10",
@@ -741,12 +742,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "xbond-loadgen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde_json",
+ "xbond-core",
+]
+
+[[package]]
 name = "xbond-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "getrandom",
+ "libc",
  "serde",
  "serde_json",
  "socket2 0.5.10",

@@ -3,6 +3,7 @@ members = [
     "crates/xbond-core",
     "crates/xbond-client",
     "crates/xbond-server",
+    "crates/xbond-loadgen",
 ]
 resolver = "2"
 

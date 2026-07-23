@@ -150,6 +150,15 @@ public sealed class XBondStatsSnapshot
 
     public XBondProcessStatus Process => RawStatus.Process;
 
+    public double QueueUtilizationPercent => Math.Clamp(Process.Saturation.QueueUtilization, 0, 1) * 100;
+
+    public ulong QueueOldestAgeMs => Process.Saturation.OldestAgeMs;
+
+    public ulong UdpBufferErrors =>
+        Process.KernelNetwork.UdpReceiveBufferErrors + Process.KernelNetwork.UdpSendBufferErrors;
+
+    public ulong SaturationPeriods => Process.Saturation.SaturationPeriods;
+
     public XBondServerRecoveryStatus ServerRecovery => RawStatus.ServerRecovery;
 
     public bool HasServerRecoveryTelemetry => ServerRecovery.Reported;

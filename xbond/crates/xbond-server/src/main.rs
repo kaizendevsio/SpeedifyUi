@@ -5,26 +5,33 @@ use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+#[cfg(target_os = "linux")]
+use std::net::{IpAddr, Ipv4Addr};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "linux")]
+use tokio::io::Interest;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Notify, RwLock};
 use tokio::time;
 use xbond_core::{
     build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into,
-    is_ipv4_packet, precompute_transmission_plans, recommended_repair_cache_bytes,
-    AuthenticatedSessionTracker, DuplicateOutcome, DuplicateWindow, FrameReceiver, PacketKind,
-    PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome,
-    RedundancyPolicy, RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache,
-    ScheduleControlMessage, SchedulePlan, SessionChallengeOutcome, SessionHandshakeNonce,
-    SessionProofOutcome, XBondControlMessage, XBondFrame, XBondHeader, XBondKey,
-    XBondPacketPoolStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondServerHealthStatus,
+    is_ipv4_packet, precompute_transmission_plans, read_linux_kernel_network_status,
+    recommended_repair_cache_bytes, AuthenticatedSessionTracker, DuplicateOutcome, DuplicateWindow,
+    FrameReceiver, LinuxKernelNetworkSnapshot, PacketKind, PacketReorderBuffer,
+    PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
+    RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache, ScheduleControlMessage,
+    SchedulePlan, SessionChallengeOutcome, SessionHandshakeNonce, SessionProofOutcome,
+    XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondPacketPoolStatus,
+    XBondRepairCacheStatus, XBondRepairStatus, XBondSaturationStatus, XBondServerHealthStatus,
     XBondServerHealthTargetStatus, XBondServerIngressReorderStatus, XBondServerRecoveryStatus,
-    XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
+    XBondSocketBufferStatus, XBondStageTimingStatus, XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -34,7 +41,40 @@ const HEARTBEAT_ACK_QUEUE_CAPACITY: usize = 256;
 const HEARTBEAT_ACK_RETRY_SEND_TIMEOUT: Duration = Duration::from_millis(10);
 const SEND_REPORT_QUEUE_CAPACITY: usize = 256;
 const TUN_WORKER_EXIT_QUEUE_CAPACITY: usize = 4;
-const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_UDP_SOCKET_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_UDP_RECEIVE_BATCH_SIZE: usize = 32;
+const MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES: usize = 256 * 1024;
+const SATURATION_SOFT_QUEUE_UTILIZATION: f64 = 0.60;
+const SATURATION_HARD_QUEUE_UTILIZATION: f64 = 0.80;
+const SATURATION_SOFT_OLDEST_AGE_MS: u64 = 20;
+const SATURATION_HARD_OLDEST_AGE_MS: u64 = 50;
+const SATURATION_HARD_RESTART_AFTER: Duration = Duration::from_secs(1);
+
+static SERVER_SOCKET_BUFFER_STATUS: OnceLock<XBondSocketBufferStatus> = OnceLock::new();
+static KERNEL_NETWORK_BASELINE: OnceLock<LinuxKernelNetworkSnapshot> = OnceLock::new();
+static RECEIVE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_BATCHES: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_DATAGRAMS: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_BATCH_PEAK: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_DECODE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_ENQUEUE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SCHEDULE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static TUN_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static PRIMARY_RETURN_DRAINED: AtomicU64 = AtomicU64::new(0);
+static SERVER_SATURATION: OnceLock<Mutex<ServerSaturationRuntime>> = OnceLock::new();
+
+#[derive(Debug, Default)]
+struct ServerSaturationRuntime {
+    hard_since: Option<Instant>,
+    previous_active: bool,
+    periods: u64,
+    duplicate_suppressions: u64,
+    fec_suppressions: u64,
+    last_drain_count: u64,
+    last_drain_sample: Option<Instant>,
+    drain_packets_per_second: f64,
+    status: XBondSaturationStatus,
+}
 const REPAIR_CACHE_CAPACITY: usize = 4096;
 const DEFAULT_REPAIR_CACHE_BYTES: usize = 8 * 1024 * 1024;
 const MIN_REPAIR_CACHE_BYTES: usize = 1024 * 1024;
@@ -71,6 +111,9 @@ struct Args {
 
     #[arg(long, default_value_t = 120)]
     realtime_deadline_ms: u64,
+
+    #[arg(long, default_value_t = 768)]
+    interactive_packet_threshold_bytes: usize,
 
     #[arg(long, default_value_t = 50)]
     ingress_reorder_normal_hold_ms: u64,
@@ -116,6 +159,9 @@ struct Args {
 
     #[arg(long, default_value_t = DEFAULT_UDP_SOCKET_BUFFER_BYTES)]
     udp_socket_buffer_bytes: usize,
+
+    #[arg(long, default_value_t = DEFAULT_UDP_RECEIVE_BATCH_SIZE)]
+    udp_receive_batch_size: usize,
 
     #[arg(long, default_value_t = DEFAULT_REPAIR_CACHE_BYTES)]
     repair_cache_bytes: usize,
@@ -865,6 +911,10 @@ struct ServerRuntimeStatus {
     server_health: XBondServerHealthStatus,
     control_plane: ServerControlPlaneStatus,
     return_pmtu: ServerReturnPmtuStatus,
+    socket_buffers: Vec<XBondSocketBufferStatus>,
+    kernel_network: xbond_core::XBondKernelNetworkStatus,
+    saturation: XBondSaturationStatus,
+    stage_timings: XBondStageTimingStatus,
     counters: TunnelCounters,
 }
 
@@ -1709,6 +1759,7 @@ fn spawn_tun_writer(
 
                     let latency_micros =
                         started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+                    TUN_MICROS_TOTAL.fetch_add(latency_micros, Ordering::Relaxed);
                     worker_telemetry
                         .last_write_latency_micros
                         .store(latency_micros, Ordering::Relaxed);
@@ -2021,6 +2072,7 @@ fn spawn_primary_return_sender(
                         .await
                     {
                         Ok(_) => {
+                            PRIMARY_RETURN_DRAINED.fetch_add(1, Ordering::Relaxed);
                             consecutive_deadline_expiries = 0;
                             ReturnSendReport {
                                 path_id: work.header.path_id,
@@ -2143,6 +2195,154 @@ fn refresh_server_repair_cache_status(
     }
 }
 
+#[cfg(target_os = "linux")]
+struct ServerUdpBatchReceiver {
+    buffers: Vec<Vec<u8>>,
+    _iovecs: Vec<libc::iovec>,
+    addresses: Vec<libc::sockaddr_storage>,
+    messages: Vec<libc::mmsghdr>,
+}
+
+// The raw pointers reference this receiver's fixed heap allocations, which are never resized and
+// are accessed exclusively through `&mut self` by one receive task.
+#[cfg(target_os = "linux")]
+unsafe impl Send for ServerUdpBatchReceiver {}
+
+#[cfg(target_os = "linux")]
+impl ServerUdpBatchReceiver {
+    fn new(capacity: usize) -> Self {
+        let mut buffers = (0..capacity)
+            .map(|_| vec![0u8; MAX_UDP_DATAGRAM_BYTES])
+            .collect::<Vec<_>>();
+        let mut iovecs = buffers
+            .iter_mut()
+            .map(|buffer| libc::iovec {
+                iov_base: buffer.as_mut_ptr().cast(),
+                iov_len: buffer.len(),
+            })
+            .collect::<Vec<_>>();
+        let mut addresses = vec![unsafe { std::mem::zeroed::<libc::sockaddr_storage>() }; capacity];
+        let messages = iovecs
+            .iter_mut()
+            .zip(addresses.iter_mut())
+            .map(|(iov, address)| {
+                let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+                message.msg_hdr.msg_iov = std::ptr::from_mut(iov);
+                message.msg_hdr.msg_iovlen = 1;
+                message.msg_hdr.msg_name = std::ptr::from_mut(address).cast();
+                message.msg_hdr.msg_namelen =
+                    std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+                message
+            })
+            .collect::<Vec<_>>();
+        Self {
+            buffers,
+            _iovecs: iovecs,
+            addresses,
+            messages,
+        }
+    }
+
+    fn receive(&mut self, socket: &UdpSocket) -> std::io::Result<usize> {
+        for message in &mut self.messages {
+            message.msg_len = 0;
+            message.msg_hdr.msg_namelen =
+                std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        }
+        socket.try_io(Interest::READABLE, || {
+            let count = unsafe {
+                libc::recvmmsg(
+                    socket.as_raw_fd(),
+                    self.messages.as_mut_ptr(),
+                    self.messages.len().min(u32::MAX as usize) as u32,
+                    libc::MSG_DONTWAIT,
+                    std::ptr::null_mut(),
+                )
+            };
+            if count < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(count as usize)
+        })
+    }
+
+    fn length(&self, index: usize) -> usize {
+        self.messages[index].msg_len as usize
+    }
+
+    fn peer(&self, index: usize) -> std::io::Result<SocketAddr> {
+        socket_addr_from_storage(&self.addresses[index])
+    }
+
+    fn packet(&self, index: usize, length: usize) -> &[u8] {
+        &self.buffers[index][..length]
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn socket_addr_from_storage(address: &libc::sockaddr_storage) -> std::io::Result<SocketAddr> {
+    if i32::from(address.ss_family) != libc::AF_INET {
+        return Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "uLink currently accepts IPv4 UDP peers only",
+        ));
+    }
+    let address = unsafe { &*std::ptr::from_ref(address).cast::<libc::sockaddr_in>() };
+    Ok(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes())),
+        u16::from_be(address.sin_port),
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+struct ServerUdpBatchReceiver {
+    buffers: Vec<Vec<u8>>,
+    lengths: Vec<usize>,
+    peers: Vec<Option<SocketAddr>>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ServerUdpBatchReceiver {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffers: (0..capacity)
+                .map(|_| vec![0u8; MAX_UDP_DATAGRAM_BYTES])
+                .collect(),
+            lengths: vec![0; capacity],
+            peers: vec![None; capacity],
+        }
+    }
+
+    fn receive(&mut self, socket: &UdpSocket) -> std::io::Result<usize> {
+        let mut count = 0;
+        for index in 0..self.buffers.len() {
+            match socket.try_recv_from(&mut self.buffers[index]) {
+                Ok((length, peer)) => {
+                    self.lengths[index] = length;
+                    self.peers[index] = Some(peer);
+                    count += 1;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(count)
+    }
+
+    fn length(&self, index: usize) -> usize {
+        self.lengths[index]
+    }
+
+    fn peer(&self, index: usize) -> std::io::Result<SocketAddr> {
+        self.peers[index]
+            .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "missing UDP peer address"))
+    }
+
+    fn packet(&self, index: usize, length: usize) -> &[u8] {
+        &self.buffers[index][..length]
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -2248,95 +2448,142 @@ async fn main() -> Result<()> {
     let recv_payload_pool_telemetry = payload_pool_telemetry.clone();
     let recv_heartbeat_ack_sender = heartbeat_ack_sender.clone();
     let recv_json_events = args.json_events;
+    let recv_batch_size = args.udp_receive_batch_size.clamp(1, 256);
     let mut udp_receiver_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
+        let mut batch_receiver = ServerUdpBatchReceiver::new(recv_batch_size);
         let mut payload =
             take_payload_buffer(&mut payload_recycle_rx, &recv_payload_pool_telemetry);
         let mut pre_admission_duplicates = DuplicateWindow::new(8192);
         loop {
-            let (len, peer) = match recv_socket.recv_from(&mut buf).await {
-                Ok(result) => result,
+            if let Err(error) = recv_socket.readable().await {
+                eprintln!("xbond server UDP readiness error: {error}");
+                time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            let batch_started = Instant::now();
+            let batch_count = match batch_receiver.receive(&recv_socket) {
+                Ok(count) => count,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => 0,
                 Err(error) => {
                     eprintln!("xbond server UDP recv error: {error}");
-                    time::sleep(Duration::from_millis(50)).await;
+                    0
+                }
+            };
+            for index in 0..batch_count {
+                let len = batch_receiver.length(index);
+                let peer = match batch_receiver.peer(index) {
+                    Ok(peer) => peer,
+                    Err(error) => {
+                        eprintln!("xbond server UDP peer decode error: {error}");
+                        continue;
+                    }
+                };
+                RECEIVE_DATAGRAMS.fetch_add(1, Ordering::Relaxed);
+                let decode_started = Instant::now();
+                let Ok(header) = decode_sealed_payload_into(
+                    batch_receiver.packet(index, len),
+                    &recv_key,
+                    &mut payload,
+                ) else {
+                    continue;
+                };
+                RECEIVE_DECODE_MICROS_TOTAL.fetch_add(
+                    decode_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
+                );
+                if !is_client_originated_frame(&header) {
+                    payload.clear();
                     continue;
                 }
-            };
-            let Ok(header) = decode_sealed_payload_into(&buf[..len], &recv_key, &mut payload)
-            else {
-                continue;
-            };
-            if !is_client_originated_frame(&header) {
-                payload.clear();
-                continue;
-            }
-            if header.kind == PacketKind::Heartbeat {
-                acknowledge_authenticated_heartbeat(
-                    &header,
-                    &recv_key,
+                if header.kind == PacketKind::Heartbeat {
+                    acknowledge_authenticated_heartbeat(
+                        &header,
+                        &recv_key,
+                        peer,
+                        &recv_heartbeat_ack_sender,
+                        recv_json_events,
+                    );
+                }
+                let duplicate_class = pre_admission_duplicate_class(header.kind);
+                if duplicate_class.is_some_and(|class| {
+                    pre_admission_duplicates.contains_key_class(
+                        header.session_id,
+                        header.sequence,
+                        class,
+                    )
+                }) {
+                    recv_duplicates_coalesced.fetch_add(1, Ordering::Relaxed);
+                    payload.clear();
+                    continue;
+                }
+                let frame_session_id = header.session_id;
+                let frame_sequence = header.sequence;
+                let frame_payload = std::mem::replace(
+                    &mut payload,
+                    take_payload_buffer(&mut payload_recycle_rx, &recv_payload_pool_telemetry),
+                );
+                let inbound = InboundServerFrame::new(
+                    XBondFrame::new(header, frame_payload),
                     peer,
-                    &recv_heartbeat_ack_sender,
-                    recv_json_events,
+                    duplicate_class.is_some(),
+                    Some(recv_payload_recycle.clone()),
+                );
+                let enqueue_started = Instant::now();
+                match dispatch_inbound_frame(
+                    &recv_critical_control_frames,
+                    &recv_latest_schedule_frames,
+                    &recv_latest_heartbeat_frames,
+                    &repair_frame_tx,
+                    &payload_frame_tx,
+                    inbound,
+                    &recv_payload_queue_drops,
+                    &recv_repair_queue_drops,
+                    &recv_control_frames_coalesced,
+                ) {
+                    InboundDispatchOutcome::Queued => {
+                        if let Some(class) = duplicate_class {
+                            debug_assert_eq!(
+                                pre_admission_duplicates.observe_key_class(
+                                    frame_session_id,
+                                    frame_sequence,
+                                    class,
+                                ),
+                                DuplicateOutcome::FirstArrival,
+                            );
+                        }
+                    }
+                    InboundDispatchOutcome::Coalesced => {}
+                    InboundDispatchOutcome::Dropped => {}
+                    InboundDispatchOutcome::CriticalSaturated => {
+                        eprintln!(
+                            "xbond server critical inbound control queue saturated; terminating \
+                         cleanly rather than dropping session control"
+                        );
+                        return;
+                    }
+                    InboundDispatchOutcome::Closed => return,
+                }
+                RECEIVE_ENQUEUE_MICROS_TOTAL.fetch_add(
+                    enqueue_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
                 );
             }
-            let duplicate_class = pre_admission_duplicate_class(header.kind);
-            if duplicate_class.is_some_and(|class| {
-                pre_admission_duplicates.contains_key_class(
-                    header.session_id,
-                    header.sequence,
-                    class,
-                )
-            }) {
-                recv_duplicates_coalesced.fetch_add(1, Ordering::Relaxed);
-                payload.clear();
-                continue;
-            }
-            let frame_session_id = header.session_id;
-            let frame_sequence = header.sequence;
-            let frame_payload = std::mem::replace(
-                &mut payload,
-                take_payload_buffer(&mut payload_recycle_rx, &recv_payload_pool_telemetry),
+            RECEIVE_BATCHES.fetch_add(1, Ordering::Relaxed);
+            RECEIVE_BATCH_PEAK.fetch_max(batch_count as u64, Ordering::Relaxed);
+            RECEIVE_MICROS_TOTAL.fetch_add(
+                batch_started
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64,
+                Ordering::Relaxed,
             );
-            let inbound = InboundServerFrame::new(
-                XBondFrame::new(header, frame_payload),
-                peer,
-                duplicate_class.is_some(),
-                Some(recv_payload_recycle.clone()),
-            );
-            match dispatch_inbound_frame(
-                &recv_critical_control_frames,
-                &recv_latest_schedule_frames,
-                &recv_latest_heartbeat_frames,
-                &repair_frame_tx,
-                &payload_frame_tx,
-                inbound,
-                &recv_payload_queue_drops,
-                &recv_repair_queue_drops,
-                &recv_control_frames_coalesced,
-            ) {
-                InboundDispatchOutcome::Queued => {
-                    if let Some(class) = duplicate_class {
-                        debug_assert_eq!(
-                            pre_admission_duplicates.observe_key_class(
-                                frame_session_id,
-                                frame_sequence,
-                                class,
-                            ),
-                            DuplicateOutcome::FirstArrival,
-                        );
-                    }
-                }
-                InboundDispatchOutcome::Coalesced => {}
-                InboundDispatchOutcome::Dropped => {}
-                InboundDispatchOutcome::CriticalSaturated => {
-                    eprintln!(
-                        "xbond server critical inbound control queue saturated; terminating \
-                         cleanly rather than dropping session control"
-                    );
-                    break;
-                }
-                InboundDispatchOutcome::Closed => break,
-            }
+            tokio::task::yield_now().await;
         }
     });
 
@@ -3377,6 +3624,17 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
+                let (soft_saturated, sustained_hard, pacing_delay_micros) =
+                    observe_server_saturation(&primary_return_tx, pending_primary_return.as_ref());
+                if sustained_hard {
+                    return Err(anyhow::anyhow!(
+                        "server return queue remained hard-saturated for more than one second; restarting the session cleanly"
+                    ));
+                }
+                if soft_saturated && packet.len() > args.interactive_packet_threshold_bytes {
+                    time::sleep(Duration::from_micros(pacing_delay_micros.min(250))).await;
+                }
+
                 return_payload_bytes_since_budget_update =
                     return_payload_bytes_since_budget_update.saturating_add(packet.len() as u64);
                 let packet_payload = Arc::new(packet);
@@ -3389,12 +3647,37 @@ async fn main() -> Result<()> {
                 );
                 repair.cache_entries = resend_cache.len();
                 let send_micros = now_micros();
-                let return_targets = select_return_targets(
+                let schedule_started = Instant::now();
+                let mut return_targets = select_return_targets(
                     return_control.as_ref(),
                     &peers,
                     packet_payload.len(),
                     monotonic_micros(),
                 );
+                SCHEDULE_MICROS_TOTAL.fetch_add(
+                    schedule_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
+                );
+                if soft_saturated {
+                    let duplicate_suppressions = return_targets
+                        .iter()
+                        .filter(|(_, _, kind)| *kind == PacketKind::Duplicate)
+                        .count() as u64;
+                    let fec_suppressions = return_targets
+                        .iter()
+                        .filter(|(_, _, kind)| *kind == PacketKind::Fec)
+                        .count() as u64;
+                    record_server_saturation_suppressions(
+                        duplicate_suppressions,
+                        fec_suppressions,
+                    );
+                    return_targets.retain(|(_, _, kind)| {
+                        !matches!(kind, PacketKind::Duplicate | PacketKind::Fec)
+                    });
+                }
                 let mut sent_paths = 0usize;
                 let mut enqueue_accounting = ReturnCopyEnqueueAccounting::default();
                 let mut deferred_primary_work = None;
@@ -3515,6 +3798,138 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn observe_server_saturation(
+    primary_return_tx: &mpsc::Sender<ReturnSendWork>,
+    pending: Option<&PendingPrimaryReturn>,
+) -> (bool, bool, u64) {
+    let now = Instant::now();
+    let capacity = primary_return_tx.max_capacity().max(1);
+    let depth = capacity.saturating_sub(primary_return_tx.capacity());
+    let utilization = depth as f64 / capacity as f64;
+    let oldest_age_ms = pending
+        .map(|pending| {
+            let enqueued_at = pending
+                .work
+                .deadline
+                .checked_sub(PRIMARY_RETURN_QUEUE_DEADLINE)
+                .unwrap_or(now);
+            now.saturating_duration_since(enqueued_at)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64
+        })
+        .unwrap_or_default();
+    let soft = utilization >= SATURATION_SOFT_QUEUE_UTILIZATION
+        || oldest_age_ms >= SATURATION_SOFT_OLDEST_AGE_MS;
+    let hard = utilization >= SATURATION_HARD_QUEUE_UTILIZATION
+        || oldest_age_ms >= SATURATION_HARD_OLDEST_AGE_MS;
+
+    let mut runtime = SERVER_SATURATION
+        .get_or_init(|| Mutex::new(ServerSaturationRuntime::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let drained = PRIMARY_RETURN_DRAINED.load(Ordering::Relaxed);
+    if let Some(last_sample) = runtime.last_drain_sample {
+        let elapsed = now.saturating_duration_since(last_sample).as_secs_f64();
+        if elapsed >= 0.1 {
+            runtime.drain_packets_per_second =
+                drained.saturating_sub(runtime.last_drain_count) as f64 / elapsed;
+            runtime.last_drain_count = drained;
+            runtime.last_drain_sample = Some(now);
+        }
+    } else {
+        runtime.last_drain_count = drained;
+        runtime.last_drain_sample = Some(now);
+    }
+    if soft && !runtime.previous_active {
+        runtime.periods = runtime.periods.saturating_add(1);
+    }
+    runtime.previous_active = soft;
+    if hard {
+        runtime.hard_since.get_or_insert(now);
+    } else {
+        runtime.hard_since = None;
+    }
+    let hard_duration = runtime
+        .hard_since
+        .map(|started| now.saturating_duration_since(started))
+        .unwrap_or_default();
+    let pacing_delay_micros = if soft && runtime.drain_packets_per_second > 0.0 {
+        (1_000_000.0 / runtime.drain_packets_per_second)
+            .ceil()
+            .clamp(1.0, 250.0) as u64
+    } else {
+        0
+    };
+    runtime.status = XBondSaturationStatus {
+        state: if hard {
+            "hard"
+        } else if soft {
+            "soft"
+        } else {
+            "normal"
+        }
+        .to_string(),
+        reason: if utilization
+            >= if hard {
+                SATURATION_HARD_QUEUE_UTILIZATION
+            } else {
+                SATURATION_SOFT_QUEUE_UTILIZATION
+            } {
+            Some("queue-utilization".to_string())
+        } else if soft {
+            Some("oldest-queue-age".to_string())
+        } else {
+            None
+        },
+        queue_utilization: utilization,
+        oldest_age_ms,
+        recent_drain_packets_per_second: runtime.drain_packets_per_second,
+        pacing_delay_micros,
+        duplicate_suppressions: runtime.duplicate_suppressions,
+        fec_suppressions: runtime.fec_suppressions,
+        saturation_periods: runtime.periods,
+        hard_duration_ms: hard_duration.as_millis().min(u128::from(u64::MAX)) as u64,
+    };
+    (
+        soft,
+        hard_duration >= SATURATION_HARD_RESTART_AFTER,
+        pacing_delay_micros,
+    )
+}
+
+fn record_server_saturation_suppressions(duplicates: u64, fec: u64) {
+    let mut runtime = SERVER_SATURATION
+        .get_or_init(|| Mutex::new(ServerSaturationRuntime::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    runtime.duplicate_suppressions = runtime.duplicate_suppressions.saturating_add(duplicates);
+    runtime.fec_suppressions = runtime.fec_suppressions.saturating_add(fec);
+    runtime.status.duplicate_suppressions = runtime.duplicate_suppressions;
+    runtime.status.fec_suppressions = runtime.fec_suppressions;
+}
+
+fn server_saturation_status() -> XBondSaturationStatus {
+    SERVER_SATURATION
+        .get_or_init(|| Mutex::new(ServerSaturationRuntime::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .status
+        .clone()
+}
+
+fn server_stage_timings() -> XBondStageTimingStatus {
+    XBondStageTimingStatus {
+        receive_micros_total: RECEIVE_MICROS_TOTAL.load(Ordering::Relaxed),
+        receive_batches: RECEIVE_BATCHES.load(Ordering::Relaxed),
+        receive_datagrams: RECEIVE_DATAGRAMS.load(Ordering::Relaxed),
+        receive_batch_peak: RECEIVE_BATCH_PEAK.load(Ordering::Relaxed),
+        decode_micros_total: RECEIVE_DECODE_MICROS_TOTAL.load(Ordering::Relaxed),
+        schedule_micros_total: SCHEDULE_MICROS_TOTAL.load(Ordering::Relaxed),
+        enqueue_micros_total: RECEIVE_ENQUEUE_MICROS_TOTAL.load(Ordering::Relaxed),
+        tun_micros_total: TUN_MICROS_TOTAL.load(Ordering::Relaxed),
+    }
+}
+
 async fn bind_udp_socket(bind_addr: &str, socket_buffer_bytes: usize) -> Result<UdpSocket> {
     let bind_addr = bind_addr
         .parse::<SocketAddr>()
@@ -3525,12 +3940,13 @@ async fn bind_udp_socket(bind_addr: &str, socket_buffer_bytes: usize) -> Result<
         Some(Protocol::UDP),
     )?;
     socket.set_reuse_address(true)?;
-    apply_udp_socket_buffers(&socket, socket_buffer_bytes);
+    let buffer_status = apply_udp_socket_buffers(&socket, socket_buffer_bytes, "server-listener")?;
     socket
         .bind(&bind_addr.into())
         .with_context(|| format!("failed to bind UDP socket to {bind_addr}"))?;
     socket.set_nonblocking(true)?;
     let std_socket: std::net::UdpSocket = socket.into();
+    let _ = SERVER_SOCKET_BUFFER_STATUS.set(buffer_status);
     Ok(UdpSocket::from_std(std_socket)?)
 }
 
@@ -3771,14 +4187,86 @@ async fn receive_prioritized_return_work(
     }
 }
 
-fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
-    if socket_buffer_bytes == 0 {
-        return;
+fn apply_udp_socket_buffers(
+    socket: &Socket,
+    socket_buffer_bytes: usize,
+    scope: &str,
+) -> Result<XBondSocketBufferStatus> {
+    if socket_buffer_bytes > 0 {
+        socket
+            .set_recv_buffer_size(socket_buffer_bytes)
+            .context("failed to request UDP receive buffer")?;
+        socket
+            .set_send_buffer_size(socket_buffer_bytes)
+            .context("failed to request UDP send buffer")?;
     }
-
-    let _ = socket.set_recv_buffer_size(socket_buffer_bytes);
-    let _ = socket.set_send_buffer_size(socket_buffer_bytes);
+    let mut effective_receive_bytes = socket
+        .recv_buffer_size()
+        .context("failed to read effective UDP receive buffer")?;
+    let mut effective_send_bytes = socket
+        .send_buffer_size()
+        .context("failed to read effective UDP send buffer")?;
+    if socket_buffer_bytes > 0
+        && (effective_receive_bytes < socket_buffer_bytes
+            || effective_send_bytes < socket_buffer_bytes)
+    {
+        force_udp_socket_buffers(socket, socket_buffer_bytes);
+        effective_receive_bytes = socket
+            .recv_buffer_size()
+            .context("failed to read forced UDP receive buffer")?;
+        effective_send_bytes = socket
+            .send_buffer_size()
+            .context("failed to read forced UDP send buffer")?;
+    }
+    if effective_receive_bytes < MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES
+        || effective_send_bytes < MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES
+    {
+        anyhow::bail!(
+            "effective UDP socket buffers are unusably small for {scope}: receive={effective_receive_bytes}, send={effective_send_bytes}, minimum={MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES}"
+        );
+    }
+    let below_requested = socket_buffer_bytes > 0
+        && (effective_receive_bytes < socket_buffer_bytes
+            || effective_send_bytes < socket_buffer_bytes);
+    if below_requested {
+        eprintln!(
+            "xbond UDP socket buffer warning for {scope}: requested={socket_buffer_bytes}, effective_receive={effective_receive_bytes}, effective_send={effective_send_bytes}"
+        );
+    }
+    Ok(XBondSocketBufferStatus {
+        scope: scope.to_string(),
+        requested_receive_bytes: socket_buffer_bytes,
+        requested_send_bytes: socket_buffer_bytes,
+        effective_receive_bytes,
+        effective_send_bytes,
+        below_requested,
+    })
 }
+
+#[cfg(target_os = "linux")]
+fn force_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
+    let value = socket_buffer_bytes.min(i32::MAX as usize) as libc::c_int;
+    let length = std::mem::size_of_val(&value) as libc::socklen_t;
+    unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUFFORCE,
+            std::ptr::addr_of!(value).cast(),
+            length,
+        );
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUFFORCE,
+            std::ptr::addr_of!(value).cast(),
+            length,
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn force_udp_socket_buffers(_socket: &Socket, _socket_buffer_bytes: usize) {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecoveredPacket {
@@ -3976,6 +4464,17 @@ fn write_server_status(
         server_health: server_health.clone(),
         control_plane,
         return_pmtu: return_pmtu.clone(),
+        socket_buffers: SERVER_SOCKET_BUFFER_STATUS
+            .get()
+            .cloned()
+            .into_iter()
+            .collect(),
+        kernel_network: read_linux_kernel_network_status(tun.map(XBondTun::name)).delta(
+            *KERNEL_NETWORK_BASELINE
+                .get_or_init(|| read_linux_kernel_network_status(tun.map(XBondTun::name))),
+        ),
+        saturation: server_saturation_status(),
+        stage_timings: server_stage_timings(),
         counters,
     };
     let json = serde_json::to_vec(&status)?;
@@ -5945,6 +6444,10 @@ mod tests {
                 ..ServerControlPlaneStatus::default()
             },
             return_pmtu: ServerReturnPmtuStatus::default(),
+            socket_buffers: Vec::new(),
+            kernel_network: xbond_core::XBondKernelNetworkStatus::default(),
+            saturation: XBondSaturationStatus::default(),
+            stage_timings: XBondStageTimingStatus::default(),
             counters: TunnelCounters {
                 data_packets_received: 0,
                 data_packets_forwarded: 0,

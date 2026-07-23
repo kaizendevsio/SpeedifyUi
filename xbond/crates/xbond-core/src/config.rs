@@ -25,6 +25,8 @@ pub struct ClientConfig {
     pub inbound_queue_capacity: usize,
     #[serde(default = "default_udp_socket_buffer_bytes")]
     pub udp_socket_buffer_bytes: usize,
+    #[serde(default = "default_udp_receive_batch_size")]
+    pub udp_receive_batch_size: usize,
     #[serde(default = "default_heartbeat_interval_ms")]
     pub heartbeat_interval_ms: u64,
     #[serde(default = "default_heartbeat_health_window_samples")]
@@ -89,6 +91,7 @@ impl Default for ClientConfig {
             tun_queue_capacity: default_tun_queue_capacity(),
             inbound_queue_capacity: default_inbound_queue_capacity(),
             udp_socket_buffer_bytes: default_udp_socket_buffer_bytes(),
+            udp_receive_batch_size: default_udp_receive_batch_size(),
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
             heartbeat_health_window_samples: default_heartbeat_health_window_samples(),
             heartbeat_min_quality_samples: default_heartbeat_min_quality_samples(),
@@ -174,7 +177,11 @@ pub fn default_inbound_queue_capacity() -> usize {
 }
 
 pub fn default_udp_socket_buffer_bytes() -> usize {
-    4 * 1024 * 1024
+    8 * 1024 * 1024
+}
+
+pub fn default_udp_receive_batch_size() -> usize {
+    32
 }
 
 pub fn default_heartbeat_interval_ms() -> u64 {

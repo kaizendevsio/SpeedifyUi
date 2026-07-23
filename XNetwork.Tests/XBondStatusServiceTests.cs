@@ -494,6 +494,39 @@ public class XBondStatusServiceTests
     }
 
     [Fact]
+    public void ParseRuntimeStatusJson_MapsDataplanePressureTelemetry()
+    {
+        var status = XBondStatusService.ParseRuntimeStatusJson(
+            """
+            {
+              "running": true,
+              "process": {
+                "udp_receive_batch_size": 32,
+                "kernel_network": {
+                  "udp_rcvbuf_errors": 3,
+                  "udp_sndbuf_errors": 2
+                },
+                "saturation": {
+                  "state": "soft",
+                  "queue_utilization": 0.625,
+                  "oldest_age_ms": 24,
+                  "saturation_periods": 7
+                }
+              }
+            }
+            """,
+            new XBondSettings());
+
+        var snapshot = XBondStatsService.FromStatus(status);
+
+        Assert.Equal(32, snapshot.Process.UdpReceiveBatchSize);
+        Assert.Equal(62.5, snapshot.QueueUtilizationPercent);
+        Assert.Equal((ulong)24, snapshot.QueueOldestAgeMs);
+        Assert.Equal((ulong)5, snapshot.UdpBufferErrors);
+        Assert.Equal((ulong)7, snapshot.SaturationPeriods);
+    }
+
+    [Fact]
     public void ParseRuntimeStatusJson_ComputesTwoLinkDuplicateScheduleAndRejectsFullLossAnchor()
     {
         var status = XBondStatusService.ParseRuntimeStatusJson(

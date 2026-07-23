@@ -6,6 +6,8 @@ param(
         "anchor-bad-backup",
         "all-intermittent",
         "heavy-bidirectional",
+        "throughput-stress",
+        "multi-session-scale",
         "silent-blackhole",
         "usb-reenumeration",
         "heartbeat-integrity",

@@ -354,6 +354,123 @@ public class XBondProcessStatus
 
     [JsonPropertyName("decoded_frames")]
     public ulong DecodedFrames { get; set; }
+
+    [JsonPropertyName("udp_receive_batch_size")]
+    public int UdpReceiveBatchSize { get; set; }
+
+    [JsonPropertyName("socket_buffers")]
+    public List<XBondSocketBufferStatus> SocketBuffers { get; set; } = new();
+
+    [JsonPropertyName("kernel_network")]
+    public XBondKernelNetworkStatus KernelNetwork { get; set; } = new();
+
+    [JsonPropertyName("saturation")]
+    public XBondSaturationStatus Saturation { get; set; } = new();
+
+    [JsonPropertyName("stage_timings")]
+    public XBondStageTimingStatus StageTimings { get; set; } = new();
+}
+
+public class XBondSocketBufferStatus
+{
+    [JsonPropertyName("scope")]
+    public string Scope { get; set; } = "";
+
+    [JsonPropertyName("requested_receive_bytes")]
+    public ulong RequestedReceiveBytes { get; set; }
+
+    [JsonPropertyName("requested_send_bytes")]
+    public ulong RequestedSendBytes { get; set; }
+
+    [JsonPropertyName("effective_receive_bytes")]
+    public ulong EffectiveReceiveBytes { get; set; }
+
+    [JsonPropertyName("effective_send_bytes")]
+    public ulong EffectiveSendBytes { get; set; }
+
+    [JsonPropertyName("below_requested")]
+    public bool BelowRequested { get; set; }
+}
+
+public class XBondKernelNetworkStatus
+{
+    [JsonPropertyName("udp_in_errors")]
+    public ulong UdpInErrors { get; set; }
+
+    [JsonPropertyName("udp_rcvbuf_errors")]
+    public ulong UdpReceiveBufferErrors { get; set; }
+
+    [JsonPropertyName("udp_sndbuf_errors")]
+    public ulong UdpSendBufferErrors { get; set; }
+
+    [JsonPropertyName("udp_no_ports")]
+    public ulong UdpNoPorts { get; set; }
+
+    [JsonPropertyName("tunnel_rx_drops")]
+    public ulong TunnelReceiveDrops { get; set; }
+
+    [JsonPropertyName("tunnel_tx_drops")]
+    public ulong TunnelSendDrops { get; set; }
+}
+
+public class XBondSaturationStatus
+{
+    [JsonPropertyName("state")]
+    public string State { get; set; } = "normal";
+
+    [JsonPropertyName("reason")]
+    public string? Reason { get; set; }
+
+    [JsonPropertyName("queue_utilization")]
+    public double QueueUtilization { get; set; }
+
+    [JsonPropertyName("oldest_age_ms")]
+    public ulong OldestAgeMs { get; set; }
+
+    [JsonPropertyName("recent_drain_packets_per_second")]
+    public double RecentDrainPacketsPerSecond { get; set; }
+
+    [JsonPropertyName("pacing_delay_micros")]
+    public ulong PacingDelayMicros { get; set; }
+
+    [JsonPropertyName("duplicate_suppressions")]
+    public ulong DuplicateSuppressions { get; set; }
+
+    [JsonPropertyName("fec_suppressions")]
+    public ulong FecSuppressions { get; set; }
+
+    [JsonPropertyName("saturation_periods")]
+    public ulong SaturationPeriods { get; set; }
+
+    [JsonPropertyName("hard_duration_ms")]
+    public ulong HardDurationMs { get; set; }
+}
+
+public class XBondStageTimingStatus
+{
+    [JsonPropertyName("receive_micros_total")]
+    public ulong ReceiveMicrosTotal { get; set; }
+
+    [JsonPropertyName("receive_batches")]
+    public ulong ReceiveBatches { get; set; }
+
+    [JsonPropertyName("receive_datagrams")]
+    public ulong ReceiveDatagrams { get; set; }
+
+    [JsonPropertyName("receive_batch_peak")]
+    public ulong ReceiveBatchPeak { get; set; }
+
+    [JsonPropertyName("decode_micros_total")]
+    public ulong DecodeMicrosTotal { get; set; }
+
+    [JsonPropertyName("schedule_micros_total")]
+    public ulong ScheduleMicrosTotal { get; set; }
+
+    [JsonPropertyName("enqueue_micros_total")]
+    public ulong EnqueueMicrosTotal { get; set; }
+
+    [JsonPropertyName("tun_micros_total")]
+    public ulong TunMicrosTotal { get; set; }
 }
 
 public class XBondServerHealthStatus

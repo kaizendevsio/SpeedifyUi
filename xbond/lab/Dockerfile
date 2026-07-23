@@ -24,6 +24,7 @@ RUN apt-get update \
 
 COPY --from=builder /src/target/release/xbond-client /opt/xbond/bin/xbond-client
 COPY --from=builder /src/target/release/xbond-server /opt/xbond/bin/xbond-server
+COPY --from=builder /src/target/release/xbond-loadgen /opt/xbond/bin/xbond-loadgen
 COPY lab /opt/xbond/lab
 RUN sed -i 's/\r$//' /opt/xbond/lab/entrypoint.sh \
     && chmod 0755 /opt/xbond/lab/entrypoint.sh

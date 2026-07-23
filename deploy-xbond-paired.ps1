@@ -39,6 +39,8 @@ git pull --ff-only
 cargo build --release --manifest-path xbond/Cargo.toml -p xbond-server
 install -m 0755 xbond/target/release/xbond-server /usr/local/bin/xbond-server
 install -m 0644 xbond/deploy/systemd/xbond-server.service /etc/systemd/system/xbond-server.service
+install -m 0644 xbond/deploy/sysctl/90-xbond.conf /etc/sysctl.d/90-xbond.conf
+sysctl --system >/dev/null
 systemctl daemon-reload
 systemctl restart xbond-server.service
 systemctl restart xbond-server-nat.service
@@ -63,6 +65,18 @@ sudo -n install -m 0755 xbond/target/release/xbond-client /usr/local/bin/xbond-c
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 sudo -n install -m 0644 xbond/deploy/systemd/xbond-client.service /etc/systemd/system/xbond-client.service
+sudo -n install -m 0644 xbond/deploy/sysctl/90-xbond.conf /etc/sysctl.d/90-xbond.conf
+sudo -n sysctl --system >/dev/null
+if grep -q '^udp_socket_buffer_bytes[[:space:]]*=' /etc/xbond/client.toml; then
+  sudo -n sed -i 's/^udp_socket_buffer_bytes[[:space:]]*=.*/udp_socket_buffer_bytes = 8388608/' /etc/xbond/client.toml
+else
+  sudo -n sed -i '0,/^\[\[paths\]\]/{s//udp_socket_buffer_bytes = 8388608\n\n[[paths]]/}' /etc/xbond/client.toml
+fi
+if grep -q '^udp_receive_batch_size[[:space:]]*=' /etc/xbond/client.toml; then
+  sudo -n sed -i 's/^udp_receive_batch_size[[:space:]]*=.*/udp_receive_batch_size = 32/' /etc/xbond/client.toml
+else
+  sudo -n sed -i '0,/^\[\[paths\]\]/{s//udp_receive_batch_size = 32\n\n[[paths]]/}' /etc/xbond/client.toml
+fi
 sudo -n systemctl daemon-reload
 sudo -n systemctl restart xbond-client.service
 systemctl is-active xnetwork.service

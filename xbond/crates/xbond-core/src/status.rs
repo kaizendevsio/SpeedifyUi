@@ -516,6 +516,82 @@ pub struct XBondRepairCacheStatus {
     pub quiescent_since_micros: Option<u64>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondSocketBufferStatus {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub requested_receive_bytes: usize,
+    #[serde(default)]
+    pub requested_send_bytes: usize,
+    #[serde(default)]
+    pub effective_receive_bytes: usize,
+    #[serde(default)]
+    pub effective_send_bytes: usize,
+    #[serde(default)]
+    pub below_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondKernelNetworkStatus {
+    #[serde(default)]
+    pub udp_in_errors: u64,
+    #[serde(default)]
+    pub udp_rcvbuf_errors: u64,
+    #[serde(default)]
+    pub udp_sndbuf_errors: u64,
+    #[serde(default)]
+    pub udp_no_ports: u64,
+    #[serde(default)]
+    pub tunnel_rx_drops: u64,
+    #[serde(default)]
+    pub tunnel_tx_drops: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct XBondSaturationStatus {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub queue_utilization: f64,
+    #[serde(default)]
+    pub oldest_age_ms: u64,
+    #[serde(default)]
+    pub recent_drain_packets_per_second: f64,
+    #[serde(default)]
+    pub pacing_delay_micros: u64,
+    #[serde(default)]
+    pub duplicate_suppressions: u64,
+    #[serde(default)]
+    pub fec_suppressions: u64,
+    #[serde(default)]
+    pub saturation_periods: u64,
+    #[serde(default)]
+    pub hard_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct XBondStageTimingStatus {
+    #[serde(default)]
+    pub receive_micros_total: u64,
+    #[serde(default)]
+    pub receive_batches: u64,
+    #[serde(default)]
+    pub receive_datagrams: u64,
+    #[serde(default)]
+    pub receive_batch_peak: u64,
+    #[serde(default)]
+    pub decode_micros_total: u64,
+    #[serde(default)]
+    pub schedule_micros_total: u64,
+    #[serde(default)]
+    pub enqueue_micros_total: u64,
+    #[serde(default)]
+    pub tun_micros_total: u64,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondProcessStatus {
     #[serde(default)]
@@ -544,6 +620,16 @@ pub struct XBondProcessStatus {
     pub inbound_queue_depth: usize,
     #[serde(default)]
     pub udp_socket_buffer_bytes: usize,
+    #[serde(default)]
+    pub udp_receive_batch_size: usize,
+    #[serde(default)]
+    pub socket_buffers: Vec<XBondSocketBufferStatus>,
+    #[serde(default)]
+    pub kernel_network: XBondKernelNetworkStatus,
+    #[serde(default)]
+    pub saturation: XBondSaturationStatus,
+    #[serde(default)]
+    pub stage_timings: XBondStageTimingStatus,
     #[serde(default)]
     pub tun_queue_drops: u64,
     #[serde(default)]

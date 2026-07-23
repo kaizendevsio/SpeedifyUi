@@ -145,6 +145,27 @@
             </div>
         </section>
 
+        <section class="mb-6 border-y border-slate-700 py-4" aria-label="uLink dataplane pressure">
+            <div class="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
+                <div>
+                    <div class="text-xs text-slate-500">Queue Utilization</div>
+                    <div class="mt-1 text-lg font-semibold text-white">@_snapshot.QueueUtilizationPercent.ToString("0.#")%</div>
+                </div>
+                <div>
+                    <div class="text-xs text-slate-500">Oldest Queue Item</div>
+                    <div class="mt-1 text-lg font-semibold text-white">@_snapshot.QueueOldestAgeMs ms</div>
+                </div>
+                <div>
+                    <div class="text-xs text-slate-500">UDP Buffer Errors</div>
+                    <div class="mt-1 text-lg font-semibold text-white">@_snapshot.UdpBufferErrors</div>
+                </div>
+                <div>
+                    <div class="text-xs text-slate-500">Saturation Periods</div>
+                    <div class="mt-1 text-lg font-semibold text-white">@_snapshot.SaturationPeriods</div>
+                </div>
+            </div>
+        </section>
+
         <section class="mb-6">
             <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>

@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,6 +13,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
+#[cfg(target_os = "linux")]
+use tokio::io::Interest;
 #[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UdpSocket;
@@ -22,19 +26,50 @@ use tokio::time;
 use xbond_core::{
     build_schedule, decode_sealed_payload_into, default_udp_socket_buffer_bytes,
     encode_sealed_payload_into, expand_schedule_for_recovery, is_ipv4_packet,
-    precompute_transmission_plans, recommended_repair_cache_bytes, select_path_roles,
-    select_path_roles_with_state, stabilize_recovery_schedule, update_recovery_state, ClientConfig,
-    FrameReceiver, PacketKind, PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot,
-    PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig,
-    RecoveryScheduleStabilityState, RecoveryState, RecoveryStatus, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderedPacket, RepairPayload, ResendCache, RoleSelectionConfig,
-    RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
-    SessionHandshakeNonce, XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus,
-    XBondFrame, XBondHeader, XBondKey, XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus,
-    XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus,
-    XBondServerRecoveryStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
-    FLAG_SERVER_TO_CLIENT,
+    precompute_transmission_plans, read_linux_kernel_network_status,
+    recommended_repair_cache_bytes, select_path_roles, select_path_roles_with_state,
+    stabilize_recovery_schedule, update_recovery_state, ClientConfig, FrameReceiver,
+    LinuxKernelNetworkSnapshot, PacketKind, PacketReorderBuffer, PacketTransmissionPlans,
+    PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome,
+    RecoveryConfig, RecoveryScheduleStabilityState, RecoveryState, RecoveryStatus,
+    RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket, RepairPayload, ResendCache,
+    RoleSelectionConfig, RoleSelectionState, RouteVerification, ScheduleControlMessage,
+    ScheduleMode, SchedulePlan, SessionHandshakeNonce, XBondControlMessage,
+    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
+    XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
+    XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus, XBondSaturationStatus,
+    XBondServerRecoveryStatus, XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus,
+    XBondTun, XBondTunnelStatus, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
+
+const MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES: usize = 256 * 1024;
+const SATURATION_SOFT_QUEUE_UTILIZATION: f64 = 0.60;
+const SATURATION_HARD_QUEUE_UTILIZATION: f64 = 0.80;
+const SATURATION_SOFT_OLDEST_AGE_MS: u64 = 20;
+const SATURATION_HARD_OLDEST_AGE_MS: u64 = 50;
+const SATURATION_HARD_RECONNECT_AFTER: Duration = Duration::from_secs(1);
+
+static SOCKET_BUFFER_STATUSES: OnceLock<StdMutex<HashMap<String, XBondSocketBufferStatus>>> =
+    OnceLock::new();
+static KERNEL_NETWORK_BASELINE: OnceLock<LinuxKernelNetworkSnapshot> = OnceLock::new();
+static RECEIVE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_BATCHES: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_DATAGRAMS: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_BATCH_PEAK: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_DECODE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static RECEIVE_ENQUEUE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static SCHEDULE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static CLIENT_SATURATION: OnceLock<StdMutex<ClientSaturationRuntime>> = OnceLock::new();
+
+#[derive(Debug, Default)]
+struct ClientSaturationRuntime {
+    hard_since: Option<Instant>,
+    periods: u64,
+    previous_active: bool,
+    duplicate_suppressions: u64,
+    fec_suppressions: u64,
+    status: XBondSaturationStatus,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "xbond-client")]
@@ -3629,10 +3664,30 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     continue;
                 }
 
+                let (soft_saturated, sustained_hard, pacing_delay_micros) =
+                    observe_client_saturation(&senders, &path_runtime, packet.len());
+                if sustained_hard {
+                    bail!("client upload queue remained hard-saturated for more than one second; reconnecting cleanly");
+                }
+                if soft_saturated
+                    && packet.len() > policy_config.interactive_packet_threshold_bytes
+                    && pacing_delay_micros > 0
+                {
+                    time::sleep(Duration::from_micros(pacing_delay_micros.min(250))).await;
+                }
+
                 let packet_payload = Arc::new(packet);
+                let schedule_started = Instant::now();
                 let packet_transmissions = transmission_plans.for_packet_len(
                     packet_payload.len(),
                     policy_config.interactive_packet_threshold_bytes,
+                );
+                SCHEDULE_MICROS_TOTAL.fetch_add(
+                    schedule_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
                 );
 
                 if packet_transmissions.is_empty() {
@@ -3676,9 +3731,22 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     .data_bytes_sent
                     .saturating_add(packet_payload.len() as u64);
                 let send_micros = now_micros();
+                let suppressed_duplicates = if soft_saturated {
+                    packet_transmissions
+                        .iter()
+                        .filter(|transmission| transmission.packet_kind == PacketKind::Duplicate)
+                        .count() as u64
+                } else {
+                    0
+                };
+                record_client_saturation_suppressions(suppressed_duplicates, 0);
                 for transmission in packet_transmissions
                     .iter()
-                    .filter(|transmission| transmission.packet_kind != PacketKind::Fec)
+                    .filter(|transmission| {
+                        transmission.packet_kind != PacketKind::Fec
+                            && (!soft_saturated
+                                || transmission.packet_kind == PacketKind::Data)
+                    })
                 {
                     record_payload_traffic_opportunity(&mut path_runtime, transmission.path_id);
                     let Some(sender) = senders.get(&transmission.path_id) else {
@@ -3753,9 +3821,18 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     }
                 }
 
-                let fec_eligible = packet_transmissions
+                let fec_eligible = !soft_saturated && packet_transmissions
                     .iter()
                     .any(|transmission| transmission.packet_kind == PacketKind::Fec);
+                if soft_saturated
+                    && packet_transmissions
+                        .iter()
+                        .any(|transmission| transmission.packet_kind == PacketKind::Fec)
+                {
+                    counters.fec_packets_skipped = counters.fec_packets_skipped.saturating_add(1);
+                    counters.fec_send_skips = counters.fec_send_skips.saturating_add(1);
+                    record_client_saturation_suppressions(0, 1);
+                }
                 if let Some((base_sequence, first_payload, second_payload)) =
                     advance_pending_fec_source(
                         &mut pending_fec_source,
@@ -4511,6 +4588,7 @@ async fn ensure_tunnel_sockets(
                         socket_event_tx.clone(),
                         key.clone(),
                         tun_mtu,
+                        config.udp_receive_batch_size,
                         receiver_payload_pool.clone(),
                     );
                     receivers.insert(*path_id, receiver);
@@ -4574,6 +4652,7 @@ async fn ensure_tunnel_sockets(
                     socket_event_tx.clone(),
                     key.clone(),
                     tun_mtu,
+                    config.udp_receive_batch_size,
                     receiver_payload_pool.clone(),
                 );
                 receivers.insert(*path_id, receiver);
@@ -4640,6 +4719,7 @@ async fn ensure_tunnel_sockets(
             socket_event_tx.clone(),
             key.clone(),
             tun_mtu,
+            config.udp_receive_batch_size,
             receiver_payload_pool.clone(),
         );
         let sender = spawn_tunnel_sender(
@@ -4952,15 +5032,24 @@ fn spawn_tunnel_receiver(
     socket_event_tx: mpsc::Sender<PathSocketEvent>,
     key: XBondKey,
     tun_mtu: u16,
+    receive_batch_size: usize,
     payload_pool: ReceiverPayloadPool,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut buf = vec![0u8; MAX_UDP_DATAGRAM_BYTES];
+        let receive_batch_size = receive_batch_size.clamp(1, 256);
+        let mut batch_receiver = ConnectedUdpBatchReceiver::new(receive_batch_size);
         let scratch_capacity = receiver_scratch_capacity(tun_mtu);
         let mut payload = Vec::with_capacity(scratch_capacity);
         loop {
-            let (len, received_at) = match socket.recv(&mut buf).await {
-                Ok(len) => (len, Instant::now()),
+            if let Err(error) = socket.readable().await {
+                eprintln!("xbond path receiver for path {path_id} readiness error: {error}");
+                time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+            let batch_started = Instant::now();
+            let batch_count = match batch_receiver.receive(&socket) {
+                Ok(count) => count,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => 0,
                 Err(error) => {
                     if socket_error_requires_rebind(&error) {
                         let _ = socket_event_tx
@@ -4973,55 +5062,201 @@ fn spawn_tunnel_receiver(
                             .await;
                     }
                     eprintln!("xbond path receiver for path {path_id} hit UDP recv error: {error}");
-                    time::sleep(Duration::from_millis(50)).await;
-                    continue;
+                    0
                 }
             };
-            let Ok(header) = decode_sealed_payload_into(&buf[..len], &key, &mut payload) else {
-                continue;
-            };
-            if !is_server_originated_frame(&header) {
-                payload.clear();
-                continue;
-            }
-            let Some(queued_payload) =
-                copy_bounded_receiver_payload(header.kind, &payload, tun_mtu, &payload_pool)
-            else {
+            for index in 0..batch_count {
+                let len = batch_receiver.length(index);
+                let received_at = Instant::now();
+                RECEIVE_DATAGRAMS.fetch_add(1, Ordering::Relaxed);
+                let decode_started = Instant::now();
+                let Ok(header) = decode_sealed_payload_into(
+                    batch_receiver.packet(index, len),
+                    &key,
+                    &mut payload,
+                ) else {
+                    continue;
+                };
+                RECEIVE_DECODE_MICROS_TOTAL.fetch_add(
+                    decode_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
+                );
+                if !is_server_originated_frame(&header) {
+                    payload.clear();
+                    continue;
+                }
+                let Some(queued_payload) =
+                    copy_bounded_receiver_payload(header.kind, &payload, tun_mtu, &payload_pool)
+                else {
+                    payload.clear();
+                    if payload.capacity() > scratch_capacity.saturating_mul(2) {
+                        payload = Vec::with_capacity(scratch_capacity);
+                    }
+                    continue;
+                };
                 payload.clear();
                 if payload.capacity() > scratch_capacity.saturating_mul(2) {
                     payload = Vec::with_capacity(scratch_capacity);
                 }
-                continue;
-            };
-            payload.clear();
-            if payload.capacity() > scratch_capacity.saturating_mul(2) {
-                payload = Vec::with_capacity(scratch_capacity);
-            }
-            let prioritized = is_prioritized_client_inbound(header.kind);
-            let inbound = InboundTunnelFrame {
-                path_id,
-                frame: XBondFrame::new(header, queued_payload),
-                received_at,
-            };
-            if prioritized {
-                if inbound_queues.control_tx.send(inbound).await.is_err() {
-                    break;
+                let prioritized = is_prioritized_client_inbound(header.kind);
+                let inbound = InboundTunnelFrame {
+                    path_id,
+                    frame: XBondFrame::new(header, queued_payload),
+                    received_at,
+                };
+                let enqueue_started = Instant::now();
+                if prioritized {
+                    if inbound_queues.control_tx.send(inbound).await.is_err() {
+                        return;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            match inbound_queues.payload_tx.try_send(inbound) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(inbound)) => {
-                    inbound_queues.payload_drops.fetch_add(1, Ordering::Relaxed);
-                    payload_pool.recycle(inbound.frame.payload);
+                match inbound_queues.payload_tx.try_send(inbound) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(inbound)) => {
+                        inbound_queues.payload_drops.fetch_add(1, Ordering::Relaxed);
+                        payload_pool.recycle(inbound.frame.payload);
+                    }
+                    Err(mpsc::error::TrySendError::Closed(inbound)) => {
+                        payload_pool.recycle(inbound.frame.payload);
+                        break;
+                    }
                 }
-                Err(mpsc::error::TrySendError::Closed(inbound)) => {
-                    payload_pool.recycle(inbound.frame.payload);
-                    break;
-                }
+                RECEIVE_ENQUEUE_MICROS_TOTAL.fetch_add(
+                    enqueue_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u128::from(u64::MAX)) as u64,
+                    Ordering::Relaxed,
+                );
             }
+            RECEIVE_BATCHES.fetch_add(1, Ordering::Relaxed);
+            RECEIVE_BATCH_PEAK.fetch_max(batch_count as u64, Ordering::Relaxed);
+            RECEIVE_MICROS_TOTAL.fetch_add(
+                batch_started
+                    .elapsed()
+                    .as_micros()
+                    .min(u128::from(u64::MAX)) as u64,
+                Ordering::Relaxed,
+            );
+            tokio::task::yield_now().await;
         }
     })
+}
+
+#[cfg(target_os = "linux")]
+struct ConnectedUdpBatchReceiver {
+    buffers: Vec<Vec<u8>>,
+    _iovecs: Vec<libc::iovec>,
+    messages: Vec<libc::mmsghdr>,
+}
+
+// The raw pointers reference this receiver's fixed heap allocations, which are never resized and
+// are accessed exclusively through `&mut self` by one receive task.
+#[cfg(target_os = "linux")]
+unsafe impl Send for ConnectedUdpBatchReceiver {}
+
+#[cfg(target_os = "linux")]
+impl ConnectedUdpBatchReceiver {
+    fn new(capacity: usize) -> Self {
+        let mut buffers = (0..capacity)
+            .map(|_| vec![0u8; MAX_UDP_DATAGRAM_BYTES])
+            .collect::<Vec<_>>();
+        let mut iovecs = buffers
+            .iter_mut()
+            .map(|buffer| libc::iovec {
+                iov_base: buffer.as_mut_ptr().cast(),
+                iov_len: buffer.len(),
+            })
+            .collect::<Vec<_>>();
+        let messages = iovecs
+            .iter_mut()
+            .map(|iov| {
+                let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
+                message.msg_hdr.msg_iov = std::ptr::from_mut(iov);
+                message.msg_hdr.msg_iovlen = 1;
+                message
+            })
+            .collect();
+        Self {
+            buffers,
+            _iovecs: iovecs,
+            messages,
+        }
+    }
+
+    fn receive(&mut self, socket: &UdpSocket) -> std::io::Result<usize> {
+        for message in &mut self.messages {
+            message.msg_len = 0;
+        }
+        socket.try_io(Interest::READABLE, || {
+            let count = unsafe {
+                libc::recvmmsg(
+                    socket.as_raw_fd(),
+                    self.messages.as_mut_ptr(),
+                    self.messages.len().min(u32::MAX as usize) as u32,
+                    libc::MSG_DONTWAIT,
+                    std::ptr::null_mut(),
+                )
+            };
+            if count < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(count as usize)
+        })
+    }
+
+    fn length(&self, index: usize) -> usize {
+        self.messages[index].msg_len as usize
+    }
+
+    fn packet(&self, index: usize, length: usize) -> &[u8] {
+        &self.buffers[index][..length]
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct ConnectedUdpBatchReceiver {
+    buffers: Vec<Vec<u8>>,
+    lengths: Vec<usize>,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl ConnectedUdpBatchReceiver {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffers: (0..capacity)
+                .map(|_| vec![0u8; MAX_UDP_DATAGRAM_BYTES])
+                .collect(),
+            lengths: vec![0; capacity],
+        }
+    }
+
+    fn receive(&mut self, socket: &UdpSocket) -> std::io::Result<usize> {
+        let mut count = 0;
+        for (buffer, length) in self.buffers.iter_mut().zip(self.lengths.iter_mut()) {
+            match socket.try_recv(buffer) {
+                Ok(received) => {
+                    *length = received;
+                    count += 1;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(count)
+    }
+
+    fn length(&self, index: usize) -> usize {
+        self.lengths[index]
+    }
+
+    fn packet(&self, index: usize, length: usize) -> &[u8] {
+        &self.buffers[index][..length]
+    }
 }
 
 fn receiver_scratch_capacity(tun_mtu: u16) -> usize {
@@ -6984,6 +7219,140 @@ fn update_tunnel_throughput(
     *last_sample = now;
 }
 
+fn observe_client_saturation(
+    senders: &HashMap<u16, PathSenderHandle>,
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    packet_bytes: usize,
+) -> (bool, bool, u64) {
+    let now = Instant::now();
+    let mut maximum_utilization = 0.0f64;
+    let mut maximum_oldest_age_ms = 0u64;
+    for sender in senders.values() {
+        let snapshot = sender.metrics.snapshot(PathSendLane::Data, now);
+        if snapshot.capacity > 0 {
+            maximum_utilization =
+                maximum_utilization.max(snapshot.depth as f64 / snapshot.capacity as f64);
+        }
+        maximum_oldest_age_ms = maximum_oldest_age_ms.max(snapshot.oldest_age_ms);
+    }
+    let recent_drain_bps = path_runtime
+        .values()
+        .map(|runtime| runtime.outbound_throughput_bps)
+        .sum::<u64>();
+    let packet_bits = packet_bytes.max(1).saturating_mul(8) as f64;
+    let recent_drain_packets_per_second = recent_drain_bps as f64 / packet_bits;
+    let soft = maximum_utilization >= SATURATION_SOFT_QUEUE_UTILIZATION
+        || maximum_oldest_age_ms >= SATURATION_SOFT_OLDEST_AGE_MS;
+    let hard = maximum_utilization >= SATURATION_HARD_QUEUE_UTILIZATION
+        || maximum_oldest_age_ms >= SATURATION_HARD_OLDEST_AGE_MS;
+    let pacing_delay_micros = if soft && recent_drain_packets_per_second > 0.0 {
+        (1_000_000.0 / recent_drain_packets_per_second)
+            .ceil()
+            .clamp(1.0, 250.0) as u64
+    } else {
+        0
+    };
+
+    let mut runtime = CLIENT_SATURATION
+        .get_or_init(|| StdMutex::new(ClientSaturationRuntime::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if soft && !runtime.previous_active {
+        runtime.periods = runtime.periods.saturating_add(1);
+    }
+    runtime.previous_active = soft;
+    if hard {
+        runtime.hard_since.get_or_insert(now);
+    } else {
+        runtime.hard_since = None;
+    }
+    let hard_duration = runtime
+        .hard_since
+        .map(|started| now.saturating_duration_since(started))
+        .unwrap_or_default();
+    let state = if hard {
+        "hard"
+    } else if soft {
+        "soft"
+    } else {
+        "normal"
+    };
+    let reason = if maximum_utilization
+        >= if hard {
+            SATURATION_HARD_QUEUE_UTILIZATION
+        } else {
+            SATURATION_SOFT_QUEUE_UTILIZATION
+        } {
+        Some("queue-utilization".to_string())
+    } else if soft {
+        Some("oldest-queue-age".to_string())
+    } else {
+        None
+    };
+    runtime.status = XBondSaturationStatus {
+        state: state.to_string(),
+        reason,
+        queue_utilization: maximum_utilization,
+        oldest_age_ms: maximum_oldest_age_ms,
+        recent_drain_packets_per_second,
+        pacing_delay_micros,
+        duplicate_suppressions: runtime.duplicate_suppressions,
+        fec_suppressions: runtime.fec_suppressions,
+        saturation_periods: runtime.periods,
+        hard_duration_ms: hard_duration.as_millis().min(u128::from(u64::MAX)) as u64,
+    };
+    (
+        soft,
+        hard_duration >= SATURATION_HARD_RECONNECT_AFTER,
+        pacing_delay_micros,
+    )
+}
+
+fn record_client_saturation_suppressions(duplicates: u64, fec: u64) {
+    let mut runtime = CLIENT_SATURATION
+        .get_or_init(|| StdMutex::new(ClientSaturationRuntime::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    runtime.duplicate_suppressions = runtime.duplicate_suppressions.saturating_add(duplicates);
+    runtime.fec_suppressions = runtime.fec_suppressions.saturating_add(fec);
+    runtime.status.duplicate_suppressions = runtime.duplicate_suppressions;
+    runtime.status.fec_suppressions = runtime.fec_suppressions;
+}
+
+fn client_saturation_status() -> XBondSaturationStatus {
+    CLIENT_SATURATION
+        .get_or_init(|| StdMutex::new(ClientSaturationRuntime::default()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .status
+        .clone()
+}
+
+fn client_socket_buffer_statuses() -> Vec<XBondSocketBufferStatus> {
+    let mut values = SOCKET_BUFFER_STATUSES
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| left.scope.cmp(&right.scope));
+    values
+}
+
+fn client_stage_timings(counters: &TunnelCounters) -> XBondStageTimingStatus {
+    XBondStageTimingStatus {
+        receive_micros_total: RECEIVE_MICROS_TOTAL.load(Ordering::Relaxed),
+        receive_batches: RECEIVE_BATCHES.load(Ordering::Relaxed),
+        receive_datagrams: RECEIVE_DATAGRAMS.load(Ordering::Relaxed),
+        receive_batch_peak: RECEIVE_BATCH_PEAK.load(Ordering::Relaxed),
+        decode_micros_total: RECEIVE_DECODE_MICROS_TOTAL.load(Ordering::Relaxed),
+        schedule_micros_total: SCHEDULE_MICROS_TOTAL.load(Ordering::Relaxed),
+        enqueue_micros_total: RECEIVE_ENQUEUE_MICROS_TOTAL.load(Ordering::Relaxed),
+        tun_micros_total: counters.tun_write_micros_total,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_tunnel_runtime_status(
     config: &ClientConfig,
@@ -7075,6 +7444,14 @@ fn write_tunnel_runtime_status(
                 tun_write_queue_peak_depth,
                 inbound_queue_depth,
                 udp_socket_buffer_bytes: config.udp_socket_buffer_bytes,
+                udp_receive_batch_size: config.udp_receive_batch_size,
+                socket_buffers: client_socket_buffer_statuses(),
+                kernel_network: read_linux_kernel_network_status(Some(tun.name())).delta(
+                    *KERNEL_NETWORK_BASELINE
+                        .get_or_init(|| read_linux_kernel_network_status(Some(tun.name()))),
+                ),
+                saturation: client_saturation_status(),
+                stage_timings: client_stage_timings(counters),
                 tun_queue_drops: counters.tun_queue_drops,
                 inbound_queue_drops: counters.inbound_queue_drops,
                 duplicate_send_skips: counters.duplicate_send_skips,
@@ -7492,12 +7869,21 @@ fn create_isolated_udp_socket(
         Some(Protocol::UDP),
     )?;
     let isolation = apply_bind_device(&socket, bind_device)?;
-    apply_udp_socket_buffers(&socket, socket_buffer_bytes);
+    let buffer_status = apply_udp_socket_buffers(
+        &socket,
+        socket_buffer_bytes,
+        bind_device.unwrap_or(bind_addr.ip().to_string().as_str()),
+    )?;
     socket
         .bind(&bind_addr.into())
         .with_context(|| format!("failed to bind UDP socket to {bind_addr}"))?;
     socket.set_nonblocking(true)?;
     let std_socket: std::net::UdpSocket = socket.into();
+    SOCKET_BUFFER_STATUSES
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(buffer_status.scope.clone(), buffer_status);
     Ok((UdpSocket::from_std(std_socket)?, isolation))
 }
 
@@ -7515,14 +7901,86 @@ fn socket_source_matches_bind_addr(socket: &UdpSocket, bind_addr: &str) -> bool 
         .unwrap_or(false)
 }
 
-fn apply_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
-    if socket_buffer_bytes == 0 {
-        return;
+fn apply_udp_socket_buffers(
+    socket: &Socket,
+    socket_buffer_bytes: usize,
+    scope: &str,
+) -> Result<XBondSocketBufferStatus> {
+    if socket_buffer_bytes > 0 {
+        socket
+            .set_recv_buffer_size(socket_buffer_bytes)
+            .context("failed to request UDP receive buffer")?;
+        socket
+            .set_send_buffer_size(socket_buffer_bytes)
+            .context("failed to request UDP send buffer")?;
     }
-
-    let _ = socket.set_recv_buffer_size(socket_buffer_bytes);
-    let _ = socket.set_send_buffer_size(socket_buffer_bytes);
+    let mut effective_receive_bytes = socket
+        .recv_buffer_size()
+        .context("failed to read effective UDP receive buffer")?;
+    let mut effective_send_bytes = socket
+        .send_buffer_size()
+        .context("failed to read effective UDP send buffer")?;
+    if socket_buffer_bytes > 0
+        && (effective_receive_bytes < socket_buffer_bytes
+            || effective_send_bytes < socket_buffer_bytes)
+    {
+        force_udp_socket_buffers(socket, socket_buffer_bytes);
+        effective_receive_bytes = socket
+            .recv_buffer_size()
+            .context("failed to read forced UDP receive buffer")?;
+        effective_send_bytes = socket
+            .send_buffer_size()
+            .context("failed to read forced UDP send buffer")?;
+    }
+    if effective_receive_bytes < MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES
+        || effective_send_bytes < MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES
+    {
+        bail!(
+            "effective UDP socket buffers are unusably small for {scope}: receive={effective_receive_bytes}, send={effective_send_bytes}, minimum={MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES}"
+        );
+    }
+    let below_requested = socket_buffer_bytes > 0
+        && (effective_receive_bytes < socket_buffer_bytes
+            || effective_send_bytes < socket_buffer_bytes);
+    if below_requested {
+        eprintln!(
+            "xbond UDP socket buffer warning for {scope}: requested={socket_buffer_bytes}, effective_receive={effective_receive_bytes}, effective_send={effective_send_bytes}"
+        );
+    }
+    Ok(XBondSocketBufferStatus {
+        scope: scope.to_string(),
+        requested_receive_bytes: socket_buffer_bytes,
+        requested_send_bytes: socket_buffer_bytes,
+        effective_receive_bytes,
+        effective_send_bytes,
+        below_requested,
+    })
 }
+
+#[cfg(target_os = "linux")]
+fn force_udp_socket_buffers(socket: &Socket, socket_buffer_bytes: usize) {
+    let value = socket_buffer_bytes.min(i32::MAX as usize) as libc::c_int;
+    let length = std::mem::size_of_val(&value) as libc::socklen_t;
+    unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUFFORCE,
+            std::ptr::addr_of!(value).cast(),
+            length,
+        );
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUFFORCE,
+            std::ptr::addr_of!(value).cast(),
+            length,
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn force_udp_socket_buffers(_socket: &Socket, _socket_buffer_bytes: usize) {}
 
 fn apply_bind_device(socket: &Socket, bind_device: Option<&str>) -> Result<PathIsolationStatus> {
     let Some(bind_device) = bind_device.filter(|value| !value.trim().is_empty()) else {

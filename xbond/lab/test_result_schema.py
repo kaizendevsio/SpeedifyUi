@@ -791,6 +791,19 @@ class ResultSchemaTests(unittest.TestCase):
                     "capacity": 16,
                     "discarded": 4,
                 },
+                "socket_buffers": [
+                    {
+                        "effective_receive_bytes": 16777216,
+                        "effective_send_bytes": 16777216,
+                    }
+                ],
+                "kernel_network": {"udp_rcvbuf_errors": 0},
+                "saturation": {
+                    "queue_utilization": 0.62,
+                    "oldest_age_ms": 24,
+                    "saturation_periods": 2,
+                },
+                "stage_timings": {"receive_batches": 50},
             },
             "misc": {"value": 42},
         }
@@ -807,6 +820,15 @@ class ResultSchemaTests(unittest.TestCase):
         self.assertEqual(1, telemetry["process.tun_packet_pool.discarded"])
         self.assertEqual(3, telemetry["process.receive_payload_pool.retained"])
         self.assertEqual(4, telemetry["process.receive_payload_pool.discarded"])
+        self.assertEqual(
+            16777216,
+            telemetry["process.socket_buffers[0].effective_receive_bytes"],
+        )
+        self.assertEqual(0, telemetry["process.kernel_network.udp_rcvbuf_errors"])
+        self.assertEqual(0.62, telemetry["process.saturation.queue_utilization"])
+        self.assertEqual(24, telemetry["process.saturation.oldest_age_ms"])
+        self.assertEqual(2, telemetry["process.saturation.saturation_periods"])
+        self.assertEqual(50, telemetry["process.stage_timings.receive_batches"])
         self.assertNotIn("misc.value", telemetry)
 
     def test_repair_cache_quiescence_requires_zero_runtime_state(self):
