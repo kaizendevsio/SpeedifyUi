@@ -6,7 +6,7 @@
 - Main runtime routes on `feature/xband-only-runtime` are `/` (`Home.razor`), `/details` (`Statistics.razor`), `/xbond`, `/settings`, and `/xrouter` (`XRouter.razor`, shown in the UI as `Wifi`). Legacy controls/server-switching pages are intentionally removed.
 - User-facing product branding is `uLink`; the historical `/xrouter` route and internal `XNetwork` namespaces, services, and storage paths remain for compatibility and should not be renamed casually.
 - Frontend assets are mostly static/CDN: Tailwind, Font Awesome, Google Fonts, and Chart.js are loaded from CDNs in `App.razor`; local JS modules live in `XNetwork/wwwroot/js`.
-- Current app logo asset is `XNetwork/wwwroot/icons/ulink-logo.svg`; browser/PWA references use `/icons/ulink-logo.svg`.
+- Supplied uLink branding assets live under `XNetwork/wwwroot/icons`: `ulink-logo-horizontal.svg` is used in persistent headers, `ulink-logo.svg` is the source symbol, and `ulink-app-icon.svg` plus PNG fallbacks provide browser/PWA icons.
 
 ## Commands
 - Build: `dotnet build SpeedifyUi.sln`
@@ -377,7 +377,8 @@
 - 2026-06-28: XNetwork version `xbond-2026.06.93` changes `/live` adapter emitters from planet-like orbs to network hardware glyphs: cellular/F50 paths render as tower silhouettes with pulsing signal arcs, and Wi-Fi/Starlink-like paths render as dish emitters. Role-colored beams and pan/rotate controls remain unchanged. This is UI-only and does not require paired Rust/XBond deployment.
 - 2026-06-28: XNetwork version `xbond-2026.06.94` spreads compact `/live` adapter hardware glyphs farther apart so tower nodes no longer visually stack, and replaces the server-side portal/gate visual with a satellite relay endpoint using solar panels, antenna detail, and signal rings. This is UI-only and does not require paired Rust/XBond deployment.
 - 2026-06-28: XNetwork version `xbond-2026.06.95` tightens compact `/live` satellite framing by pulling the satellite relay farther into the mobile viewport and scaling it down slightly so the solar panels remain visible. This is UI-only and does not require paired Rust/XBond deployment.
-- 2026-07-21: The user-facing application brand is `uLink`; internal .NET namespaces, Linux service names, persisted `XNetwork` storage paths, protocol identifiers, and `/xbond` compatibility route remain unchanged. The canonical vector brand asset is `XNetwork/wwwroot/icons/ulink-logo.svg` and is used by the app header, favicon, and PWA manifest.
+- 2026-07-21: The user-facing application brand is `uLink`; internal .NET namespaces, Linux service names, persisted `XNetwork` storage paths, protocol identifiers, and `/xbond` compatibility route remain unchanged.
+- 2026-07-24: The supplied uLink horizontal vector is used by desktop and mobile persistent headers. The supplied symbol remains the source for the browser/PWA app icon, with a derived square SVG and 180/192/512 PNG fallbacks for platform compatibility.
 - 2026-07-21: uLink branding, dashboard composition, and CSS animation changes are app-only changes. They deploy only `xnetwork.service` on `xeon-network`; paired Rust client/server deployment is still required only when XBond protocol/runtime code changes.
 - 2026-07-21: uLink keeps active XBond anchor/backup cards as keyed direct grid children so FLIP role changes preserve live metric component identity, while a shared grid backdrop visually groups the `Actively Redundant` heading, count, and current active members. Probe and cooldown cards stay outside that surface.
 - 2026-07-21: uLink adapter technical rows are hidden by default and controlled by the persisted Settings > Appearance preference `Adapter technical details`, stored in app data as `ui-display-preferences.json`.
