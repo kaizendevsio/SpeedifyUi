@@ -142,8 +142,14 @@ public class XBondPageSurfaceTests
         var logo = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "icons", "ulink-logo.svg"));
         var appIcon = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "icons", "ulink-app-icon.svg"));
         var horizontalLogo = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "icons", "ulink-logo-horizontal.svg"));
+        var mobileHorizontalLogo = File.ReadAllText(FindRepoFile("XNetwork", "wwwroot", "icons", "ulink-logo-horizontal-mobile.svg"));
 
         Assert.Contains("/icons/ulink-logo-horizontal.svg", layout);
+        Assert.Contains("/icons/ulink-logo-horizontal-mobile.svg", layout);
+        Assert.Contains("h-12 w-auto max-w-full", layout);
+        Assert.Contains("h-8 w-auto max-w-[9rem]", layout);
+        Assert.Contains("width=\"1060\" height=\"345\"", mobileHorizontalLogo);
+        Assert.Contains("scale(1.7)", mobileHorizontalLogo);
         Assert.Contains("fa-circle-info", layout);
         Assert.DoesNotContain("fa-list", layout);
         Assert.DoesNotContain("xnetwork-logo", layout, StringComparison.OrdinalIgnoreCase);
