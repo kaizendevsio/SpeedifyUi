@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.118";
+    public const string CurrentVersion = "ulink-2026.06.119";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-07-24",
+            Summary = "Hardened the high-throughput uLink dataplane.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the high-throughput dataplane hardening release.",
+                "Added bounded UDP receive batching and larger effective socket buffers for sustained packet rates.",
+                "Added pressure-aware duplicate and FEC suppression plus a clean reconnect when hard queue pressure persists.",
+                "Expanded high-throughput telemetry for effective buffers, queue pressure and age, kernel errors, saturation, and dataplane stage timings.",
+                "Expanded bounded load validation across parallel streams, concurrent clients, fixed-rate UDP, and protocol-scale sessions."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.118",
             Date = "2026-07-22",
             Summary = "Fixed tunnel scheduler path collapse scoring.",
             Changes =
