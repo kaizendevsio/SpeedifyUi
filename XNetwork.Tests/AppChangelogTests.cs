@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("ulink-2026.06.119", AppChangelog.CurrentVersion);
+        Assert.Equal("ulink-2026.06.120", AppChangelog.CurrentVersion);
         Assert.Matches(@"^ulink-\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 
@@ -17,17 +17,14 @@ public class AppChangelogTests
         var entry = AppChangelog.Entries.First();
 
         Assert.Equal(AppChangelog.CurrentVersion, entry.Version);
-        Assert.Contains(entry.Changes, change => change.Contains("version", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(entry.Changes, change =>
-            change.Contains("UDP receive batching", StringComparison.OrdinalIgnoreCase) &&
-            change.Contains("socket buffers", StringComparison.OrdinalIgnoreCase));
+            change.Contains("adapter selection", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(entry.Changes, change =>
-            change.Contains("pressure-aware", StringComparison.OrdinalIgnoreCase) &&
-            change.Contains("clean reconnect", StringComparison.OrdinalIgnoreCase));
+            change.Contains("aliases", StringComparison.OrdinalIgnoreCase) &&
+            change.Contains("interface names", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(entry.Changes, change =>
-            change.Contains("high-throughput telemetry", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change =>
-            change.Contains("load validation", StringComparison.OrdinalIgnoreCase));
+            change.Contains("dashboard", StringComparison.OrdinalIgnoreCase) &&
+            change.Contains("analytics", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(AppChangelog.Entries.SelectMany(item => item.Changes),
             change => change.Contains("uLink", StringComparison.Ordinal));
         Assert.Contains(AppChangelog.Entries.SelectMany(item => item.Changes),

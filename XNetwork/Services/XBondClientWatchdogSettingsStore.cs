@@ -64,6 +64,7 @@ public sealed class XBondClientWatchdogSettingsStore
         XBondClientWatchdogSettings settings,
         CancellationToken cancellationToken = default)
     {
+        Validate(settings);
         await _saveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -91,6 +92,10 @@ public sealed class XBondClientWatchdogSettingsStore
 
     public static void Apply(XBondClientWatchdogSettings source, XBondClientWatchdogSettings target)
     {
+        target.MonitoredInterfaces = source.MonitoredInterfaces?.ToList();
+        target.AdapterAliases = new Dictionary<string, string>(
+            source.AdapterAliases ?? new Dictionary<string, string>(),
+            StringComparer.OrdinalIgnoreCase);
         target.Enabled = source.Enabled;
         target.CheckIntervalSeconds = source.CheckIntervalSeconds;
         target.ConsecutiveUnhealthyChecks = source.ConsecutiveUnhealthyChecks;
@@ -111,6 +116,18 @@ public sealed class XBondClientWatchdogSettingsStore
 
     public static void Normalize(XBondClientWatchdogSettings settings)
     {
+        settings.MonitoredInterfaces = settings.MonitoredInterfaces?
+            .Select(value => value?.Trim() ?? "")
+            .Where(XBondPhysicalPathProbeService.IsSafePhysicalInterface)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        settings.AdapterAliases = (settings.AdapterAliases ?? new Dictionary<string, string>())
+            .Where(item => XBondPhysicalPathProbeService.IsSafePhysicalInterface(item.Key))
+            .Select(item => new KeyValuePair<string, string>(item.Key.Trim(), item.Value?.Trim() ?? ""))
+            .Where(item => !string.IsNullOrWhiteSpace(item.Value))
+            .GroupBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Last().Value, StringComparer.OrdinalIgnoreCase);
         settings.CheckIntervalSeconds = Math.Clamp(settings.CheckIntervalSeconds, 5, 300);
         settings.ConsecutiveUnhealthyChecks = Math.Clamp(settings.ConsecutiveUnhealthyChecks, 1, 12);
         settings.TunnelRttThresholdMs = Math.Clamp(settings.TunnelRttThresholdMs, 100, 5_000);
@@ -125,6 +142,45 @@ public sealed class XBondClientWatchdogSettingsStore
         settings.RestartCooldownMinutes = Math.Clamp(settings.RestartCooldownMinutes, 1, 120);
         settings.PostRestartGraceSeconds = Math.Clamp(settings.PostRestartGraceSeconds, 10, 300);
         settings.MaxRestartsPerHour = Math.Clamp(settings.MaxRestartsPerHour, 1, 12);
+    }
+
+    public static void Validate(XBondClientWatchdogSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+
+        foreach (var interfaceName in settings.MonitoredInterfaces ?? [])
+        {
+            if (!XBondPhysicalPathProbeService.IsSafePhysicalInterface(interfaceName?.Trim() ?? ""))
+            {
+                throw new InvalidOperationException($"Invalid watchdog interface '{interfaceName}'.");
+            }
+        }
+
+        foreach (var (interfaceName, alias) in settings.AdapterAliases ?? new Dictionary<string, string>())
+        {
+            if (!XBondPhysicalPathProbeService.IsSafePhysicalInterface(interfaceName?.Trim() ?? ""))
+            {
+                throw new InvalidOperationException($"Invalid adapter alias interface '{interfaceName}'.");
+            }
+
+            var normalizedAlias = alias?.Trim() ?? "";
+            if (normalizedAlias.Length > 48 || normalizedAlias.Any(char.IsControl))
+            {
+                throw new InvalidOperationException("Adapter display names must be 48 characters or fewer and cannot contain control characters.");
+            }
+        }
+    }
+
+    public static string? GetAdapterAlias(XBondClientWatchdogSettings settings, string interfaceName)
+    {
+        if (string.IsNullOrWhiteSpace(interfaceName))
+        {
+            return null;
+        }
+
+        var match = (settings.AdapterAliases ?? new Dictionary<string, string>())
+            .FirstOrDefault(item => string.Equals(item.Key, interfaceName, StringComparison.OrdinalIgnoreCase));
+        return string.IsNullOrWhiteSpace(match.Value) ? null : match.Value.Trim();
     }
 
     public static string NormalizeHost(string? value)

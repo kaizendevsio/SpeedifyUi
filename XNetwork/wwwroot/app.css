@@ -2864,7 +2864,8 @@ body:has(.settings-section-modal-backdrop) .mobile-tabbar {
 }
 
 .settings-primary-button,
-.settings-secondary-button {
+.settings-secondary-button,
+.settings-danger-button {
     padding: 0.55rem 1rem;
     border-radius: 0.5rem;
     font-size: 0.875rem;
@@ -2884,8 +2885,15 @@ body:has(.settings-section-modal-backdrop) .mobile-tabbar {
     color: var(--text-primary, #e6e6e6);
 }
 
+.settings-danger-button {
+    border: 1px solid color-mix(in srgb, var(--vscode-danger) 42%, var(--vscode-border));
+    background: color-mix(in srgb, var(--vscode-danger) 10%, var(--vscode-raised));
+    color: var(--vscode-danger);
+}
+
 .settings-primary-button:disabled,
-.settings-secondary-button:disabled {
+.settings-secondary-button:disabled,
+.settings-danger-button:disabled {
     cursor: not-allowed;
     opacity: 0.4;
 }

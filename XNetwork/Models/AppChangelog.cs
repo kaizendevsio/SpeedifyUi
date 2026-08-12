@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.119";
+    public const string CurrentVersion = "ulink-2026.06.120";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-12",
+            Summary = "Added manageable watchdog adapters and adapter aliases.",
+            Changes =
+            [
+                "Added adapter selection, removal, and persisted user-facing aliases to the uLink client watchdog.",
+                "Kept aliases tied to immutable interface names so networking identity is never renamed.",
+                "Applied saved aliases consistently to dashboard and analytics adapter names."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.119",
             Date = "2026-07-24",
             Summary = "Hardened the high-throughput uLink dataplane.",
             Changes =

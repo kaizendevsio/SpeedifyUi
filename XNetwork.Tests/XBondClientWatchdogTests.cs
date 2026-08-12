@@ -8,6 +8,105 @@ namespace XNetwork.Tests;
 public class XBondClientWatchdogTests
 {
     [Fact]
+    public void ResolveCandidateInterfaces_LegacySelectionUsesConfiguredLivePaths()
+    {
+        var paths = new[]
+        {
+            WatchdogPath("wlan0", configured: true, up: true),
+            WatchdogPath("enx1", configured: false, up: true),
+            WatchdogPath("enx2", configured: true, up: false)
+        };
+
+        var result = XBondClientWatchdogService.ResolveCandidateInterfaces(paths, null);
+
+        Assert.Equal(["wlan0"], result);
+    }
+
+    [Fact]
+    public void ResolveCandidateInterfaces_ExplicitSelectionSupportsAddChangeAndEmptyRemoval()
+    {
+        var paths = new[]
+        {
+            WatchdogPath("wlan0", configured: true, up: true),
+            WatchdogPath("enx1", configured: false, up: true),
+            WatchdogPath("enx2", configured: true, up: true)
+        };
+
+        Assert.Equal(
+            ["enx1", "wlan0"],
+            XBondClientWatchdogService.ResolveCandidateInterfaces(paths, ["wlan0", "enx1"]));
+        Assert.Empty(XBondClientWatchdogService.ResolveCandidateInterfaces(paths, []));
+    }
+
+    [Fact]
+    public async Task SettingsStore_PersistsSelectionAndAliasesByInterfaceIdentity()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"ulink-watchdog-{Guid.NewGuid():N}");
+        var filePath = Path.Combine(directory, "settings.json");
+        try
+        {
+            var store = new XBondClientWatchdogSettingsStore(
+                NullLogger<XBondClientWatchdogSettingsStore>.Instance,
+                filePath);
+            var source = new XBondClientWatchdogSettings
+            {
+                MonitoredInterfaces = ["wlan0"],
+                AdapterAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["wlan0"] = "Roof Wi-Fi",
+                    ["enx1"] = "Backup modem"
+                }
+            };
+
+            await store.SaveAsync(source);
+            var loaded = new XBondClientWatchdogSettings();
+            store.Load(loaded);
+
+            Assert.Equal(["wlan0"], loaded.MonitoredInterfaces);
+            Assert.Equal("Roof Wi-Fi", XBondClientWatchdogSettingsStore.GetAdapterAlias(loaded, "WLAN0"));
+            Assert.Equal("Backup modem", XBondClientWatchdogSettingsStore.GetAdapterAlias(loaded, "enx1"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Validate_RejectsUnsafeInterfaceAndAlias()
+    {
+        Assert.Throws<InvalidOperationException>(() => XBondClientWatchdogSettingsStore.Validate(new XBondClientWatchdogSettings
+        {
+            MonitoredInterfaces = ["bad interface"]
+        }));
+        Assert.Throws<InvalidOperationException>(() => XBondClientWatchdogSettingsStore.Validate(new XBondClientWatchdogSettings
+        {
+            AdapterAliases = new Dictionary<string, string> { ["wlan0"] = new('x', 49) }
+        }));
+    }
+
+    [Fact]
+    public void ApplyAdapterAliases_RenamesDisplayOnlyAndKeepsInterfaceIdentity()
+    {
+        var interfaces = new[]
+        {
+            new InterfaceMetadataService.InterfaceMetadata("wlan0", "wifi", "connected", "Home", "Provider")
+        };
+        var settings = new XBondClientWatchdogSettings
+        {
+            AdapterAliases = new Dictionary<string, string> { ["wlan0"] = "Roof Wi-Fi" }
+        };
+
+        var renamed = Assert.Single(XBondStatsService.ApplyAdapterAliases(interfaces, settings));
+
+        Assert.Equal("wlan0", renamed.Device);
+        Assert.Equal("Roof Wi-Fi", renamed.DisplayName);
+    }
+
+    [Fact]
     public void Normalize_ClampsUnsafeRestartAndProbeValues()
     {
         var settings = new XBondClientWatchdogSettings
@@ -456,6 +555,13 @@ public class XBondClientWatchdogTests
         TunnelLossThresholdPercent = 25,
         TunnelStaleAfterSeconds = 10,
         MinimumHealthyPhysicalPaths = 1
+    };
+
+    private static XBondPathStatsSnapshot WatchdogPath(string interfaceName, bool configured, bool up) => new()
+    {
+        InterfaceName = interfaceName,
+        IsConfigured = configured,
+        InterfaceUp = up
     };
 
     private static XBondStatsSnapshot Snapshot(double rttMs, double lossRate, ulong lastSuccessAgeMs) => new()
