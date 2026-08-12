@@ -8,6 +8,7 @@
 @inject XBondClientConfigService XBondClientConfigService
 @inject XBondMssClampService MssClampService
 @inject NetworkMonitorService NetworkMonitorService
+@inject NetworkMonitorSettingsStore NetworkMonitorSettingsStore
 @inject WifiService WifiService
 @inject CudyApControlService CudyApControlService
 @inject CudyAdminPasswordStore CudyAdminPasswordStore
@@ -621,55 +622,6 @@
                 </div>
             }
 
-            <section class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
-                <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                        <h3 class="font-semibold text-slate-100">Monitored adapters</h3>
-                        <p class="mt-1 text-xs text-slate-500">Choose physical adapters for independent watchdog probes. Display names are aliases only; system interface names never change.</p>
-                    </div>
-                    <span class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300">@WatchdogAdapterCount selected</span>
-                </div>
-
-                @if (_xbondAdapterStatus?.Adapters.Count > 0)
-                {
-                    <div class="mt-4 grid gap-3">
-                        @foreach (var adapter in _xbondAdapterStatus.Adapters)
-                        {
-                            <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-                                <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                    <div class="min-w-0">
-                                        <div class="flex flex-wrap items-center gap-2">
-                                            <span class="font-semibold text-slate-200">@WatchdogAdapterDisplayName(adapter)</span>
-                                            <span class="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-400">@(adapter.IsConfigured ? "In uLink" : "Available")</span>
-                                        </div>
-                                        <p class="mt-1 break-all text-xs text-slate-500">@adapter.InterfaceName</p>
-                                    </div>
-                                    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-                                        <input class="settings-number-input sm:w-56"
-                                               maxlength="48"
-                                               placeholder="@adapter.Name"
-                                               value="@WatchdogAliasValue(adapter.InterfaceName)"
-                                               @onchange="args => SetWatchdogAlias(adapter.InterfaceName, args.Value?.ToString())" />
-                                        @if (IsWatchdogAdapterSelected(adapter.InterfaceName))
-                                        {
-                                            <button type="button" class="settings-danger-button" disabled="@_clientWatchdogBusy" @onclick="() => ShowWatchdogAdapterRemoveConfirmation(adapter)">Remove</button>
-                                        }
-                                        else
-                                        {
-                                            <button type="button" class="settings-secondary-button" disabled="@_clientWatchdogBusy" @onclick="() => AddWatchdogAdapter(adapter.InterfaceName)">Add</button>
-                                        }
-                                    </div>
-                                </div>
-                            </article>
-                        }
-                    </div>
-                }
-                else
-                {
-                    <p class="mt-4 text-sm text-slate-500">No physical adapters are currently available.</p>
-                }
-            </section>
-
             <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <label class="flex items-center justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3 md:col-span-2 xl:col-span-3">
                     <span>
@@ -993,7 +945,7 @@
 
     <Accordion Title="Link Watchdog" IsExpanded="_monitorExpanded" OnToggle="(expanded) => _monitorExpanded = expanded" BadgeText="@NetworkMonitorBadge">
         <div class="space-y-4 pt-2">
-        <div class="flex items-start justify-between gap-4">
+        <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
                 <h2 class="text-lg font-semibold text-white">Link Watchdog</h2>
                 <p class="mt-1 text-sm text-slate-400">Monitors configured Linux interfaces and restarts links that lose carrier.</p>
@@ -1002,21 +954,87 @@
                 @(_networkMonitorStatus?.IsEnabled == true ? "Enabled" : "Disabled")
             </span>
         </div>
-        <div class="mt-4 grid gap-3">
-            @foreach (var link in _networkMonitorStatus?.Links ?? Array.Empty<NetworkLinkMonitorStatus>())
+
+        @if (!string.IsNullOrWhiteSpace(_networkMonitorMessage))
+        {
+            <div class="@_networkMonitorMessageClass rounded-lg border p-3 text-sm">@_networkMonitorMessage</div>
+        }
+
+        <label class="flex items-center justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+            <span>
+                <span class="block text-sm font-semibold text-slate-200">Automatic link recovery</span>
+                <span class="mt-1 block text-xs text-slate-500">Monitor the selected interfaces and restart one after carrier remains down.</span>
+            </span>
+            <input type="checkbox" class="h-5 w-5 accent-emerald-300" @bind="_networkMonitorDraft.Enabled" />
+        </label>
+
+        <section class="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h3 class="font-semibold text-slate-100">Adapters</h3>
+                    <p class="mt-1 text-xs text-slate-500">Choose links to recover. Display names are aliases only; Linux interface names do not change.</p>
+                </div>
+                <span class="rounded-full border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-300">@_networkMonitorDraft.WhitelistedLinks.Count selected</span>
+            </div>
+
+            <div class="mt-4 grid gap-3">
+            @foreach (var adapter in LinkWatchdogAdapterRows())
             {
-                <div class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-                    <div class="flex items-center justify-between gap-3">
-                        <span class="font-semibold text-white">@link.Name</span>
-                        <span class="text-sm text-slate-400">@(link.State ?? "unknown")</span>
+                var link = FindNetworkMonitorLink(adapter.InterfaceName);
+                <article class="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                    <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="font-semibold text-white">@LinkWatchdogDisplayName(adapter)</span>
+                                <span class="rounded-full border border-slate-700 bg-slate-800 px-2 py-0.5 text-xs text-slate-400">@(IsLinkWatchdogSelected(adapter.InterfaceName) ? "Monitored" : "Available")</span>
+                                <span class="text-xs text-slate-500">@(link?.State ?? adapter.State ?? "unknown")</span>
+                            </div>
+                            <p class="mt-1 break-all text-xs text-slate-500">@adapter.InterfaceName</p>
+                        </div>
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <input class="settings-number-input sm:w-56"
+                                   maxlength="48"
+                                   placeholder="Display name"
+                                   value="@LinkWatchdogAliasValue(adapter.InterfaceName)"
+                                   @onchange="args => SetLinkWatchdogAlias(adapter.InterfaceName, args.Value?.ToString())" />
+                            @if (IsLinkWatchdogSelected(adapter.InterfaceName))
+                            {
+                                <button type="button" class="settings-danger-button" disabled="@_networkMonitorBusy" @onclick="() => ShowLinkWatchdogRemoveConfirmation(adapter)">Remove</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="settings-secondary-button" disabled="@_networkMonitorBusy" @onclick="() => AddLinkWatchdogAdapter(adapter.InterfaceName)">Add</button>
+                            }
+                        </div>
                     </div>
-                    @if (!string.IsNullOrWhiteSpace(link.LastRestartError))
+                    @if (!string.IsNullOrWhiteSpace(link?.LastRestartError))
                     {
                         <p class="mt-2 text-sm text-rose-200">@link.LastRestartError</p>
                     }
-                </div>
+                </article>
             }
+            </div>
+        </section>
+
+        <div class="grid gap-3 md:grid-cols-3">
+            <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                <span class="text-xs uppercase tracking-wide text-slate-500">Down timeout</span>
+                <input type="number" min="5" max="300" class="settings-number-input" @bind="_networkMonitorDraft.DownTimeoutSeconds" />
+                <span class="mt-1 block text-xs text-slate-500">Seconds before a restart.</span>
+            </label>
+            <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                <span class="text-xs uppercase tracking-wide text-slate-500">Restart attempts</span>
+                <input type="number" min="0" class="settings-number-input" @bind="_networkMonitorDraft.MaxRestartAttemptsPerHour" />
+                <span class="mt-1 block text-xs text-slate-500">Per hour; 0 means unlimited.</span>
+            </label>
+            <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+                <span class="text-xs uppercase tracking-wide text-slate-500">Cooldown</span>
+                <input type="number" min="1" class="settings-number-input" @bind="_networkMonitorDraft.RestartCooldownMinutes" />
+                <span class="mt-1 block text-xs text-slate-500">Minutes after the attempt limit.</span>
+            </label>
         </div>
+
+        <button type="button" class="settings-primary-button" disabled="@_networkMonitorBusy" @onclick="SaveLinkWatchdogSettingsAsync">Save Link Watchdog</button>
         </div>
     </Accordion>
         </div>
@@ -1201,13 +1219,12 @@
                    RequiredConfirmationText="RESET WATCHDOG"
                    OnConfirm="HandleClientWatchdogRecoveryConfirmationAsync" />
 
-<ConfirmationModal IsVisible="@_showWatchdogAdapterRemoveConfirmation"
-                   Title="Remove watchdog adapter?"
-                   Message="@WatchdogAdapterRemoveMessage"
-                   ConfirmText="Remove"
-                   CancelText="Cancel"
-                   ConfirmButtonClass="btn-red"
-                   OnConfirm="HandleWatchdogAdapterRemoveConfirmationAsync" />
+<ConfirmationModal IsVisible="@_showLinkWatchdogRemoveConfirmation"
+                   Title="Remove adapter from Link Watchdog?"
+                   Message="@LinkWatchdogRemoveMessage"
+                   ConfirmText="Remove adapter"
+                   ConfirmButtonClass="btn-danger"
+                   OnConfirm="HandleLinkWatchdogRemoveConfirmationAsync" />
 
 @code {
     private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(2));
@@ -1217,6 +1234,8 @@
     private XBondAdapterConfigStatus? _xbondAdapterStatus;
     private XBondMssClampStatus? _mssClampStatus;
     private NetworkMonitorStatus? _networkMonitorStatus;
+    private NetworkMonitorSettings _networkMonitorDraft = new();
+    private XBondAdapterConfigRow? _pendingLinkWatchdogRemoval;
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
     private WifiConnectionStatus? _wifiStatus;
@@ -1229,8 +1248,6 @@
     private F50ModemRecoveryStatus? _f50RecoveryStatus;
     private XBondClientWatchdogSettings _clientWatchdogDraft = new();
     private XBondClientWatchdogStatus? _clientWatchdogStatus;
-    private readonly Dictionary<string, string> _watchdogAliasDrafts = new(StringComparer.OrdinalIgnoreCase);
-    private XBondAdapterConfigRow? _pendingWatchdogAdapterRemoval;
     private List<TrafficBypassRule> _bypassEntries = new();
     private List<TrafficBypassEgressAdapter> _bypassAdapters = new();
     private TrafficBypassRule _bypassDraft = NewBypassDraft();
@@ -1246,6 +1263,8 @@
     private string _f50RecoveryMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string? _clientWatchdogMessage;
     private string _clientWatchdogMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
+    private string? _networkMonitorMessage;
+    private string _networkMonitorMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string? _bypassMessage;
     private string _bypassMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string _bypassDestinationText = "";
@@ -1268,6 +1287,7 @@
     private bool _proxyBusy;
     private bool _f50RecoveryBusy;
     private bool _clientWatchdogBusy;
+    private bool _networkMonitorBusy;
     private bool _bypassBusy;
     private bool _isWifiRefreshing;
     private bool _isWifiScanning;
@@ -1276,7 +1296,7 @@
     private bool _showProxyEditor;
     private bool _showBypassEditor;
     private bool _showClientWatchdogRecoveryConfirmation;
-    private bool _showWatchdogAdapterRemoveConfirmation;
+    private bool _showLinkWatchdogRemoveConfirmation;
     private bool _appearanceExpanded;
     private bool _tunnelExpanded;
     private bool _policyExpanded;
@@ -1302,8 +1322,8 @@
         _f50RecoveryDraft = CopyF50RecoverySettings(F50ModemRecoveryService.Settings);
         _f50RecoveryStatus = F50ModemRecoveryService.GetStatus();
         _clientWatchdogDraft = CopyClientWatchdogSettings(XBondClientWatchdogService.Settings);
-        InitializeWatchdogAliasDrafts();
         _clientWatchdogStatus = XBondClientWatchdogService.GetStatus();
+        _networkMonitorDraft = CopyNetworkMonitorSettings(NetworkMonitorService.GetSettings());
         LoadProxyEntries();
         await LoadTrafficBypassAsync();
         await LoadWifiInterfacesAsync();
@@ -1332,7 +1352,6 @@
         _trafficStatus = await XBondTrafficEngineService.GetStatusAsync(_refreshCts.Token);
         _xbondStatus = await XBondStatusService.GetStatusAsync(_refreshCts.Token);
         _xbondAdapterStatus = await XBondClientConfigService.GetStatusAsync(_refreshCts.Token);
-        InitializeWatchdogAliasDrafts();
         _mssClampStatus = await MssClampService.GetStatusAsync(_refreshCts.Token);
         _networkMonitorStatus = NetworkMonitorService.GetStatus();
         _cudyStatus = CudyApControlService.GetStatus();
@@ -1896,7 +1915,6 @@
         ClearClientWatchdogMessage();
         try
         {
-            ApplyWatchdogAliasDrafts();
             await XBondClientWatchdogService.SaveSettingsAsync(_clientWatchdogDraft, _refreshCts.Token);
             _clientWatchdogDraft = CopyClientWatchdogSettings(XBondClientWatchdogService.Settings);
             _clientWatchdogStatus = XBondClientWatchdogService.GetStatus();
@@ -1917,90 +1935,108 @@
         }
     }
 
-    private int WatchdogAdapterCount => _xbondAdapterStatus?.Adapters.Count(adapter => IsWatchdogAdapterSelected(adapter.InterfaceName)) ?? 0;
-
-    private bool IsWatchdogAdapterSelected(string interfaceName) => _clientWatchdogDraft.MonitoredInterfaces is null
-        ? _xbondAdapterStatus?.Adapters.Any(adapter => adapter.IsConfigured && string.Equals(adapter.InterfaceName, interfaceName, StringComparison.OrdinalIgnoreCase)) == true
-        : _clientWatchdogDraft.MonitoredInterfaces.Contains(interfaceName, StringComparer.OrdinalIgnoreCase);
-
-    private void MaterializeWatchdogSelection()
+    private IReadOnlyList<XBondAdapterConfigRow> LinkWatchdogAdapterRows()
     {
-        _clientWatchdogDraft.MonitoredInterfaces ??= _xbondAdapterStatus?.Adapters
-            .Where(adapter => adapter.IsConfigured)
-            .Select(adapter => adapter.InterfaceName)
-            .Where(XBondPhysicalPathProbeService.IsSafePhysicalInterface)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList() ?? [];
+        var rows = (_xbondAdapterStatus?.Adapters ?? [])
+            .ToDictionary(adapter => adapter.InterfaceName, StringComparer.OrdinalIgnoreCase);
+        foreach (var interfaceName in _networkMonitorDraft.WhitelistedLinks)
+        {
+            rows.TryAdd(interfaceName, new XBondAdapterConfigRow
+            {
+                Name = interfaceName,
+                InterfaceName = interfaceName,
+                State = FindNetworkMonitorLink(interfaceName)?.State ?? "unknown"
+            });
+        }
+
+        return rows.Values
+            .OrderByDescending(adapter => IsLinkWatchdogSelected(adapter.InterfaceName))
+            .ThenBy(adapter => LinkWatchdogDisplayName(adapter), StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
-    private void AddWatchdogAdapter(string interfaceName)
+    private NetworkLinkMonitorStatus? FindNetworkMonitorLink(string interfaceName) =>
+        _networkMonitorStatus?.Links.FirstOrDefault(link =>
+            string.Equals(link.Name, interfaceName, StringComparison.OrdinalIgnoreCase));
+
+    private bool IsLinkWatchdogSelected(string interfaceName) =>
+        _networkMonitorDraft.WhitelistedLinks.Contains(interfaceName, StringComparer.OrdinalIgnoreCase);
+
+    private void AddLinkWatchdogAdapter(string interfaceName)
     {
-        MaterializeWatchdogSelection();
-        var monitoredInterfaces = _clientWatchdogDraft.MonitoredInterfaces!;
-        if (!monitoredInterfaces.Contains(interfaceName, StringComparer.OrdinalIgnoreCase))
+        if (!IsLinkWatchdogSelected(interfaceName))
         {
-            monitoredInterfaces.Add(interfaceName);
+            _networkMonitorDraft.WhitelistedLinks.Add(interfaceName);
         }
     }
 
-    private void ShowWatchdogAdapterRemoveConfirmation(XBondAdapterConfigRow adapter)
+    private string LinkWatchdogAliasValue(string interfaceName) =>
+        NetworkMonitorSettingsStore.GetAdapterAlias(_networkMonitorDraft, interfaceName) ?? "";
+
+    private void SetLinkWatchdogAlias(string interfaceName, string? value)
     {
-        _pendingWatchdogAdapterRemoval = adapter;
-        _showWatchdogAdapterRemoveConfirmation = true;
+        var alias = value?.Trim() ?? "";
+        if (string.IsNullOrEmpty(alias))
+        {
+            _networkMonitorDraft.AdapterAliases.Remove(interfaceName);
+        }
+        else
+        {
+            _networkMonitorDraft.AdapterAliases[interfaceName] = alias;
+        }
     }
 
-    private Task HandleWatchdogAdapterRemoveConfirmationAsync(bool confirmed)
+    private string LinkWatchdogDisplayName(XBondAdapterConfigRow adapter) =>
+        NetworkMonitorSettingsStore.GetAdapterAlias(_networkMonitorDraft, adapter.InterfaceName) ?? adapter.Name;
+
+    private void ShowLinkWatchdogRemoveConfirmation(XBondAdapterConfigRow adapter)
     {
-        _showWatchdogAdapterRemoveConfirmation = false;
-        if (confirmed && _pendingWatchdogAdapterRemoval is not null)
+        _pendingLinkWatchdogRemoval = adapter;
+        _showLinkWatchdogRemoveConfirmation = true;
+    }
+
+    private Task HandleLinkWatchdogRemoveConfirmationAsync(bool confirmed)
+    {
+        _showLinkWatchdogRemoveConfirmation = false;
+        if (confirmed && _pendingLinkWatchdogRemoval is not null)
         {
-            MaterializeWatchdogSelection();
-            _clientWatchdogDraft.MonitoredInterfaces!.RemoveAll(value =>
-                string.Equals(value, _pendingWatchdogAdapterRemoval.InterfaceName, StringComparison.OrdinalIgnoreCase));
+            _networkMonitorDraft.WhitelistedLinks.RemoveAll(interfaceName =>
+                string.Equals(interfaceName, _pendingLinkWatchdogRemoval.InterfaceName, StringComparison.OrdinalIgnoreCase));
         }
 
-        _pendingWatchdogAdapterRemoval = null;
+        _pendingLinkWatchdogRemoval = null;
         return Task.CompletedTask;
     }
 
-    private string WatchdogAdapterRemoveMessage => _pendingWatchdogAdapterRemoval is null
-        ? "This adapter will no longer be checked by the watchdog."
-        : $"{WatchdogAdapterDisplayName(_pendingWatchdogAdapterRemoval)} ({_pendingWatchdogAdapterRemoval.InterfaceName}) will no longer be checked after you save.";
+    private string LinkWatchdogRemoveMessage => _pendingLinkWatchdogRemoval is null
+        ? "This adapter will no longer be monitored."
+        : $"{LinkWatchdogDisplayName(_pendingLinkWatchdogRemoval)} ({_pendingLinkWatchdogRemoval.InterfaceName}) will no longer be restarted after you save. Its display name is retained if you add it again.";
 
-    private void InitializeWatchdogAliasDrafts()
+    private async Task SaveLinkWatchdogSettingsAsync()
     {
-        foreach (var adapter in _xbondAdapterStatus?.Adapters ?? [])
+        _networkMonitorBusy = true;
+        _networkMonitorMessage = null;
+        try
         {
-            if (!_watchdogAliasDrafts.ContainsKey(adapter.InterfaceName))
-            {
-                _watchdogAliasDrafts[adapter.InterfaceName] = XBondClientWatchdogSettingsStore.GetAdapterAlias(_clientWatchdogDraft, adapter.InterfaceName) ?? "";
-            }
+            NetworkMonitorSettingsStore.Validate(_networkMonitorDraft);
+            var normalized = NetworkMonitorSettingsStore.Normalize(_networkMonitorDraft);
+            await NetworkMonitorSettingsStore.SaveAsync(normalized, _refreshCts.Token);
+            NetworkMonitorService.UpdateSettings(normalized);
+            _networkMonitorDraft = CopyNetworkMonitorSettings(NetworkMonitorService.GetSettings());
+            _networkMonitorStatus = NetworkMonitorService.GetStatus();
+            _networkMonitorMessage = "Link Watchdog settings saved and applied.";
+            _networkMonitorMessageClass = "border-emerald-500/25 bg-emerald-500/10 text-emerald-100";
         }
-    }
-
-    private string WatchdogAliasValue(string interfaceName) => _watchdogAliasDrafts.TryGetValue(interfaceName, out var value) ? value : "";
-
-    private void SetWatchdogAlias(string interfaceName, string? value) => _watchdogAliasDrafts[interfaceName] = value?.Trim() ?? "";
-
-    private string WatchdogAdapterDisplayName(XBondAdapterConfigRow adapter) =>
-        string.IsNullOrWhiteSpace(WatchdogAliasValue(adapter.InterfaceName)) ? adapter.Name : WatchdogAliasValue(adapter.InterfaceName);
-
-    private void ApplyWatchdogAliasDrafts()
-    {
-        var aliases = new Dictionary<string, string>(_clientWatchdogDraft.AdapterAliases, StringComparer.OrdinalIgnoreCase);
-        foreach (var (interfaceName, alias) in _watchdogAliasDrafts)
+        catch (Exception ex)
         {
-            if (string.IsNullOrWhiteSpace(alias))
-            {
-                aliases.Remove(interfaceName);
-            }
-            else
-            {
-                aliases[interfaceName] = alias.Trim();
-            }
+            _networkMonitorMessage = $"Could not save Link Watchdog settings: {ex.Message}";
+            _networkMonitorMessageClass = "border-rose-500/30 bg-rose-500/10 text-rose-100";
         }
-
-        _clientWatchdogDraft.AdapterAliases = aliases;
+        finally
+        {
+            _networkMonitorBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task RunClientWatchdogNowAsync()
@@ -2331,8 +2367,6 @@
 
     private static XBondClientWatchdogSettings CopyClientWatchdogSettings(XBondClientWatchdogSettings source) => new()
     {
-        MonitoredInterfaces = source.MonitoredInterfaces?.ToList(),
-        AdapterAliases = new Dictionary<string, string>(source.AdapterAliases, StringComparer.OrdinalIgnoreCase),
         Enabled = source.Enabled,
         CheckIntervalSeconds = source.CheckIntervalSeconds,
         ConsecutiveUnhealthyChecks = source.ConsecutiveUnhealthyChecks,
@@ -2348,6 +2382,16 @@
         RestartCooldownMinutes = source.RestartCooldownMinutes,
         PostRestartGraceSeconds = source.PostRestartGraceSeconds,
         MaxRestartsPerHour = source.MaxRestartsPerHour
+    };
+
+    private static NetworkMonitorSettings CopyNetworkMonitorSettings(NetworkMonitorSettings source) => new()
+    {
+        Enabled = source.Enabled,
+        WhitelistedLinks = source.WhitelistedLinks.ToList(),
+        AdapterAliases = new Dictionary<string, string>(source.AdapterAliases, StringComparer.OrdinalIgnoreCase),
+        DownTimeoutSeconds = source.DownTimeoutSeconds,
+        MaxRestartAttemptsPerHour = source.MaxRestartAttemptsPerHour,
+        RestartCooldownMinutes = source.RestartCooldownMinutes
     };
 
     private string FormatClientWatchdogUpdated()

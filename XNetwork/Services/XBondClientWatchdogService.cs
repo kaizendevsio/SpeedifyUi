@@ -79,7 +79,6 @@ public sealed class XBondClientWatchdogService : BackgroundService
         XBondClientWatchdogSettings updated,
         CancellationToken cancellationToken = default)
     {
-        XBondClientWatchdogSettingsStore.Validate(updated);
         XBondClientWatchdogSettingsStore.Apply(updated, settings);
         await settingsStore.SaveAsync(settings, cancellationToken).ConfigureAwait(false);
         UpdateStatus(status =>
@@ -220,7 +219,12 @@ public sealed class XBondClientWatchdogService : BackgroundService
 
             var snapshot = await snapshotCache.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
             var target = ResolveProbeTarget(settings.PhysicalProbeTarget, snapshot.ServerAddress, xbondSettings.PublicTestServerAddress);
-            var candidateInterfaces = ResolveCandidateInterfaces(snapshot.Paths, settings.MonitoredInterfaces);
+            var candidateInterfaces = snapshot.Paths
+                .Where(path => path.IsConfigured && path.InterfaceUp)
+                .Select(path => path.InterfaceName)
+                .Where(XBondPhysicalPathProbeService.IsSafePhysicalInterface)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
             var probes = await physicalPathProbeService.ProbeAsync(
                 candidateInterfaces,
                 target,
@@ -284,22 +288,6 @@ public sealed class XBondClientWatchdogService : BackgroundService
         {
             _checkLock.Release();
         }
-    }
-
-    public static string[] ResolveCandidateInterfaces(
-        IEnumerable<XBondPathStatsSnapshot> paths,
-        IReadOnlyCollection<string>? monitoredInterfaces)
-    {
-        var explicitSelection = monitoredInterfaces is not null;
-        var selected = monitoredInterfaces?.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return paths
-            .Where(path => path.InterfaceUp && (!explicitSelection || selected!.Contains(path.InterfaceName)))
-            .Where(path => explicitSelection || path.IsConfigured)
-            .Select(path => path.InterfaceName)
-            .Where(XBondPhysicalPathProbeService.IsSafePhysicalInterface)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
     }
 
     private async Task<string> AttemptRestartAsync(

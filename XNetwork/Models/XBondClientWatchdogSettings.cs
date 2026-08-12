@@ -2,10 +2,6 @@ namespace XNetwork.Models;
 
 public sealed class XBondClientWatchdogSettings
 {
-    public List<string>? MonitoredInterfaces { get; set; }
-
-    public Dictionary<string, string> AdapterAliases { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-
     public bool Enabled { get; set; } = true;
 
     public int CheckIntervalSeconds { get; set; } = 10;

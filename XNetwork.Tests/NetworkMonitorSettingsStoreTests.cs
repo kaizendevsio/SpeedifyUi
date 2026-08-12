@@ -18,6 +18,7 @@ public class NetworkMonitorSettingsStoreTests
             {
                 Enabled = false,
                 WhitelistedLinks = new List<string> { "enxc8a3627e629b", "wwan0" },
+                AdapterAliases = new Dictionary<string, string> { ["wwan0"] = "Roof modem" },
                 DownTimeoutSeconds = 45,
                 MaxRestartAttemptsPerHour = 3,
                 RestartCooldownMinutes = 20
@@ -30,6 +31,7 @@ public class NetworkMonitorSettingsStoreTests
 
             Assert.False(loaded.Enabled);
             Assert.Equal(settings.WhitelistedLinks, loaded.WhitelistedLinks);
+            Assert.Equal("Roof modem", loaded.AdapterAliases["wwan0"]);
             Assert.Equal(45, loaded.DownTimeoutSeconds);
             Assert.Equal(3, loaded.MaxRestartAttemptsPerHour);
             Assert.Equal(20, loaded.RestartCooldownMinutes);
@@ -41,6 +43,65 @@ public class NetworkMonitorSettingsStoreTests
                 File.Delete(filePath);
             }
         }
+    }
+
+    [Fact]
+    public async Task RemoveAndReAddLink_PreservesDisplayAliasByInterfaceIdentity()
+    {
+        var filePath = Path.Combine(Path.GetTempPath(), $"network-monitor-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            var store = new NetworkMonitorSettingsStore(NullLogger<NetworkMonitorSettingsStore>.Instance, filePath);
+            var settings = new NetworkMonitorSettings
+            {
+                WhitelistedLinks = ["wlan0"],
+                AdapterAliases = new Dictionary<string, string> { ["wlan0"] = "Cabin Wi-Fi" }
+            };
+
+            settings.WhitelistedLinks.Clear();
+            await store.SaveAsync(settings);
+            settings.WhitelistedLinks.Add("wlan0");
+            await store.SaveAsync(settings);
+
+            var loaded = new NetworkMonitorSettings();
+            store.Load(loaded);
+            Assert.Equal(["wlan0"], loaded.WhitelistedLinks);
+            Assert.Equal("Cabin Wi-Fi", loaded.AdapterAliases["wlan0"]);
+        }
+        finally
+        {
+            if (File.Exists(filePath)) File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public void Validate_RejectsUnsafeInterfaceAndInvalidAlias()
+    {
+        Assert.Throws<InvalidOperationException>(() => NetworkMonitorSettingsStore.Validate(new NetworkMonitorSettings
+        {
+            WhitelistedLinks = ["wlan0;reboot"]
+        }));
+        Assert.Throws<InvalidOperationException>(() => NetworkMonitorSettingsStore.Validate(new NetworkMonitorSettings
+        {
+            AdapterAliases = new Dictionary<string, string> { ["wlan0"] = new('x', 49) }
+        }));
+    }
+
+    [Fact]
+    public void ApplyAdapterAliases_ChangesDisplayNameWithoutChangingInterfaceIdentity()
+    {
+        var interfaces = new[]
+        {
+            new InterfaceMetadataService.InterfaceMetadata("wlan0", "wifi", "connected", "Wi-Fi", "Wi-Fi")
+        };
+        var settings = new NetworkMonitorSettings
+        {
+            AdapterAliases = new Dictionary<string, string> { ["wlan0"] = "Cabin Wi-Fi" }
+        };
+
+        var renamed = Assert.Single(XBondStatsService.ApplyAdapterAliases(interfaces, settings));
+        Assert.Equal("wlan0", renamed.Device);
+        Assert.Equal("Cabin Wi-Fi", renamed.DisplayName);
     }
 
     [Fact]

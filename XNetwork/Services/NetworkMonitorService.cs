@@ -321,6 +321,7 @@ public class NetworkMonitorService : BackgroundService
 
             _settings.Enabled = updatedSettings.Enabled;
             _settings.WhitelistedLinks = updatedSettings.WhitelistedLinks;
+            _settings.AdapterAliases = updatedSettings.AdapterAliases;
             _settings.DownTimeoutSeconds = updatedSettings.DownTimeoutSeconds;
             _settings.MaxRestartAttemptsPerHour = updatedSettings.MaxRestartAttemptsPerHour;
             _settings.RestartCooldownMinutes = updatedSettings.RestartCooldownMinutes;
@@ -345,23 +346,7 @@ public class NetworkMonitorService : BackgroundService
 
     private static NetworkMonitorSettings CopySettings(NetworkMonitorSettings settings)
     {
-        return new NetworkMonitorSettings
-        {
-            Enabled = settings.Enabled,
-            WhitelistedLinks = NormalizeLinks(settings.WhitelistedLinks),
-            DownTimeoutSeconds = Math.Clamp(settings.DownTimeoutSeconds, 5, 300),
-            MaxRestartAttemptsPerHour = Math.Max(0, settings.MaxRestartAttemptsPerHour),
-            RestartCooldownMinutes = Math.Max(1, settings.RestartCooldownMinutes)
-        };
-    }
-
-    private static List<string> NormalizeLinks(IEnumerable<string>? links)
-    {
-        return links?
-            .Select(link => link.Trim())
-            .Where(link => !string.IsNullOrWhiteSpace(link))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList() ?? new List<string>();
+        return NetworkMonitorSettingsStore.Normalize(settings);
     }
 
     private async Task RestartLink(string interfaceName, CancellationToken stoppingToken)

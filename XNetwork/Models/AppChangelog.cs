@@ -13,20 +13,21 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.120";
+    public const string CurrentVersion = "ulink-2026.06.121";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
-            Date = "2026-08-12",
-            Summary = "Added manageable watchdog adapters and adapter aliases.",
+            Date = "2026-08-13",
+            Summary = "Made Link Watchdog adapter configuration manageable.",
             Changes =
             [
-                "Added adapter selection, removal, and persisted user-facing aliases to the uLink client watchdog.",
-                "Kept aliases tied to immutable interface names so networking identity is never renamed.",
-                "Applied saved aliases consistently to dashboard and analytics adapter names."
+                "Bumped the uLink interface version for manageable Link Watchdog settings.",
+                "Added adapter selection, editing, and confirmed removal to Link Watchdog.",
+                "Applied saved Link Watchdog changes immediately to the running monitor service.",
+                "Added persistent display-only adapter aliases while preserving Linux interface identities."
             ]
         },
         new ChangelogEntry

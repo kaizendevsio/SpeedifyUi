@@ -54,6 +54,8 @@ public class NetworkMonitorSettingsStore
 
     public async Task SaveAsync(NetworkMonitorSettings settings, CancellationToken cancellationToken = default)
     {
+        Validate(settings);
+        var normalized = Normalize(settings);
         await _saveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -63,7 +65,7 @@ public class NetworkMonitorSettingsStore
                 Directory.CreateDirectory(directory);
             }
 
-            var json = JsonSerializer.Serialize(settings, JsonOptions);
+            var json = JsonSerializer.Serialize(normalized, JsonOptions);
             var temporaryPath = _filePath + ".tmp";
             await File.WriteAllTextAsync(temporaryPath, json, cancellationToken).ConfigureAwait(false);
             RestrictOwnerAccess(temporaryPath);
@@ -79,12 +81,62 @@ public class NetworkMonitorSettingsStore
 
     private static void Apply(NetworkMonitorSettings source, NetworkMonitorSettings target)
     {
-        target.Enabled = source.Enabled;
-        target.WhitelistedLinks = source.WhitelistedLinks ?? new List<string>();
-        target.DownTimeoutSeconds = source.DownTimeoutSeconds;
-        target.MaxRestartAttemptsPerHour = source.MaxRestartAttemptsPerHour;
-        target.RestartCooldownMinutes = source.RestartCooldownMinutes;
+        var normalized = Normalize(source);
+        target.Enabled = normalized.Enabled;
+        target.WhitelistedLinks = normalized.WhitelistedLinks;
+        target.AdapterAliases = normalized.AdapterAliases;
+        target.DownTimeoutSeconds = normalized.DownTimeoutSeconds;
+        target.MaxRestartAttemptsPerHour = normalized.MaxRestartAttemptsPerHour;
+        target.RestartCooldownMinutes = normalized.RestartCooldownMinutes;
     }
+
+    public static NetworkMonitorSettings Normalize(NetworkMonitorSettings settings) => new()
+    {
+        Enabled = settings.Enabled,
+        WhitelistedLinks = (settings.WhitelistedLinks ?? [])
+            .Select(link => link.Trim())
+            .Where(XBondPhysicalPathProbeService.IsSafePhysicalInterface)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList(),
+        AdapterAliases = (settings.AdapterAliases ?? new Dictionary<string, string>())
+            .Where(pair => XBondPhysicalPathProbeService.IsSafePhysicalInterface(pair.Key))
+            .Where(pair => !string.IsNullOrWhiteSpace(pair.Value))
+            .ToDictionary(pair => pair.Key.Trim(), pair => pair.Value.Trim(), StringComparer.OrdinalIgnoreCase),
+        DownTimeoutSeconds = Math.Clamp(settings.DownTimeoutSeconds, 5, 300),
+        MaxRestartAttemptsPerHour = Math.Max(0, settings.MaxRestartAttemptsPerHour),
+        RestartCooldownMinutes = Math.Max(1, settings.RestartCooldownMinutes)
+    };
+
+    public static void Validate(NetworkMonitorSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        foreach (var interfaceName in settings.WhitelistedLinks ?? [])
+        {
+            if (!XBondPhysicalPathProbeService.IsSafePhysicalInterface(interfaceName))
+            {
+                throw new InvalidOperationException($"Invalid Linux interface name: {interfaceName}");
+            }
+        }
+
+        foreach (var (interfaceName, alias) in settings.AdapterAliases ?? new Dictionary<string, string>())
+        {
+            if (!XBondPhysicalPathProbeService.IsSafePhysicalInterface(interfaceName))
+            {
+                throw new InvalidOperationException($"Invalid Linux interface name: {interfaceName}");
+            }
+
+            if (alias.Trim().Length > 48 || alias.Any(char.IsControl))
+            {
+                throw new InvalidOperationException($"Adapter alias for {interfaceName} must be 48 characters or fewer and cannot contain control characters.");
+            }
+        }
+    }
+
+    public static string? GetAdapterAlias(NetworkMonitorSettings settings, string interfaceName) =>
+        settings.AdapterAliases.FirstOrDefault(pair =>
+            string.Equals(pair.Key, interfaceName, StringComparison.OrdinalIgnoreCase)).Value is { Length: > 0 } alias
+                ? alias
+                : null;
 
     private static string GetAppDataDirectory(IHostEnvironment environment)
     {

@@ -6,6 +6,11 @@ public class NetworkMonitorSettings
     /// List of network interface names that are allowed to be monitored and restarted
     /// </summary>
     public List<string> WhitelistedLinks { get; set; } = new();
+
+    /// <summary>
+    /// Optional display aliases keyed by the unchanged Linux interface name.
+    /// </summary>
+    public Dictionary<string, string> AdapterAliases { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     
     /// <summary>
     /// Time in seconds before attempting to restart a down link

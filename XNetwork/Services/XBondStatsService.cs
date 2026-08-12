@@ -11,7 +11,7 @@ public sealed class XBondStatsService(
     XBondStatusService statusService,
     InterfaceMetadataService interfaceMetadataService,
     F50ModemTelemetryService f50TelemetryService,
-    XBondClientWatchdogSettings watchdogSettings) : IXBondStatsProvider
+    NetworkMonitorSettings networkMonitorSettings) : IXBondStatsProvider
 {
     private const ulong StaleRttAckAgeMs = 5_000;
 
@@ -20,7 +20,7 @@ public sealed class XBondStatsService(
         var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
         var interfaces = ApplyAdapterAliases(
             await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false),
-            watchdogSettings);
+            networkMonitorSettings);
         var gatewayRoutes = await interfaceMetadataService.GetDefaultGatewayRoutesAsync(cancellationToken).ConfigureAwait(false);
         var modemTelemetry = await f50TelemetryService.GetTelemetryByInterfaceAsync(cancellationToken).ConfigureAwait(false);
         return FromStatus(status, interfaces, modemTelemetry, gatewayRoutes);
@@ -28,8 +28,8 @@ public sealed class XBondStatsService(
 
     public static IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> ApplyAdapterAliases(
         IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces,
-        XBondClientWatchdogSettings settings) => interfaces
-        .Select(item => XBondClientWatchdogSettingsStore.GetAdapterAlias(settings, item.Device) is { } alias
+        NetworkMonitorSettings settings) => interfaces
+        .Select(item => NetworkMonitorSettingsStore.GetAdapterAlias(settings, item.Device) is { } alias
             ? item with { DisplayName = alias }
             : item)
         .ToArray();
