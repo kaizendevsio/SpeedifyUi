@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.125";
+    public const string CurrentVersion = "ulink-2026.06.126";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-13",
+            Summary = "Added a per-adapter switch that stops the router joining Wi-Fi networks.",
+            Changes =
+            [
+                "Bumped the uLink interface version for per-adapter Wi-Fi control.",
+                "Added a Router Wi-Fi switch per adapter that stops the router joining any Wi-Fi network with it.",
+                "Kept a disabled adapter disconnected by re-checking it every 30 seconds, so a reboot or a manual change cannot quietly re-enable it.",
+                "Stopped Wi-Fi connect and automatic link recovery from fighting a disabled adapter.",
+                "Left saved Wi-Fi networks untouched, so enabling an adapter again restores its normal behaviour."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.125",
             Date = "2026-08-13",
             Summary = "Fixed provider lookups, display names, and the adapter details graphs.",
             Changes =
