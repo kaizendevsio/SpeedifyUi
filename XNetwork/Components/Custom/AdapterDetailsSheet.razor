@@ -1,0 +1,266 @@
+@using XNetwork.Models
+@using XNetwork.Utils
+
+<ActionSheet IsOpen="IsOpen"
+             Title="@SheetTitle"
+             Description="@SheetDescription"
+             CloseLabel="Close adapter details"
+             MaxWidthClass="md:max-w-5xl"
+             OnClose="OnClose">
+    @if (Path is not null)
+    {
+        <div class="space-y-5">
+            <section class="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+                    <p class="text-xs text-slate-400">Latency</p>
+                    <p class="mt-1 text-xl font-semibold text-white">@TelemetryFormatter.FormatLatency(Path.RttMs)</p>
+                    <p class="mt-1 text-xs text-slate-500">Jitter @TelemetryFormatter.FormatNullableMs(Path.JitterMs)</p>
+                </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+                    <p class="text-xs text-slate-400">Loss</p>
+                    <p class="mt-1 text-xl font-semibold @LossValueClass">@LossText</p>
+                    <p class="mt-1 text-xs text-slate-500">Late @TelemetryFormatter.FormatPercent(Path.LatePercent)</p>
+                </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+                    <p class="text-xs text-slate-400">Download</p>
+                    <p class="mt-1 text-xl font-semibold text-cyan-200">@SpeedFormatter.FormatSpeed(Path.DownloadMbps)</p>
+                    <p class="mt-1 text-xs text-slate-500">Useful @SpeedFormatter.FormatSpeed(Path.UsefulDownloadMbps)</p>
+                </div>
+                <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+                    <p class="text-xs text-slate-400">Upload</p>
+                    <p class="mt-1 text-xl font-semibold text-pink-200">@SpeedFormatter.FormatSpeed(Path.UploadMbps)</p>
+                    <p class="mt-1 text-xs text-slate-500">@RoleText</p>
+                </div>
+            </section>
+
+            <section class="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <AdapterTelemetryChart Samples="@Samples" Title="Latency" Metric="latency" Unit="ms" Stroke="#d8d8d8" />
+                <AdapterTelemetryChart Samples="@Samples" Title="Loss" Metric="loss" Unit="%" Stroke="#f59e0b" />
+                <AdapterTelemetryChart Samples="@Samples" Title="Download" Metric="download" Unit="Mbps" Stroke="#38bdf8" />
+                <AdapterTelemetryChart Samples="@Samples" Title="Upload" Metric="upload" Unit="Mbps" Stroke="#f472b6" />
+            </section>
+
+            <section class="rounded-xl border border-slate-700 bg-slate-950/50">
+                <div class="border-b border-slate-700 p-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <h4 class="font-semibold text-white">Upstream</h4>
+                            <p class="mt-1 text-sm text-slate-400">Detected by asking through this adapter, not through the uLink tunnel.</p>
+                        </div>
+                        <span class="text-xs text-slate-500">@TelemetryFormatter.FormatLastUpdated(Identity?.UpdatedAtUtc)</span>
+                    </div>
+                </div>
+
+                @if (!IdentityLookupEnabled)
+                {
+                    <div class="m-4 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
+                        <i class="fas fa-circle-info mr-2 text-amber-300"></i>
+                        ISP lookups are disabled in Settings, so this adapter keeps its manual or system name.
+                    </div>
+                }
+                else if (Identity is null || !Identity.IsAvailable)
+                {
+                    <div class="m-4 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
+                        <i class="fas fa-triangle-exclamation mr-2 text-amber-300"></i>
+                        <span class="font-semibold">ISP unavailable.</span>
+                        <span class="opacity-90">@TelemetryFormatter.FormatUnknown(Identity?.Error ?? "No lookup has completed for this adapter yet.")</span>
+                    </div>
+                }
+                else
+                {
+                    <div class="grid grid-cols-1 gap-3 p-4 text-sm md:grid-cols-3">
+                        <div>
+                            <p class="text-xs text-slate-500">Provider</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.DisplayName)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Public IP</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.PublicIp)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">ISP</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.Isp)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Organization</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.Organization)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Autonomous system</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.AsLabel)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Location</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.Location)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Gateway</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Path.Gateway)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Interface</p>
+                            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Path.InterfaceName)</p>
+                        </div>
+                        <div>
+                            <p class="text-xs text-slate-500">Source</p>
+                            <p class="break-all font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Identity.Source)</p>
+                        </div>
+                    </div>
+                }
+            </section>
+
+            @if (Path.HasCellularTelemetry)
+            {
+                <section class="rounded-xl border border-slate-700 bg-slate-950/50 p-4">
+                    <h4 class="font-semibold text-white">Cellular</h4>
+                    <div class="mt-3 flex flex-wrap items-center gap-3 text-sm text-slate-300">
+                        @if (!string.IsNullOrWhiteSpace(Path.CellularGeneration))
+                        {
+                            <span class="rounded-full border border-cyan-400/25 bg-cyan-400/10 px-2 py-0.5 text-xs font-semibold text-cyan-100">
+                                @Path.CellularGeneration
+                            </span>
+                        }
+                        @if (Path.CellularSignalBars.HasValue)
+                        {
+                            <span class="inline-flex items-center gap-1.5">
+                                <i class="fas fa-signal text-slate-400"></i>
+                                <span>@Path.CellularSignalBars.Value / 5 bars</span>
+                            </span>
+                        }
+                    </div>
+                </section>
+            }
+
+            <section class="flex flex-wrap items-center gap-3">
+                @if (!string.IsNullOrWhiteSpace(AdminUrl))
+                {
+                    <a href="@AdminUrl"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="inline-flex items-center gap-2 rounded-xl border border-slate-600/50 bg-slate-700/50 px-4 py-2.5 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-600/50 hover:text-white">
+                        <i class="fas fa-arrow-up-right-from-square text-xs"></i>
+                        Open admin page
+                    </a>
+                }
+                <button type="button"
+                        class="inline-flex items-center gap-2 rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-2.5 text-sm font-semibold text-cyan-100 transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled="@(IsRefreshingIdentity || !IdentityLookupEnabled)"
+                        @onclick="OnRefreshIdentity">
+                    <i class="@(IsRefreshingIdentity ? "fas fa-spinner fa-spin" : "fas fa-rotate") text-xs"></i>
+                    @(IsRefreshingIdentity ? "Refreshing..." : "Refresh identity")
+                </button>
+            </section>
+
+            @if (ShowTechnicalDetails)
+            {
+                <section class="grid grid-cols-1 gap-3 rounded-xl border border-slate-700 bg-slate-950/50 p-4 text-sm md:grid-cols-3">
+                    <div>
+                        <p class="text-xs text-slate-500">Role</p>
+                        <p class="font-medium text-slate-200">@RoleText</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Score</p>
+                        <p class="font-medium text-slate-200">@Math.Round(Path.Score)</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Queue depth</p>
+                        <p class="font-medium text-slate-200">@Path.QueueDepth</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Heartbeat samples</p>
+                        <p class="font-medium text-slate-200">@Path.HeartbeatSampleCount</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Bind address</p>
+                        <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Path.BindAddress)</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Socket generation</p>
+                        <p class="font-medium text-slate-200">@Path.SocketGeneration</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Last rebind</p>
+                        <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Path.LastRebindReason)</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">Demotion reason</p>
+                        <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Path.DemotionReason)</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-slate-500">State</p>
+                        <p class="font-medium text-slate-200">@Path.StateText</p>
+                    </div>
+                </section>
+            }
+
+            @ChildContent
+        </div>
+    }
+</ActionSheet>
+
+@code {
+    [Parameter] public bool IsOpen { get; set; }
+    [Parameter] public XBondPathStatsSnapshot? Path { get; set; }
+    [Parameter] public AdapterIdentity? Identity { get; set; }
+    [Parameter] public IReadOnlyList<AdapterTelemetrySample> Samples { get; set; } = Array.Empty<AdapterTelemetrySample>();
+    [Parameter] public string? AdminUrl { get; set; }
+    [Parameter] public bool IdentityLookupEnabled { get; set; } = true;
+    [Parameter] public bool IsRefreshingIdentity { get; set; }
+    [Parameter] public bool ShowTechnicalDetails { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnRefreshIdentity { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private string SheetTitle => string.IsNullOrWhiteSpace(Path?.Name) ? "Adapter" : Path!.Name;
+
+    private string? SheetDescription
+    {
+        get
+        {
+            if (Path is null)
+            {
+                return null;
+            }
+
+            var provider = Identity?.DisplayName;
+            return string.IsNullOrWhiteSpace(provider) || string.Equals(provider, Path.Name, StringComparison.OrdinalIgnoreCase)
+                ? $"{Path.InterfaceName} - {RoleText}"
+                : $"{Path.InterfaceName} - {RoleText} - {provider}";
+        }
+    }
+
+    private string RoleText
+    {
+        get
+        {
+            if (Path is null)
+            {
+                return "";
+            }
+
+            if (!Path.IsConfigured)
+            {
+                return "not in uLink";
+            }
+
+            if (Path.IsActive && !Path.IsAnchor && string.Equals(Path.Role, "probe", StringComparison.OrdinalIgnoreCase))
+            {
+                return "backup";
+            }
+
+            return Path.Role;
+        }
+    }
+
+    private string LossText => Path?.DisplayLossPercent is { } loss
+        ? TelemetryFormatter.FormatPercent(loss)
+        : "warming";
+
+    private string LossValueClass => Path?.DisplayLossPercent switch
+    {
+        >= 10 => "text-red-300",
+        >= 2 => "text-yellow-300",
+        null => "text-slate-400",
+        _ => "text-white"
+    };
+}

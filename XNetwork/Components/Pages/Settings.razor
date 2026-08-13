@@ -19,6 +19,9 @@
 @inject TrafficBypassService TrafficBypassService
 @inject UiDisplayPreferences UiDisplayPreferences
 @inject UiDisplayPreferencesStore UiDisplayPreferencesStore
+@inject AdapterIdentitySettings AdapterIdentitySettings
+@inject AdapterIdentitySettingsStore AdapterIdentitySettingsStore
+@inject AdapterIdentityService AdapterIdentityService
 @inject NavigationManager NavigationManager
 
 <PageTitle>Settings - uLink</PageTitle>
@@ -1034,6 +1037,17 @@
             </label>
         </div>
 
+        <div class="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+            <div class="min-w-0">
+                <p class="text-sm font-semibold text-white">Name adapters from their ISP</p>
+                <p class="mt-1 text-xs text-slate-500">
+                    Asks a free lookup service through each adapter's own connection so cards show the live provider.
+                    Display names above always win when set.
+                </p>
+            </div>
+            <input type="checkbox" class="h-5 w-5 accent-cyan-400" @bind="_adapterIdentityEnabled" />
+        </div>
+
         <button type="button" class="settings-primary-button" disabled="@_networkMonitorBusy" @onclick="SaveLinkWatchdogSettingsAsync">Save Link Watchdog</button>
         </div>
     </Accordion>
@@ -1235,6 +1249,7 @@
     private XBondMssClampStatus? _mssClampStatus;
     private NetworkMonitorStatus? _networkMonitorStatus;
     private NetworkMonitorSettings _networkMonitorDraft = new();
+    private bool _adapterIdentityEnabled = true;
     private XBondAdapterConfigRow? _pendingLinkWatchdogRemoval;
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
@@ -1324,6 +1339,7 @@
         _clientWatchdogDraft = CopyClientWatchdogSettings(XBondClientWatchdogService.Settings);
         _clientWatchdogStatus = XBondClientWatchdogService.GetStatus();
         _networkMonitorDraft = CopyNetworkMonitorSettings(NetworkMonitorService.GetSettings());
+        _adapterIdentityEnabled = AdapterIdentitySettings.Enabled;
         LoadProxyEntries();
         await LoadTrafficBypassAsync();
         await LoadWifiInterfacesAsync();
@@ -2024,6 +2040,17 @@
             NetworkMonitorService.UpdateSettings(normalized);
             _networkMonitorDraft = CopyNetworkMonitorSettings(NetworkMonitorService.GetSettings());
             _networkMonitorStatus = NetworkMonitorService.GetStatus();
+
+            if (AdapterIdentitySettings.Enabled != _adapterIdentityEnabled)
+            {
+                AdapterIdentitySettings.Enabled = _adapterIdentityEnabled;
+                await AdapterIdentitySettingsStore.SaveAsync(AdapterIdentitySettings, _refreshCts.Token);
+                if (!_adapterIdentityEnabled)
+                {
+                    AdapterIdentityService.ClearCache();
+                }
+            }
+
             _networkMonitorMessage = "Link Watchdog settings saved and applied.";
             _networkMonitorMessageClass = "border-emerald-500/25 bg-emerald-500/10 text-emerald-100";
         }

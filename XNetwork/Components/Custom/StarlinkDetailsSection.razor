@@ -1,0 +1,299 @@
+@using XNetwork.Models
+@using XNetwork.Utils
+
+@{
+    var detectedCapabilities = Capabilities.Capabilities.Where(capability => capability.IsDetected).ToList();
+    var openCapabilities = GetUniqueStarlinkOpenCapabilities(detectedCapabilities);
+    var commandCapabilities = detectedCapabilities
+        .Where(capability => !string.IsNullOrWhiteSpace(capability.DirectCommand) && IsStarlinkCommandVisible(capability, Snapshot))
+        .ToList();
+}
+
+<div class="space-y-5">
+    <section class="grid grid-cols-2 gap-3">
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Dish latency</p>
+            <p class="mt-1 text-xl font-semibold text-white">@TelemetryFormatter.FormatNullableMs(Snapshot.PopPingLatencyMs)</p>
+            <p class="mt-1 text-xs text-slate-500">Drop @TelemetryFormatter.FormatDropRate(Snapshot.PopPingDropRate)</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Downlink</p>
+            <p class="mt-1 text-xl font-semibold text-cyan-200">@TelemetryFormatter.FormatNullableSpeed(Snapshot.DownlinkMbps)</p>
+            <p class="mt-1 text-xs text-slate-500">Direct dish</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Uplink</p>
+            <p class="mt-1 text-xl font-semibold text-pink-200">@TelemetryFormatter.FormatNullableSpeed(Snapshot.UplinkMbps)</p>
+            <p class="mt-1 text-xs text-slate-500">Direct dish</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Obstruction</p>
+            <p class="mt-1 text-xl font-semibold text-amber-200">@TelemetryFormatter.FormatNullablePercent(Snapshot.ObstructionPercent)</p>
+            <p class="mt-1 text-xs text-slate-500">@TelemetryFormatter.FormatObstructionState(Snapshot.CurrentlyObstructed)</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Alignment</p>
+            <p class="mt-1 text-xl font-semibold text-emerald-200">@TelemetryFormatter.FormatNullableDegrees(Snapshot.AlignmentErrorDegrees)</p>
+            <p class="mt-1 text-xs text-slate-500">Az @TelemetryFormatter.FormatNullableDegrees(Snapshot.BoresightAzimuthDegrees)</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Elevation</p>
+            <p class="mt-1 text-xl font-semibold text-white">@TelemetryFormatter.FormatNullableDegrees(Snapshot.BoresightElevationDegrees)</p>
+            <p class="mt-1 text-xs text-slate-500">Boresight</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">GPS</p>
+            <p class="mt-1 text-xl font-semibold text-white">@TelemetryFormatter.FormatGpsState(Snapshot)</p>
+            <p class="mt-1 text-xs text-slate-500">@TelemetryFormatter.FormatGpsSatellites(Snapshot.GpsSatellites)</p>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
+            <p class="text-xs text-slate-400">Uptime</p>
+            <p class="mt-1 text-xl font-semibold text-white">@TelemetryFormatter.FormatDuration(Snapshot.UptimeSeconds)</p>
+            <p class="mt-1 text-xs text-slate-500">@TelemetryFormatter.FormatShortDeviceId(Snapshot.DeviceId)</p>
+        </div>
+    </section>
+
+    @if (!string.IsNullOrWhiteSpace(Snapshot.Error))
+    {
+        <div class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
+            <i class="fas fa-triangle-exclamation mr-2 text-amber-300"></i>
+            @Snapshot.Error
+        </div>
+    }
+
+    <section class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <StarlinkTelemetryChart Samples="@History" Title="Latency" Metric="latency" Unit="ms" Stroke="#d8d8d8" />
+        <StarlinkTelemetryChart Samples="@History" Title="Downlink" Metric="download" Unit="Mbps" Stroke="#38bdf8" />
+        <StarlinkTelemetryChart Samples="@History" Title="Uplink" Metric="upload" Unit="Mbps" Stroke="#a3a3a3" />
+        <StarlinkTelemetryChart Samples="@History" Title="Obstruction" Metric="obstruction" Unit="%" Stroke="#f59e0b" />
+    </section>
+
+    @if (Snapshot.ActiveAlerts.Count > 0)
+    {
+        <section class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4">
+            <h4 class="font-semibold text-amber-100">Active Alerts</h4>
+            <div class="mt-3 flex flex-wrap gap-2">
+                @foreach (var alert in Snapshot.ActiveAlerts)
+                {
+                    <span class="rounded-full border border-amber-500/30 bg-amber-500/15 px-2.5 py-1 text-xs font-medium text-amber-100" title="@StarlinkAlertPresenter.GetDescription(alert)">
+                        @StarlinkAlertPresenter.GetLabel(alert)
+                    </span>
+                }
+            </div>
+        </section>
+    }
+
+    <section class="rounded-xl border border-slate-700 bg-slate-950/50">
+        <div class="border-b border-slate-700 p-4">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h4 class="font-semibold text-white">Starlink Actions</h4>
+                    <p class="mt-1 text-sm text-slate-400">Open the local Starlink app or swipe an action fully right to run it from uLink.</p>
+                </div>
+                <span class="text-xs text-slate-500">@TelemetryFormatter.FormatLastUpdated(Capabilities.LastUpdatedUtc)</span>
+            </div>
+        </div>
+
+        @if (LastCommandResult is not null)
+        {
+            <div class="@GetStarlinkCommandResultClass(LastCommandResult)">
+                <i class="@(LastCommandResult.Success ? "fas fa-check-circle" : "fas fa-triangle-exclamation")"></i>
+                <div>
+                    <p class="font-semibold">@LastCommandResult.Message</p>
+                    <p class="text-xs opacity-80">@TelemetryFormatter.FormatLastUpdated(LastCommandResult.CompletedUtc)</p>
+                </div>
+            </div>
+        }
+
+        <div class="space-y-3 p-4">
+            @foreach (var capability in openCapabilities)
+            {
+                <a href="@capability.ActionUrl"
+                   target="_blank"
+                   rel="noopener noreferrer"
+                   class="flex items-center justify-between rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-100 transition-colors hover:border-cyan-400/40 hover:bg-cyan-500/15">
+                    <span class="inline-flex items-center gap-2">
+                        <i class="fas fa-arrow-up-right-from-square"></i>
+                        @GetStarlinkOpenActionLabel(capability)
+                    </span>
+                    <span class="text-xs font-medium text-cyan-100/70">@ManagementHost</span>
+                </a>
+            }
+
+            @foreach (var capability in commandCapabilities)
+            {
+                <div class="@GetStarlinkActionCardClass(capability)">
+                    <div class="flex items-start gap-3">
+                        <span class="@GetStarlinkActionIconClass(capability)">
+                            <i class="fas @GetStarlinkCommandIconClass(capability)"></i>
+                        </span>
+                        <div class="min-w-0 flex-grow">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <h5 class="font-semibold text-white">@capability.Label</h5>
+                                @if (capability.IsDisruptive)
+                                {
+                                    <span class="rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-200">Disruptive</span>
+                                }
+                            </div>
+                            <p class="mt-1 text-sm leading-snug text-slate-400">@GetStarlinkCommandShortDescription(capability)</p>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <SlideToConfirm Label="@GetStarlinkCommandSlideLabel(capability)"
+                                        BusyLabel="@GetStarlinkCommandBusyLabel(capability)"
+                                        IconClass="@GetStarlinkCommandIconClass(capability)"
+                                        Tone="@GetStarlinkCommandTone(capability)"
+                                        Disabled="@(!capability.IsActionable || CommandInProgress)"
+                                        IsBusy="@IsStarlinkCommandBusy(capability)"
+                                        OnConfirmed="() => OnExecuteCommand.InvokeAsync(capability)" />
+                    </div>
+                </div>
+            }
+
+            @if (openCapabilities.Count == 0 && commandCapabilities.Count == 0)
+            {
+                <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-3 text-sm text-slate-400">
+                    No direct Starlink actions were detected from the current firmware.
+                </div>
+            }
+        </div>
+    </section>
+
+    <section class="grid grid-cols-1 gap-3 rounded-xl border border-slate-700 bg-slate-950/50 p-4 text-sm md:grid-cols-3">
+        <div>
+            <p class="text-xs text-slate-500">Hardware</p>
+            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Snapshot.HardwareVersion)</p>
+        </div>
+        <div>
+            <p class="text-xs text-slate-500">Software</p>
+            <p class="font-medium text-slate-200">@TelemetryFormatter.FormatUnknown(Snapshot.SoftwareVersion)</p>
+        </div>
+        <div>
+            <p class="text-xs text-slate-500">Management</p>
+            <p class="font-medium text-slate-200">@ManagementHost</p>
+        </div>
+    </section>
+</div>
+
+@code {
+    [Parameter] public StarlinkTelemetrySnapshot Snapshot { get; set; } = StarlinkTelemetrySnapshot.Unavailable();
+    [Parameter] public IReadOnlyList<StarlinkTelemetrySnapshot> History { get; set; } = Array.Empty<StarlinkTelemetrySnapshot>();
+    [Parameter] public StarlinkCapabilitySnapshot Capabilities { get; set; } = new();
+    [Parameter] public string ManagementHost { get; set; } = "";
+    [Parameter] public StarlinkCommandResult? LastCommandResult { get; set; }
+    [Parameter] public bool CommandInProgress { get; set; }
+    [Parameter] public StarlinkCapability? PendingCommand { get; set; }
+    [Parameter] public EventCallback<StarlinkCapability> OnExecuteCommand { get; set; }
+
+    private bool IsStarlinkCommandBusy(StarlinkCapability capability)
+    {
+        return CommandInProgress && PendingCommand?.DirectCommand == capability.DirectCommand;
+    }
+
+    private static bool IsStarlinkCommandVisible(StarlinkCapability capability, StarlinkTelemetrySnapshot snapshot)
+    {
+        if (snapshot.HasActuators == false &&
+            (capability.Key.Contains("stow", StringComparison.OrdinalIgnoreCase) ||
+             capability.Key.Contains("unstow", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<StarlinkCapability> GetUniqueStarlinkOpenCapabilities(IReadOnlyList<StarlinkCapability> capabilities)
+    {
+        return capabilities
+            .Where(capability => !string.IsNullOrWhiteSpace(capability.ActionUrl))
+            .GroupBy(capability => capability.ActionUrl, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.OrderBy(capability => capability.Key.Equals("web-ui", StringComparison.OrdinalIgnoreCase) ? 0 : 1).First())
+            .ToArray();
+    }
+
+    private static string GetStarlinkOpenActionLabel(StarlinkCapability capability)
+    {
+        return capability.Key.Equals("web-ui", StringComparison.OrdinalIgnoreCase)
+            ? "Open Starlink app"
+            : capability.Label;
+    }
+
+    private static string GetStarlinkCommandShortDescription(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "reboot" => "Restart the terminal. Starlink may be offline for a few minutes.",
+            "stow" => "Move the dish into stow position.",
+            "unstow" => "Return the dish from stow position.",
+            "dish_clear_obstruction_map" => "Clear learned obstruction history. It can take hours or days to rebuild.",
+            _ => capability.Description
+        };
+    }
+
+    private static string GetStarlinkCommandSlideLabel(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "dish_clear_obstruction_map" => "Slide to reset map",
+            _ => $"Slide to {capability.Label.ToLowerInvariant()}"
+        };
+    }
+
+    private static string GetStarlinkCommandBusyLabel(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "dish_clear_obstruction_map" => "Resetting map...",
+            _ => $"{capability.Label}..."
+        };
+    }
+
+    private static string GetStarlinkCommandTone(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "reboot" or "dish_clear_obstruction_map" => "danger",
+            "stow" => "warning",
+            _ => "info"
+        };
+    }
+
+    private static string GetStarlinkCommandIconClass(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "reboot" => "fa-power-off",
+            "stow" => "fa-box-archive",
+            "unstow" => "fa-satellite-dish",
+            "dish_clear_obstruction_map" => "fa-map-location-dot",
+            _ => "fa-bolt"
+        };
+    }
+
+    private static string GetStarlinkActionCardClass(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "reboot" or "dish_clear_obstruction_map" => "rounded-xl border border-red-500/25 bg-red-500/10 p-3",
+            "stow" => "rounded-xl border border-amber-500/25 bg-amber-500/10 p-3",
+            _ => "rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3"
+        };
+    }
+
+    private static string GetStarlinkActionIconClass(StarlinkCapability capability)
+    {
+        return capability.DirectCommand switch
+        {
+            "reboot" or "dish_clear_obstruction_map" => "inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-red-500/15 text-red-200",
+            "stow" => "inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-200",
+            _ => "inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-cyan-500/15 text-cyan-200"
+        };
+    }
+
+    private static string GetStarlinkCommandResultClass(StarlinkCommandResult result)
+    {
+        return result.Success
+            ? "flex items-start gap-3 border-b border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-100"
+            : "flex items-start gap-3 border-b border-red-500/20 bg-red-500/10 p-4 text-sm text-red-100";
+    }
+}
