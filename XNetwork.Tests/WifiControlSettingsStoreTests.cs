@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging.Abstractions;
+﻿using Microsoft.Extensions.Logging.Abstractions;
 using XNetwork.Models;
 using XNetwork.Services;
 
@@ -41,6 +41,19 @@ public class WifiControlSettingsStoreTests : IDisposable
 
         Assert.Equal(45, loaded.EnforcementIntervalSeconds);
         Assert.Equal(TimeSpan.FromSeconds(45), loaded.EnforcementInterval);
+    }
+
+    [Fact]
+    public async Task PersistsOnlyRealSettingsNotDerivedValues()
+    {
+        var path = Path.Combine(_directory, "wifi-control-settings.json");
+        var store = new WifiControlSettingsStore(NullLogger<WifiControlSettingsStore>.Instance, path);
+
+        await store.SaveAsync(new WifiControlSettings());
+
+        var json = await File.ReadAllTextAsync(path);
+        Assert.DoesNotContain("EnforcementInterval\"", json);
+        Assert.Contains("EnforcementIntervalSeconds", json);
     }
 
     [Fact]

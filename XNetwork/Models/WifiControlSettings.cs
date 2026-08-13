@@ -1,3 +1,5 @@
+﻿using System.Text.Json.Serialization;
+
 namespace XNetwork.Models;
 
 /// <summary>Which Wi-Fi adapters are blocked from connecting, and how often that is re-asserted.</summary>
@@ -8,6 +10,7 @@ public sealed class WifiControlSettings
 
     public int EnforcementIntervalSeconds { get; set; } = 30;
 
+    [JsonIgnore]
     public TimeSpan EnforcementInterval => TimeSpan.FromSeconds(Math.Clamp(EnforcementIntervalSeconds, 10, 3600));
 
     public bool IsDisabled(string interfaceName) =>
