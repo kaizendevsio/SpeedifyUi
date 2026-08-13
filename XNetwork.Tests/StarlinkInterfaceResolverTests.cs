@@ -23,13 +23,50 @@ public class StarlinkInterfaceResolverTests
                         IsConfigured = true
                     }
                 ]
-            });
+            },
+            probe: (iface, _) => Task.FromResult(iface == "enx-dynamic-starlink"));
 
         var resolution = await resolver.ResolveAsync();
 
         Assert.True(resolution.IsAvailable);
         Assert.Equal("enx-dynamic-starlink", resolution.InterfaceName);
-        Assert.Contains("uLink path", resolution.Reason);
+        Assert.Contains("Verified", resolution.Reason);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_RejectsStaleXBondMetadataAndFindsVerifiedReplacement()
+    {
+        var resolver = CreateResolver(
+            new XBondStatsSnapshot
+            {
+                Paths =
+                [
+                    new XBondPathStatsSnapshot
+                    {
+                        PathId = 1,
+                        Name = "Starlink",
+                        InterfaceName = "enx-old-starlink",
+                        InterfaceUp = true,
+                        IsConfigured = true
+                    }
+                ]
+            },
+            interfaces:
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-old-starlink", Type: "ethernet", State: "connected",
+                    ConnectionName: "Old", DisplayName: "Old"),
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-new-starlink", Type: "ethernet", State: "connected",
+                    ConnectionName: "Starlink", DisplayName: "Starlink")
+            ],
+            probe: (iface, _) => Task.FromResult(iface == "enx-new-starlink"));
+
+        var resolution = await resolver.ResolveAsync();
+
+        Assert.True(resolution.IsAvailable);
+        Assert.Equal("enx-new-starlink", resolution.InterfaceName);
+        Assert.Contains("answered", resolution.Reason);
     }
 
     [Fact]

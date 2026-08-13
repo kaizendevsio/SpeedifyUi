@@ -117,6 +117,8 @@ builder.Services.AddHostedService<TrafficBypassStartupService>();
 builder.Services.AddSingleton(sp =>
     builder.Configuration.GetSection("StarlinkTelemetry").Get<StarlinkTelemetrySettings>() ?? new StarlinkTelemetrySettings());
 builder.Services.AddSingleton<IStarlinkInterfaceResolver, StarlinkInterfaceResolver>();
+builder.Services.AddSingleton<StarlinkPathBindingService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StarlinkPathBindingService>());
 builder.Services.AddSingleton<IStarlinkHttpClientFactory, StarlinkBoundHttpClientFactory>();
 builder.Services.AddSingleton<StarlinkDeviceClient>();
 builder.Services.AddSingleton<StarlinkTelemetryService>();

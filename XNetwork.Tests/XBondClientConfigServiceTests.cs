@@ -190,4 +190,44 @@ public class XBondClientConfigServiceTests
         var reparsed = XBondClientConfigService.ParseConfig(rendered);
         Assert.Equal(["enx103c59f1039c", "wlan0"], reparsed.Paths.Select(path => path.InterfaceName).ToArray());
     }
+
+    [Fact]
+    public void ApplyPathInterfaceBinding_UpdatesOnlySelectedPathAndClearsStaleAddress()
+    {
+        var config = new XNetwork.Models.XBondClientConfig
+        {
+            Paths =
+            [
+                new() { Id = 1, Name = "Starlink", InterfaceName = "enx-old", BindAddress = "192.168.254.101" },
+                new() { Id = 2, Name = "Mobile", InterfaceName = "enx-mobile" }
+            ]
+        };
+
+        var result = XBondClientConfigService.ApplyPathInterfaceBinding(config, 1, "enx-new");
+
+        Assert.True(result.Success);
+        Assert.True(result.Changed);
+        Assert.Equal("enx-new", config.Paths[0].InterfaceName);
+        Assert.Null(config.Paths[0].BindAddress);
+        Assert.Equal("enx-mobile", config.Paths[1].InterfaceName);
+    }
+
+    [Fact]
+    public void ApplyPathInterfaceBinding_RejectsInterfaceAlreadyOwnedByAnotherPath()
+    {
+        var config = new XNetwork.Models.XBondClientConfig
+        {
+            Paths =
+            [
+                new() { Id = 1, Name = "Starlink", InterfaceName = "enx-old" },
+                new() { Id = 2, Name = "Mobile", InterfaceName = "enx-new" }
+            ]
+        };
+
+        var result = XBondClientConfigService.ApplyPathInterfaceBinding(config, 1, "enx-new");
+
+        Assert.False(result.Success);
+        Assert.False(result.Changed);
+        Assert.Equal("enx-old", config.Paths[0].InterfaceName);
+    }
 }

@@ -43,17 +43,23 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
     public async Task<StarlinkInterfaceResolution> ResolveAsync(CancellationToken cancellationToken = default)
     {
         var xbondMatch = await ResolveFromXBondPathsAsync(cancellationToken).ConfigureAwait(false);
-        if (xbondMatch.IsAvailable)
+        if (xbondMatch.IsAvailable && !_settings.AdapterProbeEnabled)
         {
             return xbondMatch;
         }
 
-        if (!_settings.AdapterProbeEnabled)
+        if (xbondMatch.IsAvailable &&
+            await VerifyInterfaceAsync(xbondMatch.InterfaceName!, cancellationToken).ConfigureAwait(false))
         {
-            return xbondMatch;
+            return CacheProbe(StarlinkInterfaceResolution.Available(
+                xbondMatch.InterfaceName!,
+                $"Verified {xbondMatch.InterfaceName} against Starlink management host {_settings.Host}."));
         }
 
-        return await ResolveByProbeAsync(xbondMatch.Reason, cancellationToken).ConfigureAwait(false);
+        return await ResolveByProbeAsync(
+            xbondMatch.Reason,
+            xbondMatch.IsAvailable ? xbondMatch.InterfaceName : null,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<StarlinkInterfaceResolution> ResolveFromXBondPathsAsync(CancellationToken cancellationToken)
@@ -76,27 +82,31 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
         }
     }
 
-    private async Task<StarlinkInterfaceResolution> ResolveByProbeAsync(string pathReason, CancellationToken cancellationToken)
+    private async Task<StarlinkInterfaceResolution> ResolveByProbeAsync(
+        string pathReason,
+        string? excludedInterface,
+        CancellationToken cancellationToken)
     {
         var now = DateTimeOffset.UtcNow;
-        if (_cachedProbeResolution is not null && now < _cachedProbeExpiresAtUtc)
+        if (CanUseCachedProbe(now, excludedInterface))
         {
-            return _cachedProbeResolution;
+            return _cachedProbeResolution!;
         }
 
         await _probeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             now = DateTimeOffset.UtcNow;
-            if (_cachedProbeResolution is not null && now < _cachedProbeExpiresAtUtc)
+            if (CanUseCachedProbe(now, excludedInterface))
             {
-                return _cachedProbeResolution;
+                return _cachedProbeResolution!;
             }
 
             var interfaces = await _interfaceProvider(cancellationToken).ConfigureAwait(false);
             var candidates = interfaces
                 .Where(item => item.IsDashboardCandidate && !string.IsNullOrWhiteSpace(item.Device))
                 .Select(item => item.Device)
+                .Where(item => !string.Equals(item, excludedInterface, StringComparison.OrdinalIgnoreCase))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
 
@@ -123,6 +133,32 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
         finally
         {
             _probeLock.Release();
+        }
+    }
+
+    private bool CanUseCachedProbe(DateTimeOffset now, string? excludedInterface) =>
+        _cachedProbeResolution is not null &&
+        now < _cachedProbeExpiresAtUtc &&
+        !string.Equals(
+            _cachedProbeResolution.InterfaceName,
+            excludedInterface,
+            StringComparison.OrdinalIgnoreCase);
+
+    private async Task<bool> VerifyInterfaceAsync(string interfaceName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _probeInterfaceAsync(interfaceName, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "Starlink verification timed out on interface {InterfaceName}", interfaceName);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Starlink verification failed on interface {InterfaceName}", interfaceName);
+            return false;
         }
     }
 

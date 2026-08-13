@@ -16,6 +16,79 @@ public sealed class XBondClientConfigService(
     public async Task<XBondClientConfig> ReadCurrentConfigAsync(CancellationToken cancellationToken = default) =>
         await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
 
+    public async Task<XBondPathInterfaceUpdate> PersistPathInterfaceAsync(
+        int pathId,
+        string interfaceName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!settings.AllowServiceControl)
+        {
+            return new(false, false, "uLink config changes are locked by configuration.");
+        }
+
+        if (!IsSafeInterfaceName(interfaceName))
+        {
+            return new(false, false, "Invalid network adapter name.");
+        }
+
+        await _operationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var config = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
+            var result = ApplyPathInterfaceBinding(config, pathId, interfaceName);
+            if (!result.Success || !result.Changed)
+            {
+                return result;
+            }
+
+            await WriteConfigAsync(config, cancellationToken).ConfigureAwait(false);
+            logger.LogInformation(
+                "Persisted uLink path {PathId} on replacement interface {InterfaceName} without restarting the client",
+                pathId,
+                interfaceName);
+            return result;
+        }
+        finally
+        {
+            _operationLock.Release();
+        }
+    }
+
+    public static XBondPathInterfaceUpdate ApplyPathInterfaceBinding(
+        XBondClientConfig config,
+        int pathId,
+        string interfaceName)
+    {
+        if (!IsSafeInterfaceName(interfaceName))
+        {
+            return new(false, false, "Invalid network adapter name.");
+        }
+
+        var path = config.Paths.FirstOrDefault(candidate => candidate.Id == pathId);
+        if (path is null)
+        {
+            return new(false, false, $"uLink path {pathId} is not configured.");
+        }
+
+        var conflict = config.Paths.FirstOrDefault(candidate =>
+            candidate.Enabled &&
+            candidate.Id != pathId &&
+            string.Equals(candidate.InterfaceName, interfaceName, StringComparison.OrdinalIgnoreCase));
+        if (conflict is not null)
+        {
+            return new(false, false, $"Adapter {interfaceName} is already assigned to uLink path {conflict.Id}.");
+        }
+
+        if (string.Equals(path.InterfaceName, interfaceName, StringComparison.OrdinalIgnoreCase))
+        {
+            return new(true, false, "uLink path already uses the detected adapter.");
+        }
+
+        path.InterfaceName = interfaceName;
+        path.BindAddress = null;
+        return new(true, true, "Updated the uLink path adapter without restarting the client.");
+    }
+
     public async Task<XBondAdapterConfigStatus> SaveConfigAndRestartAsync(
         XBondClientConfig config,
         string message,

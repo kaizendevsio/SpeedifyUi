@@ -80,6 +80,8 @@ public sealed class XBondClientPathConfig
     public bool Enabled { get; set; } = true;
 }
 
+public sealed record XBondPathInterfaceUpdate(bool Success, bool Changed, string Message);
+
 public sealed class XBondAdapterConfigStatus
 {
     public string Message { get; set; } = "";

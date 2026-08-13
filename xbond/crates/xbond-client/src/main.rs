@@ -2190,7 +2190,14 @@ fn resolve_control_rebind_path(
         let spec = specs_by_id
             .get(&path_id)
             .with_context(|| format!("XBond path {path_id} is not configured"))?;
-        return Ok((path_id, spec.interface_name.clone()));
+        let requested_interface = interface_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        return Ok((
+            path_id,
+            requested_interface.or_else(|| spec.interface_name.clone()),
+        ));
     }
 
     let interface_name = interface_name
@@ -2211,6 +2218,42 @@ fn resolve_control_rebind_path(
         })
         .map(|(path_id, spec)| (*path_id, spec.interface_name.clone()))
         .with_context(|| format!("no configured XBond path uses interface {interface_name}"))
+}
+
+fn replace_path_interface(
+    config: &mut ClientConfig,
+    specs_by_id: &mut HashMap<u16, ProbePathSpec>,
+    path_id: u16,
+    interface_name: &str,
+) -> Result<bool> {
+    let interface_name = interface_name.trim();
+    if interface_name.is_empty() {
+        bail!("replacement interface is empty");
+    }
+
+    let spec = specs_by_id
+        .get_mut(&path_id)
+        .with_context(|| format!("XBond path {path_id} is not configured"))?;
+    let path = config
+        .paths
+        .iter_mut()
+        .find(|path| path.id == path_id)
+        .with_context(|| format!("XBond path {path_id} is missing from client config"))?;
+
+    let changed = !spec
+        .interface_name
+        .as_deref()
+        .is_some_and(|current| current.eq_ignore_ascii_case(interface_name));
+    if changed {
+        let interface_name = interface_name.to_string();
+        path.interface_name = Some(interface_name.clone());
+        path.bind_addr = None;
+        spec.interface_name = Some(interface_name.clone());
+        spec.bind_device = Some(interface_name);
+        spec.bind_addr = None;
+    }
+
+    Ok(changed)
 }
 
 fn effective_mode_and_policy(
@@ -2659,14 +2702,14 @@ fn reset_client_repair_cache(
 }
 
 async fn run_tunnel(options: TunnelOptions) -> Result<()> {
-    let config = read_config(&options.config)?;
+    let mut config = read_config(&options.config)?;
     let key_text = std::env::var(&options.key_env)
         .with_context(|| format!("{} environment variable is required", options.key_env))?;
     let key = XBondKey::from_passphrase(&key_text);
     let mut session_id = resolve_session_id()?;
 
     let specs = select_probe_paths(&config, &[], &[])?;
-    let specs_by_id = specs
+    let mut specs_by_id = specs
         .into_iter()
         .map(|spec| (spec.path_id, spec))
         .collect::<HashMap<_, _>>();
@@ -3274,66 +3317,85 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     ControlRequest::RebindPath { path_id, interface_name } => {
                         match resolve_control_rebind_path(&specs_by_id, path_id, interface_name.as_deref()) {
                             Ok((resolved_path_id, resolved_interface)) => {
-                                mark_path_socket_for_rebind(
-                                    &mut path_runtime,
-                                    resolved_path_id,
-                                    "manual-control",
-                                    None,
-                                    true,
-                                );
-                                match ensure_tunnel_sockets(
-                                    &config,
-                                    &specs_by_id,
-                                    &mut sockets,
-                                    &mut senders,
-                                    &mut receivers,
-                                    &mut path_runtime,
-                                    &inbound_queues,
-                                    &send_report_tx,
-                                    &socket_event_tx,
-                                    &key,
-                                    options.tun_mtu,
-                                    &receiver_payload_pool,
-                                    options.json_events,
-                                ).await {
-                                    Ok(()) if sockets.contains_key(&resolved_path_id) => {
-                                        let generation = path_runtime
-                                            .get(&resolved_path_id)
-                                            .map(|runtime| runtime.socket_generation);
-                                        ControlResponse {
-                                            ok: true,
+                                let replacement_error = resolved_interface
+                                    .as_deref()
+                                    .and_then(|interface_name| replace_path_interface(
+                                        &mut config,
+                                        &mut specs_by_id,
+                                        resolved_path_id,
+                                        interface_name,
+                                    ).err());
+                                if let Some(error) = replacement_error {
+                                    ControlResponse {
+                                            ok: false,
+                                            message: error.to_string(),
+                                            path_id: Some(resolved_path_id),
+                                            interface_name: resolved_interface,
+                                            rebound: Some(false),
+                                        ..ControlResponse::default()
+                                    }
+                                } else {
+                                    mark_path_socket_for_rebind(
+                                        &mut path_runtime,
+                                        resolved_path_id,
+                                        "manual-control",
+                                        None,
+                                        true,
+                                    );
+                                    match ensure_tunnel_sockets(
+                                        &config,
+                                        &specs_by_id,
+                                        &mut sockets,
+                                        &mut senders,
+                                        &mut receivers,
+                                        &mut path_runtime,
+                                        &inbound_queues,
+                                        &send_report_tx,
+                                        &socket_event_tx,
+                                        &key,
+                                        options.tun_mtu,
+                                        &receiver_payload_pool,
+                                        options.json_events,
+                                    ).await {
+                                        Ok(()) if sockets.contains_key(&resolved_path_id) => {
+                                            let generation = path_runtime
+                                                .get(&resolved_path_id)
+                                                .map(|runtime| runtime.socket_generation);
+                                            ControlResponse {
+                                                ok: true,
+                                                message: format!(
+                                                    "XBond path {resolved_path_id} rebound{}.",
+                                                    resolved_interface
+                                                        .as_deref()
+                                                        .map(|iface| format!(" on {iface}"))
+                                                        .unwrap_or_default()
+                                                ),
+                                                path_id: Some(resolved_path_id),
+                                                interface_name: resolved_interface,
+                                                socket_generation: generation,
+                                                rebound: Some(true),
+                                                ..ControlResponse::default()
+                                            }
+                                        }
+                                        Ok(()) => ControlResponse {
+                                            ok: false,
                                             message: format!(
-                                                "XBond path {resolved_path_id} rebound{}.",
-                                                resolved_interface
-                                                    .as_deref()
-                                                    .map(|iface| format!(" on {iface}"))
-                                                    .unwrap_or_default()
+                                                "XBond path {resolved_path_id} could not be rebound because no live socket was opened."
                                             ),
                                             path_id: Some(resolved_path_id),
                                             interface_name: resolved_interface,
-                                            socket_generation: generation,
-                                            rebound: Some(true),
+                                            rebound: Some(false),
                                             ..ControlResponse::default()
-                                        }
+                                        },
+                                        Err(error) => ControlResponse {
+                                            ok: false,
+                                            message: format!("XBond path rebind failed: {error}"),
+                                            path_id: Some(resolved_path_id),
+                                            interface_name: resolved_interface,
+                                            rebound: Some(false),
+                                            ..ControlResponse::default()
+                                        },
                                     }
-                                    Ok(()) => ControlResponse {
-                                        ok: false,
-                                        message: format!(
-                                            "XBond path {resolved_path_id} could not be rebound because no live socket was opened."
-                                        ),
-                                        path_id: Some(resolved_path_id),
-                                        interface_name: resolved_interface,
-                                        rebound: Some(false),
-                                        ..ControlResponse::default()
-                                    },
-                                    Err(error) => ControlResponse {
-                                        ok: false,
-                                        message: format!("XBond path rebind failed: {error}"),
-                                        path_id: Some(resolved_path_id),
-                                        interface_name: resolved_interface,
-                                        rebound: Some(false),
-                                        ..ControlResponse::default()
-                                    },
                                 }
                             }
                             Err(error) => ControlResponse {
@@ -8589,6 +8651,46 @@ fn monotonic_micros() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rebind_test_spec(interface_name: &str) -> ProbePathSpec {
+        ProbePathSpec {
+            path_id: 1,
+            name: "Starlink".to_string(),
+            interface_name: Some(interface_name.to_string()),
+            bind_addr: Some("192.168.254.101".to_string()),
+            bind_device: Some(interface_name.to_string()),
+        }
+    }
+
+    #[test]
+    fn path_id_rebind_respects_explicit_replacement_interface() {
+        let specs = HashMap::from([(1, rebind_test_spec("enx-old"))]);
+
+        let resolved = resolve_control_rebind_path(&specs, Some(1), Some("enx-new")).unwrap();
+
+        assert_eq!(resolved, (1, Some("enx-new".to_string())));
+    }
+
+    #[test]
+    fn replacing_path_interface_updates_runtime_config_and_clears_stale_address() {
+        let mut config = ClientConfig::default();
+        config.paths = vec![xbond_core::PathConfig {
+            id: 1,
+            name: "Starlink".to_string(),
+            interface_name: Some("enx-old".to_string()),
+            bind_addr: Some("192.168.254.101".to_string()),
+            enabled: true,
+        }];
+        let mut specs = HashMap::from([(1, rebind_test_spec("enx-old"))]);
+
+        assert!(replace_path_interface(&mut config, &mut specs, 1, "enx-new").unwrap());
+
+        assert_eq!(config.paths[0].interface_name.as_deref(), Some("enx-new"));
+        assert_eq!(config.paths[0].bind_addr, None);
+        assert_eq!(specs[&1].interface_name.as_deref(), Some("enx-new"));
+        assert_eq!(specs[&1].bind_device.as_deref(), Some("enx-new"));
+        assert_eq!(specs[&1].bind_addr, None);
+    }
 
     fn nonce(value: u8) -> SessionHandshakeNonce {
         [value; 16]
