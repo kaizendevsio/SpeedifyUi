@@ -43,8 +43,12 @@ Singleton registered as a hosted service, following `StarlinkTelemetryService` a
 
 Responsibilities:
 
-- Enumerate candidate interfaces from the existing `XBondSnapshotCache` snapshot (configured
-  uLink paths plus synthetic connected interfaces). No new polling of `/run/xbond/client-status.json`.
+- Enumerate candidate interfaces from `InterfaceMetadataService` (`GetInterfacesAsync` for devices,
+  `GetDefaultGatewayRoutesAsync` for gateways), *not* from `XBondSnapshotCache`. This direction is
+  required: `XBondStatsService` consumes identities to resolve names, and `XBondSnapshotCache` wraps
+  `XBondStatsService`, so reading the snapshot here would create a dependency cycle. Consequently
+  `XBondStatsService` only ever reads already-cached identities synchronously and never awaits a
+  lookup while building a snapshot.
 - Skip interfaces that must never be probed, using the same rules as
   `InterfaceMetadataService.ShouldSkipGatewayProbe`: `xbond*`, `tailscale*`, `p2p-*`, `lo`,
   and interfaces that are down.
@@ -67,8 +71,9 @@ Caching rules:
 
 - Success TTL: 15 minutes.
 - Failure backoff: 2 minutes (failures are cached so a dead endpoint is not hammered).
-- Immediate invalidation when the interface's gateway or bind address changes. This covers
-  DHCP moves, SIM swaps, and re-plugged USB adapters without waiting out the TTL.
+- Immediate invalidation when the interface's default gateway changes, and eviction when the
+  interface disappears. This covers modem swaps and re-plugged USB adapters without waiting out the
+  TTL; a same-gateway dynamic-IP change is picked up by the TTL.
 - Refresh loop tick: 60 seconds. Probes within a tick are staggered so bursts stay well inside
   free-tier rate limits. With five adapters and a 15-minute TTL this is roughly 20 requests/hour.
 
@@ -223,7 +228,7 @@ xUnit in `XNetwork.Tests` (no bUnit in the project, so coverage targets services
   collapsing, empty-after-normalization fallback.
 - `AdapterNameResolver` precedence, including alias-wins-over-ISP and full fallback to interface name.
 - Identity cache behavior with an injected `TimeProvider` (the seam `InterfaceMetadataService`
-  already uses): success TTL expiry, failure backoff, invalidation when gateway or bind address changes.
+  already uses): success TTL expiry, failure backoff, invalidation when the gateway changes.
 - Skip rules: `xbond0`, `tailscale0`, `lo`, and down interfaces are never probed.
 - `AdapterTelemetryHistory` pruning by sample count and per-interface isolation.
 
