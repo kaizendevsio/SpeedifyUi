@@ -1,7 +1,4 @@
-using System.Net;
-using System.Net.Sockets;
-using System.Runtime.InteropServices;
-using System.Text;
+using System.Net.Http;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
@@ -36,9 +33,6 @@ public sealed class StarlinkBoundHttpClientFactory(
     StarlinkTelemetrySettings settings,
     IStarlinkInterfaceResolver interfaceResolver) : IStarlinkHttpClientFactory
 {
-    private const int SolSocket = 1;
-    private const int SoBindToDevice = 25;
-
     public async Task<StarlinkHttpClientLease> CreateAsync(CancellationToken cancellationToken = default)
     {
         var resolution = await interfaceResolver.ResolveAsync(cancellationToken).ConfigureAwait(false);
@@ -55,83 +49,11 @@ public sealed class StarlinkBoundHttpClientFactory(
 
     public static HttpClient CreateHttpClient(StarlinkTelemetrySettings settings, string interfaceName)
     {
-        return new HttpClient(CreateHandler(settings, interfaceName), disposeHandler: true)
-        {
-            Timeout = settings.RequestTimeout
-        };
+        return InterfaceBoundHttpClientFactory.CreateClient(interfaceName, settings.RequestTimeout);
     }
 
     public static SocketsHttpHandler CreateHandler(StarlinkTelemetrySettings settings, string interfaceName)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(interfaceName);
-
-        return new SocketsHttpHandler
-        {
-            ConnectTimeout = settings.RequestTimeout,
-            EnableMultipleHttp2Connections = true,
-            ConnectCallback = async (context, cancellationToken) =>
-            {
-                if (!OperatingSystem.IsLinux())
-                {
-                    throw new InvalidOperationException("Interface-bound Starlink access requires Linux SO_BINDTODEVICE.");
-                }
-
-                var socket = CreateSocket(context.DnsEndPoint);
-                try
-                {
-                    BindSocketToDevice(socket, interfaceName);
-                    await ConnectAsync(socket, context.DnsEndPoint, cancellationToken).ConfigureAwait(false);
-                    return new NetworkStream(socket, ownsSocket: true);
-                }
-                catch
-                {
-                    socket.Dispose();
-                    throw;
-                }
-            }
-        };
+        return InterfaceBoundHttpClientFactory.CreateHandler(interfaceName, settings.RequestTimeout);
     }
-
-    private static Socket CreateSocket(DnsEndPoint endpoint)
-    {
-        var family = IPAddress.TryParse(endpoint.Host, out var address)
-            ? address.AddressFamily
-            : AddressFamily.InterNetwork;
-
-        return new Socket(family, SocketType.Stream, ProtocolType.Tcp)
-        {
-            NoDelay = true
-        };
-    }
-
-    private static Task ConnectAsync(Socket socket, DnsEndPoint endpoint, CancellationToken cancellationToken)
-    {
-        return IPAddress.TryParse(endpoint.Host, out var address)
-            ? socket.ConnectAsync(new IPEndPoint(address, endpoint.Port), cancellationToken).AsTask()
-            : socket.ConnectAsync(endpoint, cancellationToken).AsTask();
-    }
-
-    private static void BindSocketToDevice(Socket socket, string interfaceName)
-    {
-        var value = Encoding.ASCII.GetBytes(interfaceName + '\0');
-        var result = setsockopt(
-            socket.Handle,
-            SolSocket,
-            SoBindToDevice,
-            value,
-            (uint)value.Length);
-
-        if (result != 0)
-        {
-            throw new SocketException(Marshal.GetLastPInvokeError());
-        }
-    }
-
-    [DllImport("libc", SetLastError = true)]
-    private static extern int setsockopt(
-        IntPtr socket,
-        int level,
-        int optionName,
-        byte[] optionValue,
-        uint optionLength);
 }
