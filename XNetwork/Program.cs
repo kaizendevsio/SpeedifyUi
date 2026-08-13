@@ -1,4 +1,4 @@
-using XNetwork.Components;
+﻿using XNetwork.Components;
 using XNetwork.Services;
 using XNetwork.Models;
 
@@ -33,6 +33,15 @@ builder.Services.AddSingleton(sp =>
     return settings;
 });
 builder.Services.AddSingleton<BuildInfoService>();
+builder.Services.AddSingleton<WifiControlSettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("WifiControl").Get<WifiControlSettings>() ?? new WifiControlSettings();
+    sp.GetRequiredService<WifiControlSettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<WifiControlService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WifiControlService>());
 builder.Services.AddSingleton<WifiService>();
 builder.Services.AddSingleton<NetworkMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<NetworkMonitorService>());

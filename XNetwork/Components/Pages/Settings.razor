@@ -2,6 +2,7 @@
 @using XNetwork.Components.Custom
 @using XNetwork.Models
 @using XNetwork.Services
+@using XNetwork.Utils
 @implements IAsyncDisposable
 @inject XBondTrafficEngineService XBondTrafficEngineService
 @inject XBondStatusService XBondStatusService
@@ -22,6 +23,7 @@
 @inject AdapterIdentitySettings AdapterIdentitySettings
 @inject AdapterIdentitySettingsStore AdapterIdentitySettingsStore
 @inject AdapterIdentityService AdapterIdentityService
+@inject WifiControlService WifiControlService
 @inject NavigationManager NavigationManager
 
 <PageTitle>Settings - uLink</PageTitle>
@@ -247,6 +249,43 @@
                     <div class="rounded-lg border border-cyan-500/25 bg-cyan-500/10 p-3 text-sm text-cyan-100">@_wifiMessage</div>
                 }
 
+                <div class="overflow-hidden rounded-lg border border-slate-800 bg-slate-950/50">
+                    <div class="border-b border-slate-800 px-4 py-3">
+                        <h4 class="text-sm font-semibold text-white">Adapter Wi-Fi access</h4>
+                        <p class="text-xs text-slate-500">
+                            Turn an adapter off to stop the router joining any Wi-Fi network with it. Useful when a wired
+                            uplink already reaches the same network.
+                        </p>
+                    </div>
+                    @if (_wifiInterfaces.Count == 0)
+                    {
+                        <div class="p-4 text-sm text-slate-400">No Wi-Fi adapters were detected.</div>
+                    }
+                    else
+                    {
+                        @foreach (var adapter in _wifiInterfaces)
+                        {
+                            var control = GetWifiControlFor(adapter.InterfaceName);
+                            <div class="flex items-start justify-between gap-4 border-b border-slate-800/70 px-4 py-3 last:border-b-0">
+                                <div class="min-w-0">
+                                    <p class="text-sm font-semibold text-white">@adapter.DisplayName</p>
+                                    <p class="mt-1 text-xs @(string.IsNullOrWhiteSpace(control?.LastError) ? "text-slate-500" : "text-rose-200")">
+                                        @WifiControlStateText(adapter.InterfaceName)
+                                    </p>
+                                </div>
+                                <label class="flex flex-shrink-0 items-center gap-2 text-xs text-slate-400">
+                                    <span>Allow</span>
+                                    <input type="checkbox"
+                                           class="h-5 w-5 accent-cyan-400"
+                                           disabled="@_wifiControlBusy"
+                                           checked="@(!WifiControlService.IsDisabled(adapter.InterfaceName))"
+                                           @onchange="args => ToggleWifiAdapterAsync(adapter.InterfaceName, args.Value is true)" />
+                                </label>
+                            </div>
+                        }
+                    }
+                </div>
+
                 <div class="grid gap-4 md:grid-cols-2">
                     <label class="block">
                         <span class="text-sm font-medium text-white">Wi-Fi Adapter</span>
@@ -287,7 +326,7 @@
                         </div>
                         <button type="button"
                                 class="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
-                                disabled="@_isWifiBusy"
+                                disabled="@(_isWifiBusy || WifiControlService.IsDisabled(_wifiInterface))"
                                 @onclick="ScanWifiNetworksAsync">
                             <i class="fas fa-radar @(_isWifiScanning ? "fa-spin" : "")"></i>
                             Scan
@@ -340,7 +379,7 @@
                     </label>
                     <button type="button"
                             class="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-400 px-4 py-2.5 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
-                            disabled="@(_isWifiBusy || string.IsNullOrWhiteSpace(_wifiSsid))"
+                            disabled="@(_isWifiBusy || string.IsNullOrWhiteSpace(_wifiSsid) || WifiControlService.IsDisabled(_wifiInterface))"
                             @onclick="ConnectOnboardWifiAsync">
                         @if (_isWifiConnecting)
                         {
@@ -1254,6 +1293,8 @@
     private CudyApAutomationSettings _cudySettings = new();
     private CudyApControlStatus _cudyStatus = new();
     private WifiConnectionStatus? _wifiStatus;
+    private WifiControlStatus? _wifiControlStatus;
+    private bool _wifiControlBusy;
     private List<WifiInterfaceInfo> _wifiInterfaces = new();
     private List<WifiNetwork> _wifiNetworks = new();
     private List<WifiNetwork> _cudyWifiNetworks = new();
@@ -1439,6 +1480,7 @@
                 await LoadWifiInterfacesAsync();
             }
 
+            _wifiControlStatus = WifiControlService.GetStatus();
             _wifiStatus = await WifiService.GetStatusAsync(_wifiInterface, _refreshCts.Token);
             if (_wifiStatus.IsSupported)
             {
@@ -2611,6 +2653,50 @@
         return TrafficBypassEgressModes.Normalize(rule.EgressMode) == TrafficBypassEgressModes.Interface
             ? rule.InterfaceName
             : "Auto physical";
+    }
+
+    private WifiControlInterfaceStatus? GetWifiControlFor(string interfaceName) =>
+        _wifiControlStatus?.Interfaces.FirstOrDefault(item =>
+            string.Equals(item.InterfaceName, interfaceName, StringComparison.OrdinalIgnoreCase));
+
+    private string WifiControlStateText(string interfaceName)
+    {
+        var control = GetWifiControlFor(interfaceName);
+        if (!string.IsNullOrWhiteSpace(control?.LastError))
+        {
+            return control.LastError!;
+        }
+
+        if (!WifiControlService.IsDisabled(interfaceName))
+        {
+            return "Connecting allowed";
+        }
+
+        return control?.LastAppliedUtc is null
+            ? "Disabled"
+            : $"Disabled - enforced {TelemetryFormatter.FormatLastUpdated(control.LastAppliedUtc)}";
+    }
+
+    private async Task ToggleWifiAdapterAsync(string interfaceName, bool allow)
+    {
+        _wifiControlBusy = true;
+        try
+        {
+            await WifiControlService.SetDisabledAsync(interfaceName, !allow, _refreshCts.Token);
+            _wifiMessage = allow
+                ? $"Wi-Fi enabled for {interfaceName}."
+                : $"Wi-Fi disabled for {interfaceName}. uLink will keep it disconnected.";
+        }
+        catch (Exception ex)
+        {
+            _wifiMessage = $"Could not change Wi-Fi for {interfaceName}: {ex.Message}";
+        }
+        finally
+        {
+            _wifiControlBusy = false;
+            _wifiControlStatus = WifiControlService.GetStatus();
+            await RefreshWifiStatusAsync();
+        }
     }
 
     private string? GetWifiBadge()

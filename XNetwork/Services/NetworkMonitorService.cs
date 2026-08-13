@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net.NetworkInformation;
 using XNetwork.Models;
 
@@ -8,6 +8,7 @@ public class NetworkMonitorService : BackgroundService
 {
     private readonly ILogger<NetworkMonitorService> _logger;
     private readonly NetworkMonitorSettings _settings;
+    private readonly WifiControlService? _wifiControlService;
     private readonly Dictionary<string, DateTime> _disconnectionTimes = new();
     private readonly Dictionary<string, Queue<DateTime>> _restartAttempts = new();
     private readonly Dictionary<string, DateTime> _restartSuppressedUntil = new();
@@ -21,11 +22,13 @@ public class NetworkMonitorService : BackgroundService
     public NetworkMonitorService(
         ILogger<NetworkMonitorService> logger,
         NetworkMonitorSettings settings,
-        IHostApplicationLifetime appLifetime)
+        IHostApplicationLifetime appLifetime,
+        WifiControlService? wifiControlService = null)
     {
         _logger = logger;
         _settings = CopySettings(settings);
         _appLifetime = appLifetime;
+        _wifiControlService = wifiControlService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -351,6 +354,14 @@ public class NetworkMonitorService : BackgroundService
 
     private async Task RestartLink(string interfaceName, CancellationToken stoppingToken)
     {
+        if (_wifiControlService?.IsDisabled(interfaceName) == true)
+        {
+            _logger.LogInformation(
+                "Skipping restart of {Link} because Wi-Fi is disabled for it in Settings",
+                interfaceName);
+            return;
+        }
+
         _logger.LogWarning("Attempting to restart network link {Link}", interfaceName);
         
         try

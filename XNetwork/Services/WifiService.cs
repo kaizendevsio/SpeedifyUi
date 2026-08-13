@@ -1,9 +1,9 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
 
-public class WifiService(ILogger<WifiService> logger)
+public class WifiService(ILogger<WifiService> logger, WifiControlService? wifiControlService = null)
 {
     public async Task<IReadOnlyList<WifiInterfaceInfo>> GetWifiInterfacesAsync(CancellationToken cancellationToken = default)
     {
@@ -75,11 +75,6 @@ public class WifiService(ILogger<WifiService> logger)
 
     public async Task<WifiConnectionStatus> ConnectAsync(string interfaceName, string ssid, string password, CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            throw new PlatformNotSupportedException("Wi-Fi control is only supported on Linux.");
-        }
-
         if (string.IsNullOrWhiteSpace(ssid))
         {
             throw new ArgumentException("Wi-Fi name is required.", nameof(ssid));
@@ -87,6 +82,18 @@ public class WifiService(ILogger<WifiService> logger)
 
         interfaceName = string.IsNullOrWhiteSpace(interfaceName) ? "wlan0" : interfaceName.Trim();
         ssid = ssid.Trim();
+
+        // Checked before the platform guard: a disabled adapter must never connect, whatever the host.
+        if (wifiControlService?.IsDisabled(interfaceName) == true)
+        {
+            throw new InvalidOperationException(
+                $"Wi-Fi is disabled for {interfaceName} in Settings. Enable it under Settings > Router Wi-Fi first.");
+        }
+
+        if (!OperatingSystem.IsLinux())
+        {
+            throw new PlatformNotSupportedException("Wi-Fi control is only supported on Linux.");
+        }
 
         var connectionName = $"XNetwork Wi-Fi {ssid}";
         var args = new List<string>
