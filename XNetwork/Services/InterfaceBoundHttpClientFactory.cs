@@ -37,39 +37,81 @@ public static class InterfaceBoundHttpClientFactory
                     throw new InvalidOperationException("Interface-bound HTTP access requires Linux SO_BINDTODEVICE.");
                 }
 
-                var socket = CreateSocket(context.DnsEndPoint);
-                try
-                {
-                    BindSocketToDevice(socket, interfaceName);
-                    await ConnectAsync(socket, context.DnsEndPoint, cancellationToken).ConfigureAwait(false);
-                    return new NetworkStream(socket, ownsSocket: true);
-                }
-                catch
-                {
-                    socket.Dispose();
-                    throw;
-                }
+                return await ConnectBoundAsync(context.DnsEndPoint, interfaceName, cancellationToken).ConfigureAwait(false);
             }
         };
     }
 
-    private static Socket CreateSocket(DnsEndPoint endpoint)
+    /// <summary>
+    /// Connects to the endpoint through <paramref name="interfaceName"/>, trying each resolved
+    /// address on its own fresh socket. A socket that has failed a connect cannot be reused on
+    /// Linux, so per-address sockets are required whenever a host resolves to more than one address.
+    /// </summary>
+    private static async Task<Stream> ConnectBoundAsync(
+        DnsEndPoint endpoint,
+        string interfaceName,
+        CancellationToken cancellationToken)
     {
-        var family = IPAddress.TryParse(endpoint.Host, out var address)
-            ? address.AddressFamily
-            : AddressFamily.InterNetwork;
-
-        return new Socket(family, SocketType.Stream, ProtocolType.Tcp)
+        var addresses = await ResolveAddressesAsync(endpoint.Host, cancellationToken).ConfigureAwait(false);
+        if (addresses.Count == 0)
         {
-            NoDelay = true
-        };
+            throw new IOException($"Could not resolve {endpoint.Host} for interface-bound access through {interfaceName}.");
+        }
+
+        var failures = new List<Exception>();
+        foreach (var address in addresses)
+        {
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+            {
+                NoDelay = true
+            };
+
+            try
+            {
+                BindSocketToDevice(socket, interfaceName);
+                await socket.ConnectAsync(new IPEndPoint(address, endpoint.Port), cancellationToken).ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (Exception ex)
+            {
+                socket.Dispose();
+
+                if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                failures.Add(new IOException($"{address}: {ex.Message}", ex));
+            }
+        }
+
+        throw new IOException(
+            $"Could not connect to {endpoint.Host}:{endpoint.Port} through {interfaceName}. {string.Join("; ", failures.Select(failure => failure.Message))}",
+            failures[0]);
     }
 
-    private static Task ConnectAsync(Socket socket, DnsEndPoint endpoint, CancellationToken cancellationToken)
+    private static async Task<IReadOnlyList<IPAddress>> ResolveAddressesAsync(
+        string host,
+        CancellationToken cancellationToken)
     {
-        return IPAddress.TryParse(endpoint.Host, out var address)
-            ? socket.ConnectAsync(new IPEndPoint(address, endpoint.Port), cancellationToken).AsTask()
-            : socket.ConnectAsync(endpoint, cancellationToken).AsTask();
+        if (IPAddress.TryParse(host, out var literal))
+        {
+            return [literal];
+        }
+
+        var resolved = await Dns.GetHostAddressesAsync(host, cancellationToken).ConfigureAwait(false);
+        return PreferIPv4(resolved);
+    }
+
+    /// <summary>
+    /// Orders resolved addresses IPv4 first. uLink path routing is IPv4-only on this branch, so an
+    /// IPv6 answer would describe a different egress than the tunnel paths actually use.
+    /// </summary>
+    public static IReadOnlyList<IPAddress> PreferIPv4(IEnumerable<IPAddress> addresses)
+    {
+        return addresses
+            .OrderBy(address => address.AddressFamily == AddressFamily.InterNetwork ? 0 : 1)
+            .ToArray();
     }
 
     private static void BindSocketToDevice(Socket socket, string interfaceName)

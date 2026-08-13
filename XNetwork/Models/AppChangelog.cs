@@ -1,4 +1,4 @@
-namespace XNetwork.Models;
+﻿namespace XNetwork.Models;
 
 public sealed record ChangelogEntry
 {
@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.123";
+    public const string CurrentVersion = "ulink-2026.06.124";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-13",
+            Summary = "Fixed provider lookups and tightened the adapter details graphs.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the provider lookup fix.",
+                "Fixed the provider lookup failing with a socket error when a lookup host resolves to several addresses.",
+                "Preferred IPv4 lookup answers so a provider matches the address family uLink paths actually use.",
+                "Scoped the adapter details graphs to the last fifteen minutes instead of growing without bound."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.123",
             Date = "2026-08-13",
             Summary = "Opened adapter details for every adapter and named them from their live provider.",
             Changes =
