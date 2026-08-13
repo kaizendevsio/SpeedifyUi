@@ -13,7 +13,7 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.124";
+    public const string CurrentVersion = "ulink-2026.06.125";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
@@ -21,10 +21,11 @@ public static class AppChangelog
         {
             Version = CurrentVersion,
             Date = "2026-08-13",
-            Summary = "Fixed provider lookups and tightened the adapter details graphs.",
+            Summary = "Fixed provider lookups, display names, and the adapter details graphs.",
             Changes =
             [
                 "Bumped the uLink interface version for the provider lookup fix.",
+                "Fixed saved display names being ignored on the dashboard until the app restarted.",
                 "Fixed the provider lookup failing with a socket error when a lookup host resolves to several addresses.",
                 "Preferred IPv4 lookup answers so a provider matches the address family uLink paths actually use.",
                 "Scoped the adapter details graphs to the last fifteen minutes instead of growing without bound."

@@ -1,3 +1,5 @@
+﻿using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 using XNetwork.Models;
 using XNetwork.Services;
 
@@ -84,6 +86,42 @@ public class XBondStatsServiceNamingTests
         var path = Assert.Single(snapshot.Paths);
         Assert.Equal("Converge ICT", path.Name);
         Assert.False(path.IsConfigured);
+    }
+
+    [Fact]
+    public void LiveWatchdogAliasEditsReachNameResolution()
+    {
+        // NetworkMonitorService keeps its own settings copy, so aliases must be read from
+        // GetSettings() rather than the startup singleton or edits stay invisible until restart.
+        var singleton = new NetworkMonitorSettings();
+        var service = new NetworkMonitorService(
+            NullLogger<NetworkMonitorService>.Instance,
+            singleton,
+            new NoopHostApplicationLifetime());
+
+        service.UpdateSettings(new NetworkMonitorSettings
+        {
+            AdapterAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["enx0"] = "Upstairs modem"
+            }
+        });
+
+        Assert.Empty(XBondStatsService.BuildAdapterAliases(singleton));
+        Assert.Equal("Upstairs modem", XBondStatsService.BuildAdapterAliases(service.GetSettings())["enx0"]);
+    }
+
+    private sealed class NoopHostApplicationLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+
+        public void StopApplication()
+        {
+        }
     }
 
     [Fact]

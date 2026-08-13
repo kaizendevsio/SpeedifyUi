@@ -11,7 +11,7 @@ public sealed class XBondStatsService(
     XBondStatusService statusService,
     InterfaceMetadataService interfaceMetadataService,
     F50ModemTelemetryService f50TelemetryService,
-    NetworkMonitorSettings networkMonitorSettings,
+    NetworkMonitorService networkMonitorService,
     AdapterIdentityService adapterIdentityService) : IXBondStatsProvider
 {
     private const ulong StaleRttAckAgeMs = 5_000;
@@ -30,7 +30,9 @@ public sealed class XBondStatsService(
             interfaces,
             modemTelemetry,
             gatewayRoutes,
-            BuildAdapterAliases(networkMonitorSettings),
+            // Read aliases from the running watchdog, not the startup settings singleton:
+            // NetworkMonitorService keeps its own copy, so saved aliases only reach that copy.
+            BuildAdapterAliases(networkMonitorService.GetSettings()),
             adapterIdentityService.GetDisplayNames());
     }
 
