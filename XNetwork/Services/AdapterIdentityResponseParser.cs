@@ -114,7 +114,9 @@ public static class AdapterIdentityResponseParser
             tokens.RemoveAt(0);
         }
 
-        while (tokens.Count > 1 && CorporateSuffixes.Contains(tokens[^1], StringComparer.OrdinalIgnoreCase))
+        // Strip at most one trailing legal-form token. Looping would turn
+        // "The Constant Company, LLC" into "The Constant".
+        if (tokens.Count > 1 && CorporateSuffixes.Contains(tokens[^1], StringComparer.OrdinalIgnoreCase))
         {
             tokens.RemoveAt(tokens.Count - 1);
         }

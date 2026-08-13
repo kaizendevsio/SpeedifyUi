@@ -1,4 +1,4 @@
-using XNetwork.Services;
+﻿using XNetwork.Services;
 
 namespace XNetwork.Tests;
 
@@ -105,6 +105,10 @@ public class AdapterIdentityResponseParserTests
     [InlineData("Starlink", "Starlink")]
     [InlineData("AS14593", "AS14593")]
     [InlineData("LLC", "LLC")]
+    [InlineData("The Constant Company, LLC", "The Constant Company")]
+    [InlineData("Space Exploration Technologies Corporation", "Space Exploration Technologies")]
+    [InlineData("Smart Broadband, Inc.", "Smart Broadband")]
+    [InlineData("Globe Telecoms", "Globe Telecoms")]
     public void NormalizesProviderNames(string input, string expected)
     {
         Assert.Equal(expected, AdapterIdentityResponseParser.NormalizeProviderName(input));
