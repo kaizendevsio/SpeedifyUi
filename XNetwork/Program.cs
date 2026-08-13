@@ -61,9 +61,24 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<XBondStatusService>();
 builder.Services.AddSingleton<InterfaceMetadataService>();
+
+// Discover each adapter's upstream ISP through interface-bound lookups so adapter names are dynamic
+builder.Services.AddSingleton<AdapterIdentitySettingsStore>();
+builder.Services.AddSingleton(sp =>
+{
+    var settings = builder.Configuration.GetSection("AdapterIdentity").Get<AdapterIdentitySettings>() ?? new AdapterIdentitySettings();
+    sp.GetRequiredService<AdapterIdentitySettingsStore>().Load(settings);
+    return settings;
+});
+builder.Services.AddSingleton<AdapterIdentityService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdapterIdentityService>());
+
 builder.Services.AddSingleton<XBondStatsService>();
 builder.Services.AddSingleton<IXBondStatsProvider>(sp => sp.GetRequiredService<XBondStatsService>());
 builder.Services.AddSingleton<XBondSnapshotCache>();
+builder.Services.AddSingleton<AdapterTelemetryHistory>();
+builder.Services.AddSingleton<AdapterTelemetryHistoryService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdapterTelemetryHistoryService>());
 builder.Services.AddSingleton<XBondLabService>();
 builder.Services.AddSingleton<XBondTrafficEngineService>();
 builder.Services.AddSingleton<XBondClientConfigService>();

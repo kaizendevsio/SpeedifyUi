@@ -1,4 +1,4 @@
-using XNetwork.Models;
+﻿using XNetwork.Models;
 
 namespace XNetwork.Services;
 
@@ -11,19 +11,47 @@ public sealed class XBondStatsService(
     XBondStatusService statusService,
     InterfaceMetadataService interfaceMetadataService,
     F50ModemTelemetryService f50TelemetryService,
-    NetworkMonitorSettings networkMonitorSettings) : IXBondStatsProvider
+    NetworkMonitorSettings networkMonitorSettings,
+    AdapterIdentityService adapterIdentityService) : IXBondStatsProvider
 {
     private const ulong StaleRttAckAgeMs = 5_000;
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyNames =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
     public async Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
         var status = await statusService.GetStatusAsync(cancellationToken).ConfigureAwait(false);
-        var interfaces = ApplyAdapterAliases(
-            await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false),
-            networkMonitorSettings);
+        var interfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
         var gatewayRoutes = await interfaceMetadataService.GetDefaultGatewayRoutesAsync(cancellationToken).ConfigureAwait(false);
         var modemTelemetry = await f50TelemetryService.GetTelemetryByInterfaceAsync(cancellationToken).ConfigureAwait(false);
-        return FromStatus(status, interfaces, modemTelemetry, gatewayRoutes);
+        return FromStatus(
+            status,
+            interfaces,
+            modemTelemetry,
+            gatewayRoutes,
+            BuildAdapterAliases(networkMonitorSettings),
+            adapterIdentityService.GetDisplayNames());
+    }
+
+    /// <summary>
+    /// Manual Link Watchdog aliases keyed by interface. Kept separate from NetworkManager metadata
+    /// names so <see cref="AdapterNameResolver"/> can place the discovered ISP name between them.
+    /// Read straight from settings so configured uLink paths are covered even when NetworkManager
+    /// metadata is unavailable.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> BuildAdapterAliases(NetworkMonitorSettings settings)
+    {
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (interfaceName, alias) in settings.AdapterAliases ?? [])
+        {
+            if (!string.IsNullOrWhiteSpace(interfaceName) && !string.IsNullOrWhiteSpace(alias))
+            {
+                aliases[interfaceName] = alias.Trim();
+            }
+        }
+
+        return aliases;
     }
 
     public static IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> ApplyAdapterAliases(
@@ -70,11 +98,29 @@ public sealed class XBondStatsService(
         IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry,
         IReadOnlyList<InterfaceMetadataService.GatewayRoute> gatewayRoutes)
     {
+        return FromStatus(status, interfaces, modemTelemetry, gatewayRoutes, EmptyNames, EmptyNames);
+    }
+
+    public static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces,
+        IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry,
+        IReadOnlyList<InterfaceMetadataService.GatewayRoute> gatewayRoutes,
+        IReadOnlyDictionary<string, string> adapterAliases,
+        IReadOnlyDictionary<string, string> ispNames)
+    {
         var interfaceDisplayNames = interfaces
             .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
             .ToDictionary(item => item.Device, item => item.DisplayName, StringComparer.OrdinalIgnoreCase);
 
-        return FromStatus(status, interfaceDisplayNames, interfaces, modemTelemetry, gatewayRoutes);
+        return FromStatus(
+            status,
+            interfaceDisplayNames,
+            interfaces,
+            modemTelemetry,
+            gatewayRoutes,
+            adapterAliases,
+            ispNames);
     }
 
     private static XBondStatsSnapshot FromStatus(
@@ -87,7 +133,9 @@ public sealed class XBondStatsService(
             interfaceDisplayNames,
             interfaces,
             new Dictionary<string, F50ModemTelemetry>(StringComparer.OrdinalIgnoreCase),
-            []);
+            [],
+            EmptyNames,
+            EmptyNames);
     }
 
     private static XBondStatsSnapshot FromStatus(
@@ -95,7 +143,9 @@ public sealed class XBondStatsService(
         IReadOnlyDictionary<string, string> interfaceDisplayNames,
         IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces,
         IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry,
-        IReadOnlyList<InterfaceMetadataService.GatewayRoute> gatewayRoutes)
+        IReadOnlyList<InterfaceMetadataService.GatewayRoute> gatewayRoutes,
+        IReadOnlyDictionary<string, string> adapterAliases,
+        IReadOnlyDictionary<string, string> ispNames)
     {
         var activeIds = status.Schedule.DataPathIds
             .Concat(status.Schedule.DuplicatePathIds)
@@ -118,7 +168,12 @@ public sealed class XBondStatsService(
                 {
                     PathId = path.PathId,
                     InterfaceName = interfaceName,
-                    Name = ResolvePathName(path, interfaceDisplayNames),
+                    Name = AdapterNameResolver.Resolve(
+                        interfaceName,
+                        adapterAliases,
+                        ispNames,
+                        interfaceDisplayNames,
+                        path.Name),
                     Role = path.Role,
                     InterfaceUp = path.InterfaceUp,
                     InCooldown = path.InCooldown,
@@ -176,7 +231,12 @@ public sealed class XBondStatsService(
             {
                 PathId = nextSyntheticPathId--,
                 InterfaceName = item.Device,
-                Name = string.IsNullOrWhiteSpace(item.DisplayName) ? item.Device : item.DisplayName,
+                Name = AdapterNameResolver.Resolve(
+                    item.Device,
+                    adapterAliases,
+                    ispNames,
+                    interfaceDisplayNames,
+                    item.DisplayName),
                 Role = "standby",
                 InterfaceUp = true,
                 Gateway = gatewayByDevice.TryGetValue(item.Device, out var gateway) ? gateway : null,
@@ -199,21 +259,6 @@ public sealed class XBondStatsService(
             RawStatus = status,
             Paths = paths
         };
-    }
-
-    private static string ResolvePathName(
-        XBondPathStatus path,
-        IReadOnlyDictionary<string, string> interfaceDisplayNames)
-    {
-        var interfaceName = path.InterfaceName ?? path.BindDevice;
-        if (!string.IsNullOrWhiteSpace(interfaceName) &&
-            interfaceDisplayNames.TryGetValue(interfaceName, out var displayName) &&
-            !string.IsNullOrWhiteSpace(displayName))
-        {
-            return displayName;
-        }
-
-        return string.IsNullOrWhiteSpace(path.Name) ? $"Path {path.PathId}" : path.Name;
     }
 
     private static bool IsStaleRtt(XBondPathStatus path, double lossPercent)
