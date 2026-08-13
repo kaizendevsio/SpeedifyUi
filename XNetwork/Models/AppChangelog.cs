@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.122";
+    public const string CurrentVersion = "ulink-2026.06.123";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-13",
+            Summary = "Opened adapter details for every adapter and named them from their live provider.",
+            Changes =
+            [
+                "Bumped the uLink interface version for per-adapter details and provider naming.",
+                "Opened a details sheet from every adapter card with live latency, loss, download, and upload graphs.",
+                "Added upstream details per adapter, including public IP, provider, autonomous system, and location.",
+                "Named adapters from the provider detected through each adapter's own connection, while manual display names still win.",
+                "Added a Link Watchdog setting to turn provider lookups off, and a per-adapter refresh for a fresh lookup."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.122",
             Date = "2026-08-13",
             Summary = "Made Starlink USB interface changes recover without restarting uLink.",
             Changes =
