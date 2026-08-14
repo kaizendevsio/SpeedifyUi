@@ -151,6 +151,42 @@
                 </button>
             </section>
 
+            @if (Path.IsUnavailable && Path.IsConfigured)
+            {
+                <section class="rounded-xl border border-amber-500/25 bg-amber-500/10 p-4">
+                    <div class="flex items-start gap-3">
+                        <span class="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-amber-500/15 text-amber-200">
+                            <i class="fas fa-link-slash"></i>
+                        </span>
+                        <div class="min-w-0 flex-grow">
+                            <h5 class="font-semibold text-white">Remove from uLink</h5>
+                            <p class="mt-1 text-sm leading-snug text-slate-400">
+                                @Path.UnavailableReason. Removing takes @Path.InterfaceName out of the tunnel
+                                configuration and restarts the uLink client. Add it back any time under
+                                Settings &gt; uLink Adapters.
+                            </p>
+                        </div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(RemoveResultMessage))
+                    {
+                        <div class="@(RemoveSucceeded ? "mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3 text-sm text-emerald-100" : "mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100")">
+                            @RemoveResultMessage
+                        </div>
+                    }
+
+                    <div class="mt-3">
+                        <SlideToConfirm Label="Slide to remove from uLink"
+                                        BusyLabel="Removing..."
+                                        IconClass="fa-link-slash"
+                                        Tone="warning"
+                                        Disabled="@IsRemoving"
+                                        IsBusy="@IsRemoving"
+                                        OnConfirmed="OnRemoveFromTunnel" />
+                    </div>
+                </section>
+            }
+
             @if (ShowTechnicalDetails)
             {
                 <section class="grid grid-cols-1 gap-3 rounded-xl border border-slate-700 bg-slate-950/50 p-4 text-sm md:grid-cols-3">
@@ -209,6 +245,10 @@
     [Parameter] public bool ShowTechnicalDetails { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public EventCallback OnRefreshIdentity { get; set; }
+    [Parameter] public EventCallback OnRemoveFromTunnel { get; set; }
+    [Parameter] public bool IsRemoving { get; set; }
+    [Parameter] public string? RemoveResultMessage { get; set; }
+    [Parameter] public bool RemoveSucceeded { get; set; }
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private string SheetTitle => string.IsNullOrWhiteSpace(Path?.Name) ? "Adapter" : Path!.Name;

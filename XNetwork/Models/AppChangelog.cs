@@ -13,13 +13,28 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.127";
+    public const string CurrentVersion = "ulink-2026.06.128";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-15",
+            Summary = "Explained dead adapters on the dashboard and made them easy to remove.",
+            Changes =
+            [
+                "Bumped the uLink interface version for dead adapter handling.",
+                "Grouped adapters that cannot carry traffic under an Unavailable heading instead of mixing them with working ones.",
+                "Explained why each one is unavailable, either the adapter is not present or its Wi-Fi is switched off, instead of showing an alarming 100% loss.",
+                "Showed configured adapters whose hardware has gone missing, which were previously hidden entirely.",
+                "Added a slide-to-confirm action to remove an unavailable adapter from the tunnel, and never removes one automatically.",
+                "Kept adapters that merely lost carrier looking like the outage they are."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.127",
             Date = "2026-08-14",
             Summary = "Cut background logging and privileged polling on the router and tunnel server.",
             Changes =

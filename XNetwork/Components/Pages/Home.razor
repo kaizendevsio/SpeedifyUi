@@ -11,6 +11,7 @@
 @inject AdapterIdentityService AdapterIdentityService
 @inject AdapterIdentitySettings AdapterIdentitySettings
 @inject AdapterTelemetryHistoryService AdapterTelemetryHistoryService
+@inject XBondClientConfigService XBondClientConfigService
 @inject LocalDeviceProxyService LocalDeviceProxyService
 @inject IConnectionHealthService ConnectionHealthService
 @inject UiDisplayPreferences UiDisplayPreferences
@@ -141,6 +142,19 @@
                         </div>
                     }
 
+                    @if (_snapshot.UnavailablePaths.Count > 0)
+                    {
+                        <div class="active-redundant-header" style="@GetUnavailableHeaderGridStyle()">
+                            <span class="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-slate-600/20 text-slate-500">
+                                <i class="fas fa-plug-circle-xmark text-xs"></i>
+                            </span>
+                            <h4 class="text-base font-semibold text-slate-400">Unavailable</h4>
+                            <span class="inline-flex min-w-6 items-center justify-center rounded-full border border-slate-600/40 bg-slate-700/30 px-2 py-0.5 text-xs font-semibold text-slate-400">
+                                @_snapshot.UnavailablePaths.Count
+                            </span>
+                        </div>
+                    }
+
                     @foreach (var path in GetOrderedDashboardPaths())
                     {
                         @PathCard(path)
@@ -160,7 +174,11 @@
                      IsRefreshingIdentity="_identityRefreshInProgress"
                      ShowTechnicalDetails="UiDisplayPreferences.AdapterTechnicalDetails"
                      OnClose="CloseAdapterDetailsAsync"
-                     OnRefreshIdentity="RefreshSelectedIdentityAsync">
+                     OnRefreshIdentity="RefreshSelectedIdentityAsync"
+                     OnRemoveFromTunnel="RemoveSelectedPathAsync"
+                     IsRemoving="_pathRemovalInProgress"
+                     RemoveResultMessage="@_pathRemovalMessage"
+                     RemoveSucceeded="_pathRemovalSucceeded">
     @if (_selectedPath is not null && IsStarlinkPath(_selectedPath))
     {
         <StarlinkDetailsSection Snapshot="StarlinkTelemetryService.GetSnapshot()"
@@ -183,6 +201,9 @@
     private StarlinkTelemetrySnapshot _starlink = StarlinkTelemetrySnapshot.Unavailable();
     private bool _showAdapterDetails;
     private bool _identityRefreshInProgress;
+    private bool _pathRemovalInProgress;
+    private bool _pathRemovalSucceeded;
+    private string? _pathRemovalMessage;
     private XBondPathStatsSnapshot? _selectedPath;
     private StarlinkCapability? _pendingStarlinkCommand;
     private StarlinkCommandResult? _lastStarlinkCommandResult;
@@ -261,6 +282,8 @@
     {
         _selectedPath = path;
         _showAdapterDetails = true;
+        _pathRemovalMessage = null;
+        _pathRemovalSucceeded = false;
     }
 
     private Task CloseAdapterDetailsAsync()
@@ -268,6 +291,51 @@
         _showAdapterDetails = false;
         _pendingStarlinkCommand = null;
         return Task.CompletedTask;
+    }
+
+    private async Task RemoveSelectedPathAsync()
+    {
+        if (_selectedPath is null || _pathRemovalInProgress)
+        {
+            return;
+        }
+
+        var interfaceName = _selectedPath.InterfaceName;
+        _pathRemovalInProgress = true;
+        _pathRemovalMessage = null;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var result = await XBondClientConfigService.SetInterfaceEnabledAsync(
+                interfaceName,
+                enabled: false,
+                _refreshCts.Token);
+
+            _pathRemovalSucceeded = string.IsNullOrWhiteSpace(result.Error);
+            _pathRemovalMessage = _pathRemovalSucceeded
+                ? $"{interfaceName} was removed from uLink."
+                : result.Error;
+
+            if (_pathRemovalSucceeded)
+            {
+                XBondSnapshotCache.Invalidate();
+                await RefreshAsync();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            _pathRemovalSucceeded = false;
+            _pathRemovalMessage = $"Could not remove {interfaceName}: {ex.Message}";
+        }
+        finally
+        {
+            _pathRemovalInProgress = false;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private async Task RefreshSelectedIdentityAsync()
@@ -422,6 +490,10 @@
                         }
                     </div>
                 }
+                else if (path.IsUnavailable)
+                {
+                    <i class="fas fa-plug-circle-xmark w-8 flex-shrink-0 text-center text-lg text-slate-500"></i>
+                }
                 else
                 {
                     <i class="fas fa-signal-slash w-8 flex-shrink-0 text-center text-lg text-red-400"></i>
@@ -474,7 +546,20 @@
             </div>
         </div>
 
-        @if (path.InterfaceUp || path.IsActive)
+        @if (path.IsUnavailable)
+        {
+            <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-400">
+                <span class="inline-flex items-center gap-1.5">
+                    <i class="fas fa-circle-info text-xs text-slate-500"></i>
+                    <span>@path.UnavailableReason</span>
+                </span>
+                @if (path.Availability == XBondPathAvailability.InterfaceMissing)
+                {
+                    <span class="text-xs text-slate-500">Configured as @path.InterfaceName</span>
+                }
+            </div>
+        }
+        else if (path.InterfaceUp || path.IsActive)
         {
             var downloadMbps = path.DownloadMbps;
             var uploadMbps = path.UploadMbps;
@@ -595,20 +680,33 @@
 
     private IEnumerable<XBondPathStatsSnapshot> GetOrderedDashboardPaths()
     {
+        // Quarantined paths sort last so dead adapters never compete with live ones for attention.
         return _snapshot is null
             ? Enumerable.Empty<XBondPathStatsSnapshot>()
-            : _snapshot.ActivePaths.Concat(_snapshot.StandbyPaths);
+            : _snapshot.ActivePaths
+                .Concat(_snapshot.StandbyPaths)
+                .Concat(_snapshot.UnavailablePaths);
     }
 
+    private int ActivePathCount => _snapshot?.ActivePaths.Count ?? 0;
+
+    private int FirstPathRow => ActivePathCount > 0 ? 2 : 1;
+
+    private int UnavailableHeaderRow =>
+        FirstPathRow + ActivePathCount + (_snapshot?.StandbyPaths.Count ?? 0);
+
     private string GetActiveGroupGridStyle() =>
-        $"grid-row: 1 / span {Math.Max(1, (_snapshot?.ActivePaths.Count ?? 0) + 1)};";
+        $"grid-row: 1 / span {Math.Max(1, ActivePathCount + 1)};";
+
+    private string GetUnavailableHeaderGridStyle() => $"grid-row: {UnavailableHeaderRow};";
 
     private string GetPathGridStyle(XBondPathStatsSnapshot path)
     {
         var paths = GetOrderedDashboardPaths().ToList();
         var index = paths.FindIndex(candidate => candidate.PathId == path.PathId);
-        var firstPathRow = (_snapshot?.ActivePaths.Count ?? 0) > 0 ? 2 : 1;
-        return $"grid-row: {Math.Max(0, index) + firstPathRow};";
+        // Quarantined cards sit below their own header row, so they shift down by one.
+        var headerOffset = path.IsUnavailable ? 1 : 0;
+        return $"grid-row: {Math.Max(0, index) + FirstPathRow + headerOffset};";
     }
 
     private string GetPathCardClass(XBondPathStatsSnapshot path)
@@ -621,6 +719,12 @@
             : "";
         const string baseClass = "xbond-path-card rounded-xl border px-3 py-3 shadow-lg relative";
         const string interactionClass = " cursor-pointer hover:bg-slate-700/30 focus-within:ring-2 focus-within:ring-slate-400/40";
+
+        // Quarantined paths are muted: an adapter that is absent or deliberately off is not a fault.
+        if (path.IsUnavailable)
+        {
+            return $"{baseClass}{groupClass}{separationClass} border-slate-700/60 bg-slate-900/40 opacity-70{interactionClass}";
+        }
 
         if (!path.InterfaceUp)
         {
