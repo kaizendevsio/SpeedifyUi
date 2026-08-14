@@ -12,12 +12,24 @@ public sealed class XBondStatsService(
     InterfaceMetadataService interfaceMetadataService,
     F50ModemTelemetryService f50TelemetryService,
     NetworkMonitorService networkMonitorService,
-    AdapterIdentityService adapterIdentityService) : IXBondStatsProvider
+    AdapterIdentityService adapterIdentityService,
+    WifiControlService wifiControlService) : IXBondStatsProvider
 {
+    /// <summary>
+    /// Interface presence is read from the kernel, not from NetworkManager: the kernel is authoritative
+    /// about whether hardware exists, and this avoids mislabelling a path when nmcli omits or fails.
+    /// </summary>
+    private static IReadOnlyCollection<string> ReadKernelInterfaces() =>
+        System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Select(item => item.Name)
+            .ToArray();
+
     private const ulong StaleRttAckAgeMs = 5_000;
 
     private static readonly IReadOnlyDictionary<string, string> EmptyNames =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly IReadOnlyCollection<string> EmptyInterfaces = Array.Empty<string>();
 
     public async Task<XBondStatsSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
@@ -33,7 +45,12 @@ public sealed class XBondStatsService(
             // Read aliases from the running watchdog, not the startup settings singleton:
             // NetworkMonitorService keeps its own copy, so saved aliases only reach that copy.
             BuildAdapterAliases(networkMonitorService.GetSettings()),
-            adapterIdentityService.GetDisplayNames());
+            adapterIdentityService.GetDisplayNames(),
+            wifiControlService.GetStatus().Interfaces
+                .Where(item => item.IsDisabled)
+                .Select(item => item.InterfaceName)
+                .ToArray(),
+            ReadKernelInterfaces());
     }
 
     /// <summary>
@@ -111,6 +128,27 @@ public sealed class XBondStatsService(
         IReadOnlyDictionary<string, string> adapterAliases,
         IReadOnlyDictionary<string, string> ispNames)
     {
+        return FromStatus(
+            status,
+            interfaces,
+            modemTelemetry,
+            gatewayRoutes,
+            adapterAliases,
+            ispNames,
+            EmptyInterfaces,
+            EmptyInterfaces);
+    }
+
+    public static XBondStatsSnapshot FromStatus(
+        XBondStatus status,
+        IReadOnlyList<InterfaceMetadataService.InterfaceMetadata> interfaces,
+        IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry,
+        IReadOnlyList<InterfaceMetadataService.GatewayRoute> gatewayRoutes,
+        IReadOnlyDictionary<string, string> adapterAliases,
+        IReadOnlyDictionary<string, string> ispNames,
+        IReadOnlyCollection<string> wifiDisabledInterfaces,
+        IReadOnlyCollection<string> presentInterfaces)
+    {
         var interfaceDisplayNames = interfaces
             .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName))
             .ToDictionary(item => item.Device, item => item.DisplayName, StringComparer.OrdinalIgnoreCase);
@@ -122,7 +160,9 @@ public sealed class XBondStatsService(
             modemTelemetry,
             gatewayRoutes,
             adapterAliases,
-            ispNames);
+            ispNames,
+            wifiDisabledInterfaces,
+            presentInterfaces);
     }
 
     private static XBondStatsSnapshot FromStatus(
@@ -137,7 +177,9 @@ public sealed class XBondStatsService(
             new Dictionary<string, F50ModemTelemetry>(StringComparer.OrdinalIgnoreCase),
             [],
             EmptyNames,
-            EmptyNames);
+            EmptyNames,
+            EmptyInterfaces,
+            EmptyInterfaces);
     }
 
     private static XBondStatsSnapshot FromStatus(
@@ -147,7 +189,9 @@ public sealed class XBondStatsService(
         IReadOnlyDictionary<string, F50ModemTelemetry> modemTelemetry,
         IReadOnlyList<InterfaceMetadataService.GatewayRoute> gatewayRoutes,
         IReadOnlyDictionary<string, string> adapterAliases,
-        IReadOnlyDictionary<string, string> ispNames)
+        IReadOnlyDictionary<string, string> ispNames,
+        IReadOnlyCollection<string> wifiDisabledInterfaces,
+        IReadOnlyCollection<string> presentInterfaces)
     {
         var activeIds = status.Schedule.DataPathIds
             .Concat(status.Schedule.DuplicatePathIds)
@@ -217,7 +261,11 @@ public sealed class XBondStatsService(
                     CellularGeneration = cellular?.Generation,
                     CellularSignalBars = cellular?.SignalBars,
                     IsActive = activeIds.Contains(path.PathId),
-                    IsConfigured = true
+                    IsConfigured = true,
+                    Availability = XBondPathAvailabilityResolver.Resolve(
+                        interfaceName,
+                        presentInterfaces,
+                        wifiDisabledInterfaces)
                 };
             });
 

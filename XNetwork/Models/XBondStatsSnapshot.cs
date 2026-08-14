@@ -1,4 +1,4 @@
-namespace XNetwork.Models;
+﻿namespace XNetwork.Models;
 
 public sealed class XBondStatsSnapshot
 {
@@ -32,10 +32,14 @@ public sealed class XBondStatsSnapshot
         Paths.Where(path => path.ShowOnDashboard).ToArray();
 
     public IReadOnlyList<XBondPathStatsSnapshot> ActivePaths =>
-        DashboardPaths.Where(path => path.IsActive).ToArray();
+        DashboardPaths.Where(path => path.IsActive && !path.IsUnavailable).ToArray();
 
     public IReadOnlyList<XBondPathStatsSnapshot> StandbyPaths =>
-        DashboardPaths.Where(path => !path.IsActive).ToArray();
+        DashboardPaths.Where(path => !path.IsActive && !path.IsUnavailable).ToArray();
+
+    /// <summary>Configured paths quarantined because their adapter is missing or deliberately disabled.</summary>
+    public IReadOnlyList<XBondPathStatsSnapshot> UnavailablePaths =>
+        DashboardPaths.Where(path => path.IsUnavailable).ToArray();
 
     public double DownloadMbps => RawStatus.InboundThroughputBps / 1_000_000d;
 
@@ -270,6 +274,19 @@ public sealed class XBondStatsSnapshot
     }
 }
 
+/// <summary>Why a configured uLink path is unusable, beyond ordinary down/NO-CARRIER states.</summary>
+public enum XBondPathAvailability
+{
+    /// <summary>Usable, or down for an ordinary reason such as lost carrier.</summary>
+    Normal,
+
+    /// <summary>The bound interface is not present on the host at all.</summary>
+    InterfaceMissing,
+
+    /// <summary>The adapter is deliberately disabled under Settings > Router Wi-Fi.</summary>
+    WifiDisabled
+}
+
 public sealed class XBondPathStatsSnapshot
 {
     public int PathId { get; init; }
@@ -384,7 +401,21 @@ public sealed class XBondPathStatsSnapshot
 
     public bool IsConfigured { get; init; } = true;
 
-    public bool ShowOnDashboard => InterfaceUp || IsActive || InCooldown || !IsConfigured;
+    public XBondPathAvailability Availability { get; init; } = XBondPathAvailability.Normal;
+
+    public bool IsUnavailable => Availability != XBondPathAvailability.Normal;
+
+    /// <summary>Plain-language reason a quarantined path is not carrying traffic.</summary>
+    public string UnavailableReason => Availability switch
+    {
+        XBondPathAvailability.InterfaceMissing => "Adapter not present",
+        XBondPathAvailability.WifiDisabled => "Wi-Fi disabled in Settings",
+        _ => ""
+    };
+
+    // Unavailable paths are shown too: an absent adapter behind a configured path was previously
+    // invisible, which gave the operator no signal at all.
+    public bool ShowOnDashboard => InterfaceUp || IsActive || InCooldown || !IsConfigured || IsUnavailable;
 
     public bool IsAnchor => string.Equals(Role, "anchor", StringComparison.OrdinalIgnoreCase);
 

@@ -65,12 +65,17 @@ Computed by a new pure static, `XBondPathAvailabilityResolver.Resolve(interfaceN
    hosts and when `nmcli` fails, and without the guard every path would be misreported as missing.
 3. **`Normal`** otherwise, including `NO-CARRIER`.
 
-Presence uses the **raw** interface list from `InterfaceMetadataService`, not `IsDashboardCandidate` —
-`nmcli` lists `unavailable` and `unmanaged` devices, and those are present, merely down.
+Presence comes from the **kernel**, via `NetworkInterface.GetAllNetworkInterfaces()` — not from
+NetworkManager. This was corrected during implementation: deriving presence from the nmcli list made an
+existing test fail, which exposed the real flaw. nmcli's view is not authoritative about whether hardware
+exists, so any path whose interface nmcli omits (or every path, when nmcli fails) would be mislabelled as
+missing. Reading `/sys/class/net` through .NET is in-process, forks nothing, and cannot disagree with the
+kernel. It is passed into `FromStatus` as an explicit parameter defaulting to empty, so tests stay hermetic
+and existing call sites keep today's behavior.
 
-`XBondStatsService` supplies the two sets. It already receives the interface list; the Wi-Fi disabled set
-comes from `WifiControlService`, which depends only on its own settings, so there is no cycle. Synthetic
-non-configured rows are built from the interface list itself and are therefore always `Normal`.
+`XBondStatsService` supplies both sets. The Wi-Fi disabled set comes from `WifiControlService`, which
+depends only on its own settings, so there is no cycle. Synthetic non-configured rows are built from the
+interface list itself and are therefore always `Normal`.
 
 ## Dashboard
 
