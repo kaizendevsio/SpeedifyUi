@@ -1,17 +1,82 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
 
-public sealed class XBondMssClampService(
-    ILogger<XBondMssClampService> logger,
-    XBondSettings settings)
+public sealed class XBondMssClampService
 {
+    /// <summary>
+    /// Checking the clamp rule costs a privileged `sudo iptables -C` fork. The Settings page polls
+    /// status on a timer, so the result is cached to keep that from forking once per poll.
+    /// </summary>
+    private static readonly TimeSpan DefaultStatusCacheDuration = TimeSpan.FromSeconds(15);
+
+    private readonly ILogger<XBondMssClampService> logger;
+    private readonly XBondSettings settings;
+    private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _statusCacheDuration;
+    private readonly Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>> _runner;
+    private readonly Func<bool> _isSupported;
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly SemaphoreSlim _statusLock = new(1, 1);
+    private XBondMssClampStatus? _cachedStatus;
+    private DateTimeOffset _statusExpiresAtUtc = DateTimeOffset.MinValue;
+
+    public XBondMssClampService(ILogger<XBondMssClampService> logger, XBondSettings settings)
+        : this(logger, settings, null, null, null, null)
+    {
+    }
+
+    public XBondMssClampService(
+        ILogger<XBondMssClampService> logger,
+        XBondSettings settings,
+        TimeProvider? timeProvider,
+        TimeSpan? statusCacheDuration,
+        Func<string, IReadOnlyList<string>, CancellationToken, Task<(int ExitCode, string Output)>>? runner,
+        Func<bool>? isSupported = null)
+    {
+        this.logger = logger;
+        this.settings = settings;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _statusCacheDuration = statusCacheDuration ?? DefaultStatusCacheDuration;
+        _runner = runner ?? (static (command, args, ct) => RunCommandAsync(command, args, ct));
+        _isSupported = isSupported ?? OperatingSystem.IsLinux;
+    }
+
+    /// <summary>Drops the cached status so the next read reflects a change we just made.</summary>
+    public void InvalidateStatus() => _statusExpiresAtUtc = DateTimeOffset.MinValue;
 
     public async Task<XBondMssClampStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
-        if (!OperatingSystem.IsLinux())
+        var now = _timeProvider.GetUtcNow();
+        if (_cachedStatus is not null && now < _statusExpiresAtUtc)
+        {
+            return _cachedStatus;
+        }
+
+        await _statusLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            now = _timeProvider.GetUtcNow();
+            if (_cachedStatus is not null && now < _statusExpiresAtUtc)
+            {
+                return _cachedStatus;
+            }
+
+            var status = await ReadStatusAsync(cancellationToken).ConfigureAwait(false);
+            _cachedStatus = status;
+            _statusExpiresAtUtc = now + _statusCacheDuration;
+            return status;
+        }
+        finally
+        {
+            _statusLock.Release();
+        }
+    }
+
+    private async Task<XBondMssClampStatus> ReadStatusAsync(CancellationToken cancellationToken)
+    {
+        if (!_isSupported())
         {
             return new XBondMssClampStatus
             {
@@ -49,7 +114,7 @@ public sealed class XBondMssClampService(
 
         try
         {
-            var current = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+            var current = await ReadStatusAsync(cancellationToken).ConfigureAwait(false);
             if (current.IsEnabled)
             {
                 return current;
@@ -61,7 +126,7 @@ public sealed class XBondMssClampService(
                 return Error(string.IsNullOrWhiteSpace(append.Output) ? "Unable to enable MSS clamp." : append.Output);
             }
 
-            return await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+            return await RefreshStatusAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -91,13 +156,13 @@ public sealed class XBondMssClampService(
             var delete = await RunIptablesAsync("-D", cancellationToken).ConfigureAwait(false);
             if (delete.ExitCode != 0)
             {
-                var current = await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+                var current = await RefreshStatusAsync(cancellationToken).ConfigureAwait(false);
                 return current.IsEnabled
                     ? Error(string.IsNullOrWhiteSpace(delete.Output) ? "Unable to disable MSS clamp." : delete.Output)
                     : current;
             }
 
-            return await GetStatusAsync(cancellationToken).ConfigureAwait(false);
+            return await RefreshStatusAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -108,6 +173,14 @@ public sealed class XBondMssClampService(
         {
             _lock.Release();
         }
+    }
+
+    private async Task<XBondMssClampStatus> RefreshStatusAsync(CancellationToken cancellationToken)
+    {
+        var status = await ReadStatusAsync(cancellationToken).ConfigureAwait(false);
+        _cachedStatus = status;
+        _statusExpiresAtUtc = _timeProvider.GetUtcNow() + _statusCacheDuration;
+        return status;
     }
 
     private async Task<CommandResult> RunIptablesAsync(string action, CancellationToken cancellationToken)
@@ -129,13 +202,14 @@ public sealed class XBondMssClampService(
             "--set-mss", Math.Clamp(settings.MssClampValue, 536, 1460).ToString()
         ]);
 
-        return await RunCommandAsync(
+        var result = await _runner(
             settings.UseSudoForServiceManager ? settings.SudoPath : settings.IptablesCommandPath,
             args,
             cancellationToken).ConfigureAwait(false);
+        return new CommandResult(result.ExitCode, result.Output);
     }
 
-    private static async Task<CommandResult> RunCommandAsync(
+    private static async Task<(int ExitCode, string Output)> RunCommandAsync(
         string command,
         IReadOnlyList<string> arguments,
         CancellationToken cancellationToken)
@@ -164,7 +238,7 @@ public sealed class XBondMssClampService(
         var output = string.Join('\n', new[] { await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false) }
             .Where(value => !string.IsNullOrWhiteSpace(value))
             .Select(value => value.Trim()));
-        return new CommandResult(process.ExitCode, output);
+        return (process.ExitCode, output);
     }
 
     private XBondMssClampStatus Error(string error) => new()

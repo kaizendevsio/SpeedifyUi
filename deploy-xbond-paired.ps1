@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Branch = "feature/xband-only-runtime",
     [string]$RouterHost = "xeon-network",
     [string]$RouterUser = "xeon-network",
@@ -40,6 +40,10 @@ cargo build --release --manifest-path xbond/Cargo.toml -p xbond-server
 install -m 0755 xbond/target/release/xbond-server /usr/local/bin/xbond-server
 install -m 0644 xbond/deploy/systemd/xbond-server.service /etc/systemd/system/xbond-server.service
 install -m 0644 xbond/deploy/sysctl/90-xbond.conf /etc/sysctl.d/90-xbond.conf
+install -d -m 0755 /etc/systemd/journald.conf.d
+install -m 0644 xbond/deploy/journald/90-ulink.conf /etc/systemd/journald.conf.d/90-ulink.conf
+systemctl restart systemd-journald
+journalctl --vacuum-size=512M >/dev/null
 sysctl --system >/dev/null
 systemctl daemon-reload
 systemctl restart xbond-server.service
@@ -66,6 +70,10 @@ sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-route-apply.sh /usr/lo
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 sudo -n install -m 0644 xbond/deploy/systemd/xbond-client.service /etc/systemd/system/xbond-client.service
 sudo -n install -m 0644 xbond/deploy/sysctl/90-xbond.conf /etc/sysctl.d/90-xbond.conf
+sudo -n install -d -m 0755 /etc/systemd/journald.conf.d
+sudo -n install -m 0644 xbond/deploy/journald/90-ulink.conf /etc/systemd/journald.conf.d/90-ulink.conf
+sudo -n systemctl restart systemd-journald
+sudo -n journalctl --vacuum-size=512M >/dev/null
 sudo -n sysctl --system >/dev/null
 if grep -q '^udp_socket_buffer_bytes[[:space:]]*=' /etc/xbond/client.toml; then
   sudo -n sed -i 's/^udp_socket_buffer_bytes[[:space:]]*=.*/udp_socket_buffer_bytes = 8388608/' /etc/xbond/client.toml

@@ -1280,7 +1280,8 @@
                    OnConfirm="HandleLinkWatchdogRemoveConfirmationAsync" />
 
 @code {
-    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(2));
+    // 5s rather than 2s: every tick refreshes privileged status (iptables, systemctl, nmcli).
+    private readonly PeriodicTimer _timer = new(TimeSpan.FromSeconds(5));
     private readonly CancellationTokenSource _refreshCts = new();
     private XBondTrafficEngineStatus? _trafficStatus;
     private XBondStatus? _xbondStatus;

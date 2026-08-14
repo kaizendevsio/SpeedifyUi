@@ -1,11 +1,13 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using XNetwork.Models;
 
 namespace XNetwork.Services;
 
 public class XBondTrafficEngineService
 {
-    private static readonly TimeSpan DefaultStatusCacheDuration = TimeSpan.FromSeconds(3);
+    // Each status read forks `sudo systemctl is-active` + `is-enabled`. Pages poll on timers, so keep
+    // the window wide enough that an open page does not fork twice per second.
+    private static readonly TimeSpan DefaultStatusCacheDuration = TimeSpan.FromSeconds(10);
 
     private readonly ILogger<XBondTrafficEngineService> _logger;
     private readonly XBondSettings _settings;

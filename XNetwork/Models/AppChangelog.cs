@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.126";
+    public const string CurrentVersion = "ulink-2026.06.127";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-14",
+            Summary = "Cut background logging and privileged polling on the router and tunnel server.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the logging and polling efficiency pass.",
+                "Stopped the router and tunnel server writing per-second status events to the system log, while keeping real error events.",
+                "Stopped an open Settings page from running privileged firewall and service checks every two seconds.",
+                "Capped system log growth on both hosts so old logs cannot fill the disk."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.126",
             Date = "2026-08-13",
             Summary = "Added a per-adapter switch that stops the router joining Wi-Fi networks.",
             Changes =

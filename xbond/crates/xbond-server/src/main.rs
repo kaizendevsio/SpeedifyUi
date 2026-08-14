@@ -142,6 +142,11 @@ struct Args {
     #[arg(long)]
     json_events: bool,
 
+    /// Emit the high-frequency periodic status/health/recovery events. Off by default: they are
+    /// already written to --status-path, and printing them floods journald on a small VPS.
+    #[arg(long)]
+    status_events: bool,
+
     #[arg(long)]
     trace_packets: bool,
 
@@ -3108,7 +3113,7 @@ async fn main() -> Result<()> {
                         last_session_id,
                         &mut control_sequence,
                         status,
-                        args.json_events,
+                        args.json_events && args.status_events,
                         &mut control_plane,
                     )?;
                     last_server_recovery_status_sent = Instant::now();
@@ -3569,7 +3574,7 @@ async fn main() -> Result<()> {
                     control_plane,
                     &return_pmtu,
                 )?;
-                if args.json_events {
+                if args.json_events && args.status_events {
                     json_status_event_counter = json_status_event_counter.saturating_add(1);
                     if json_status_event_counter >= 5 {
                         json_status_event_counter = 0;
@@ -3966,7 +3971,7 @@ fn start_server_health_monitor(args: &Args) -> Arc<RwLock<XBondServerHealthStatu
     let targets = args.server_health_targets.clone();
     let interval = Duration::from_secs(args.server_health_interval_seconds.max(1));
     let timeout = Duration::from_millis(args.server_health_timeout_ms.max(1));
-    let json_events = args.json_events;
+    let json_events = args.json_events && args.status_events;
     tokio::spawn(async move {
         run_server_health_monitor(state_for_task, targets, interval, timeout, json_events).await;
     });

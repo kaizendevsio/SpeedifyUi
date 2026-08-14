@@ -144,6 +144,10 @@ enum Command {
         packet_limit: Option<u64>,
         #[arg(long)]
         json_events: bool,
+        /// Emit the high-frequency periodic dataplane/schedule events. Off by default: the same data
+        /// is written to the runtime status file, and printing it floods journald.
+        #[arg(long)]
+        status_events: bool,
         #[arg(long)]
         trace_packets: bool,
         #[arg(long, default_value = "/run/xbond/client-control.sock")]
@@ -278,6 +282,7 @@ async fn main() -> Result<()> {
             key_env,
             packet_limit,
             json_events,
+            status_events,
             trace_packets,
             control_socket,
             lab_fail_tun_read_after_packets,
@@ -290,6 +295,7 @@ async fn main() -> Result<()> {
                 key_env,
                 packet_limit,
                 json_events,
+                status_events,
                 trace_packets,
                 control_socket,
                 lab_fail_tun_read_after_packets,
@@ -346,6 +352,7 @@ struct TunnelOptions {
     key_env: String,
     packet_limit: Option<u64>,
     json_events: bool,
+    status_events: bool,
     trace_packets: bool,
     control_socket: PathBuf,
     lab_fail_tun_read_after_packets: Option<u64>,
@@ -3133,7 +3140,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     )?;
                 }
                 repair.cache_entries = resend_cache.len();
-                if options.json_events {
+                if options.json_events && options.status_events {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -3245,7 +3252,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         })
                     );
                 }
-                if options.json_events && (primary_send_pending || queue_full_events_since_last > 0) {
+                if options.json_events && options.status_events && (primary_send_pending || queue_full_events_since_last > 0) {
                     println!(
                         "{}",
                         serde_json::json!({
@@ -4099,7 +4106,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             }
                         }
                         SynchronizationControlOutcome::ScheduleAccepted => {
-                            if options.json_events {
+                            if options.json_events && options.status_events {
                                 println!(
                                     "{}",
                                     serde_json::json!({
