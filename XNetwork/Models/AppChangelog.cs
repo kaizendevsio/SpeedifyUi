@@ -13,13 +13,25 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.128";
+    public const string CurrentVersion = "ulink-2026.06.129";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-16",
+            Summary = "Fixed the traffic bypass error shown before any rule is saved.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the traffic bypass fix.",
+                "Fixed Traffic Bypass Rules reporting a missing file error on a router that has never saved a rule.",
+                "Treated having no bypass rules as a valid state instead of a failure."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.128",
             Date = "2026-08-15",
             Summary = "Explained dead adapters on the dashboard and made them easy to remove.",
             Changes =

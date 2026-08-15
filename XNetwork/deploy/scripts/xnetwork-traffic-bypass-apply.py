@@ -146,7 +146,10 @@ def clear_rules():
 
 
 def apply(path):
-    config = json.loads(Path(path).read_text())
+    # A router that has never saved a rule has no file yet; that means "no bypass rules",
+    # which is a valid state to apply, not an error.
+    config_path = Path(path)
+    config = json.loads(config_path.read_text()) if config_path.exists() else {"rules": []}
     rules = [rule for rule in config.get("rules", []) if rule.get("enabled", True)]
     if len(rules) > MAX_RULES:
         raise ValueError(f"too many enabled bypass rules: {len(rules)} > {MAX_RULES}")

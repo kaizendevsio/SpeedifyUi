@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Net;
 using System.Text.RegularExpressions;
 using XNetwork.Models;
@@ -107,6 +107,25 @@ public sealed class TrafficBypassService(
                 Message: "Traffic bypass helper is not installed yet.",
                 Error: helperPath,
                 UpdatedAtUtc: DateTimeOffset.UtcNow));
+        }
+
+        // The helper reads this file directly. On a router that has never saved a rule it does not
+        // exist yet, and the startup apply then failed with a bare "No such file or directory".
+        if (!File.Exists(store.FilePath))
+        {
+            try
+            {
+                await store.SaveAsync(settings, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                return SetLastApplyStatus(new TrafficBypassApplyStatus(
+                    IsSupported: true,
+                    Applied: false,
+                    Message: "Traffic bypass rules could not be written.",
+                    Error: ex.Message,
+                    UpdatedAtUtc: DateTimeOffset.UtcNow));
+            }
         }
 
         try
