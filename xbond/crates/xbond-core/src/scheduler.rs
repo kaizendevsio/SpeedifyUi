@@ -177,6 +177,10 @@ pub struct SchedulePlan {
     pub data_path_ids: Vec<u16>,
     pub duplicate_path_ids: Vec<u16>,
     pub fec_path_ids: Vec<u16>,
+    /// Anchor candidate under load test. Mirrored as duplicates in every policy so the
+    /// candidate is judged on real traffic. Defaulted for wire compatibility.
+    #[serde(default)]
+    pub trial_path_ids: Vec<u16>,
 }
 
 pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan {
@@ -189,6 +193,11 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
         .filter(|path| path.role == PathRole::Backup)
         .map(|path| path.path.path_id)
         .collect();
+    let trials: Vec<u16> = roles
+        .iter()
+        .filter(|path| path.role == PathRole::Trial)
+        .map(|path| path.path.path_id)
+        .collect();
 
     match mode {
         ScheduleMode::AnchorOnly => SchedulePlan {
@@ -197,6 +206,7 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
             data_path_ids: anchor.into_iter().collect(),
             duplicate_path_ids: Vec::new(),
             fec_path_ids: Vec::new(),
+            trial_path_ids: trials,
         },
         ScheduleMode::AnchorDuplicate1 => SchedulePlan {
             mode,
@@ -204,6 +214,7 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
             data_path_ids: anchor.into_iter().collect(),
             duplicate_path_ids: backups.into_iter().take(1).collect(),
             fec_path_ids: Vec::new(),
+            trial_path_ids: trials,
         },
         ScheduleMode::AnchorFec => SchedulePlan {
             mode,
@@ -211,6 +222,7 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
             data_path_ids: anchor.into_iter().collect(),
             duplicate_path_ids: Vec::new(),
             fec_path_ids: backups,
+            trial_path_ids: trials,
         },
         ScheduleMode::FullDuplicateDebug => SchedulePlan {
             mode,
@@ -218,6 +230,7 @@ pub fn build_schedule(mode: ScheduleMode, roles: &[ScoredPath]) -> SchedulePlan 
             data_path_ids: anchor.into_iter().collect(),
             duplicate_path_ids: backups,
             fec_path_ids: Vec::new(),
+            trial_path_ids: trials,
         },
     }
 }
@@ -370,6 +383,7 @@ pub fn expand_schedule_for_recovery(
         data_path_ids: schedule.data_path_ids.clone(),
         duplicate_path_ids,
         fec_path_ids: Vec::new(),
+        trial_path_ids: schedule.trial_path_ids.clone(),
     }
 }
 
@@ -433,6 +447,7 @@ pub fn stabilize_recovery_schedule(
         data_path_ids: schedule.data_path_ids.clone(),
         duplicate_path_ids: state.stable_duplicate_path_ids.clone(),
         fec_path_ids: schedule.fec_path_ids.clone(),
+        trial_path_ids: schedule.trial_path_ids.clone(),
     }
 }
 
@@ -621,6 +636,19 @@ pub fn build_transmission_plan(schedule: &SchedulePlan) -> Vec<ScheduledTransmis
         });
     }
 
+    for path_id in &schedule.trial_path_ids {
+        if schedule.data_path_ids.contains(path_id)
+            || schedule.duplicate_path_ids.contains(path_id)
+            || schedule.fec_path_ids.contains(path_id)
+        {
+            continue;
+        }
+        transmissions.push(ScheduledTransmission {
+            path_id: *path_id,
+            packet_kind: crate::protocol::PacketKind::Duplicate,
+        });
+    }
+
     for path_id in &schedule.fec_path_ids {
         transmissions.push(ScheduledTransmission {
             path_id: *path_id,
@@ -629,6 +657,22 @@ pub fn build_transmission_plan(schedule: &SchedulePlan) -> Vec<ScheduledTransmis
     }
 
     transmissions
+}
+
+/// Trial mirroring is unconditional across policies, but a trial path that just lost
+/// carrier must not be handed packets.
+fn healthy_trial_path_ids(schedule: &SchedulePlan, paths: &[PathHealthSnapshot]) -> Vec<u16> {
+    schedule
+        .trial_path_ids
+        .iter()
+        .copied()
+        .filter(|path_id| {
+            paths
+                .iter()
+                .find(|path| path.path_id == *path_id)
+                .is_some_and(|path| path.interface_up && !path.in_cooldown)
+        })
+        .collect()
 }
 
 pub fn build_transmission_plan_for_packet(
@@ -656,6 +700,7 @@ pub fn build_transmission_plan_for_packet(
         data_path_ids: schedule.data_path_ids.clone(),
         duplicate_path_ids: Vec::new(),
         fec_path_ids: Vec::new(),
+        trial_path_ids: healthy_trial_path_ids(schedule, paths),
     };
 
     let anchor_loss = schedule
@@ -727,10 +772,163 @@ pub fn precompute_transmission_plans(
 
 #[cfg(test)]
 mod tests {
-    use crate::health::{select_path_roles, PathHealthSnapshot};
+    use crate::health::{select_path_roles, PathHealthSnapshot, PathRole};
     use crate::protocol::PacketKind;
 
     use super::*;
+
+    fn trial_schedule() -> SchedulePlan {
+        SchedulePlan {
+            mode: ScheduleMode::AnchorDuplicate1,
+            anchor_path_id: Some(1),
+            data_path_ids: vec![1],
+            duplicate_path_ids: vec![2],
+            fec_path_ids: Vec::new(),
+            trial_path_ids: vec![3],
+        }
+    }
+
+    #[test]
+    fn build_schedule_collects_trial_paths_from_roles() {
+        let mut roles = select_path_roles(&[path(1, 20.0, 0.0), path(2, 60.0, 0.0)], 1);
+        let trial_index = roles
+            .iter()
+            .position(|role| role.path.path_id == 2)
+            .expect("path 2 must be scored");
+        roles[trial_index].role = PathRole::Trial;
+
+        let plan = build_schedule(ScheduleMode::AnchorDuplicate1, &roles);
+
+        assert_eq!(plan.anchor_path_id, Some(1));
+        assert_eq!(plan.data_path_ids, vec![1]);
+        assert_eq!(plan.trial_path_ids, vec![2]);
+        assert!(
+            plan.duplicate_path_ids.is_empty(),
+            "a trial path is not a backup"
+        );
+    }
+
+    #[test]
+    fn trial_path_is_mirrored_as_duplicate() {
+        let transmissions = build_transmission_plan(&trial_schedule());
+
+        assert_eq!(
+            transmissions,
+            vec![
+                ScheduledTransmission {
+                    path_id: 1,
+                    packet_kind: PacketKind::Data
+                },
+                ScheduledTransmission {
+                    path_id: 2,
+                    packet_kind: PacketKind::Duplicate
+                },
+                ScheduledTransmission {
+                    path_id: 3,
+                    packet_kind: PacketKind::Duplicate
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn trial_path_is_never_mirrored_twice() {
+        let mut plan = trial_schedule();
+        plan.trial_path_ids = vec![2, 3];
+
+        let transmissions = build_transmission_plan(&plan);
+
+        assert_eq!(
+            transmissions
+                .iter()
+                .filter(|transmission| transmission.path_id == 2)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fast_policy_mirrors_bulk_onto_the_trial_path_even_when_healthy() {
+        // This is the whole point of the trial: fast/balanced normally send bulk on the
+        // anchor alone, so without this the candidate would never see real load.
+        let health = vec![path(1, 20.0, 0.0), path(2, 60.0, 0.0), path(3, 30.0, 0.0)];
+
+        let transmissions = build_transmission_plan_for_packet(
+            &trial_schedule(),
+            RedundancyPolicy::Fast,
+            1_200,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert_eq!(
+            transmissions,
+            vec![
+                ScheduledTransmission {
+                    path_id: 1,
+                    packet_kind: PacketKind::Data
+                },
+                ScheduledTransmission {
+                    path_id: 3,
+                    packet_kind: PacketKind::Duplicate
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn balanced_policy_mirrors_small_packets_onto_the_trial_path() {
+        let health = vec![path(1, 20.0, 0.0), path(2, 60.0, 0.0), path(3, 30.0, 0.0)];
+
+        let plans = precompute_transmission_plans(
+            &trial_schedule(),
+            RedundancyPolicy::Balanced,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        for plan in [&plans.small, &plans.bulk] {
+            assert!(
+                plan.iter().any(|transmission| transmission.path_id == 3
+                    && transmission.packet_kind == PacketKind::Duplicate),
+                "trial path missing from plan: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn down_trial_path_is_not_mirrored() {
+        let mut trial_path = path(3, 30.0, 0.0);
+        trial_path.interface_up = false;
+        let health = vec![path(1, 20.0, 0.0), path(2, 60.0, 0.0), trial_path];
+
+        let transmissions = build_transmission_plan_for_packet(
+            &trial_schedule(),
+            RedundancyPolicy::Fast,
+            1_200,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert!(transmissions
+            .iter()
+            .all(|transmission| transmission.path_id != 3));
+    }
+
+    #[test]
+    fn schedule_plan_without_trial_ids_still_deserialises() {
+        let json = r#"{
+            "mode": "anchor-duplicate-1",
+            "anchor_path_id": 1,
+            "data_path_ids": [1],
+            "duplicate_path_ids": [2],
+            "fec_path_ids": []
+        }"#;
+
+        let plan = serde_json::from_str::<SchedulePlan>(json).unwrap();
+
+        assert!(plan.trial_path_ids.is_empty());
+    }
 
     fn path(path_id: u16, rtt_ms: f64, late_rate: f64) -> PathHealthSnapshot {
         PathHealthSnapshot {
@@ -858,6 +1056,7 @@ mod tests {
             data_path_ids: vec![1],
             duplicate_path_ids: vec![2],
             fec_path_ids: Vec::new(),
+            trial_path_ids: Vec::new(),
         };
 
         let transmissions = build_transmission_plan(&plan);
@@ -885,6 +1084,7 @@ mod tests {
             data_path_ids: vec![1],
             duplicate_path_ids: Vec::new(),
             fec_path_ids: vec![2, 3],
+            trial_path_ids: Vec::new(),
         };
 
         let transmissions = build_transmission_plan(&plan);
