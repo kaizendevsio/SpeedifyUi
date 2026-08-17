@@ -1,3 +1,4 @@
+pub mod anchor;
 pub mod config;
 pub mod crypto;
 pub mod fec;
@@ -12,6 +13,10 @@ pub mod session;
 pub mod status;
 pub mod tun;
 
+pub use anchor::{
+    AnchorTrial, AnchorTrialConfig, AnchorTrialStatus, FlapDamping, FlapDampingConfig,
+    PathScoreSmoothing, ScoreSmoothingConfig, TrialObservation, TrialOutcome,
+};
 pub use config::{
     default_inbound_queue_capacity, default_tun_queue_capacity, default_udp_receive_batch_size,
     default_udp_socket_buffer_bytes,
