@@ -33,13 +33,13 @@ use xbond_core::{
     PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome,
     RecoveryConfig, RecoveryScheduleStabilityState, RecoveryState, RecoveryStatus,
     RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket, RepairPayload, ResendCache,
-    RoleSelectionConfig, RoleSelectionState, RouteVerification, ScheduleControlMessage,
-    ScheduleMode, SchedulePlan, SessionHandshakeNonce, XBondControlMessage,
-    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
-    XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus, XBondSaturationStatus,
-    XBondServerRecoveryStatus, XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus,
-    XBondTun, XBondTunnelStatus, XorFecBlock, FLAG_SERVER_TO_CLIENT,
+    RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
+    SessionHandshakeNonce, XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus,
+    XBondFrame, XBondHeader, XBondKey, XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus,
+    XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus,
+    XBondSaturationStatus, XBondServerRecoveryStatus, XBondSocketBufferStatus,
+    XBondStageTimingStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
+    FLAG_SERVER_TO_CLIENT,
 };
 
 const MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES: usize = 256 * 1024;
@@ -2817,7 +2817,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     };
     let mut active_override: Option<ActiveScheduleOverride> = None;
     let mut role_state = RoleSelectionState::default();
-    let role_config = RoleSelectionConfig::default();
+    let role_config = config.role_selection_config();
     let recovery_config = config.recovery_config();
     let mut recovery_state = RecoveryState::default();
     let mut recovery_schedule_state = RecoveryScheduleStabilityState::default();
@@ -2827,6 +2827,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         config.max_active_backups,
         &mut role_state,
         role_config,
+        false,
     );
     let (mut effective_mode, mut effective_policy) =
         effective_mode_and_policy(&config, &mut active_override);
@@ -3093,11 +3094,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     monotonic_micros(),
                 );
                 health = tunnel_health(&config, &path_runtime, &sockets);
+                // `recovery_status` still holds the previous tick's value here; it is
+                // recomputed a few lines below. One tick of lag on trial suppression is
+                // harmless and avoids reordering the whole scheduler step.
                 roles = select_path_roles_with_state(
                     &health,
                     config.max_active_backups,
                     &mut role_state,
                     role_config,
+                    recovery_status.active,
                 );
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);
@@ -8680,14 +8685,16 @@ mod tests {
 
     #[test]
     fn replacing_path_interface_updates_runtime_config_and_clears_stale_address() {
-        let mut config = ClientConfig::default();
-        config.paths = vec![xbond_core::PathConfig {
-            id: 1,
-            name: "Starlink".to_string(),
-            interface_name: Some("enx-old".to_string()),
-            bind_addr: Some("192.168.254.101".to_string()),
-            enabled: true,
-        }];
+        let mut config = ClientConfig {
+            paths: vec![xbond_core::PathConfig {
+                id: 1,
+                name: "Starlink".to_string(),
+                interface_name: Some("enx-old".to_string()),
+                bind_addr: Some("192.168.254.101".to_string()),
+                enabled: true,
+            }],
+            ..ClientConfig::default()
+        };
         let mut specs = HashMap::from([(1, rebind_test_spec("enx-old"))]);
 
         assert!(replace_path_interface(&mut config, &mut specs, 1, "enx-new").unwrap());
@@ -9240,7 +9247,7 @@ mod tests {
 
         {
             let runtime = runtimes.get_mut(&1).unwrap();
-            runtime.payload_traffic_opportunities = runtime.payload_traffic_opportunities + 1;
+            runtime.payload_traffic_opportunities += 1;
         }
         last_sample = Instant::now() - Duration::from_secs(1);
         update_tunnel_throughput(&mut runtimes, &mut counters, &mut last_sample);

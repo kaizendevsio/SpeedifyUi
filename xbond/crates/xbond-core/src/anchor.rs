@@ -408,10 +408,16 @@ mod tests {
         let mut trial = AnchorTrial::new(2);
 
         for _ in 0..config.ticks - 1 {
-            assert_eq!(trial.observe(loaded_tick(true), config), TrialOutcome::Running);
+            assert_eq!(
+                trial.observe(loaded_tick(true), config),
+                TrialOutcome::Running
+            );
         }
 
-        assert_eq!(trial.observe(loaded_tick(true), config), TrialOutcome::Promoted);
+        assert_eq!(
+            trial.observe(loaded_tick(true), config),
+            TrialOutcome::Promoted
+        );
         assert_eq!(trial.ticks, config.ticks);
     }
 
@@ -422,7 +428,10 @@ mod tests {
         let allowed_bad_ticks = config.ticks - config.success_ticks;
 
         for _ in 0..allowed_bad_ticks {
-            assert_eq!(trial.observe(loaded_tick(false), config), TrialOutcome::Running);
+            assert_eq!(
+                trial.observe(loaded_tick(false), config),
+                TrialOutcome::Running
+            );
         }
 
         assert_eq!(

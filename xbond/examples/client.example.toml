@@ -28,3 +28,23 @@ name = "Backup modem"
 interface_name = "wwan0"
 bind_addr = "0.0.0.0:0"
 enabled = true
+
+# Anchor stability. Defaults are sticky on purpose: an anchor switch moves all bulk
+# traffic in balanced/fast, so a candidate must beat the anchor by a wide margin, stay
+# ahead for stable_ticks_required ticks, then survive a mirrored-load trial.
+[role_selection]
+anchor_switch_score_margin = 200.0
+backup_switch_score_margin = 100.0
+stable_ticks_required = 10
+smoothing_alpha = 0.2
+variance_penalty_weight = 2.0
+flap_penalty_demoted = 1000.0
+flap_penalty_trial_failed = 600.0
+flap_suppress_threshold = 500.0
+flap_penalty_cap = 4000.0
+flap_half_life_secs = 300
+trial_enabled = true
+trial_ticks = 20
+trial_success_ticks = 15
+trial_min_bytes = 5000000
+trial_min_interval_ticks = 60

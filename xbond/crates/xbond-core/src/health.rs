@@ -1,4 +1,4 @@
-﻿use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::anchor::{
     AnchorTrial, AnchorTrialConfig, AnchorTrialStatus, FlapDamping, FlapDampingConfig,
@@ -454,7 +454,9 @@ fn advance_trial(
     current_anchor: &ScoredPath,
 ) -> u16 {
     let current_anchor_id = current_anchor.path.path_id;
-    let trial_path = scored.iter().find(|path| path.path.path_id == trial.path_id);
+    let trial_path = scored
+        .iter()
+        .find(|path| path.path.path_id == trial.path_id);
     let observation = TrialObservation {
         eligible: trial_path.is_some_and(is_role_eligible),
         // Raw scores, because both paths are carrying the same mirrored load right now.
@@ -1069,7 +1071,10 @@ mod tests {
 
     #[test]
     fn trial_role_serialises_as_kebab_case() {
-        assert_eq!(serde_json::to_string(&PathRole::Trial).unwrap(), "\"trial\"");
+        assert_eq!(
+            serde_json::to_string(&PathRole::Trial).unwrap(),
+            "\"trial\""
+        );
     }
 
     #[test]
@@ -1220,11 +1225,18 @@ mod tests {
 
         // Loaded phase: it degrades and the trial aborts.
         for _ in 0..config.trial.ticks + 1 {
-            roles = tick(&mut state, &[anchor.clone(), loaded_starlink.clone()], config);
+            roles = tick(
+                &mut state,
+                &[anchor.clone(), loaded_starlink.clone()],
+                config,
+            );
         }
 
         assert_eq!(anchor_of(&roles), Some(1), "anchor must never have moved");
-        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::FailedUnderLoad));
+        assert_eq!(
+            state.last_trial_outcome,
+            Some(TrialOutcome::FailedUnderLoad)
+        );
         assert!(state
             .flap_damping
             .is_suppressed(2, config.flap.suppress_threshold));
@@ -1279,7 +1291,11 @@ mod tests {
         let mut dead = path(1, "fiber", 150.0, 0.0, 0.0);
         dead.interface_up = false;
 
-        tick(&mut state, &[dead, path(2, "other", 10.0, 0.0, 0.0)], config);
+        tick(
+            &mut state,
+            &[dead, path(2, "other", 10.0, 0.0, 0.0)],
+            config,
+        );
 
         assert_eq!(state.flap_damping.penalty(1), config.flap.penalty_demoted);
     }
@@ -1369,7 +1385,10 @@ mod tests {
         assert_eq!(suppressed.role, PathRole::Backup);
         let reason = suppressed.path.role_reason.as_deref().unwrap();
         assert!(reason.contains("Suppressed"), "unexpected reason: {reason}");
-        assert!(reason.contains("eligible again"), "unexpected reason: {reason}");
+        assert!(
+            reason.contains("eligible again"),
+            "unexpected reason: {reason}"
+        );
     }
 
     #[test]

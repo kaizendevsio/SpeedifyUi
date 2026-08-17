@@ -21,7 +21,7 @@ pub use config::{
     default_inbound_queue_capacity, default_tun_queue_capacity, default_udp_receive_batch_size,
     default_udp_socket_buffer_bytes,
 };
-pub use config::{ClientConfig, PathConfig};
+pub use config::{ClientConfig, PathConfig, RoleSelectionSettings};
 pub use crypto::XBondKey;
 pub use fec::{FecError, XorFecBlock};
 pub use health::{

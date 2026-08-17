@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::anchor::{AnchorTrialConfig, FlapDampingConfig, ScoreSmoothingConfig};
+use crate::health::RoleSelectionConfig;
 use crate::scheduler::{RecoveryConfig, RedundancyPolicy, ScheduleMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +73,8 @@ pub struct ClientConfig {
     pub recovery_clean_queue_pressure: f64,
     #[serde(default = "default_recovery_path_loss_exclude_threshold")]
     pub recovery_path_loss_exclude_threshold: f64,
+    #[serde(default)]
+    pub role_selection: RoleSelectionSettings,
     pub runtime_status_path: Option<String>,
     pub paths: Vec<PathConfig>,
 }
@@ -114,6 +118,7 @@ impl Default for ClientConfig {
             recovery_clean_stale_ack_ms: default_recovery_clean_stale_ack_ms(),
             recovery_clean_queue_pressure: default_recovery_clean_queue_pressure(),
             recovery_path_loss_exclude_threshold: default_recovery_path_loss_exclude_threshold(),
+            role_selection: RoleSelectionSettings::default(),
             runtime_status_path: Some("/run/xbond/client-status.json".to_string()),
             paths: Vec::new(),
         }
@@ -141,6 +146,152 @@ impl ClientConfig {
             path_loss_exclude_threshold: self.recovery_path_loss_exclude_threshold.clamp(0.0, 1.0),
         }
     }
+
+    pub fn role_selection_config(&self) -> RoleSelectionConfig {
+        let settings = self.role_selection;
+        let trial_ticks = settings.trial_ticks.max(1);
+        RoleSelectionConfig {
+            anchor_switch_score_margin: settings.anchor_switch_score_margin.max(0.0),
+            backup_switch_score_margin: settings.backup_switch_score_margin.max(0.0),
+            stable_ticks_required: settings.stable_ticks_required.max(1),
+            smoothing: ScoreSmoothingConfig {
+                alpha: settings.smoothing_alpha.clamp(0.01, 1.0),
+                variance_penalty_weight: settings.variance_penalty_weight.max(0.0),
+            },
+            flap: FlapDampingConfig {
+                penalty_demoted: settings.flap_penalty_demoted.max(0.0),
+                penalty_trial_failed: settings.flap_penalty_trial_failed.max(0.0),
+                suppress_threshold: settings.flap_suppress_threshold.max(0.0),
+                penalty_cap: settings.flap_penalty_cap.max(0.0),
+                half_life_secs: settings.flap_half_life_secs.max(1),
+            },
+            trial: AnchorTrialConfig {
+                enabled: settings.trial_enabled,
+                ticks: trial_ticks,
+                success_ticks: settings.trial_success_ticks.min(trial_ticks),
+                min_bytes: settings.trial_min_bytes,
+                min_interval_ticks: settings.trial_min_interval_ticks,
+            },
+        }
+    }
+}
+
+/// Operator-facing `[role_selection]` knobs. Every field is defaulted, so an existing
+/// config file without the table keeps working and picks up the new sticky defaults.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RoleSelectionSettings {
+    #[serde(default = "default_anchor_switch_score_margin")]
+    pub anchor_switch_score_margin: f64,
+    #[serde(default = "default_backup_switch_score_margin")]
+    pub backup_switch_score_margin: f64,
+    #[serde(default = "default_stable_ticks_required")]
+    pub stable_ticks_required: u8,
+    #[serde(default = "default_smoothing_alpha")]
+    pub smoothing_alpha: f64,
+    #[serde(default = "default_variance_penalty_weight")]
+    pub variance_penalty_weight: f64,
+    #[serde(default = "default_flap_penalty_demoted")]
+    pub flap_penalty_demoted: f64,
+    #[serde(default = "default_flap_penalty_trial_failed")]
+    pub flap_penalty_trial_failed: f64,
+    #[serde(default = "default_flap_suppress_threshold")]
+    pub flap_suppress_threshold: f64,
+    #[serde(default = "default_flap_penalty_cap")]
+    pub flap_penalty_cap: f64,
+    #[serde(default = "default_flap_half_life_secs")]
+    pub flap_half_life_secs: u64,
+    #[serde(default = "default_trial_enabled")]
+    pub trial_enabled: bool,
+    #[serde(default = "default_trial_ticks")]
+    pub trial_ticks: u32,
+    #[serde(default = "default_trial_success_ticks")]
+    pub trial_success_ticks: u32,
+    #[serde(default = "default_trial_min_bytes")]
+    pub trial_min_bytes: u64,
+    #[serde(default = "default_trial_min_interval_ticks")]
+    pub trial_min_interval_ticks: u32,
+}
+
+impl Default for RoleSelectionSettings {
+    fn default() -> Self {
+        Self {
+            anchor_switch_score_margin: default_anchor_switch_score_margin(),
+            backup_switch_score_margin: default_backup_switch_score_margin(),
+            stable_ticks_required: default_stable_ticks_required(),
+            smoothing_alpha: default_smoothing_alpha(),
+            variance_penalty_weight: default_variance_penalty_weight(),
+            flap_penalty_demoted: default_flap_penalty_demoted(),
+            flap_penalty_trial_failed: default_flap_penalty_trial_failed(),
+            flap_suppress_threshold: default_flap_suppress_threshold(),
+            flap_penalty_cap: default_flap_penalty_cap(),
+            flap_half_life_secs: default_flap_half_life_secs(),
+            trial_enabled: default_trial_enabled(),
+            trial_ticks: default_trial_ticks(),
+            trial_success_ticks: default_trial_success_ticks(),
+            trial_min_bytes: default_trial_min_bytes(),
+            trial_min_interval_ticks: default_trial_min_interval_ticks(),
+        }
+    }
+}
+
+fn default_anchor_switch_score_margin() -> f64 {
+    200.0
+}
+
+fn default_backup_switch_score_margin() -> f64 {
+    100.0
+}
+
+fn default_stable_ticks_required() -> u8 {
+    10
+}
+
+fn default_smoothing_alpha() -> f64 {
+    0.2
+}
+
+fn default_variance_penalty_weight() -> f64 {
+    2.0
+}
+
+fn default_flap_penalty_demoted() -> f64 {
+    1_000.0
+}
+
+fn default_flap_penalty_trial_failed() -> f64 {
+    600.0
+}
+
+fn default_flap_suppress_threshold() -> f64 {
+    500.0
+}
+
+fn default_flap_penalty_cap() -> f64 {
+    4_000.0
+}
+
+fn default_flap_half_life_secs() -> u64 {
+    300
+}
+
+fn default_trial_enabled() -> bool {
+    true
+}
+
+fn default_trial_ticks() -> u32 {
+    20
+}
+
+fn default_trial_success_ticks() -> u32 {
+    15
+}
+
+fn default_trial_min_bytes() -> u64 {
+    5_000_000
+}
+
+fn default_trial_min_interval_ticks() -> u32 {
+    60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,4 +417,71 @@ fn default_recovery_clean_queue_pressure() -> f64 {
 
 fn default_recovery_path_loss_exclude_threshold() -> f64 {
     0.95
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_role_selection_table_uses_sticky_defaults() {
+        let config = ClientConfig::default();
+        let role_selection = config.role_selection_config();
+
+        assert_eq!(role_selection.anchor_switch_score_margin, 200.0);
+        assert_eq!(role_selection.stable_ticks_required, 10);
+        assert!(role_selection.trial.enabled);
+        assert_eq!(role_selection.trial.ticks, 20);
+    }
+
+    #[test]
+    fn role_selection_table_overrides_defaults() {
+        let toml = r#"
+enabled = true
+server_addr = "127.0.0.1:8444"
+mode = "anchor-duplicate-1"
+max_active_backups = 1
+realtime_deadline_ms = 500
+paths = []
+
+[role_selection]
+anchor_switch_score_margin = 350.0
+stable_ticks_required = 20
+trial_enabled = false
+trial_ticks = 45
+flap_half_life_secs = 600
+"#;
+
+        let config = toml::from_str::<ClientConfig>(toml).unwrap();
+        let role_selection = config.role_selection_config();
+
+        assert_eq!(role_selection.anchor_switch_score_margin, 350.0);
+        assert_eq!(role_selection.stable_ticks_required, 20);
+        assert!(!role_selection.trial.enabled);
+        assert_eq!(role_selection.trial.ticks, 45);
+        assert_eq!(role_selection.flap.half_life_secs, 600);
+        // Unspecified keys keep their defaults.
+        assert_eq!(role_selection.smoothing.alpha, 0.2);
+    }
+
+    #[test]
+    fn role_selection_values_are_clamped_to_sane_ranges() {
+        let settings = RoleSelectionSettings {
+            smoothing_alpha: 9.0,
+            stable_ticks_required: 0,
+            trial_success_ticks: 999,
+            trial_ticks: 10,
+            ..RoleSelectionSettings::default()
+        };
+        let config = ClientConfig {
+            role_selection: settings,
+            ..ClientConfig::default()
+        }
+        .role_selection_config();
+
+        assert_eq!(config.smoothing.alpha, 1.0);
+        assert_eq!(config.stable_ticks_required, 1);
+        // success_ticks can never exceed the window length.
+        assert_eq!(config.trial.effective_success_ticks(), 10);
+    }
 }

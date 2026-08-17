@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::anchor::AnchorTrialStatus;
 use crate::health::{PathRole, ScoredPath};
 use crate::reorder::ReorderStats;
 use crate::scheduler::{RecoveryStatus, RedundancyPolicy, ScheduleMode, SchedulePlan};
@@ -50,6 +51,14 @@ pub struct XBondPathStatus {
     pub path_isolation: PathIsolationStatus,
     pub role: PathRole,
     pub score: f64,
+    #[serde(default)]
+    pub smoothed_score: f64,
+    #[serde(default)]
+    pub effective_score: f64,
+    #[serde(default)]
+    pub flap_penalty: f64,
+    #[serde(default)]
+    pub trial: Option<AnchorTrialStatus>,
     pub rtt_ms: Option<f64>,
     pub jitter_ms: Option<f64>,
     pub loss_rate: f64,
@@ -119,6 +128,10 @@ impl From<ScoredPath> for XBondPathStatus {
             path_isolation: PathIsolationStatus::default(),
             role: value.role,
             score: value.score,
+            smoothed_score: value.smoothed_score,
+            effective_score: value.effective_score,
+            flap_penalty: value.flap_penalty,
+            trial: value.trial,
             rtt_ms: value.path.rtt_ms,
             jitter_ms: value.path.jitter_ms,
             loss_rate: value.path.loss_rate,

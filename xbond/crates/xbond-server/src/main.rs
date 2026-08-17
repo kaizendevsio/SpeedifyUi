@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+﻿use anyhow::{Context, Result};
 use clap::{ArgAction, Parser};
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};
@@ -5191,6 +5191,7 @@ mod tests {
                     data_path_ids: vec![1],
                     duplicate_path_ids: Vec::new(),
                     fec_path_ids: Vec::new(),
+                    trial_path_ids: Vec::new(),
                 },
                 redundancy_policy: RedundancyPolicy::Balanced,
                 policy_config: RedundancyPolicyConfig::default(),
@@ -5372,6 +5373,7 @@ mod tests {
                 data_path_ids: vec![1],
                 duplicate_path_ids: Vec::new(),
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Balanced,
             RedundancyPolicyConfig::default(),
@@ -7138,6 +7140,7 @@ mod tests {
             data_path_ids: vec![5],
             duplicate_path_ids: vec![3],
             fec_path_ids: Vec::new(),
+            trial_path_ids: Vec::new(),
         };
         let frame = XBondFrame::new(
             XBondHeader::new(PacketKind::Control, 7, 1, 2, 5),
@@ -7160,6 +7163,7 @@ mod tests {
             data_path_ids: vec![5],
             duplicate_path_ids: vec![3],
             fec_path_ids: Vec::new(),
+            trial_path_ids: Vec::new(),
         };
         let message = ScheduleControlMessage {
             schedule_generation: 42,
@@ -7189,6 +7193,7 @@ mod tests {
             data_path_ids: vec![1],
             duplicate_path_ids: Vec::new(),
             fec_path_ids: Vec::new(),
+            trial_path_ids: Vec::new(),
         };
         let current = build_return_control(
             7,
@@ -7254,6 +7259,7 @@ mod tests {
                 data_path_ids: vec![5],
                 duplicate_path_ids: vec![3],
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Reliable,
             RedundancyPolicyConfig::default(),
@@ -7295,6 +7301,7 @@ mod tests {
                 data_path_ids: vec![5],
                 duplicate_path_ids: vec![3],
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Balanced,
             RedundancyPolicyConfig::default(),
@@ -7328,6 +7335,7 @@ mod tests {
                 data_path_ids: vec![5],
                 duplicate_path_ids: vec![2, 3],
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Reliable,
             RedundancyPolicyConfig::default(),
@@ -7367,6 +7375,7 @@ mod tests {
                 data_path_ids: vec![1],
                 duplicate_path_ids: vec![3],
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Reliable,
             RedundancyPolicyConfig::default(),
@@ -7408,6 +7417,7 @@ mod tests {
                 data_path_ids: vec![1],
                 duplicate_path_ids: vec![2],
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Reliable,
             RedundancyPolicyConfig::default(),
@@ -7450,6 +7460,7 @@ mod tests {
                 data_path_ids: vec![1],
                 duplicate_path_ids: vec![2],
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Reliable,
             RedundancyPolicyConfig::default(),
@@ -7479,6 +7490,7 @@ mod tests {
                 data_path_ids: vec![1],
                 duplicate_path_ids: Vec::new(),
                 fec_path_ids: Vec::new(),
+                trial_path_ids: Vec::new(),
             },
             RedundancyPolicy::Balanced,
             RedundancyPolicyConfig::default(),
