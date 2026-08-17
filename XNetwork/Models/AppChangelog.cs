@@ -13,13 +13,28 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.129";
+    public const string CurrentVersion = "ulink-2026.06.130";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-18",
+            Summary = "Stopped the main connection from switching to an unstable adapter.",
+            Changes =
+            [
+                "Bumped the uLink interface version for anchor stability.",
+                "Stopped Balanced and Fast from moving your traffic onto an adapter that only looks good while idle.",
+                "Added a trial period: a candidate adapter now carries mirrored traffic and must stay clean before it becomes the main path.",
+                "Adapters that fail as the main path are now distrusted for several minutes instead of seconds.",
+                "Kept instant failover: if the main adapter dies, uLink still switches immediately.",
+                "Showed a Trial badge and a plain-language reason for adapters under test or on cooldown."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.129",
             Date = "2026-08-16",
             Summary = "Fixed the traffic bypass error shown before any rule is saved.",
             Changes =
