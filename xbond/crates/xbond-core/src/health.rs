@@ -1,4 +1,11 @@
-use serde::{Deserialize, Serialize};
+﻿use serde::{Deserialize, Serialize};
+
+use crate::anchor::{
+    AnchorTrial, AnchorTrialConfig, AnchorTrialStatus, FlapDamping, FlapDampingConfig,
+    PathScoreSmoothing, ScoreSmoothingConfig, TrialObservation, TrialOutcome,
+};
+
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PathHealthSnapshot {
@@ -162,6 +169,8 @@ impl PathHealthSnapshot {
 pub enum PathRole {
     Anchor,
     Backup,
+    /// Carrying mirrored traffic to prove it can hold the anchor role.
+    Trial,
     Probe,
     Cooldown,
     Unavailable,
@@ -170,7 +179,19 @@ pub enum PathRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredPath {
     pub path: PathHealthSnapshot,
+    /// Raw score for this tick. Used for hard demotion and under-load trial comparison.
     pub score: f64,
+    /// EWMA of `score`.
+    #[serde(default)]
+    pub smoothed_score: f64,
+    /// `smoothed_score` minus the instability penalty. This is what role selection ranks on.
+    #[serde(default)]
+    pub effective_score: f64,
+    #[serde(default)]
+    pub flap_penalty: f64,
+    /// Present only on the path currently under trial.
+    #[serde(default)]
+    pub trial: Option<AnchorTrialStatus>,
     pub role: PathRole,
 }
 
@@ -180,7 +201,7 @@ pub fn select_path_roles(paths: &[PathHealthSnapshot], max_backups: usize) -> Ve
     scored
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleSelectionState {
     pub anchor_path_id: Option<u16>,
     pub backup_path_ids: Vec<u16>,
@@ -189,6 +210,39 @@ pub struct RoleSelectionState {
     pub backup_candidate_path_ids: Vec<u16>,
     pub backup_candidate_ticks: u8,
     pub schedule_change_count: u64,
+    #[serde(default)]
+    pub smoothing: BTreeMap<u16, PathScoreSmoothing>,
+    #[serde(default)]
+    pub flap_damping: FlapDamping,
+    #[serde(default)]
+    pub trial: Option<AnchorTrial>,
+    #[serde(default)]
+    pub last_trial_outcome: Option<TrialOutcome>,
+    #[serde(default)]
+    pub ticks_since_trial_end: u32,
+    #[serde(default)]
+    pub trial_count: u64,
+}
+
+impl Default for RoleSelectionState {
+    fn default() -> Self {
+        Self {
+            anchor_path_id: None,
+            backup_path_ids: Vec::new(),
+            anchor_candidate_path_id: None,
+            anchor_candidate_ticks: 0,
+            backup_candidate_path_ids: Vec::new(),
+            backup_candidate_ticks: 0,
+            schedule_change_count: 0,
+            smoothing: BTreeMap::new(),
+            flap_damping: FlapDamping::default(),
+            trial: None,
+            last_trial_outcome: None,
+            // Start "long since" so the first legitimate upgrade is not delayed.
+            ticks_since_trial_end: u32::MAX,
+            trial_count: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -196,14 +250,22 @@ pub struct RoleSelectionConfig {
     pub anchor_switch_score_margin: f64,
     pub backup_switch_score_margin: f64,
     pub stable_ticks_required: u8,
+    pub smoothing: ScoreSmoothingConfig,
+    pub flap: FlapDampingConfig,
+    pub trial: AnchorTrialConfig,
 }
 
 impl Default for RoleSelectionConfig {
     fn default() -> Self {
         Self {
-            anchor_switch_score_margin: 150.0,
+            // Raised from 150/5: five clean seconds is trivial for an intermittently
+            // obstructed link to fake, which is what let the anchor flap.
+            anchor_switch_score_margin: 200.0,
             backup_switch_score_margin: 100.0,
-            stable_ticks_required: 5,
+            stable_ticks_required: 10,
+            smoothing: ScoreSmoothingConfig::default(),
+            flap: FlapDampingConfig::default(),
+            trial: AnchorTrialConfig::default(),
         }
     }
 }
@@ -213,19 +275,44 @@ pub fn select_path_roles_with_state(
     max_backups: usize,
     state: &mut RoleSelectionState,
     config: RoleSelectionConfig,
+    recovery_active: bool,
 ) -> Vec<ScoredPath> {
     let mut scored = score_paths(paths);
+    let live_ids = scored
+        .iter()
+        .map(|path| path.path.path_id)
+        .collect::<Vec<_>>();
+    state.flap_damping.decay(config.flap.half_life_secs);
+    state.flap_damping.retain_paths(&live_ids);
+    apply_score_smoothing(&mut scored, state, config, &live_ids);
+
     let previous_anchor = state.anchor_path_id;
     let previous_backups = state.backup_path_ids.clone();
-    let best_anchor_id = scored
-        .iter()
-        .find(|path| is_role_eligible(path))
-        .map(path_id);
-    let anchor_id = choose_anchor(&scored, state, best_anchor_id, config);
+
+    let anchor_id = resolve_anchor(&scored, state, config, recovery_active);
     let backup_ids = choose_backups(&scored, state, anchor_id, max_backups, config);
+    let trial_path_id = state.trial.as_ref().map(|trial| trial.path_id);
 
-    assign_hysteresis_roles(&mut scored, anchor_id, &backup_ids);
+    assign_hysteresis_roles(
+        &mut scored,
+        anchor_id,
+        &backup_ids,
+        trial_path_id,
+        state,
+        config,
+    );
 
+    if previous_anchor != anchor_id {
+        // Being displaced costs the outgoing anchor some trust, which is what stops
+        // A -> B -> A ping-ponging.
+        if let Some(outgoing) = previous_anchor {
+            state.flap_damping.add(
+                outgoing,
+                config.flap.penalty_demoted,
+                config.flap.penalty_cap,
+            );
+        }
+    }
     if previous_anchor != anchor_id || previous_backups != backup_ids {
         state.schedule_change_count = state.schedule_change_count.saturating_add(1);
     }
@@ -233,6 +320,184 @@ pub fn select_path_roles_with_state(
     state.backup_path_ids = backup_ids;
 
     scored
+}
+
+/// Updates the EWMA filters, publishes the derived scores onto `scored`, and re-sorts by
+/// effective score so every downstream `find`/`take` picks the most *dependable* path.
+fn apply_score_smoothing(
+    scored: &mut [ScoredPath],
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+    live_ids: &[u16],
+) {
+    state
+        .smoothing
+        .retain(|path_id, _| live_ids.contains(path_id));
+
+    for scored_path in scored.iter_mut() {
+        let smoothing = state.smoothing.entry(scored_path.path.path_id).or_default();
+        smoothing.observe(scored_path.score, config.smoothing.alpha);
+        scored_path.smoothed_score = smoothing.smoothed;
+        // A hard-demoted path keeps its sentinel score: a good history must never let a
+        // dead interface outrank a live one.
+        scored_path.effective_score = if scored_path.path.is_realtime_eligible() {
+            smoothing.effective_score(config.smoothing.variance_penalty_weight)
+        } else {
+            scored_path.score
+        };
+        scored_path.flap_penalty = state.flap_damping.penalty(scored_path.path.path_id);
+    }
+
+    scored.sort_by(|a, b| b.effective_score.total_cmp(&a.effective_score));
+}
+
+/// Decides the anchor for this tick, advancing or starting a prove-it trial as needed.
+fn resolve_anchor(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+    recovery_active: bool,
+) -> Option<u16> {
+    state.ticks_since_trial_end = state.ticks_since_trial_end.saturating_add(1);
+
+    let best_promotable_id = scored
+        .iter()
+        .find(|path| {
+            is_role_eligible(path)
+                && !state
+                    .flap_damping
+                    .is_suppressed(path.path.path_id, config.flap.suppress_threshold)
+        })
+        .map(path_id);
+    // Failover fallback: when every healthy path is suppressed we still need an anchor.
+    let best_any_id = scored
+        .iter()
+        .find(|path| is_role_eligible(path))
+        .map(path_id);
+
+    let current_anchor = state
+        .anchor_path_id
+        .and_then(|id| scored.iter().find(|path| path.path.path_id == id))
+        .filter(|path| is_role_eligible(path));
+
+    // The anchor is gone: fail over now and abandon any trial (the trial path did nothing
+    // wrong, so no penalty).
+    let Some(current_anchor) = current_anchor else {
+        end_trial(state, TrialOutcome::Cancelled);
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return best_promotable_id.or(best_any_id);
+    };
+    let current_anchor_id = current_anchor.path.path_id;
+
+    if let Some(trial) = state.trial.clone() {
+        if recovery_active {
+            end_trial(state, TrialOutcome::Cancelled);
+            return Some(current_anchor_id);
+        }
+        return Some(advance_trial(scored, state, config, trial, current_anchor));
+    }
+
+    let Some(best_promotable_id) = best_promotable_id else {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(current_anchor_id);
+    };
+
+    if current_anchor_id == best_promotable_id {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(current_anchor_id);
+    }
+
+    let best_score = effective_score_for(scored, best_promotable_id).unwrap_or(f64::NEG_INFINITY);
+    if best_score - current_anchor.effective_score < config.anchor_switch_score_margin {
+        state.anchor_candidate_path_id = None;
+        state.anchor_candidate_ticks = 0;
+        return Some(current_anchor_id);
+    }
+
+    if state.anchor_candidate_path_id == Some(best_promotable_id) {
+        state.anchor_candidate_ticks = state.anchor_candidate_ticks.saturating_add(1);
+    } else {
+        state.anchor_candidate_path_id = Some(best_promotable_id);
+        state.anchor_candidate_ticks = 1;
+    }
+
+    if state.anchor_candidate_ticks < config.stable_ticks_required {
+        return Some(current_anchor_id);
+    }
+
+    state.anchor_candidate_path_id = None;
+    state.anchor_candidate_ticks = 0;
+
+    // Recovery duplicates everything, so a switch there is already masked and needs no trial.
+    if !config.trial.enabled || recovery_active {
+        return Some(best_promotable_id);
+    }
+
+    if state.ticks_since_trial_end < config.trial.min_interval_ticks {
+        return Some(current_anchor_id);
+    }
+
+    state.trial = Some(AnchorTrial::new(best_promotable_id));
+    state.trial_count = state.trial_count.saturating_add(1);
+    Some(current_anchor_id)
+}
+
+/// Feeds one tick of evidence into the running trial and applies its verdict.
+fn advance_trial(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+    mut trial: AnchorTrial,
+    current_anchor: &ScoredPath,
+) -> u16 {
+    let current_anchor_id = current_anchor.path.path_id;
+    let trial_path = scored.iter().find(|path| path.path.path_id == trial.path_id);
+    let observation = TrialObservation {
+        eligible: trial_path.is_some_and(is_role_eligible),
+        // Raw scores, because both paths are carrying the same mirrored load right now.
+        kept_up_with_anchor: trial_path.is_some_and(|path| path.score >= current_anchor.score),
+        mirrored_bytes_this_tick: trial_path
+            .map(|path| path.path.outbound_throughput_bps / 8)
+            .unwrap_or_default(),
+    };
+
+    let outcome = trial.observe(observation, config.trial);
+    match outcome {
+        TrialOutcome::Running => {
+            state.trial = Some(trial);
+            current_anchor_id
+        }
+        TrialOutcome::Promoted => {
+            let promoted = trial.path_id;
+            end_trial(state, outcome);
+            promoted
+        }
+        TrialOutcome::FailedUnderLoad => {
+            state.flap_damping.add(
+                trial.path_id,
+                config.flap.penalty_trial_failed,
+                config.flap.penalty_cap,
+            );
+            end_trial(state, outcome);
+            current_anchor_id
+        }
+        TrialOutcome::Inconclusive | TrialOutcome::Cancelled => {
+            end_trial(state, outcome);
+            current_anchor_id
+        }
+    }
+}
+
+fn end_trial(state: &mut RoleSelectionState, outcome: TrialOutcome) {
+    if state.trial.is_none() {
+        return;
+    }
+    state.trial = None;
+    state.last_trial_outcome = Some(outcome);
+    state.ticks_since_trial_end = 0;
 }
 
 fn score_paths(paths: &[PathHealthSnapshot]) -> Vec<ScoredPath> {
@@ -251,7 +516,15 @@ fn score_paths(paths: &[PathHealthSnapshot]) -> Vec<ScoredPath> {
             } else {
                 PathRole::Probe
             };
-            ScoredPath { path, score, role }
+            ScoredPath {
+                path,
+                score,
+                smoothed_score: score,
+                effective_score: score,
+                flap_penalty: 0.0,
+                trial: None,
+                role,
+            }
         })
         .collect();
 
@@ -283,62 +556,6 @@ fn assign_best_available_roles(scored: &mut [ScoredPath], max_backups: usize) {
             scored_path.path.role_reason =
                 Some("Healthy but currently kept as probe/standby.".to_string());
         }
-    }
-}
-
-fn choose_anchor(
-    scored: &[ScoredPath],
-    state: &mut RoleSelectionState,
-    best_anchor_id: Option<u16>,
-    config: RoleSelectionConfig,
-) -> Option<u16> {
-    let Some(best_anchor_id) = best_anchor_id else {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        return None;
-    };
-
-    let Some(current_anchor_id) = state.anchor_path_id else {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        return Some(best_anchor_id);
-    };
-
-    let Some(current_anchor) = scored
-        .iter()
-        .find(|path| path.path.path_id == current_anchor_id && is_role_eligible(path))
-    else {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        return Some(best_anchor_id);
-    };
-
-    if current_anchor_id == best_anchor_id {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        return Some(current_anchor_id);
-    }
-
-    let best_score = score_for(scored, best_anchor_id).unwrap_or(f64::NEG_INFINITY);
-    if best_score - current_anchor.score < config.anchor_switch_score_margin {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        return Some(current_anchor_id);
-    }
-
-    if state.anchor_candidate_path_id == Some(best_anchor_id) {
-        state.anchor_candidate_ticks = state.anchor_candidate_ticks.saturating_add(1);
-    } else {
-        state.anchor_candidate_path_id = Some(best_anchor_id);
-        state.anchor_candidate_ticks = 1;
-    }
-
-    if state.anchor_candidate_ticks >= config.stable_ticks_required {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        Some(best_anchor_id)
-    } else {
-        Some(current_anchor_id)
     }
 }
 
@@ -389,13 +606,13 @@ fn choose_backups(
 
     let weakest_current_score = current
         .iter()
-        .filter_map(|id| score_for(scored, *id))
+        .filter_map(|id| effective_score_for(scored, *id))
         .min_by(f64::total_cmp)
         .unwrap_or(f64::NEG_INFINITY);
     let best_new_score = target
         .iter()
         .filter(|id| !current.contains(id))
-        .filter_map(|id| score_for(scored, *id))
+        .filter_map(|id| effective_score_for(scored, *id))
         .max_by(f64::total_cmp)
         .unwrap_or(f64::NEG_INFINITY);
 
@@ -440,7 +657,14 @@ fn fill_backup_slots(
     current
 }
 
-fn assign_hysteresis_roles(scored: &mut [ScoredPath], anchor_id: Option<u16>, backup_ids: &[u16]) {
+fn assign_hysteresis_roles(
+    scored: &mut [ScoredPath],
+    anchor_id: Option<u16>,
+    backup_ids: &[u16],
+    trial_path_id: Option<u16>,
+    state: &RoleSelectionState,
+    config: RoleSelectionConfig,
+) {
     for scored_path in scored {
         if !is_role_eligible(scored_path) {
             if scored_path.path.role_reason.is_none() {
@@ -449,18 +673,65 @@ fn assign_hysteresis_roles(scored: &mut [ScoredPath], anchor_id: Option<u16>, ba
             continue;
         }
 
-        if Some(scored_path.path.path_id) == anchor_id {
+        let id = scored_path.path.path_id;
+        // Suppression never removes backup duty, so the explanation has to travel with
+        // whatever role the path ends up holding or the operator would never see it.
+        let suppression_note = if state
+            .flap_damping
+            .is_suppressed(id, config.flap.suppress_threshold)
+        {
+            Some(format!(
+                " Suppressed as an anchor candidate (penalty {:.0}, eligible again in ~{}).",
+                state.flap_damping.penalty(id),
+                format_suppression_eta(state.flap_damping.seconds_until_clear(
+                    id,
+                    config.flap.suppress_threshold,
+                    config.flap.half_life_secs,
+                ))
+            ))
+        } else {
+            None
+        };
+
+        if Some(id) == anchor_id {
             scored_path.role = PathRole::Anchor;
             scored_path.path.role_reason =
                 Some("Selected as stable anchor by hysteresis scheduler.".to_string());
-        } else if backup_ids.contains(&scored_path.path.path_id) {
+        } else if Some(id) == trial_path_id {
+            let status = state.trial.as_ref().map(|trial| trial.status(config.trial));
+            scored_path.role = PathRole::Trial;
+            scored_path.path.role_reason = Some(match &status {
+                Some(status) => format!(
+                    "On trial as anchor candidate: {}/{} ticks, {}/{} clean under load.",
+                    status.ticks,
+                    status.required_ticks,
+                    status.success_ticks,
+                    status.required_success_ticks
+                ),
+                None => "On trial as anchor candidate.".to_string(),
+            });
+            scored_path.trial = status;
+        } else if backup_ids.contains(&id) {
             scored_path.role = PathRole::Backup;
-            scored_path.path.role_reason = Some("Selected as stable redundant backup.".to_string());
+            scored_path.path.role_reason = Some(format!(
+                "Selected as stable redundant backup.{}",
+                suppression_note.unwrap_or_default()
+            ));
         } else {
             scored_path.role = PathRole::Probe;
-            scored_path.path.role_reason =
-                Some("Healthy but currently kept as probe/standby.".to_string());
+            scored_path.path.role_reason = Some(format!(
+                "Healthy but currently kept as probe/standby.{}",
+                suppression_note.unwrap_or_default()
+            ));
         }
+    }
+}
+
+fn format_suppression_eta(seconds: u64) -> String {
+    if seconds >= 60 {
+        format!("{}m", seconds.div_ceil(60))
+    } else {
+        format!("{seconds}s")
     }
 }
 
@@ -468,11 +739,11 @@ fn path_id(path: &ScoredPath) -> u16 {
     path.path.path_id
 }
 
-fn score_for(scored: &[ScoredPath], path_id: u16) -> Option<f64> {
+fn effective_score_for(scored: &[ScoredPath], path_id: u16) -> Option<f64> {
     scored
         .iter()
         .find(|path| path.path.path_id == path_id)
-        .map(|path| path.score)
+        .map(|path| path.effective_score)
 }
 
 fn is_role_eligible(path: &ScoredPath) -> bool {
@@ -713,13 +984,14 @@ mod tests {
         for _ in 0..config.stable_ticks_required.saturating_sub(1) {
             let roles = select_path_roles_with_state(
                 &[
-                    path(1, "current", 100.0, 0.0, 0.0),
+                    path(1, "current", 150.0, 0.0, 0.0),
                     path(2, "better", 10.0, 0.0, 0.0),
                     path(3, "backup", 90.0, 0.0, 0.0),
                 ],
                 1,
                 &mut state,
                 config,
+                false,
             );
 
             assert_eq!(
@@ -735,19 +1007,30 @@ mod tests {
 
         let roles = select_path_roles_with_state(
             &[
-                path(1, "current", 100.0, 0.0, 0.0),
+                path(1, "current", 150.0, 0.0, 0.0),
                 path(2, "better", 10.0, 0.0, 0.0),
                 path(3, "backup", 90.0, 0.0, 0.0),
             ],
             1,
             &mut state,
             config,
+            false,
         );
 
+        // Passing hysteresis now buys a trial, not the anchor role.
         assert_eq!(
             roles
                 .iter()
                 .find(|path| path.role == PathRole::Anchor)
+                .unwrap()
+                .path
+                .path_id,
+            1
+        );
+        assert_eq!(
+            roles
+                .iter()
+                .find(|path| path.role == PathRole::Trial)
                 .unwrap()
                 .path
                 .path_id,
@@ -770,6 +1053,7 @@ mod tests {
             1,
             &mut state,
             RoleSelectionConfig::default(),
+            false,
         );
 
         assert_eq!(
@@ -780,6 +1064,478 @@ mod tests {
                 .path
                 .path_id,
             2
+        );
+    }
+
+    #[test]
+    fn trial_role_serialises_as_kebab_case() {
+        assert_eq!(serde_json::to_string(&PathRole::Trial).unwrap(), "\"trial\"");
+    }
+
+    #[test]
+    fn scored_paths_expose_smoothed_and_effective_scores() {
+        let mut state = RoleSelectionState::default();
+        let roles = select_path_roles_with_state(
+            &[path(1, "fiber", 15.0, 0.0, 0.0)],
+            1,
+            &mut state,
+            RoleSelectionConfig::default(),
+            false,
+        );
+
+        let fiber = &roles[0];
+        // First tick seeds the filter, so all three views agree.
+        assert_eq!(fiber.smoothed_score, fiber.score);
+        assert_eq!(fiber.effective_score, fiber.score);
+        assert_eq!(fiber.flap_penalty, 0.0);
+    }
+
+    #[test]
+    fn hard_demoted_path_keeps_its_sentinel_effective_score() {
+        let mut down = path(1, "down", 15.0, 0.0, 0.0);
+        down.interface_up = false;
+        let mut state = RoleSelectionState::default();
+
+        // Build a good history first, then fail the interface: smoothing must not rescue it.
+        for _ in 0..10 {
+            select_path_roles_with_state(
+                &[
+                    path(1, "down", 15.0, 0.0, 0.0),
+                    path(2, "other", 50.0, 0.0, 0.0),
+                ],
+                1,
+                &mut state,
+                RoleSelectionConfig::default(),
+                false,
+            );
+        }
+        let roles = select_path_roles_with_state(
+            &[down, path(2, "other", 50.0, 0.0, 0.0)],
+            1,
+            &mut state,
+            RoleSelectionConfig::default(),
+            false,
+        );
+
+        let failed = roles.iter().find(|p| p.path.path_id == 1).unwrap();
+        assert_eq!(failed.effective_score, -1_000_000.0);
+        assert_eq!(
+            roles
+                .iter()
+                .find(|p| p.role == PathRole::Anchor)
+                .unwrap()
+                .path
+                .path_id,
+            2
+        );
+    }
+
+    fn tick(
+        state: &mut RoleSelectionState,
+        paths: &[PathHealthSnapshot],
+        config: RoleSelectionConfig,
+    ) -> Vec<ScoredPath> {
+        select_path_roles_with_state(paths, 1, state, config, false)
+    }
+
+    fn anchor_of(roles: &[ScoredPath]) -> Option<u16> {
+        roles
+            .iter()
+            .find(|path| path.role == PathRole::Anchor)
+            .map(|path| path.path.path_id)
+    }
+
+    fn trial_of(roles: &[ScoredPath]) -> Option<u16> {
+        roles
+            .iter()
+            .find(|path| path.role == PathRole::Trial)
+            .map(|path| path.path.path_id)
+    }
+
+    /// Fresh state that already holds `anchor_path_id`, so tests exercise *switching*
+    /// rather than the first-tick cold start (which always takes the best path outright).
+    fn state_anchored_on(path_id: u16) -> RoleSelectionState {
+        RoleSelectionState {
+            anchor_path_id: Some(path_id),
+            ..RoleSelectionState::default()
+        }
+    }
+
+    #[test]
+    fn clearing_hysteresis_starts_a_trial_instead_of_switching() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "better", 10.0, 0.0, 0.0),
+        ];
+
+        let mut roles = Vec::new();
+        for _ in 0..config.stable_ticks_required + 1 {
+            roles = tick(&mut state, &paths, config);
+            assert_eq!(anchor_of(&roles), Some(1), "the anchor must not move");
+        }
+
+        assert_eq!(trial_of(&roles), Some(2));
+        assert!(state.trial.is_some());
+    }
+
+    #[test]
+    fn trial_that_stays_clean_under_load_wins_the_anchor() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let mut better = path(2, "better", 10.0, 0.0, 0.0);
+        better.outbound_throughput_bps = 40_000_000;
+        let paths = [path(1, "fiber", 150.0, 0.0, 0.0), better];
+
+        let mut roles = Vec::new();
+        for _ in 0..u32::from(config.stable_ticks_required) + config.trial.ticks + 2 {
+            roles = tick(&mut state, &paths, config);
+        }
+
+        assert_eq!(anchor_of(&roles), Some(2));
+        assert!(state.trial.is_none());
+        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::Promoted));
+    }
+
+    #[test]
+    fn obstructed_candidate_fails_its_trial_and_gets_suppressed() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let anchor = path(1, "fiber", 150.0, 0.0, 0.0);
+        let mut idle_starlink = path(2, "starlink", 10.0, 0.0, 0.0);
+        idle_starlink.outbound_throughput_bps = 0;
+        // Under mirrored load the obstruction shows up: heavy loss and latency. The
+        // throughput figure matters â€” it is what makes the verdict FailedUnderLoad rather
+        // than Inconclusive.
+        let mut loaded_starlink = path(2, "starlink", 400.0, 0.30, 0.10);
+        loaded_starlink.outbound_throughput_bps = 40_000_000;
+
+        // Idle phase: Starlink looks great and earns a trial.
+        let mut roles = Vec::new();
+        for _ in 0..config.stable_ticks_required + 1 {
+            roles = tick(&mut state, &[anchor.clone(), idle_starlink.clone()], config);
+        }
+        assert_eq!(trial_of(&roles), Some(2));
+
+        // Loaded phase: it degrades and the trial aborts.
+        for _ in 0..config.trial.ticks + 1 {
+            roles = tick(&mut state, &[anchor.clone(), loaded_starlink.clone()], config);
+        }
+
+        assert_eq!(anchor_of(&roles), Some(1), "anchor must never have moved");
+        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::FailedUnderLoad));
+        assert!(state
+            .flap_damping
+            .is_suppressed(2, config.flap.suppress_threshold));
+    }
+
+    #[test]
+    fn suppressed_path_cannot_start_another_trial() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        state
+            .flap_damping
+            .add(2, config.flap.penalty_demoted, config.flap.penalty_cap);
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "suppressed", 10.0, 0.0, 0.0),
+        ];
+
+        let mut roles = Vec::new();
+        for _ in 0..u32::from(config.stable_ticks_required) + config.trial.ticks + 5 {
+            roles = tick(&mut state, &paths, config);
+        }
+
+        assert_eq!(anchor_of(&roles), Some(1));
+        assert_eq!(trial_of(&roles), None);
+        assert!(state.trial.is_none());
+    }
+
+    #[test]
+    fn suppressed_path_still_takes_over_when_the_anchor_dies() {
+        // Suppression gates upgrades only. Failover must never be blocked.
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        state
+            .flap_damping
+            .add(2, config.flap.penalty_cap, config.flap.penalty_cap);
+        let mut dead = path(1, "fiber", 150.0, 0.0, 0.0);
+        dead.interface_up = false;
+
+        let roles = tick(
+            &mut state,
+            &[dead, path(2, "suppressed", 10.0, 0.0, 0.0)],
+            config,
+        );
+
+        assert_eq!(anchor_of(&roles), Some(2));
+    }
+
+    #[test]
+    fn losing_the_anchor_role_charges_a_flap_penalty() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let mut dead = path(1, "fiber", 150.0, 0.0, 0.0);
+        dead.interface_up = false;
+
+        tick(&mut state, &[dead, path(2, "other", 10.0, 0.0, 0.0)], config);
+
+        assert_eq!(state.flap_damping.penalty(1), config.flap.penalty_demoted);
+    }
+
+    #[test]
+    fn recovery_mode_promotes_directly_without_a_trial() {
+        // Everything is duplicated during recovery, so a switch is already masked.
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "better", 10.0, 0.0, 0.0),
+        ];
+
+        let mut roles = Vec::new();
+        for _ in 0..config.stable_ticks_required + 1 {
+            roles = select_path_roles_with_state(&paths, 1, &mut state, config, true);
+        }
+
+        assert_eq!(anchor_of(&roles), Some(2));
+        assert_eq!(trial_of(&roles), None);
+    }
+
+    #[test]
+    fn recovery_cancels_an_in_flight_trial_without_penalty() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "better", 10.0, 0.0, 0.0),
+        ];
+        for _ in 0..config.stable_ticks_required + 1 {
+            tick(&mut state, &paths, config);
+        }
+        assert!(state.trial.is_some());
+
+        select_path_roles_with_state(&paths, 1, &mut state, config, true);
+
+        assert!(state.trial.is_none());
+        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::Cancelled));
+        assert_eq!(state.flap_damping.penalty(2), 0.0);
+    }
+
+    #[test]
+    fn trial_spacing_delays_the_next_trial() {
+        let config = RoleSelectionConfig::default();
+        let mut state = RoleSelectionState {
+            ticks_since_trial_end: 0,
+            ..state_anchored_on(1)
+        };
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "better", 10.0, 0.0, 0.0),
+        ];
+
+        for _ in 0..config.stable_ticks_required + 1 {
+            tick(&mut state, &paths, config);
+        }
+        assert!(state.trial.is_none(), "spacing window must block the trial");
+
+        for _ in 0..config.trial.min_interval_ticks {
+            tick(&mut state, &paths, config);
+        }
+        assert!(state.trial.is_some());
+    }
+
+    /// Suppression only blocks *promotion*. The path keeps carrying redundant traffic, so
+    /// the explanation has to ride along with whatever role it ends up holding.
+    #[test]
+    fn suppressed_path_keeps_backup_duty_and_explains_itself() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        state
+            .flap_damping
+            .add(2, config.flap.penalty_demoted, config.flap.penalty_cap);
+
+        let roles = tick(
+            &mut state,
+            &[
+                path(1, "fiber", 150.0, 0.0, 0.0),
+                path(2, "suppressed", 10.0, 0.0, 0.0),
+            ],
+            config,
+        );
+
+        let suppressed = roles.iter().find(|p| p.path.path_id == 2).unwrap();
+        assert_eq!(suppressed.role, PathRole::Backup);
+        let reason = suppressed.path.role_reason.as_deref().unwrap();
+        assert!(reason.contains("Suppressed"), "unexpected reason: {reason}");
+        assert!(reason.contains("eligible again"), "unexpected reason: {reason}");
+    }
+
+    #[test]
+    fn unsuppressed_path_reason_has_no_suppression_note() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+
+        let roles = tick(
+            &mut state,
+            &[
+                path(1, "fiber", 150.0, 0.0, 0.0),
+                path(2, "clean", 10.0, 0.0, 0.0),
+            ],
+            config,
+        );
+
+        let backup = roles.iter().find(|p| p.path.path_id == 2).unwrap();
+        assert_eq!(
+            backup.path.role_reason.as_deref(),
+            Some("Selected as stable redundant backup.")
+        );
+    }
+
+    #[test]
+    fn trial_path_reports_progress_in_its_role_reason() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "better", 10.0, 0.0, 0.0),
+        ];
+        let mut roles = Vec::new();
+        for _ in 0..config.stable_ticks_required + 2 {
+            roles = tick(&mut state, &paths, config);
+        }
+
+        let trial = roles.iter().find(|p| p.role == PathRole::Trial).unwrap();
+        assert!(trial.trial.is_some());
+        let reason = trial.path.role_reason.as_deref().unwrap();
+        assert!(reason.contains("trial"), "unexpected reason: {reason}");
+    }
+
+    /// A loaded fiber line: bufferbloat inflates RTT and jitter, the queue is under
+    /// pressure, and a few packets miss their deadline. This is the anchor.
+    fn loaded_fiber() -> PathHealthSnapshot {
+        let mut fiber = path(1, "globe-fiber", 60.0, 0.0, 0.04);
+        fiber.jitter_ms = Some(35.0);
+        fiber.queue_pressure = 0.35;
+        fiber
+    }
+
+    /// The same dish while it is only passing heartbeats: nothing is loaded, so nothing
+    /// looks wrong. This is the measurement asymmetry the design exists to defeat.
+    fn idle_starlink() -> PathHealthSnapshot {
+        let mut starlink = path(2, "starlink", 12.0, 0.0, 0.0);
+        starlink.jitter_ms = Some(4.0);
+        starlink.outbound_throughput_bps = 0;
+        starlink.inbound_throughput_bps = 0;
+        starlink.raw_inbound_throughput_bps = 0;
+        starlink.throughput_bps = 0;
+        starlink
+    }
+
+    /// The dish carrying mirrored trial traffic while the roof obstruction bites.
+    fn obstructed_starlink() -> PathHealthSnapshot {
+        let mut starlink = path(2, "starlink", 520.0, 0.35, 0.12);
+        starlink.jitter_ms = Some(180.0);
+        starlink.outbound_throughput_bps = 40_000_000;
+        starlink
+    }
+
+    /// The dish carrying mirrored trial traffic with a clear view of the sky.
+    fn clear_loaded_starlink() -> PathHealthSnapshot {
+        let mut starlink = path(2, "starlink", 55.0, 0.005, 0.0);
+        starlink.jitter_ms = Some(20.0);
+        starlink.outbound_throughput_bps = 40_000_000;
+        starlink
+    }
+
+    /// The reported production failure: a stable fiber anchor and a Starlink dish that
+    /// looks pristine while idle and falls apart the moment it carries real traffic.
+    /// Obstruction cycles are shorter than the trial window, so every trial must fail and
+    /// the anchor must never move.
+    #[test]
+    fn obstruction_cycles_never_move_the_anchor() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+
+        // Assert the premise, so a scoring change surfaces here rather than as a
+        // confusing downstream failure.
+        let premise = score_paths(&[loaded_fiber(), idle_starlink()]);
+        let fiber_score = premise.iter().find(|p| p.path.path_id == 1).unwrap().score;
+        let idle_score = premise.iter().find(|p| p.path.path_id == 2).unwrap().score;
+        assert!(
+            idle_score - fiber_score >= config.anchor_switch_score_margin,
+            "fixture premise broken: idle starlink {idle_score} vs loaded fiber \
+             {fiber_score} must differ by at least {}",
+            config.anchor_switch_score_margin
+        );
+
+        let mut anchor_changes = 0u32;
+        let mut previous_anchor = None;
+
+        // 30 minutes of 10-second obstruction cycles. A 20-tick trial therefore always
+        // spans more obstructed ticks than it is allowed to fail.
+        for tick_index in 0..1_800u32 {
+            let obstructed_now = (tick_index / 10) % 2 == 1;
+            // Load only appears on the dish while it is on trial, because that is the
+            // only time the scheduler mirrors traffic onto it.
+            let starlink = match (state.trial.is_some(), obstructed_now) {
+                (true, true) => obstructed_starlink(),
+                (true, false) => clear_loaded_starlink(),
+                (false, _) => idle_starlink(),
+            };
+            let roles = tick(&mut state, &[loaded_fiber(), starlink], config);
+
+            let anchor = anchor_of(&roles);
+            if previous_anchor.is_some() && previous_anchor != anchor {
+                anchor_changes += 1;
+            }
+            previous_anchor = anchor;
+        }
+
+        assert_eq!(previous_anchor, Some(1), "fiber must still hold the anchor");
+        assert_eq!(anchor_changes, 0, "the anchor must never have moved");
+        assert!(
+            state.trial_count >= 2,
+            "the candidate should have been retried, saw {} trials",
+            state.trial_count
+        );
+        // Without damping this would be roughly one trial per obstruction cycle (~90).
+        assert!(
+            state.trial_count <= 12,
+            "flap damping should throttle retries, saw {} trials",
+            state.trial_count
+        );
+    }
+
+    /// The mirror image: a genuinely good path must still be able to win the anchor.
+    #[test]
+    fn a_genuinely_better_path_is_promoted_within_a_bounded_number_of_ticks() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let mut fast = path(2, "new-fiber", 12.0, 0.0, 0.0);
+        fast.outbound_throughput_bps = 40_000_000;
+        let paths = [path(1, "old-dsl", 140.0, 0.0, 0.0), fast];
+
+        let mut promoted_after = None;
+        for tick_index in 0..200u32 {
+            let roles = tick(&mut state, &paths, config);
+            if anchor_of(&roles) == Some(2) {
+                // One-based: this is the count of ticks that ran.
+                promoted_after = Some(tick_index + 1);
+                break;
+            }
+        }
+
+        let promoted_after = promoted_after.expect("a clearly better path must eventually win");
+        let earliest = u32::from(config.stable_ticks_required) + config.trial.ticks;
+        assert!(
+            promoted_after >= earliest,
+            "promoted too eagerly after {promoted_after} ticks, expected at least {earliest}"
+        );
+        assert!(
+            promoted_after <= earliest + 5,
+            "promotion took too long: {promoted_after} ticks"
         );
     }
 }
