@@ -345,6 +345,23 @@ public sealed class XBondPathStatsSnapshot
 
     public double Score { get; init; }
 
+    public double SmoothedScore { get; init; }
+
+    /// <summary>Smoothed score minus an instability penalty; what the client ranks paths on.</summary>
+    public double EffectiveScore { get; init; }
+
+    /// <summary>Decaying distrust after a failed stint or trial as anchor.</summary>
+    public double FlapPenalty { get; init; }
+
+    /// <summary>Threshold the client uses to suppress anchor promotion.</summary>
+    public const double SuppressionThreshold = 500;
+
+    public bool IsSuppressed => FlapPenalty >= SuppressionThreshold;
+
+    public XBondPathTrialStatus? Trial { get; init; }
+
+    public bool IsTrial => string.Equals(Role, "trial", StringComparison.OrdinalIgnoreCase);
+
     public double? RttMs { get; init; }
 
     public double? JitterMs { get; init; }
@@ -443,6 +460,13 @@ public sealed class XBondPathStatsSnapshot
                 return HeartbeatSampleCount > 0
                     ? $"Warming up heartbeat quality ({HeartbeatSampleCount} samples)"
                     : "Warming up heartbeat quality";
+            }
+
+            if (IsTrial)
+            {
+                return Trial is null
+                    ? "Testing as anchor"
+                    : $"Testing as anchor ({Trial.Ticks}/{Trial.RequiredTicks})";
             }
 
             return IsActive ? "Active" : "Standby";

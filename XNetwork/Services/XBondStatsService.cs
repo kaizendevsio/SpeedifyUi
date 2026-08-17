@@ -196,6 +196,8 @@ public sealed class XBondStatsService(
         var activeIds = status.Schedule.DataPathIds
             .Concat(status.Schedule.DuplicatePathIds)
             .Concat(status.Schedule.FecPathIds)
+            // A trial path is carrying mirrored production traffic, so it is active.
+            .Concat(status.Schedule.TrialPathIds)
             .ToHashSet();
         var gatewayByDevice = gatewayRoutes
             .Where(item => !string.IsNullOrWhiteSpace(item.Device) && !string.IsNullOrWhiteSpace(item.Gateway))
@@ -245,6 +247,10 @@ public sealed class XBondStatsService(
                     DuplicateUsefulness = path.DuplicateUsefulness,
                     ThroughputCollapseScore = path.ThroughputCollapseScore,
                     Score = path.Score,
+                    SmoothedScore = path.SmoothedScore,
+                    EffectiveScore = path.EffectiveScore,
+                    FlapPenalty = path.FlapPenalty,
+                    Trial = path.Trial,
                     RttMs = isStaleRtt ? null : path.RttMs,
                     JitterMs = isStaleRtt ? null : path.JitterMs,
                     LossPercent = lossPercent,

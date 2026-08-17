@@ -114,6 +114,32 @@ public class XBondSchedulePlan
 
     [JsonPropertyName("fec_path_ids")]
     public List<int> FecPathIds { get; set; } = new();
+
+    /// <summary>Anchor candidate carrying mirrored traffic during a load trial.</summary>
+    [JsonPropertyName("trial_path_ids")]
+    public List<int> TrialPathIds { get; set; } = new();
+}
+
+/// <summary>Progress of the load test a candidate must pass before taking the anchor role.</summary>
+public class XBondPathTrialStatus
+{
+    [JsonPropertyName("path_id")]
+    public int PathId { get; set; }
+
+    [JsonPropertyName("ticks")]
+    public int Ticks { get; set; }
+
+    [JsonPropertyName("success_ticks")]
+    public int SuccessTicks { get; set; }
+
+    [JsonPropertyName("mirrored_bytes")]
+    public ulong MirroredBytes { get; set; }
+
+    [JsonPropertyName("required_ticks")]
+    public int RequiredTicks { get; set; }
+
+    [JsonPropertyName("required_success_ticks")]
+    public int RequiredSuccessTicks { get; set; }
 }
 
 public class XBondTunnelStatus
@@ -192,6 +218,18 @@ public class XBondPathStatus
 
     [JsonPropertyName("score")]
     public double Score { get; set; }
+
+    [JsonPropertyName("smoothed_score")]
+    public double SmoothedScore { get; set; }
+
+    [JsonPropertyName("effective_score")]
+    public double EffectiveScore { get; set; }
+
+    [JsonPropertyName("flap_penalty")]
+    public double FlapPenalty { get; set; }
+
+    [JsonPropertyName("trial")]
+    public XBondPathTrialStatus? Trial { get; set; }
 
     [JsonPropertyName("rtt_ms")]
     public double? RttMs { get; set; }
