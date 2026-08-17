@@ -64,6 +64,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         var paths = SelectPathRoles(runtime.Paths, settings.MaxActiveBackups);
         var schedule = runtime.Schedule ?? BuildSchedule(mode, paths);
         ApplyRuntimeScheduleRoles(paths, schedule);
+        ApplyAnchorStability(paths, runtime.AnchorStability);
 
         return new XBondStatus
         {
@@ -240,6 +241,38 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         }
     }
 
+    /// <summary>
+    /// Merges the client's parallel anchor-stability array onto the paths. Absent entries
+    /// leave the defaults, so an older client still parses.
+    /// </summary>
+    private static void ApplyAnchorStability(
+        IReadOnlyCollection<XBondPathStatus> paths,
+        IReadOnlyCollection<XBondPathAnchorStatus> anchorStability)
+    {
+        if (anchorStability.Count == 0)
+        {
+            return;
+        }
+
+        var byPathId = anchorStability
+            .GroupBy(entry => entry.PathId)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        foreach (var path in paths)
+        {
+            if (!byPathId.TryGetValue(path.PathId, out var stability))
+            {
+                continue;
+            }
+
+            path.SmoothedScore = stability.SmoothedScore;
+            path.EffectiveScore = stability.EffectiveScore;
+            path.FlapPenalty = stability.FlapPenalty;
+            path.Suppressed = stability.Suppressed;
+            path.Trial = stability.Trial;
+        }
+    }
+
     private static bool IsRealtimeEligible(XBondPathStatus path) =>
         path.InterfaceUp &&
         !path.InCooldown &&
@@ -369,6 +402,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
 
         [JsonPropertyName("paths")]
         public List<XBondPathStatus> Paths { get; set; } = new();
+
+        [JsonPropertyName("anchor_stability")]
+        public List<XBondPathAnchorStatus> AnchorStability { get; set; } = new();
 
         [JsonPropertyName("data_packets_sent")]
         public ulong DataPacketsSent { get; set; }

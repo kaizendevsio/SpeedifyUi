@@ -7516,6 +7516,10 @@ fn write_tunnel_runtime_status(
     tun_packet_pool_state: &TunPacketBufferPoolState,
     receiver_payload_pool: &ReceiverPayloadPool,
 ) -> Result<()> {
+    let anchor_stability = roles
+        .iter()
+        .map(xbond_core::XBondPathAnchorStatus::from)
+        .collect();
     let paths = roles
         .iter()
         .cloned()
@@ -7548,6 +7552,7 @@ fn write_tunnel_runtime_status(
             schedule: Some(schedule.clone()),
             schedule_generation,
             paths,
+            anchor_stability,
             data_packets_sent: counters.data_packets_sent,
             duplicate_packets_sent: counters.duplicate_packets_sent,
             duplicate_packets_dropped: counters.duplicate_packets_dropped,

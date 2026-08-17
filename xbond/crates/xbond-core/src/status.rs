@@ -171,6 +171,39 @@ impl From<ScoredPath> for XBondPathStatus {
     }
 }
 
+/// Role-selection state for one path, reported alongside the runtime status.
+///
+/// This is a separate array rather than extra fields on `PathHealthSnapshot` because that
+/// type is the client-to-server control payload, and these values are derived locally for
+/// the dashboard — the server has no use for them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct XBondPathAnchorStatus {
+    pub path_id: u16,
+    #[serde(default)]
+    pub smoothed_score: f64,
+    #[serde(default)]
+    pub effective_score: f64,
+    #[serde(default)]
+    pub flap_penalty: f64,
+    #[serde(default)]
+    pub suppressed: bool,
+    #[serde(default)]
+    pub trial: Option<AnchorTrialStatus>,
+}
+
+impl From<&ScoredPath> for XBondPathAnchorStatus {
+    fn from(value: &ScoredPath) -> Self {
+        Self {
+            path_id: value.path.path_id,
+            smoothed_score: value.smoothed_score,
+            effective_score: value.effective_score,
+            flap_penalty: value.flap_penalty,
+            suppressed: value.suppressed,
+            trial: value.trial.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathIsolationStatus {
     pub requested: bool,
@@ -695,6 +728,9 @@ pub struct XBondRuntimeStatus {
     pub schedule_generation: u64,
     #[serde(default)]
     pub paths: Vec<crate::health::PathHealthSnapshot>,
+    /// Anchor-selection state per path, parallel to `paths`.
+    #[serde(default)]
+    pub anchor_stability: Vec<XBondPathAnchorStatus>,
     #[serde(default)]
     pub data_packets_sent: u64,
     #[serde(default)]

@@ -120,6 +120,31 @@ public class XBondSchedulePlan
     public List<int> TrialPathIds { get; set; } = new();
 }
 
+/// <summary>
+/// Anchor-selection state for one path, reported by the client in a parallel array because
+/// the per-path health block is also the client-to-server control payload.
+/// </summary>
+public class XBondPathAnchorStatus
+{
+    [JsonPropertyName("path_id")]
+    public int PathId { get; set; }
+
+    [JsonPropertyName("smoothed_score")]
+    public double SmoothedScore { get; set; }
+
+    [JsonPropertyName("effective_score")]
+    public double EffectiveScore { get; set; }
+
+    [JsonPropertyName("flap_penalty")]
+    public double FlapPenalty { get; set; }
+
+    [JsonPropertyName("suppressed")]
+    public bool Suppressed { get; set; }
+
+    [JsonPropertyName("trial")]
+    public XBondPathTrialStatus? Trial { get; set; }
+}
+
 /// <summary>Progress of the load test a candidate must pass before taking the anchor role.</summary>
 public class XBondPathTrialStatus
 {

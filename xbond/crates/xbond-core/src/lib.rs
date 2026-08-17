@@ -51,7 +51,8 @@ pub use session::{
 };
 pub use status::{
     PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondKernelNetworkStatus,
-    XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
+    XBondPacketPoolStatus, XBondPathAnchorStatus, XBondPathStatus, XBondProcessStatus,
+    XBondReorderStatus,
     XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus, XBondSaturationStatus,
     XBondServerHealthStatus, XBondServerHealthTargetStatus, XBondServerIngressReorderStatus,
     XBondServerRecoveryStatus, XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus,

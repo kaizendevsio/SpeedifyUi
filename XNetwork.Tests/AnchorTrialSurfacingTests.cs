@@ -165,27 +165,33 @@ public class AnchorTrialSurfacingTests
           },
           "paths": [
             {
-              "path_id": 1, "name": "fiber", "interface_name": "enx1", "role": "anchor",
-              "score": 800.0, "smoothed_score": 800.0, "effective_score": 795.0,
+              "path_id": 1, "name": "fiber", "interface_name": "enx1",
               "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
               "interface_up": true, "in_cooldown": false
             },
             {
-              "path_id": 2, "name": "starlink", "interface_name": "enx2", "role": "trial",
-              "score": 900.0, "smoothed_score": 890.0, "effective_score": 640.0,
-              "flap_penalty": 612.5,
+              "path_id": 2, "name": "starlink", "interface_name": "enx2",
+              "role_reason": "On trial as anchor candidate: 5/20 ticks, 4/15 clean under load.",
+              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
+              "interface_up": true, "in_cooldown": false
+            },
+            {
+              "path_id": 3, "name": "smart", "interface_name": "enx3",
+              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0,
+              "throughput_bps": 1000, "interface_up": true, "in_cooldown": false
+            }
+          ],
+          "anchor_stability": [
+            { "path_id": 1, "smoothed_score": 800.0, "effective_score": 795.0 },
+            {
+              "path_id": 2, "smoothed_score": 890.0, "effective_score": 640.0,
+              "flap_penalty": 612.5, "suppressed": false,
               "trial": {
                 "path_id": 2, "ticks": 5, "success_ticks": 4, "mirrored_bytes": 9000000,
                 "required_ticks": 20, "required_success_ticks": 15
-              },
-              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
-              "interface_up": true, "in_cooldown": false
+              }
             },
-            {
-              "path_id": 3, "name": "smart", "interface_name": "enx3", "role": "backup",
-              "score": 700.0, "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0,
-              "throughput_bps": 1000, "interface_up": true, "in_cooldown": false
-            }
+            { "path_id": 3, "smoothed_score": 700.0, "effective_score": 700.0 }
           ],
           "data_packets_sent": 0, "duplicate_packets_sent": 0, "duplicate_packets_dropped": 0,
           "data_packets_received": 0, "data_bytes_sent": 0, "data_bytes_received": 0,
