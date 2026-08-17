@@ -43,6 +43,10 @@ flap_penalty_trial_failed = 600.0
 flap_suppress_threshold = 500.0
 flap_penalty_cap = 4000.0
 flap_half_life_secs = 300
+# Grace window for a hard-demoted anchor to recover before its penalty becomes final. A
+# loaded line can saturate its queue for a single second; without this it would be exiled
+# for a half-life and traffic would sit on a worse path.
+flap_transient_grace_ticks = 5
 trial_enabled = true
 trial_ticks = 20
 trial_success_ticks = 15

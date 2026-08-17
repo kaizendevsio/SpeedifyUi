@@ -112,14 +112,104 @@ public class AnchorTrialSurfacingTests
         Assert.Equal("Testing as anchor (5/20)", path.StateText);
     }
 
+    /// <summary>
+    /// Suppression is reported by the client, not recomputed here against a duplicated
+    /// threshold: <c>flap_suppress_threshold</c> is operator-configurable, so a hardcoded
+    /// copy would drift the moment anyone tuned it.
+    /// </summary>
     [Fact]
-    public void SuppressedPathIsFlaggedFromItsFlapPenalty()
+    public void SuppressionIsTakenFromTheClientNotRecomputed()
     {
-        var suppressed = new XBondPathStatsSnapshot { InterfaceUp = true, FlapPenalty = 900 };
-        var trusted = new XBondPathStatsSnapshot { InterfaceUp = true, FlapPenalty = 100 };
+        const string json = """
+        {
+          "path_id": 2, "name": "starlink", "role": "backup", "score": 700.0,
+          "flap_penalty": 120.0, "suppressed": true,
+          "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 0,
+          "interface_up": true, "in_cooldown": false
+        }
+        """;
 
-        Assert.True(suppressed.IsSuppressed);
-        Assert.False(trusted.IsSuppressed);
+        var path = JsonSerializer.Deserialize<XBondPathStatus>(json);
+
+        Assert.NotNull(path);
+        // A low penalty with suppressed=true would be impossible under a hardcoded 500
+        // threshold, which is exactly why the flag has to come from the client.
+        Assert.True(path!.Suppressed);
+        Assert.Equal(120.0, path.FlapPenalty);
+    }
+
+    /// <summary>
+    /// Goes through <see cref="XBondStatusService.ParseRuntimeStatusJson"/> rather than
+    /// calling <c>FromStatus</c> directly. The direct call bypasses the role/field
+    /// rewriting that the real pipeline performs, which is how a trial path silently
+    /// arrived at the dashboard labelled "probe" with every new field zeroed.
+    /// </summary>
+    [Fact]
+    public void TrialSurvivesTheFullRuntimeStatusPipeline()
+    {
+        const string json = """
+        {
+          "enabled": true,
+          "running": true,
+          "mode": "anchor-duplicate-1",
+          "redundancy_policy": "balanced",
+          "server_addr": "1.2.3.4:8444",
+          "anchor_path_id": 1,
+          "schedule": {
+            "mode": "anchor-duplicate-1",
+            "anchor_path_id": 1,
+            "data_path_ids": [1],
+            "duplicate_path_ids": [3],
+            "fec_path_ids": [],
+            "trial_path_ids": [2]
+          },
+          "paths": [
+            {
+              "path_id": 1, "name": "fiber", "interface_name": "enx1", "role": "anchor",
+              "score": 800.0, "smoothed_score": 800.0, "effective_score": 795.0,
+              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
+              "interface_up": true, "in_cooldown": false
+            },
+            {
+              "path_id": 2, "name": "starlink", "interface_name": "enx2", "role": "trial",
+              "score": 900.0, "smoothed_score": 890.0, "effective_score": 640.0,
+              "flap_penalty": 612.5,
+              "trial": {
+                "path_id": 2, "ticks": 5, "success_ticks": 4, "mirrored_bytes": 9000000,
+                "required_ticks": 20, "required_success_ticks": 15
+              },
+              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
+              "interface_up": true, "in_cooldown": false
+            },
+            {
+              "path_id": 3, "name": "smart", "interface_name": "enx3", "role": "backup",
+              "score": 700.0, "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0,
+              "throughput_bps": 1000, "interface_up": true, "in_cooldown": false
+            }
+          ],
+          "data_packets_sent": 0, "duplicate_packets_sent": 0, "duplicate_packets_dropped": 0,
+          "data_packets_received": 0, "data_bytes_sent": 0, "data_bytes_received": 0,
+          "outbound_throughput_bps": 0, "inbound_throughput_bps": 0,
+          "fec_packets_sent": 0, "fec_packets_recovered": 0, "fec_packets_skipped": 0,
+          "late_packets_dropped": 0, "message": ""
+        }
+        """;
+
+        var status = XBondStatusService.ParseRuntimeStatusJson(
+            json,
+            new XBondSettings(),
+            DateTime.UtcNow);
+
+        var trial = status.Paths.Single(path => path.PathId == 2);
+        Assert.Equal("trial", trial.Role);
+        Assert.Equal(640.0, trial.EffectiveScore);
+        Assert.Equal(612.5, trial.FlapPenalty);
+        Assert.NotNull(trial.Trial);
+        Assert.Equal(5, trial.Trial!.Ticks);
+
+        // The real backup must keep its own role rather than being displaced by the trial.
+        Assert.Equal("backup", status.Paths.Single(path => path.PathId == 3).Role);
+        Assert.Equal("anchor", status.Paths.Single(path => path.PathId == 1).Role);
     }
 
     [Fact]

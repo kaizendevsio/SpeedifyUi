@@ -2263,6 +2263,62 @@ fn replace_path_interface(
     Ok(changed)
 }
 
+/// Remembers enough of the previous tick to log anchor-trial transitions exactly once.
+/// Without this there is no way to tell "no trial ever ran" from "trials ran and every one
+/// aborted" on a live router, which is precisely the question a rollout has to answer.
+struct AnchorTrialObserver {
+    trial_count: u64,
+    trial_active: bool,
+}
+
+impl AnchorTrialObserver {
+    fn new(state: &RoleSelectionState) -> Self {
+        Self {
+            trial_count: state.trial_count,
+            trial_active: state.trial.is_some(),
+        }
+    }
+}
+
+fn report_anchor_trial_transitions(
+    state: &RoleSelectionState,
+    observer: &mut AnchorTrialObserver,
+    json_events: bool,
+) {
+    let trial_active = state.trial.is_some();
+    let started = state.trial_count > observer.trial_count;
+    let ended = observer.trial_active && !trial_active;
+
+    if json_events && started {
+        if let Some(trial) = state.trial.as_ref() {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "event": "anchor-trial-started",
+                    "path_id": trial.path_id,
+                    "anchor_path_id": state.anchor_path_id,
+                    "trial_count": state.trial_count,
+                })
+            );
+        }
+    }
+
+    if json_events && ended {
+        println!(
+            "{}",
+            serde_json::json!({
+                "event": "anchor-trial-finished",
+                "outcome": state.last_trial_outcome,
+                "anchor_path_id": state.anchor_path_id,
+                "trial_count": state.trial_count,
+            })
+        );
+    }
+
+    observer.trial_count = state.trial_count;
+    observer.trial_active = trial_active;
+}
+
 fn effective_mode_and_policy(
     config: &ClientConfig,
     active_override: &mut Option<ActiveScheduleOverride>,
@@ -2906,6 +2962,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         current_schedule_generation,
         synchronization_started_at,
     );
+    let mut anchor_trial_observer = AnchorTrialObserver::new(&role_state);
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
     let mut path_heartbeat_tick = time::interval(path_heartbeat_interval(&config));
     path_heartbeat_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -3103,6 +3160,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut role_state,
                     role_config,
                     recovery_status.active,
+                );
+                report_anchor_trial_transitions(
+                    &role_state,
+                    &mut anchor_trial_observer,
+                    options.json_events,
                 );
                 (effective_mode, effective_policy) =
                     effective_mode_and_policy(&config, &mut active_override);

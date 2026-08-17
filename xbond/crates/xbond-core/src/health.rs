@@ -189,6 +189,10 @@ pub struct ScoredPath {
     pub effective_score: f64,
     #[serde(default)]
     pub flap_penalty: f64,
+    /// Whether the penalty currently bars this path from anchor promotion. Published
+    /// rather than derived downstream, because the threshold is operator-configurable.
+    #[serde(default)]
+    pub suppressed: bool,
     /// Present only on the path currently under trial.
     #[serde(default)]
     pub trial: Option<AnchorTrialStatus>,
@@ -222,6 +226,10 @@ pub struct RoleSelectionState {
     pub ticks_since_trial_end: u32,
     #[serde(default)]
     pub trial_count: u64,
+    /// An ex-anchor whose hard-demotion penalty is still refundable: `(path_id, amount,
+    /// ticks_remaining)`. Cleared when the path recovers (refund) or the window expires.
+    #[serde(default)]
+    pub demotion_probation: Option<(u16, f64, u32)>,
 }
 
 impl Default for RoleSelectionState {
@@ -241,6 +249,7 @@ impl Default for RoleSelectionState {
             // Start "long since" so the first legitimate upgrade is not delayed.
             ticks_since_trial_end: u32::MAX,
             trial_count: 0,
+            demotion_probation: None,
         }
     }
 }
@@ -285,13 +294,24 @@ pub fn select_path_roles_with_state(
     state.flap_damping.decay(config.flap.half_life_secs);
     state.flap_damping.retain_paths(&live_ids);
     apply_score_smoothing(&mut scored, state, config, &live_ids);
+    settle_demotion_probation(&scored, state);
 
     let previous_anchor = state.anchor_path_id;
     let previous_backups = state.backup_path_ids.clone();
 
     let anchor_id = resolve_anchor(&scored, state, config, recovery_active);
-    let backup_ids = choose_backups(&scored, state, anchor_id, max_backups, config);
     let trial_path_id = state.trial.as_ref().map(|trial| trial.path_id);
+    // The trial is an extra mirror lane, not a backup slot. Excluding it here keeps a
+    // trusted backup carrying redundancy for the whole trial window; otherwise Balanced
+    // would move its interactive-packet protection onto the path under suspicion.
+    let backup_ids = choose_backups(
+        &scored,
+        state,
+        anchor_id,
+        trial_path_id,
+        max_backups,
+        config,
+    );
 
     assign_hysteresis_roles(
         &mut scored,
@@ -311,6 +331,19 @@ pub fn select_path_roles_with_state(
                 config.flap.penalty_demoted,
                 config.flap.penalty_cap,
             );
+            // A path that hard-failed gets a refundable window: a one-tick queue
+            // saturation on an otherwise good line must not strand traffic elsewhere for
+            // a half-life. A path displaced while still healthy lost fairly to a
+            // trial-proven rival, so that penalty is final immediately.
+            let outgoing_failed = scored
+                .iter()
+                .find(|path| path.path.path_id == outgoing)
+                .is_none_or(|path| !is_role_eligible(path));
+            state.demotion_probation = outgoing_failed.then_some((
+                outgoing,
+                config.flap.penalty_demoted,
+                config.flap.transient_grace_ticks,
+            ));
         }
     }
     if previous_anchor != anchor_id || previous_backups != backup_ids {
@@ -335,17 +368,27 @@ fn apply_score_smoothing(
         .retain(|path_id, _| live_ids.contains(path_id));
 
     for scored_path in scored.iter_mut() {
+        let eligible = scored_path.path.is_realtime_eligible();
         let smoothing = state.smoothing.entry(scored_path.path.path_id).or_default();
-        smoothing.observe(scored_path.score, config.smoothing.alpha);
+        // Never feed the -1_000_000 hard-demotion sentinel into the filter. It is a flag,
+        // not a measurement: one ineligible tick would drive `smoothed` to about -199k and
+        // `deviation` to about 200k, leaving a fully recovered path unpromotable for tens
+        // of ticks against a 200-point margin.
+        if eligible {
+            smoothing.observe(scored_path.score, config.smoothing.alpha);
+        }
         scored_path.smoothed_score = smoothing.smoothed;
-        // A hard-demoted path keeps its sentinel score: a good history must never let a
-        // dead interface outrank a live one.
-        scored_path.effective_score = if scored_path.path.is_realtime_eligible() {
+        // A hard-demoted path still reports the sentinel, so a good history can never let
+        // a dead interface outrank a live one.
+        scored_path.effective_score = if eligible {
             smoothing.effective_score(config.smoothing.variance_penalty_weight)
         } else {
             scored_path.score
         };
         scored_path.flap_penalty = state.flap_damping.penalty(scored_path.path.path_id);
+        scored_path.suppressed = state
+            .flap_damping
+            .is_suppressed(scored_path.path.path_id, config.flap.suppress_threshold);
     }
 
     scored.sort_by(|a, b| b.effective_score.total_cmp(&a.effective_score));
@@ -461,8 +504,17 @@ fn advance_trial(
         eligible: trial_path.is_some_and(is_role_eligible),
         // Raw scores, because both paths are carrying the same mirrored load right now.
         kept_up_with_anchor: trial_path.is_some_and(|path| path.score >= current_anchor.score),
+        // Both directions count: the server mirrors return traffic onto the trial path
+        // from the same schedule, and on an asymmetric consumer link the download side is
+        // most of the payload. Counting only the upload left every verdict Inconclusive,
+        // so no penalty was charged and a bad candidate was retried forever.
         mirrored_bytes_this_tick: trial_path
-            .map(|path| path.path.outbound_throughput_bps / 8)
+            .map(|path| {
+                path.path
+                    .outbound_throughput_bps
+                    .saturating_add(path.path.duplicate_inbound_throughput_bps)
+                    / 8
+            })
             .unwrap_or_default(),
     };
 
@@ -491,6 +543,29 @@ fn advance_trial(
             current_anchor_id
         }
     }
+}
+
+/// Resolves a refundable anchor-loss penalty: refund if the path came back inside the
+/// grace window, otherwise let the penalty stand once the window closes.
+fn settle_demotion_probation(scored: &[ScoredPath], state: &mut RoleSelectionState) {
+    let Some((path_id, amount, ticks_remaining)) = state.demotion_probation else {
+        return;
+    };
+
+    let recovered = scored
+        .iter()
+        .find(|path| path.path.path_id == path_id)
+        .is_some_and(is_role_eligible);
+    if recovered {
+        state.flap_damping.forgive(path_id, amount);
+        state.demotion_probation = None;
+        return;
+    }
+
+    state.demotion_probation = match ticks_remaining.checked_sub(1) {
+        Some(0) | None => None,
+        Some(remaining) => Some((path_id, amount, remaining)),
+    };
 }
 
 fn end_trial(state: &mut RoleSelectionState, outcome: TrialOutcome) {
@@ -524,6 +599,7 @@ fn score_paths(paths: &[PathHealthSnapshot]) -> Vec<ScoredPath> {
                 smoothed_score: score,
                 effective_score: score,
                 flap_penalty: 0.0,
+                suppressed: false,
                 trial: None,
                 role,
             }
@@ -565,6 +641,7 @@ fn choose_backups(
     scored: &[ScoredPath],
     state: &mut RoleSelectionState,
     anchor_id: Option<u16>,
+    trial_path_id: Option<u16>,
     max_backups: usize,
     config: RoleSelectionConfig,
 ) -> Vec<u16> {
@@ -574,9 +651,11 @@ fn choose_backups(
         return Vec::new();
     }
 
+    let excluded = |id: u16| Some(id) == anchor_id || Some(id) == trial_path_id;
+
     let target = scored
         .iter()
-        .filter(|path| is_role_eligible(path) && Some(path.path.path_id) != anchor_id)
+        .filter(|path| is_role_eligible(path) && !excluded(path.path.path_id))
         .take(max_backups)
         .map(path_id)
         .collect::<Vec<_>>();
@@ -586,7 +665,7 @@ fn choose_backups(
         .iter()
         .copied()
         .filter(|id| {
-            Some(*id) != anchor_id
+            !excluded(*id)
                 && scored
                     .iter()
                     .any(|path| path.path.path_id == *id && is_role_eligible(path))
@@ -597,7 +676,7 @@ fn choose_backups(
     if current.len() < max_backups {
         state.backup_candidate_path_ids.clear();
         state.backup_candidate_ticks = 0;
-        return fill_backup_slots(scored, anchor_id, current, max_backups);
+        return fill_backup_slots(scored, anchor_id, trial_path_id, current, max_backups);
     }
 
     if current == target {
@@ -643,6 +722,7 @@ fn choose_backups(
 fn fill_backup_slots(
     scored: &[ScoredPath],
     anchor_id: Option<u16>,
+    trial_path_id: Option<u16>,
     mut current: Vec<u16>,
     max_backups: usize,
 ) -> Vec<u16> {
@@ -651,7 +731,11 @@ fn fill_backup_slots(
         if current.len() >= max_backups {
             break;
         }
-        if Some(id) == anchor_id || current.contains(&id) || !is_role_eligible(path) {
+        if Some(id) == anchor_id
+            || Some(id) == trial_path_id
+            || current.contains(&id)
+            || !is_role_eligible(path)
+        {
             continue;
         }
         current.push(id);
@@ -1242,6 +1326,36 @@ mod tests {
             .is_suppressed(2, config.flap.suppress_threshold));
     }
 
+    /// The trial adds a mirror lane; it must not spend the `max_active_backups` budget.
+    /// Otherwise Balanced moves its interactive-packet redundancy off a trusted backup and
+    /// onto the path currently under suspicion, for the whole trial window.
+    #[test]
+    fn a_trial_does_not_consume_the_backup_budget() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let paths = [
+            path(1, "fiber", 150.0, 0.0, 0.0),
+            path(2, "candidate", 10.0, 0.0, 0.0),
+            path(3, "trusted-backup", 90.0, 0.0, 0.0),
+        ];
+
+        let mut roles = Vec::new();
+        for _ in 0..config.stable_ticks_required + 1 {
+            roles = select_path_roles_with_state(&paths, 1, &mut state, config, false);
+        }
+
+        assert_eq!(trial_of(&roles), Some(2));
+        assert_eq!(
+            roles
+                .iter()
+                .find(|role| role.role == PathRole::Backup)
+                .map(|role| role.path.path_id),
+            Some(3),
+            "the trusted backup must keep carrying redundancy"
+        );
+        assert_eq!(state.backup_path_ids, vec![3]);
+    }
+
     #[test]
     fn suppressed_path_cannot_start_another_trial() {
         let config = RoleSelectionConfig::default();
@@ -1282,6 +1396,76 @@ mod tests {
         );
 
         assert_eq!(anchor_of(&roles), Some(2));
+    }
+
+    /// A loaded line can hit `queue_pressure >= 1.0` for a single second, which is a hard
+    /// demotion. Charging the full anchor-loss penalty for that would banish a perfectly
+    /// good line for minutes and leave traffic on a visibly worse path — a worse outcome
+    /// than the flapping this work exists to fix. The penalty is refunded when the path
+    /// recovers inside the grace window.
+    #[test]
+    fn a_single_tick_anchor_blip_is_forgiven() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let healthy_fiber = path(1, "fiber", 20.0, 0.0, 0.0);
+        let slow_cell = path(2, "cell", 200.0, 0.0, 0.0);
+        let mut blipped_fiber = healthy_fiber.clone();
+        blipped_fiber.queue_pressure = 1.0;
+
+        tick(&mut state, &[healthy_fiber.clone(), slow_cell.clone()], config);
+        let roles = tick(&mut state, &[blipped_fiber, slow_cell.clone()], config);
+        assert_eq!(anchor_of(&roles), Some(2), "the blip must fail over");
+        assert!(state.flap_damping.penalty(1) > 0.0, "the blip is charged up front");
+
+        // The line recovers on the very next tick.
+        let roles = tick(&mut state, &[healthy_fiber.clone(), slow_cell.clone()], config);
+
+        assert_eq!(
+            state.flap_damping.penalty(1),
+            0.0,
+            "a recovered transient must be refunded"
+        );
+        assert!(!state
+            .flap_damping
+            .is_suppressed(1, config.flap.suppress_threshold));
+        assert_eq!(anchor_of(&roles), Some(2), "failback still goes through hysteresis");
+
+        // And it reclaims the anchor within the normal candidate + trial budget rather
+        // than waiting out a 300-second half-life.
+        let mut reclaimed_after = None;
+        for index in 0..120u32 {
+            let roles = tick(&mut state, &[healthy_fiber.clone(), slow_cell.clone()], config);
+            if anchor_of(&roles) == Some(1) {
+                reclaimed_after = Some(index + 1);
+                break;
+            }
+        }
+        let reclaimed_after = reclaimed_after.expect("the good line must reclaim the anchor");
+        assert!(
+            reclaimed_after <= u32::from(config.stable_ticks_required) + config.trial.ticks + 5,
+            "failback took {reclaimed_after} ticks"
+        );
+    }
+
+    /// A path that hard-fails and stays failed keeps its penalty, so a genuinely bad
+    /// anchor is still distrusted.
+    #[test]
+    fn a_sustained_anchor_failure_keeps_its_penalty() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let mut dead = path(1, "fiber", 20.0, 0.0, 0.0);
+        dead.interface_up = false;
+        let cell = path(2, "cell", 200.0, 0.0, 0.0);
+
+        for _ in 0..config.flap.transient_grace_ticks + 3 {
+            tick(&mut state, &[dead.clone(), cell.clone()], config);
+        }
+
+        assert!(
+            state.flap_damping.penalty(1) >= config.flap.suppress_threshold,
+            "sustained failure must stay suppressed, saw {}",
+            state.flap_damping.penalty(1)
+        );
     }
 
     #[test]
@@ -1453,10 +1637,15 @@ mod tests {
     }
 
     /// The dish carrying mirrored trial traffic while the roof obstruction bites.
+    ///
+    /// The throughput split is deliberately asymmetric — 2 Mbps up against 38 Mbps of
+    /// mirrored download — because that is what a real consumer link looks like, and
+    /// because counting only the upload side made flap damping silently inert.
     fn obstructed_starlink() -> PathHealthSnapshot {
         let mut starlink = path(2, "starlink", 520.0, 0.35, 0.12);
         starlink.jitter_ms = Some(180.0);
-        starlink.outbound_throughput_bps = 40_000_000;
+        starlink.outbound_throughput_bps = 2_000_000;
+        starlink.duplicate_inbound_throughput_bps = 38_000_000;
         starlink
     }
 
@@ -1464,8 +1653,33 @@ mod tests {
     fn clear_loaded_starlink() -> PathHealthSnapshot {
         let mut starlink = path(2, "starlink", 55.0, 0.005, 0.0);
         starlink.jitter_ms = Some(20.0);
-        starlink.outbound_throughput_bps = 40_000_000;
+        starlink.outbound_throughput_bps = 2_000_000;
+        starlink.duplicate_inbound_throughput_bps = 38_000_000;
         starlink
+    }
+
+    /// A download-heavy trial must still reach a verdict. Counting only the upload side
+    /// left every failure `Inconclusive`, so no penalty was ever charged and the candidate
+    /// was retried forever.
+    #[test]
+    fn download_heavy_trial_still_charges_a_flap_penalty() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let anchor = loaded_fiber();
+
+        for _ in 0..config.stable_ticks_required + 1 {
+            tick(&mut state, &[anchor.clone(), idle_starlink()], config);
+        }
+        assert!(state.trial.is_some(), "a trial must have started");
+
+        for _ in 0..config.trial.ticks + 1 {
+            tick(&mut state, &[anchor.clone(), obstructed_starlink()], config);
+        }
+
+        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::FailedUnderLoad));
+        assert!(state
+            .flap_damping
+            .is_suppressed(2, config.flap.suppress_threshold));
     }
 
     /// The reported production failure: a stable fiber anchor and a Starlink dish that

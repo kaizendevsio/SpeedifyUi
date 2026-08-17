@@ -29,7 +29,9 @@ public static class AppChangelog
                 "Added a trial period: a candidate adapter now carries mirrored traffic and must stay clean before it becomes the main path.",
                 "Adapters that fail as the main path are now distrusted for several minutes instead of seconds.",
                 "Kept instant failover: if the main adapter dies, uLink still switches immediately.",
-                "Showed a Trial badge and a plain-language reason for adapters under test or on cooldown."
+                "Forgave a one-second hiccup on the main adapter instead of sidelining it for minutes.",
+                "Showed a Trial badge and a plain-language reason for adapters under test or on cooldown.",
+                "Kept a trusted backup carrying redundancy while another adapter is being tested."
             ]
         },
         new ChangelogEntry

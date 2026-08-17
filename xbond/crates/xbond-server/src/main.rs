@@ -1,4 +1,4 @@
-﻿use anyhow::{Context, Result};
+use anyhow::{Context, Result};
 use clap::{ArgAction, Parser};
 use serde::Serialize;
 use socket2::{Domain, Protocol, Socket, Type};

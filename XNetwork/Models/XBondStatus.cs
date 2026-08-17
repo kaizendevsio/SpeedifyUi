@@ -228,6 +228,10 @@ public class XBondPathStatus
     [JsonPropertyName("flap_penalty")]
     public double FlapPenalty { get; set; }
 
+    /// <summary>Client-computed, because the suppression threshold is operator-configurable.</summary>
+    [JsonPropertyName("suppressed")]
+    public bool Suppressed { get; set; }
+
     [JsonPropertyName("trial")]
     public XBondPathTrialStatus? Trial { get; set; }
 

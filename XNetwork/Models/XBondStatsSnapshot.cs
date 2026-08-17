@@ -353,10 +353,12 @@ public sealed class XBondPathStatsSnapshot
     /// <summary>Decaying distrust after a failed stint or trial as anchor.</summary>
     public double FlapPenalty { get; init; }
 
-    /// <summary>Threshold the client uses to suppress anchor promotion.</summary>
-    public const double SuppressionThreshold = 500;
-
-    public bool IsSuppressed => FlapPenalty >= SuppressionThreshold;
+    /// <summary>
+    /// Whether the penalty currently bars this path from becoming the anchor. Reported by
+    /// the client rather than compared against a threshold here, because the threshold is
+    /// operator-configurable and duplicating it would silently drift.
+    /// </summary>
+    public bool IsSuppressed { get; init; }
 
     public XBondPathTrialStatus? Trial { get; init; }
 

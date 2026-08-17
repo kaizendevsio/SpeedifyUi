@@ -58,6 +58,8 @@ pub struct XBondPathStatus {
     #[serde(default)]
     pub flap_penalty: f64,
     #[serde(default)]
+    pub suppressed: bool,
+    #[serde(default)]
     pub trial: Option<AnchorTrialStatus>,
     pub rtt_ms: Option<f64>,
     pub jitter_ms: Option<f64>,
@@ -131,6 +133,7 @@ impl From<ScoredPath> for XBondPathStatus {
             smoothed_score: value.smoothed_score,
             effective_score: value.effective_score,
             flap_penalty: value.flap_penalty,
+            suppressed: value.suppressed,
             trial: value.trial,
             rtt_ms: value.path.rtt_ms,
             jitter_ms: value.path.jitter_ms,

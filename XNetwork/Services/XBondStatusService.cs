@@ -195,7 +195,8 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         var hasSchedule = schedule.AnchorPathId.HasValue ||
                           schedule.DataPathIds.Count > 0 ||
                           schedule.DuplicatePathIds.Count > 0 ||
-                          schedule.FecPathIds.Count > 0;
+                          schedule.FecPathIds.Count > 0 ||
+                          schedule.TrialPathIds.Count > 0;
         if (!hasSchedule)
         {
             return;
@@ -204,6 +205,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
         var activeBackupIds = schedule.DuplicatePathIds
             .Concat(schedule.FecPathIds)
             .ToHashSet();
+        var trialIds = schedule.TrialPathIds.ToHashSet();
 
         foreach (var path in paths)
         {
@@ -218,6 +220,14 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             else if (schedule.AnchorPathId == path.PathId)
             {
                 path.Role = "anchor";
+            }
+            // Checked before backup: a path under trial is carrying mirrored traffic to
+            // earn the anchor role, which is what the operator needs to see. Without this
+            // the client's "trial" role was silently rewritten to "probe" here and every
+            // trial affordance on the dashboard became unreachable.
+            else if (trialIds.Contains(path.PathId))
+            {
+                path.Role = "trial";
             }
             else if (activeBackupIds.Contains(path.PathId))
             {
@@ -269,6 +279,11 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             PathIsolation = path.PathIsolation,
             Role = path.Role,
             Score = path.Score,
+            SmoothedScore = path.SmoothedScore,
+            EffectiveScore = path.EffectiveScore,
+            FlapPenalty = path.FlapPenalty,
+            Suppressed = path.Suppressed,
+            Trial = path.Trial,
             RttMs = path.RttMs,
             JitterMs = path.JitterMs,
             LossRate = path.LossRate,

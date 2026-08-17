@@ -682,25 +682,32 @@ pub fn build_transmission_plan_for_packet(
     paths: &[PathHealthSnapshot],
     policy_config: RedundancyPolicyConfig,
 ) -> Vec<ScheduledTransmission> {
+    // Every branch below plans from a schedule whose trial list has been filtered, so a
+    // trial path that just lost carrier is never handed packets regardless of policy.
+    let filtered = SchedulePlan {
+        trial_path_ids: healthy_trial_path_ids(schedule, paths),
+        ..schedule.clone()
+    };
+
     if matches!(
         policy,
         RedundancyPolicy::Reliable | RedundancyPolicy::Diagnostic
-    ) || matches!(schedule.mode, ScheduleMode::FullDuplicateDebug)
+    ) || matches!(filtered.mode, ScheduleMode::FullDuplicateDebug)
     {
-        return build_transmission_plan(schedule);
+        return build_transmission_plan(&filtered);
     }
 
-    if matches!(schedule.mode, ScheduleMode::AnchorOnly) {
-        return build_transmission_plan(schedule);
+    if matches!(filtered.mode, ScheduleMode::AnchorOnly) {
+        return build_transmission_plan(&filtered);
     }
 
     let mut plan = SchedulePlan {
-        mode: schedule.mode,
-        anchor_path_id: schedule.anchor_path_id,
-        data_path_ids: schedule.data_path_ids.clone(),
+        mode: filtered.mode,
+        anchor_path_id: filtered.anchor_path_id,
+        data_path_ids: filtered.data_path_ids.clone(),
         duplicate_path_ids: Vec::new(),
         fec_path_ids: Vec::new(),
-        trial_path_ids: healthy_trial_path_ids(schedule, paths),
+        trial_path_ids: filtered.trial_path_ids.clone(),
     };
 
     let anchor_loss = schedule
@@ -802,10 +809,11 @@ mod tests {
         assert_eq!(plan.anchor_path_id, Some(1));
         assert_eq!(plan.data_path_ids, vec![1]);
         assert_eq!(plan.trial_path_ids, vec![2]);
-        assert!(
-            plan.duplicate_path_ids.is_empty(),
-            "a trial path is not a backup"
-        );
+        // Only path 2 exists besides the anchor here, so there is nothing left to be a
+        // backup. Role selection is what guarantees a trial never spends the backup budget
+        // (see `a_trial_does_not_consume_the_backup_budget`); `build_schedule` just
+        // transcribes whatever roles it is handed.
+        assert!(plan.duplicate_path_ids.is_empty());
     }
 
     #[test]
@@ -913,6 +921,51 @@ mod tests {
         assert!(transmissions
             .iter()
             .all(|transmission| transmission.path_id != 3));
+    }
+
+    #[test]
+    fn reliable_policy_also_skips_a_down_trial_path() {
+        let mut trial_path = path(3, 30.0, 0.0);
+        trial_path.interface_up = false;
+        let health = vec![path(1, 20.0, 0.0), path(2, 60.0, 0.0), trial_path];
+
+        for policy in [
+            RedundancyPolicy::Reliable,
+            RedundancyPolicy::Diagnostic,
+            RedundancyPolicy::Balanced,
+            RedundancyPolicy::Fast,
+        ] {
+            let transmissions = build_transmission_plan_for_packet(
+                &trial_schedule(),
+                policy,
+                1_200,
+                &health,
+                RedundancyPolicyConfig::default(),
+            );
+
+            assert!(
+                transmissions
+                    .iter()
+                    .all(|transmission| transmission.path_id != 3),
+                "{policy:?} mirrored onto a down trial path"
+            );
+        }
+    }
+
+    #[test]
+    fn reliable_policy_mirrors_a_healthy_trial_path() {
+        let health = vec![path(1, 20.0, 0.0), path(2, 60.0, 0.0), path(3, 30.0, 0.0)];
+
+        let transmissions = build_transmission_plan_for_packet(
+            &trial_schedule(),
+            RedundancyPolicy::Reliable,
+            1_200,
+            &health,
+            RedundancyPolicyConfig::default(),
+        );
+
+        assert!(transmissions.iter().any(|transmission| transmission.path_id == 3
+            && transmission.packet_kind == PacketKind::Duplicate));
     }
 
     #[test]

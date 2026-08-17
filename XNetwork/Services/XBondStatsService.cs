@@ -250,6 +250,7 @@ public sealed class XBondStatsService(
                     SmoothedScore = path.SmoothedScore,
                     EffectiveScore = path.EffectiveScore,
                     FlapPenalty = path.FlapPenalty,
+                    IsSuppressed = path.Suppressed,
                     Trial = path.Trial,
                     RttMs = isStaleRtt ? null : path.RttMs,
                     JitterMs = isStaleRtt ? null : path.JitterMs,

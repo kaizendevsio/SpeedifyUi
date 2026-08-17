@@ -68,6 +68,10 @@ pub struct FlapDampingConfig {
     pub penalty_cap: f64,
     /// Exponential decay half-life, in scheduler ticks (one tick per second).
     pub half_life_secs: u64,
+    /// How long a hard-demoted ex-anchor has to recover before its penalty becomes final.
+    /// A loaded line can saturate its queue for a single second; banishing it for a
+    /// half-life over that would strand traffic on a worse path.
+    pub transient_grace_ticks: u32,
 }
 
 impl Default for FlapDampingConfig {
@@ -78,6 +82,7 @@ impl Default for FlapDampingConfig {
             suppress_threshold: 500.0,
             penalty_cap: 4_000.0,
             half_life_secs: 300,
+            transient_grace_ticks: 5,
         }
     }
 }
@@ -108,6 +113,17 @@ impl FlapDamping {
             *penalty *= factor;
             *penalty >= 1.0
         });
+    }
+
+    /// Refunds a penalty that turned out not to be deserved, e.g. an anchor that
+    /// hard-demoted for a single tick and recovered immediately.
+    pub fn forgive(&mut self, path_id: u16, amount: f64) {
+        if let Some(penalty) = self.penalties.get_mut(&path_id) {
+            *penalty -= amount.max(0.0);
+            if *penalty < 1.0 {
+                self.penalties.remove(&path_id);
+            }
+        }
     }
 
     pub fn is_suppressed(&self, path_id: u16, suppress_threshold: f64) -> bool {
