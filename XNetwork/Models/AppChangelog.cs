@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.130";
+    public const string CurrentVersion = "ulink-2026.06.131";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-18",
+            Summary = "Preferred the consistently lowest-latency adapter as the main path.",
+            Changes =
+            [
+                "Bumped the uLink interface version for latency-first anchor selection.",
+                "Made an adapter that holds the lowest average latency for 30 seconds a candidate for the main path.",
+                "Required a candidate to also keep its latency at or below the main adapter's during its trial before taking over.",
+                "Stopped higher-scoring but slower adapters from taking the main path at all.",
+                "Kept instant failover unchanged: a dead main adapter is still replaced immediately."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.130",
             Date = "2026-08-18",
             Summary = "Stopped the main connection from switching to an unstable adapter.",
             Changes =

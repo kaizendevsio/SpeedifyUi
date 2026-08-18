@@ -168,6 +168,9 @@ pub struct AnchorTrialConfig {
     pub min_bytes: u64,
     /// Quiet period after any trial ends, so trials cannot run back to back.
     pub min_interval_ticks: u32,
+    /// A trial tick only counts as clean when the candidate's loaded RTT stays within
+    /// this margin of the anchor's; the same margin gates trial entry on smoothed RTT.
+    pub latency_margin_ms: f64,
 }
 
 impl Default for AnchorTrialConfig {
@@ -178,6 +181,7 @@ impl Default for AnchorTrialConfig {
             success_ticks: 15,
             min_bytes: 5_000_000,
             min_interval_ticks: 60,
+            latency_margin_ms: 10.0,
         }
     }
 }

@@ -1,8 +1,34 @@
 # Anchor Stability: Sticky Selection with Prove-It Promotion
 
 **Date:** 2026-08-18
-**Status:** Approved design, pending implementation plan
+**Status:** Implemented and deployed (`ulink-2026.06.130`); Revision 2 below shipped as `ulink-2026.06.131`
 **Problem owner:** uLink router (xeon-network), all redundancy policies
+
+## Revision 2 (2026-08-18): latency-first anchor preference
+
+User-requested after live validation of the initial release: the adapter with the
+consistently lowest average latency should hold the anchor, with latency also judged
+during trials, and instant failover untouched.
+
+- **Latency trigger.** Each path gets its own RTT EWMA (same filter type and alpha as
+  score smoothing, exposed as `smoothed_rtt_ms`). The path with the lowest smoothed RTT
+  becomes a trial candidate once it has beaten the anchor's smoothed RTT by
+  `latency_advantage_ms` (default 15) for `latency_stable_ticks` (default 30) consecutive
+  ticks — even when it cannot clear the 200-point score margin. The streak is per-path:
+  a different path taking the latency lead restarts the count. Suppressed paths cannot
+  qualify, and both triggers feed the same trial machinery (one trial at a time, 60-tick
+  spacing, recovery pause).
+- **Latency judged in every trial.** A trial tick counts as clean only if the candidate's
+  loaded raw RTT stays within `trial_latency_margin_ms` (default 10) of the anchor's, in
+  addition to the raw-score comparison. This applies to score-triggered candidates too,
+  making latency a hard gate on promotion.
+- **Doomed trials are never started.** A candidate whose *smoothed* RTT is worse than the
+  anchor's plus the margin is blocked at trial entry, because it could not pass the
+  latency criterion anyway; mirroring traffic onto it would be pure waste.
+- **Unchanged.** Hard failover, flap damping, suppression, backup selection, and the
+  transient-grace refund all work exactly as before. `latency_stable_ticks = 0` disables
+  the latency trigger, restoring Revision 1 candidate behaviour (the trial latency gate
+  remains, tunable via `trial_latency_margin_ms`).
 
 ## Problem
 

@@ -193,6 +193,9 @@ pub struct ScoredPath {
     /// rather than derived downstream, because the threshold is operator-configurable.
     #[serde(default)]
     pub suppressed: bool,
+    /// EWMA of the raw heartbeat RTT, driving the latency-first anchor preference.
+    #[serde(default)]
+    pub smoothed_rtt_ms: Option<f64>,
     /// Present only on the path currently under trial.
     #[serde(default)]
     pub trial: Option<AnchorTrialStatus>,
@@ -216,8 +219,15 @@ pub struct RoleSelectionState {
     pub schedule_change_count: u64,
     #[serde(default)]
     pub smoothing: BTreeMap<u16, PathScoreSmoothing>,
+    /// EWMA of raw heartbeat RTT per path; the same filter type as `smoothing`.
+    #[serde(default)]
+    pub rtt_smoothing: BTreeMap<u16, PathScoreSmoothing>,
     #[serde(default)]
     pub flap_damping: FlapDamping,
+    #[serde(default)]
+    pub latency_candidate_path_id: Option<u16>,
+    #[serde(default)]
+    pub latency_candidate_ticks: u32,
     #[serde(default)]
     pub trial: Option<AnchorTrial>,
     #[serde(default)]
@@ -243,7 +253,10 @@ impl Default for RoleSelectionState {
             backup_candidate_ticks: 0,
             schedule_change_count: 0,
             smoothing: BTreeMap::new(),
+            rtt_smoothing: BTreeMap::new(),
             flap_damping: FlapDamping::default(),
+            latency_candidate_path_id: None,
+            latency_candidate_ticks: 0,
             trial: None,
             last_trial_outcome: None,
             // Start "long since" so the first legitimate upgrade is not delayed.
@@ -259,6 +272,12 @@ pub struct RoleSelectionConfig {
     pub anchor_switch_score_margin: f64,
     pub backup_switch_score_margin: f64,
     pub stable_ticks_required: u8,
+    /// How much lower a path's smoothed RTT must be than the anchor's to count as a
+    /// latency advantage.
+    pub latency_advantage_ms: f64,
+    /// How many consecutive ticks that advantage must hold before it earns a trial.
+    /// Zero disables the latency trigger.
+    pub latency_stable_ticks: u32,
     pub smoothing: ScoreSmoothingConfig,
     pub flap: FlapDampingConfig,
     pub trial: AnchorTrialConfig,
@@ -272,6 +291,8 @@ impl Default for RoleSelectionConfig {
             anchor_switch_score_margin: 200.0,
             backup_switch_score_margin: 100.0,
             stable_ticks_required: 10,
+            latency_advantage_ms: 15.0,
+            latency_stable_ticks: 30,
             smoothing: ScoreSmoothingConfig::default(),
             flap: FlapDampingConfig::default(),
             trial: AnchorTrialConfig::default(),
@@ -366,9 +387,29 @@ fn apply_score_smoothing(
     state
         .smoothing
         .retain(|path_id, _| live_ids.contains(path_id));
+    state
+        .rtt_smoothing
+        .retain(|path_id, _| live_ids.contains(path_id));
 
     for scored_path in scored.iter_mut() {
         let eligible = scored_path.path.is_realtime_eligible();
+        // RTT gets its own filter so the latency-first anchor preference compares real
+        // averages, not single-tick readings. Only measured, eligible ticks feed it.
+        if eligible {
+            if let Some(rtt) = scored_path.path.rtt_ms {
+                state
+                    .rtt_smoothing
+                    .entry(scored_path.path.path_id)
+                    .or_default()
+                    .observe(rtt, config.smoothing.alpha);
+            }
+        }
+        scored_path.smoothed_rtt_ms = state
+            .rtt_smoothing
+            .get(&scored_path.path.path_id)
+            .filter(|smoothing| smoothing.initialized)
+            .map(|smoothing| smoothing.smoothed);
+
         let smoothing = state.smoothing.entry(scored_path.path.path_id).or_default();
         // Never feed the -1_000_000 hard-demotion sentinel into the filter. It is a flag,
         // not a measurement: one ineligible tick would drive `smoothed` to about -199k and
@@ -427,8 +468,8 @@ fn resolve_anchor(
     // wrong, so no penalty).
     let Some(current_anchor) = current_anchor else {
         end_trial(state, TrialOutcome::Cancelled);
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
+        reset_score_candidate(state);
+        reset_latency_candidate(state);
         return best_promotable_id.or(best_any_id);
     };
     let current_anchor_id = current_anchor.path.path_id;
@@ -441,23 +482,71 @@ fn resolve_anchor(
         return Some(advance_trial(scored, state, config, trial, current_anchor));
     }
 
-    let Some(best_promotable_id) = best_promotable_id else {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
+    // Two independent candidate triggers feed the same trial: a large sustained score
+    // advantage, or a sustained latency advantage. Latency wins ties on intent — an
+    // anchor carries the interactive traffic, so the consistently fastest path should
+    // hold it even when its composite score cannot clear the big score margin.
+    let score_candidate =
+        update_score_candidate(scored, state, config, current_anchor, best_promotable_id);
+    let latency_candidate = update_latency_candidate(scored, state, config, current_anchor);
+
+    let Some(candidate_id) = score_candidate.or(latency_candidate) else {
         return Some(current_anchor_id);
     };
 
-    if current_anchor_id == best_promotable_id {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
+    // Recovery duplicates everything, so a switch there is already masked and needs no trial.
+    if !config.trial.enabled || recovery_active {
+        return Some(candidate_id);
+    }
+
+    if state.ticks_since_trial_end < config.trial.min_interval_ticks {
         return Some(current_anchor_id);
+    }
+
+    // Latency is a hard gate on promotion: a candidate whose average latency is worse
+    // than the anchor's would fail its trial anyway, so don't waste the mirrored traffic.
+    if !trial_entry_latency_ok(scored, candidate_id, current_anchor, config) {
+        return Some(current_anchor_id);
+    }
+
+    state.trial = Some(AnchorTrial::new(candidate_id));
+    state.trial_count = state.trial_count.saturating_add(1);
+    Some(current_anchor_id)
+}
+
+fn reset_score_candidate(state: &mut RoleSelectionState) {
+    state.anchor_candidate_path_id = None;
+    state.anchor_candidate_ticks = 0;
+}
+
+fn reset_latency_candidate(state: &mut RoleSelectionState) {
+    state.latency_candidate_path_id = None;
+    state.latency_candidate_ticks = 0;
+}
+
+/// The pre-existing trigger: an effective-score advantage of at least
+/// `anchor_switch_score_margin`, held for `stable_ticks_required` consecutive ticks.
+fn update_score_candidate(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+    current_anchor: &ScoredPath,
+    best_promotable_id: Option<u16>,
+) -> Option<u16> {
+    let Some(best_promotable_id) = best_promotable_id else {
+        reset_score_candidate(state);
+        return None;
+    };
+
+    if current_anchor.path.path_id == best_promotable_id {
+        reset_score_candidate(state);
+        return None;
     }
 
     let best_score = effective_score_for(scored, best_promotable_id).unwrap_or(f64::NEG_INFINITY);
     if best_score - current_anchor.effective_score < config.anchor_switch_score_margin {
-        state.anchor_candidate_path_id = None;
-        state.anchor_candidate_ticks = 0;
-        return Some(current_anchor_id);
+        reset_score_candidate(state);
+        return None;
     }
 
     if state.anchor_candidate_path_id == Some(best_promotable_id) {
@@ -468,24 +557,92 @@ fn resolve_anchor(
     }
 
     if state.anchor_candidate_ticks < config.stable_ticks_required {
-        return Some(current_anchor_id);
+        return None;
     }
 
-    state.anchor_candidate_path_id = None;
-    state.anchor_candidate_ticks = 0;
+    reset_score_candidate(state);
+    Some(best_promotable_id)
+}
 
-    // Recovery duplicates everything, so a switch there is already masked and needs no trial.
-    if !config.trial.enabled || recovery_active {
-        return Some(best_promotable_id);
+/// The latency trigger: the path with the lowest smoothed RTT qualifies once it has beaten
+/// the anchor's smoothed RTT by `latency_advantage_ms` for `latency_stable_ticks`
+/// consecutive ticks. The streak is per-path: a different path taking the latency lead
+/// restarts the count, so only a *consistently* fastest path earns a trial.
+fn update_latency_candidate(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+    current_anchor: &ScoredPath,
+) -> Option<u16> {
+    if config.latency_stable_ticks == 0 {
+        reset_latency_candidate(state);
+        return None;
     }
 
-    if state.ticks_since_trial_end < config.trial.min_interval_ticks {
-        return Some(current_anchor_id);
+    // An unmeasured anchor cannot be compared against; leave latency preference idle.
+    let Some(anchor_rtt) = current_anchor.smoothed_rtt_ms else {
+        reset_latency_candidate(state);
+        return None;
+    };
+
+    let fastest = scored
+        .iter()
+        .filter(|path| {
+            is_role_eligible(path)
+                && path.path.path_id != current_anchor.path.path_id
+                && !state
+                    .flap_damping
+                    .is_suppressed(path.path.path_id, config.flap.suppress_threshold)
+        })
+        .filter_map(|path| path.smoothed_rtt_ms.map(|rtt| (path.path.path_id, rtt)))
+        .min_by(|left, right| left.1.total_cmp(&right.1));
+
+    let qualified = fastest
+        .filter(|(_, rtt)| rtt + config.latency_advantage_ms.max(0.0) <= anchor_rtt)
+        .map(|(path_id, _)| path_id);
+    let Some(candidate_id) = qualified else {
+        reset_latency_candidate(state);
+        return None;
+    };
+
+    if state.latency_candidate_path_id == Some(candidate_id) {
+        state.latency_candidate_ticks = state.latency_candidate_ticks.saturating_add(1);
+    } else {
+        state.latency_candidate_path_id = Some(candidate_id);
+        state.latency_candidate_ticks = 1;
     }
 
-    state.trial = Some(AnchorTrial::new(best_promotable_id));
-    state.trial_count = state.trial_count.saturating_add(1);
-    Some(current_anchor_id)
+    if state.latency_candidate_ticks < config.latency_stable_ticks {
+        return None;
+    }
+
+    reset_latency_candidate(state);
+    Some(candidate_id)
+}
+
+/// A candidate may only start a trial when its average latency is not worse than the
+/// anchor's: promotion now requires holding latency under load, so a slower candidate is
+/// doomed and mirroring traffic onto it would be pure waste.
+fn trial_entry_latency_ok(
+    scored: &[ScoredPath],
+    candidate_id: u16,
+    current_anchor: &ScoredPath,
+    config: RoleSelectionConfig,
+) -> bool {
+    let candidate_rtt = scored
+        .iter()
+        .find(|path| path.path.path_id == candidate_id)
+        .and_then(|path| path.smoothed_rtt_ms);
+
+    match (candidate_rtt, current_anchor.smoothed_rtt_ms) {
+        (Some(candidate), Some(anchor)) => {
+            candidate <= anchor + config.trial.latency_margin_ms.max(0.0)
+        }
+        // An unmeasured anchor sets no latency bar.
+        (Some(_), None) => true,
+        // An unmeasured candidate cannot prove anything about latency.
+        (None, _) => false,
+    }
 }
 
 /// Feeds one tick of evidence into the running trial and applies its verdict.
@@ -500,10 +657,26 @@ fn advance_trial(
     let trial_path = scored
         .iter()
         .find(|path| path.path.path_id == trial.path_id);
+    // A clean tick now also requires the candidate's loaded latency to hold at or below
+    // the anchor's: the anchor carries the interactive traffic, so a path that cannot
+    // keep its latency advantage under real load must not take the role.
+    let latency_kept_up = match (
+        trial_path.and_then(|path| path.path.rtt_ms),
+        current_anchor.path.rtt_ms,
+    ) {
+        (Some(trial_rtt), Some(anchor_rtt)) => {
+            trial_rtt <= anchor_rtt + config.trial.latency_margin_ms.max(0.0)
+        }
+        // An unmeasured anchor sets no latency bar.
+        (Some(_), None) => true,
+        // An unmeasured candidate cannot prove anything about latency.
+        (None, _) => false,
+    };
     let observation = TrialObservation {
         eligible: trial_path.is_some_and(is_role_eligible),
         // Raw scores, because both paths are carrying the same mirrored load right now.
-        kept_up_with_anchor: trial_path.is_some_and(|path| path.score >= current_anchor.score),
+        kept_up_with_anchor: latency_kept_up
+            && trial_path.is_some_and(|path| path.score >= current_anchor.score),
         // Both directions count: the server mirrors return traffic onto the trial path
         // from the same schedule, and on an asymmetric consumer link the download side is
         // most of the payload. Counting only the upload left every verdict Inconclusive,
@@ -600,6 +773,7 @@ fn score_paths(paths: &[PathHealthSnapshot]) -> Vec<ScoredPath> {
                 effective_score: score,
                 flap_penalty: 0.0,
                 suppressed: false,
+                smoothed_rtt_ms: None,
                 trial: None,
                 role,
             }
@@ -1613,6 +1787,131 @@ mod tests {
         assert!(trial.trial.is_some());
         let reason = trial.path.role_reason.as_deref().unwrap();
         assert!(reason.contains("trial"), "unexpected reason: {reason}");
+    }
+
+    fn path_with_rtt(path_id: u16, name: &str, rtt_ms: f64) -> PathHealthSnapshot {
+        path(path_id, name, rtt_ms, 0.0, 0.0)
+    }
+
+    /// The headline latency rule: a path whose average latency beats the anchor's for the
+    /// whole sustained window earns a trial even though its score advantage is nowhere
+    /// near the 200-point margin, and wins the anchor by staying faster under load.
+    #[test]
+    fn sustained_lowest_latency_path_wins_the_anchor() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let anchor = path_with_rtt(1, "fiber", 60.0);
+        let mut faster = path_with_rtt(2, "low-latency", 20.0);
+        faster.outbound_throughput_bps = 40_000_000;
+
+        // Premise: the score gap must NOT clear the score margin, so only the latency
+        // trigger can explain the promotion this test asserts.
+        let premise = score_paths(&[anchor.clone(), faster.clone()]);
+        let gap = premise.iter().find(|p| p.path.path_id == 2).unwrap().score
+            - premise.iter().find(|p| p.path.path_id == 1).unwrap().score;
+        assert!(
+            gap < config.anchor_switch_score_margin,
+            "fixture premise broken: score gap {gap} would trigger the score path"
+        );
+
+        let mut promoted_after = None;
+        for tick_index in 0..200u32 {
+            let roles = tick(&mut state, &[anchor.clone(), faster.clone()], config);
+            if anchor_of(&roles) == Some(2) {
+                promoted_after = Some(tick_index + 1);
+                break;
+            }
+        }
+
+        let promoted_after = promoted_after.expect("the lower-latency path must win");
+        let earliest = config.latency_stable_ticks + config.trial.ticks;
+        assert!(
+            promoted_after >= earliest,
+            "promoted after {promoted_after} ticks, before the {earliest}-tick sustained window + trial"
+        );
+        assert!(
+            promoted_after <= earliest + 5,
+            "promotion took too long: {promoted_after} ticks"
+        );
+    }
+
+    /// An advantage that keeps lapsing must never accumulate into a trial.
+    #[test]
+    fn intermittent_latency_advantage_never_starts_a_trial() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let anchor = path_with_rtt(1, "fiber", 60.0);
+
+        for tick_index in 0..300u32 {
+            // 10 fast ticks, then 10 slow ones: the EWMA and the consecutive-tick counter
+            // both lose the advantage before the 30-tick window completes.
+            let rtt = if (tick_index / 10) % 2 == 0 { 20.0 } else { 200.0 };
+            let roles = tick(
+                &mut state,
+                &[anchor.clone(), path_with_rtt(2, "flappy", rtt)],
+                config,
+            );
+            assert_eq!(anchor_of(&roles), Some(1));
+        }
+
+        assert_eq!(state.trial_count, 0, "no trial should ever have started");
+    }
+
+    /// Latency is now a hard gate on promotion: a candidate that out-scores the anchor
+    /// but has worse average latency never even enters a trial.
+    #[test]
+    fn higher_score_but_worse_latency_candidate_never_enters_a_trial() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        // The anchor is slow-scoring (late packets, queue pressure) but low-latency.
+        let mut anchor = path(1, "fiber", 30.0, 0.0, 0.25);
+        anchor.queue_pressure = 0.4;
+        // The candidate scores far better yet its latency is worse.
+        let candidate = path_with_rtt(2, "fat-pipe", 120.0);
+
+        // Premise: the candidate clears the score margin, so only the latency entry gate
+        // can explain the absence of a trial.
+        let premise = score_paths(&[anchor.clone(), candidate.clone()]);
+        let gap = premise.iter().find(|p| p.path.path_id == 2).unwrap().score
+            - premise.iter().find(|p| p.path.path_id == 1).unwrap().score;
+        assert!(
+            gap >= config.anchor_switch_score_margin,
+            "fixture premise broken: score gap {gap} must clear the margin"
+        );
+
+        let mut roles = Vec::new();
+        for _ in 0..120u32 {
+            roles = tick(&mut state, &[anchor.clone(), candidate.clone()], config);
+        }
+
+        assert_eq!(anchor_of(&roles), Some(1), "the low-latency anchor must hold");
+        assert_eq!(state.trial_count, 0, "the latency gate must block the trial");
+    }
+
+    /// A candidate that triggered on idle latency but degrades under mirrored load fails
+    /// its trial on the latency criterion and is penalised.
+    #[test]
+    fn trial_fails_when_candidate_latency_degrades_under_load() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let anchor = path_with_rtt(1, "fiber", 60.0);
+        let idle_fast = path_with_rtt(2, "cell", 20.0);
+        let mut loaded_slow = path_with_rtt(2, "cell", 110.0);
+        loaded_slow.outbound_throughput_bps = 40_000_000;
+
+        let mut roles = Vec::new();
+        for _ in 0..config.latency_stable_ticks + 2 {
+            roles = tick(&mut state, &[anchor.clone(), idle_fast.clone()], config);
+        }
+        assert_eq!(trial_of(&roles), Some(2), "the latency trigger must start a trial");
+
+        for _ in 0..config.trial.ticks + 1 {
+            roles = tick(&mut state, &[anchor.clone(), loaded_slow.clone()], config);
+        }
+
+        assert_eq!(anchor_of(&roles), Some(1), "the anchor must never have moved");
+        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::FailedUnderLoad));
+        assert!(state.flap_damping.penalty(2) > 0.0);
     }
 
     /// A loaded fiber line: bufferbloat inflates RTT and jitter, the queue is under

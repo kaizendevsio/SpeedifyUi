@@ -154,6 +154,8 @@ impl ClientConfig {
             anchor_switch_score_margin: settings.anchor_switch_score_margin.max(0.0),
             backup_switch_score_margin: settings.backup_switch_score_margin.max(0.0),
             stable_ticks_required: settings.stable_ticks_required.max(1),
+            latency_advantage_ms: settings.latency_advantage_ms.max(0.0),
+            latency_stable_ticks: settings.latency_stable_ticks,
             smoothing: ScoreSmoothingConfig {
                 alpha: settings.smoothing_alpha.clamp(0.01, 1.0),
                 variance_penalty_weight: settings.variance_penalty_weight.max(0.0),
@@ -172,6 +174,7 @@ impl ClientConfig {
                 success_ticks: settings.trial_success_ticks.min(trial_ticks),
                 min_bytes: settings.trial_min_bytes,
                 min_interval_ticks: settings.trial_min_interval_ticks,
+                latency_margin_ms: settings.trial_latency_margin_ms.max(0.0),
             },
         }
     }
@@ -187,6 +190,12 @@ pub struct RoleSelectionSettings {
     pub backup_switch_score_margin: f64,
     #[serde(default = "default_stable_ticks_required")]
     pub stable_ticks_required: u8,
+    #[serde(default = "default_latency_advantage_ms")]
+    pub latency_advantage_ms: f64,
+    #[serde(default = "default_latency_stable_ticks")]
+    pub latency_stable_ticks: u32,
+    #[serde(default = "default_trial_latency_margin_ms")]
+    pub trial_latency_margin_ms: f64,
     #[serde(default = "default_smoothing_alpha")]
     pub smoothing_alpha: f64,
     #[serde(default = "default_variance_penalty_weight")]
@@ -221,6 +230,9 @@ impl Default for RoleSelectionSettings {
             anchor_switch_score_margin: default_anchor_switch_score_margin(),
             backup_switch_score_margin: default_backup_switch_score_margin(),
             stable_ticks_required: default_stable_ticks_required(),
+            latency_advantage_ms: default_latency_advantage_ms(),
+            latency_stable_ticks: default_latency_stable_ticks(),
+            trial_latency_margin_ms: default_trial_latency_margin_ms(),
             smoothing_alpha: default_smoothing_alpha(),
             variance_penalty_weight: default_variance_penalty_weight(),
             flap_penalty_demoted: default_flap_penalty_demoted(),
@@ -248,6 +260,18 @@ fn default_backup_switch_score_margin() -> f64 {
 
 fn default_stable_ticks_required() -> u8 {
     10
+}
+
+fn default_latency_advantage_ms() -> f64 {
+    15.0
+}
+
+fn default_latency_stable_ticks() -> u32 {
+    30
+}
+
+fn default_trial_latency_margin_ms() -> f64 {
+    10.0
 }
 
 fn default_smoothing_alpha() -> f64 {
@@ -440,6 +464,43 @@ mod tests {
         assert_eq!(role_selection.stable_ticks_required, 10);
         assert!(role_selection.trial.enabled);
         assert_eq!(role_selection.trial.ticks, 20);
+        assert_eq!(role_selection.latency_advantage_ms, 15.0);
+        assert_eq!(role_selection.latency_stable_ticks, 30);
+        assert_eq!(role_selection.trial.latency_margin_ms, 10.0);
+    }
+
+    #[test]
+    fn latency_preference_keys_override_defaults() {
+        let toml = r#"
+enabled = true
+server_addr = "127.0.0.1:8444"
+mode = "anchor-duplicate-1"
+max_active_backups = 1
+realtime_deadline_ms = 500
+paths = []
+
+[role_selection]
+latency_advantage_ms = 25.0
+latency_stable_ticks = 45
+trial_latency_margin_ms = 5.0
+"#;
+
+        let config = toml::from_str::<ClientConfig>(toml).unwrap();
+        let role_selection = config.role_selection_config();
+
+        assert_eq!(role_selection.latency_advantage_ms, 25.0);
+        assert_eq!(role_selection.latency_stable_ticks, 45);
+        assert_eq!(role_selection.trial.latency_margin_ms, 5.0);
+        // latency_stable_ticks = 0 must stay 0: it is the documented off switch.
+        let disabled = ClientConfig {
+            role_selection: RoleSelectionSettings {
+                latency_stable_ticks: 0,
+                ..RoleSelectionSettings::default()
+            },
+            ..ClientConfig::default()
+        }
+        .role_selection_config();
+        assert_eq!(disabled.latency_stable_ticks, 0);
     }
 
     #[test]

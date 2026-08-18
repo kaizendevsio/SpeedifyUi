@@ -47,6 +47,14 @@ flap_half_life_secs = 300
 # loaded line can saturate its queue for a single second; without this it would be exiled
 # for a half-life and traffic would sit on a worse path.
 flap_transient_grace_ticks = 5
+# Latency-first anchor preference: the path whose average heartbeat RTT beats the
+# anchor's by latency_advantage_ms for latency_stable_ticks consecutive seconds earns a
+# trial, and any promotion (score- or latency-triggered) requires holding latency within
+# trial_latency_margin_ms of the anchor under mirrored load. Set latency_stable_ticks = 0
+# to disable the latency trigger.
+latency_advantage_ms = 15.0
+latency_stable_ticks = 30
+trial_latency_margin_ms = 10.0
 trial_enabled = true
 trial_ticks = 20
 trial_success_ticks = 15

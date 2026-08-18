@@ -188,6 +188,8 @@ pub struct XBondPathAnchorStatus {
     #[serde(default)]
     pub suppressed: bool,
     #[serde(default)]
+    pub smoothed_rtt_ms: Option<f64>,
+    #[serde(default)]
     pub trial: Option<AnchorTrialStatus>,
 }
 
@@ -199,6 +201,7 @@ impl From<&ScoredPath> for XBondPathAnchorStatus {
             effective_score: value.effective_score,
             flap_penalty: value.flap_penalty,
             suppressed: value.suppressed,
+            smoothed_rtt_ms: value.smoothed_rtt_ms,
             trial: value.trial.clone(),
         }
     }
