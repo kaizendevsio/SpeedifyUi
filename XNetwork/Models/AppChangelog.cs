@@ -13,13 +13,29 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.132";
+    public const string CurrentVersion = "ulink-2026.06.133";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-18",
+            Summary = "Made the TikTok bypass work on iPhones.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the iOS bypass fixes.",
+                "Stopped iCloud Private Relay from hiding Apple devices' lookups on this network, using Apple's supported opt-out.",
+                "Stopped iPhones from connecting through address hints that skipped the bypass.",
+                "Added a Block option to bypass rules that drops traffic instead of rerouting it.",
+                "Blocked TikTok's built-in DNS so the app uses the router's DNS, where the bypass can see it.",
+                "Added TikTok's own network ranges so its app traffic is bypassed no matter how it looks up addresses.",
+                "Expanded the TikTok preset with the shop, SDK, and CDN domains observed in real traffic."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.132",
             Date = "2026-08-18",
             Summary = "Added domain-based bypass rules, with a one-click TikTok preset.",
             Changes =
