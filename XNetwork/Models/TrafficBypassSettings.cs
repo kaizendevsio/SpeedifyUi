@@ -77,8 +77,11 @@ public static class TrafficBypassPresets
 {
     /// <summary>
     /// TikTok resolves into shared Akamai space plus a DITO carrier cache, so it can only
-    /// be bypassed by domain. The API and web-app hosts matter as much as the CDN ones:
-    /// region and currency are decided there, not on the video path.
+    /// be bypassed by domain. The API, shop, and SDK hosts matter as much as the CDN ones:
+    /// region and currency are decided there, not on the video path. The shop and pangle
+    /// families were added after live DNS on the router showed the app actually reaching
+    /// <c>pangle.io</c> and <c>tiktokpangle.us</c> while a shorter list left TikTok Shop
+    /// still priced in SGD.
     /// </summary>
     public static TrafficBypassRule TikTok() => new()
     {
@@ -86,13 +89,34 @@ public static class TrafficBypassPresets
         Enabled = true,
         Domains =
         [
+            // Core app and API
             "tiktok.com",
             "tiktokv.com",
+            "tiktokv.us",
+            "tiktokapi.com",
+            // TikTok Shop decides the currency and the deliver-to-region check
+            "tiktokglobalshop.com",
+            "tiktokshop.com",
+            // Content delivery
             "tiktokcdn.com",
             "tiktokcdn-us.com",
+            "tiktokcdn-eu.com",
             "ttwstatic.com",
+            "ttlivecdn.com",
+            // Pangle: the SDK/ad network the app talks to constantly, observed live
+            "pangle.io",
+            "tiktokpangle.us",
+            "pangleglobal.com",
+            // ByteDance shared infrastructure
             "byteoversea.com",
+            "byteoversea.net",
+            "byteintlapi.com",
+            "bytefcdn.com",
             "ibytedtos.com",
+            "ibyteimg.com",
+            "byteimg.com",
+            "isnssdk.com",
+            // Legacy musical.ly estate still referenced by the apps
             "muscdn.com",
             "musical.ly"
         ],

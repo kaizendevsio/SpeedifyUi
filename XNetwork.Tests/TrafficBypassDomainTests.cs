@@ -128,6 +128,13 @@ public class TrafficBypassDomainTests
         Assert.Contains("tiktok.com", preset.Domains);
         Assert.Contains("tiktokv.com", preset.Domains);
         Assert.Contains("tiktokcdn.com", preset.Domains);
+        // TikTok Shop is what shows the currency and the deliver-to-region check.
+        Assert.Contains("tiktokglobalshop.com", preset.Domains);
+        Assert.Contains("tiktokshop.com", preset.Domains);
+        // Observed live on the router: the app queries these constantly, and omitting them
+        // left the iOS app still talking to Singapore endpoints.
+        Assert.Contains("pangle.io", preset.Domains);
+        Assert.Contains("tiktokpangle.us", preset.Domains);
         Assert.All(preset.Domains, domain => Assert.True(
             TrafficBypassService.IsValidDomain(domain),
             $"preset domain {domain} is not valid"));
