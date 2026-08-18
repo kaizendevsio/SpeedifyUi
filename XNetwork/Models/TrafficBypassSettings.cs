@@ -107,6 +107,11 @@ public static class TrafficBypassPresets
             "pangle.io",
             "tiktokpangle.us",
             "pangleglobal.com",
+            // CDN CNAME targets observed in live queries; without them the video edges
+            // resolve outside every listed zone and ride the tunnel
+            "bytefcdn-oversea.com",
+            "ovscdns.net",
+            "tiktokcdn.com.cdn20.com",
             // ByteDance shared infrastructure
             "byteoversea.com",
             "byteoversea.net",
