@@ -3058,6 +3058,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 );
                 counters.inbound_queue_drops =
                     inbound_payload_drops.load(Ordering::Relaxed);
+                let mark_sockets = tick_started.elapsed();
                 ensure_tunnel_sockets(
                     &config,
                     &specs_by_id,
@@ -3073,6 +3074,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &receiver_payload_pool,
                     options.json_events,
                 ).await?;
+                let mark_after_sockets = tick_started.elapsed();
                 let synchronization_now = Instant::now();
                 if let Some(error) = synchronization.synchronization_error(synchronization_now) {
                     let previous_session_id = session_id;
@@ -3141,6 +3143,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut repair,
                 );
                 refresh_sender_queue_metrics(&mut path_runtime, &senders);
+                let mark_after_senders = tick_started.elapsed();
                 schedule_silent_blackhole_probes(
                     &config,
                     &specs_by_id,
@@ -3166,6 +3169,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 );
                 let phase_prelude = tick_started.elapsed();
                 health = tunnel_health(&config, &path_runtime, &sockets);
+                let mark_after_health = tick_started.elapsed();
                 // `recovery_status` still holds the previous tick's value here; it is
                 // recomputed a few lines below. One tick of lag on trial suppression is
                 // harmless and avoids reordering the whole scheduler step.
@@ -3328,6 +3332,17 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "event": "scheduler-tick-slow",
                             "elapsed_ms": tick_elapsed.as_secs_f64() * 1000.0,
                             "prelude_ms": phase_prelude.as_secs_f64() * 1000.0,
+                            "pre_sockets_ms": mark_sockets.as_secs_f64() * 1000.0,
+                            "ensure_sockets_ms":
+                                mark_after_sockets.saturating_sub(mark_sockets).as_secs_f64() * 1000.0,
+                            "senders_ms":
+                                mark_after_senders.saturating_sub(mark_after_sockets).as_secs_f64() * 1000.0,
+                            "probes_throughput_repair_ms":
+                                phase_prelude.saturating_sub(mark_after_senders).as_secs_f64() * 1000.0,
+                            "tunnel_health_ms":
+                                mark_after_health.saturating_sub(phase_prelude).as_secs_f64() * 1000.0,
+                            "role_select_ms":
+                                phase_health.saturating_sub(mark_after_health).as_secs_f64() * 1000.0,
                             "health_roles_ms":
                                 phase_health.saturating_sub(phase_prelude).as_secs_f64() * 1000.0,
                             "schedule_ms":
