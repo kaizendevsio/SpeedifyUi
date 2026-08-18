@@ -300,6 +300,17 @@ def apply(path):
     ])
     for _, _, _, _, _, match_lines, _, _ in resolved:
         nft_lines.extend(f"    {line}" for line in match_lines)
+    # Source NAT for the bypass path. Without this, a LAN client's packet is marked,
+    # routed out a physical adapter, and leaves still carrying its private 192.168.x
+    # source, so nothing can ever reply and every bypassed connection dies silently. The
+    # host's own masquerade rule only covers traffic leaving via the tunnel device.
+    nft_lines.extend([
+        "  }",
+        "  chain postrouting {",
+        "    type nat hook postrouting priority srcnat; policy accept;",
+    ])
+    for _, _, mark, _, _, _, _, _ in resolved:
+        nft_lines.append(f"    meta mark 0x{mark:x} counter masquerade")
     nft_lines.extend(["  }", "}"])
 
     for _, route, mark, table, priority, _, _, _ in resolved:
