@@ -1,4 +1,4 @@
-﻿namespace XNetwork.Models;
+namespace XNetwork.Models;
 
 public sealed record ChangelogEntry
 {
@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.133";
+    public const string CurrentVersion = "ulink-2026.06.134";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-19",
+            Summary = "Removed the once-per-second latency spike from the tunnel.",
+            Changes =
+            [
+                "Bumped the uLink interface version for the latency fixes.",
+                "Stopped the tunnel from launching helper commands on its packet path every second.",
+                "Moved status reporting and system counter reads onto background workers.",
+                "Kept the router CPU at full speed so packets are never processed on a sleeping core.",
+                "Result: tunnel jitter fell from 12ms to under 2ms and worst-case latency from 101ms to 50ms."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.133",
             Date = "2026-08-18",
             Summary = "Made the TikTok bypass work on iPhones.",
             Changes =
