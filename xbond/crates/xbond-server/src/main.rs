@@ -24,14 +24,14 @@ use xbond_core::{
     build_transmission_plan, decode_sealed_payload_into, encode_sealed_payload_into,
     is_ipv4_packet, precompute_transmission_plans, read_linux_kernel_network_status,
     recommended_repair_cache_bytes, AuthenticatedSessionTracker, DuplicateOutcome, DuplicateWindow,
-    FrameReceiver, LinuxKernelNetworkSnapshot, PacketKind, PacketReorderBuffer,
-    PacketTransmissionPlans, PathHealthSnapshot, ReceiveOutcome, RedundancyPolicy,
-    RedundancyPolicyConfig, ReorderStats, ReorderedPacket, ResendCache, ScheduleControlMessage,
-    SchedulePlan, SessionChallengeOutcome, SessionHandshakeNonce, SessionProofOutcome,
-    XBondControlMessage, XBondFrame, XBondHeader, XBondKey, XBondPacketPoolStatus,
-    XBondRepairCacheStatus, XBondRepairStatus, XBondSaturationStatus, XBondServerHealthStatus,
-    XBondServerHealthTargetStatus, XBondServerIngressReorderStatus, XBondServerRecoveryStatus,
-    XBondSocketBufferStatus, XBondStageTimingStatus, XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
+    FrameReceiver, PacketKind, PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot,
+    ReceiveOutcome, RedundancyPolicy, RedundancyPolicyConfig, ReorderStats, ReorderedPacket,
+    ResendCache, ScheduleControlMessage, SchedulePlan, SessionChallengeOutcome,
+    SessionHandshakeNonce, SessionProofOutcome, XBondControlMessage, XBondFrame, XBondHeader,
+    XBondKey, XBondPacketPoolStatus, XBondRepairCacheStatus, XBondRepairStatus,
+    XBondSaturationStatus, XBondServerHealthStatus, XBondServerHealthTargetStatus,
+    XBondServerIngressReorderStatus, XBondServerRecoveryStatus, XBondSocketBufferStatus,
+    XBondStageTimingStatus, XBondTun, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 const DEFAULT_TUN_QUEUE_CAPACITY: usize = 2048;
@@ -51,7 +51,8 @@ const SATURATION_HARD_OLDEST_AGE_MS: u64 = 50;
 const SATURATION_HARD_RESTART_AFTER: Duration = Duration::from_secs(1);
 
 static SERVER_SOCKET_BUFFER_STATUS: OnceLock<XBondSocketBufferStatus> = OnceLock::new();
-static KERNEL_NETWORK_BASELINE: OnceLock<LinuxKernelNetworkSnapshot> = OnceLock::new();
+// The kernel-network baseline now lives inside the host metrics sampler task, which owns
+// the only reader of these counters.
 static RECEIVE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RECEIVE_BATCHES: AtomicU64 = AtomicU64::new(0);
 static RECEIVE_DATAGRAMS: AtomicU64 = AtomicU64::new(0);
@@ -2399,6 +2400,15 @@ async fn main() -> Result<()> {
     ));
     let mut tun_admission_tick = time::interval(Duration::from_millis(2));
     tun_admission_tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    // Status serialisation, the file write, and /proc sampling used to run inline on this
+    // 1-second tick, which shares its task with packet forwarding. That produced a
+    // metronome-regular latency spike on tunnel traffic once per second.
+    let (status_tx, _status_writer) = spawn_server_status_writer(args.status_path.clone());
+    let host_metrics = Arc::new(Mutex::new(ServerHostMetrics::default()));
+    let _host_metrics_sampler = spawn_server_host_metrics_sampler(
+        tun.as_ref().map(|tun| tun.name().to_string()),
+        Arc::clone(&host_metrics),
+    );
     let mut status_tick = time::interval(Duration::from_secs(1));
     let mut json_status_event_counter = 0u32;
     let mut control_plane = ServerControlPlaneStatus::default();
@@ -2680,6 +2690,8 @@ async fn main() -> Result<()> {
         &hold_controller,
         control_plane,
         &return_pmtu,
+        &host_metrics,
+        &status_tx,
     )?;
     loop {
         tokio::select! {
@@ -3573,6 +3585,8 @@ async fn main() -> Result<()> {
                     &hold_controller,
                     control_plane,
                     &return_pmtu,
+                    &host_metrics,
+                    &status_tx,
                 )?;
                 if args.json_events && args.status_events {
                     json_status_event_counter = json_status_event_counter.saturating_add(1);
@@ -4417,6 +4431,69 @@ struct TunnelCounters {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Kernel counters sampled off the packet path. Reading `/proc/net/snmp` and the
+/// per-interface statistics files inline on the status tick stalled packet forwarding once
+/// per second, which showed up as a metronome-regular latency spike through the tunnel.
+#[derive(Debug, Clone, Default)]
+struct ServerHostMetrics {
+    kernel_network: xbond_core::XBondKernelNetworkStatus,
+}
+
+/// Serialises and writes server status away from the packet path. Depth-1 channel with
+/// `try_send`, so a slow filesystem drops a telemetry sample instead of delaying traffic.
+fn spawn_server_status_writer(
+    status_path: PathBuf,
+) -> (
+    mpsc::Sender<ServerRuntimeStatus>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, mut rx) = mpsc::channel::<ServerRuntimeStatus>(1);
+    let handle = tokio::spawn(async move {
+        // Created once here rather than on every write, which was a syscall per second.
+        if let Some(parent) = status_path.parent() {
+            let parent = parent.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || std::fs::create_dir_all(parent)).await;
+        }
+        while let Some(document) = rx.recv().await {
+            let target = status_path.clone();
+            let written = tokio::task::spawn_blocking(move || -> Result<()> {
+                std::fs::write(&target, serde_json::to_vec(&document)?)
+                    .with_context(|| format!("failed to write {}", target.display()))
+            })
+            .await;
+            if let Ok(Err(error)) = written {
+                eprintln!("server status write failed: {error}");
+            }
+        }
+    });
+    (tx, handle)
+}
+
+fn spawn_server_host_metrics_sampler(
+    tunnel_name: Option<String>,
+    cache: Arc<Mutex<ServerHostMetrics>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let baseline = read_linux_kernel_network_status(tunnel_name.as_deref());
+        let mut ticker = time::interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let name = tunnel_name.clone();
+            let sample = tokio::task::spawn_blocking(move || ServerHostMetrics {
+                kernel_network: read_linux_kernel_network_status(name.as_deref()).delta(baseline),
+            })
+            .await;
+            if let Ok(sample) = sample {
+                if let Ok(mut guard) = cache.lock() {
+                    *guard = sample;
+                }
+            }
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_server_status(
     args: &Args,
     tun: Option<&XBondTun>,
@@ -4428,12 +4505,9 @@ fn write_server_status(
     hold_controller: &IngressReorderHoldController,
     control_plane: ServerControlPlaneStatus,
     return_pmtu: &ServerReturnPmtuStatus,
+    host_metrics: &Arc<Mutex<ServerHostMetrics>>,
+    status_tx: &mpsc::Sender<ServerRuntimeStatus>,
 ) -> Result<()> {
-    if let Some(parent) = args.status_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
     let now = monotonic_micros();
     let (schedule_required, schedule_generation, current_schedule_age_ms) =
         schedule_sync_status(return_control, now);
@@ -4474,17 +4548,22 @@ fn write_server_status(
             .cloned()
             .into_iter()
             .collect(),
-        kernel_network: read_linux_kernel_network_status(tun.map(XBondTun::name)).delta(
-            *KERNEL_NETWORK_BASELINE
-                .get_or_init(|| read_linux_kernel_network_status(tun.map(XBondTun::name))),
-        ),
+        kernel_network: host_metrics
+            .lock()
+            .map(|guard| guard.kernel_network)
+            .unwrap_or_default(),
         saturation: server_saturation_status(),
         stage_timings: server_stage_timings(),
         counters,
     };
-    let json = serde_json::to_vec(&status)?;
-    std::fs::write(&args.status_path, json)
-        .with_context(|| format!("failed to write {}", args.status_path.display()))
+    match status_tx.try_send(status) {
+        Ok(()) => Ok(()),
+        // Full means the previous write is still in flight; the next tick republishes.
+        Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(anyhow::anyhow!("server status writer task stopped"))
+        }
+    }
 }
 
 fn build_ack_frame(frame: &XBondFrame) -> XBondFrame {
