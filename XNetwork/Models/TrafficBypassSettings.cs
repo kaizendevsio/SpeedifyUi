@@ -112,6 +112,8 @@ public static class TrafficBypassPresets
             "bytefcdn-oversea.com",
             "ovscdns.net",
             "tiktokcdn.com.cdn20.com",
+            "hypstarcdn.com",
+            "rocket-cdn.com",
             // ByteDance shared infrastructure
             "byteoversea.com",
             "byteoversea.net",
