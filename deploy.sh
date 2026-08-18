@@ -53,6 +53,15 @@ else
   echo "Warning: bypass helper source missing at $BYPASS_HELPER_SRC" >&2
 fi
 
+CPUFREQ_UNIT_SRC="$APP_DIR/XNetwork/deploy/systemd/xnetwork-cpufreq.service"
+if [[ -f "$CPUFREQ_UNIT_SRC" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  echo "Installing CPU governor unit (tunnel latency)..."
+  sudo install -m 0644 "$CPUFREQ_UNIT_SRC" /etc/systemd/system/xnetwork-cpufreq.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now xnetwork-cpufreq.service >/dev/null 2>&1 || \
+    echo "Warning: could not enable xnetwork-cpufreq.service; tunnel latency spikes return after reboot." >&2
+fi
+
 DNS_CONF_SRC="$APP_DIR/XNetwork/deploy/dnsmasq/xnetwork-dns.conf"
 DNS_UNIT_SRC="$APP_DIR/XNetwork/deploy/systemd/xnetwork-dns.service"
 echo "Installing XNetwork LAN resolver (domain-based bypass)..."
