@@ -3050,10 +3050,6 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 // stage_timings counters do not cover this branch, which left a
                 // once-per-second latency spike unexplained through several wrong guesses.
                 let tick_started = Instant::now();
-                let phase_prelude;
-                let phase_health;
-                let phase_schedule;
-                let phase_heartbeat;
                 apply_tun_writer_metrics(
                     &tun_writer_metrics,
                     &mut counters,
@@ -3168,7 +3164,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut repair_cache_status,
                     monotonic_micros(),
                 );
-                phase_prelude = tick_started.elapsed();
+                let phase_prelude = tick_started.elapsed();
                 health = tunnel_health(&config, &path_runtime, &sockets);
                 // `recovery_status` still holds the previous tick's value here; it is
                 // recomputed a few lines below. One tick of lag on trial suppression is
@@ -3209,11 +3205,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     recovery_config,
                     5,
                 );
-                phase_health = tick_started.elapsed();
+                let phase_health = tick_started.elapsed();
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
-                phase_schedule = tick_started.elapsed();
+                let phase_schedule = tick_started.elapsed();
                 if synchronization.data_plane_ready() {
                     send_tunnel_aggregate_heartbeat(
                         &config,
@@ -3227,7 +3223,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         options.json_events,
                     )?;
                 }
-                phase_heartbeat = tick_started.elapsed();
+                let phase_heartbeat = tick_started.elapsed();
                 repair.cache_entries = resend_cache.len();
                 if options.json_events && options.status_events {
                     println!(
@@ -4684,6 +4680,11 @@ async fn ensure_tunnel_sockets(
             remove_tunnel_path(*path_id, sockets, senders, receivers, path_runtime);
             if let Some(runtime) = path_runtime.get_mut(path_id) {
                 runtime.last_socket_error = Some("interface is not live".to_string());
+            }
+            // A link that went down will very likely come back with a different address,
+            // so the cached source must not be reused.
+            if let Some(interface_name) = spec.interface_name.as_deref() {
+                invalidate_bind_addr_cache(interface_name);
             }
             continue;
         }
@@ -8050,7 +8051,57 @@ fn effective_bind_addr_for_spec(server: &str, spec: &ProbePathSpec) -> Result<St
         );
     };
 
-    resolve_interface_source_bind_addr(server, interface_name)
+    cached_interface_source_bind_addr(server, interface_name)
+}
+
+/// Cached results of `resolve_interface_source_bind_addr`, keyed by interface.
+///
+/// Each miss forks `ip route get`. `ensure_tunnel_sockets` runs on every scheduler tick,
+/// so resolving unconditionally meant one subprocess per path per second — around 40ms of
+/// the tick on this router. Because the tick is a `select!` branch, that time suspended the
+/// whole event loop, stalling TUN reads and UDP receives and showing up as a
+/// once-per-second latency spike on every forwarded packet.
+///
+/// Entries carry the server they were resolved against and expire after
+/// `BIND_ADDR_CACHE_TTL`, so a re-address or server change is still picked up. A caller that
+/// knows the path changed can drop the entry immediately via `invalidate_bind_addr_cache`.
+/// `(server, bind_addr, resolved_at)` for one interface.
+type BindAddrCacheEntry = (String, String, Instant);
+static BIND_ADDR_CACHE: OnceLock<StdMutex<HashMap<String, BindAddrCacheEntry>>> = OnceLock::new();
+
+/// Long enough to make the per-tick cost negligible, short enough that a silent address
+/// change is corrected well before it matters. Socket errors and heartbeat failures already
+/// trigger an immediate rebind, which invalidates the entry.
+const BIND_ADDR_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn cached_interface_source_bind_addr(server: &str, interface_name: &str) -> Result<String> {
+    let cache = BIND_ADDR_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_server, bind_addr, resolved_at)) = guard.get(interface_name) {
+            if cached_server == server && resolved_at.elapsed() < BIND_ADDR_CACHE_TTL {
+                return Ok(bind_addr.clone());
+            }
+        }
+    }
+
+    let bind_addr = resolve_interface_source_bind_addr(server, interface_name)?;
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            interface_name.to_string(),
+            (server.to_string(), bind_addr.clone(), Instant::now()),
+        );
+    }
+    Ok(bind_addr)
+}
+
+/// Drops a cached bind address so the next resolve re-runs immediately. Called when a path
+/// is torn down or rebound, where the old address is no longer trustworthy.
+fn invalidate_bind_addr_cache(interface_name: &str) {
+    if let Some(cache) = BIND_ADDR_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.remove(interface_name);
+        }
+    }
 }
 
 fn resolve_interface_source_bind_addr(server: &str, interface_name: &str) -> Result<String> {
