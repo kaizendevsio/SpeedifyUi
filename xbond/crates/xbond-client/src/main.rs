@@ -28,18 +28,17 @@ use xbond_core::{
     encode_sealed_payload_into, expand_schedule_for_recovery, is_ipv4_packet,
     precompute_transmission_plans, read_linux_kernel_network_status,
     recommended_repair_cache_bytes, select_path_roles, select_path_roles_with_state,
-    stabilize_recovery_schedule, update_recovery_state, ClientConfig, FrameReceiver,
-    LinuxKernelNetworkSnapshot, PacketKind, PacketReorderBuffer, PacketTransmissionPlans,
-    PathHealthSnapshot, PathIsolationStatus, ProbeAggregate, ProbePathStats, ReceiveOutcome,
-    RecoveryConfig, RecoveryScheduleStabilityState, RecoveryState, RecoveryStatus,
-    RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket, RepairPayload, ResendCache,
-    RoleSelectionState, RouteVerification, ScheduleControlMessage, ScheduleMode, SchedulePlan,
-    SessionHandshakeNonce, XBondControlMessage, XBondDiagnosticOverrideStatus, XBondFecStatus,
-    XBondFrame, XBondHeader, XBondKey, XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus,
-    XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus,
-    XBondSaturationStatus, XBondServerRecoveryStatus, XBondSocketBufferStatus,
-    XBondStageTimingStatus, XBondStatus, XBondTun, XBondTunnelStatus, XorFecBlock,
-    FLAG_SERVER_TO_CLIENT,
+    stabilize_recovery_schedule, update_recovery_state, ClientConfig, FrameReceiver, PacketKind,
+    PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, PathIsolationStatus,
+    ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig, RecoveryScheduleStabilityState,
+    RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
+    RepairPayload, ResendCache, RoleSelectionState, RouteVerification, ScheduleControlMessage,
+    ScheduleMode, SchedulePlan, SessionHandshakeNonce, XBondControlMessage,
+    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
+    XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
+    XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus, XBondSaturationStatus,
+    XBondServerRecoveryStatus, XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus,
+    XBondTun, XBondTunnelStatus, XorFecBlock, FLAG_SERVER_TO_CLIENT,
 };
 
 const MINIMUM_USABLE_UDP_SOCKET_BUFFER_BYTES: usize = 256 * 1024;
@@ -51,7 +50,8 @@ const SATURATION_HARD_RECONNECT_AFTER: Duration = Duration::from_secs(1);
 
 static SOCKET_BUFFER_STATUSES: OnceLock<StdMutex<HashMap<String, XBondSocketBufferStatus>>> =
     OnceLock::new();
-static KERNEL_NETWORK_BASELINE: OnceLock<LinuxKernelNetworkSnapshot> = OnceLock::new();
+// The kernel-network baseline now lives inside the host metrics sampler task, which owns
+// the only reader of these counters.
 static RECEIVE_MICROS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static RECEIVE_BATCHES: AtomicU64 = AtomicU64::new(0);
 static RECEIVE_DATAGRAMS: AtomicU64 = AtomicU64::new(0);
@@ -2962,6 +2962,13 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         current_schedule_generation,
         synchronization_started_at,
     );
+    // Status serialisation, file writes, and /proc sampling all used to run inline on the
+    // scheduler tick, which shares this task with packet forwarding. That produced a
+    // once-per-second latency spike on every forwarded packet.
+    let (status_tx, _status_writer) = spawn_status_writer(&config);
+    let host_metrics = Arc::new(StdMutex::new(HostMetricsCache::default()));
+    let _host_metrics_sampler =
+        spawn_host_metrics_sampler(tun.name().to_string(), Arc::clone(&host_metrics));
     let mut anchor_trial_observer = AnchorTrialObserver::new(&role_state);
     let mut scheduler_tick = time::interval(Duration::from_secs(1));
     let mut path_heartbeat_tick = time::interval(path_heartbeat_interval(&config));
@@ -3013,6 +3020,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
         &tun_packet_pool_telemetry,
         &receiver_payload_pool,
+        &host_metrics,
+        &status_tx,
     )?;
     send_session_open(
         &mut path_runtime,
@@ -3299,6 +3308,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                     &tun_packet_pool_telemetry,
                     &receiver_payload_pool,
+                    &host_metrics,
+                    &status_tx,
                 )?;
                 counters.supervisor_control_progress_ticks = counters
                     .supervisor_control_progress_ticks
@@ -3573,6 +3584,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                     &tun_packet_pool_telemetry,
                     &receiver_payload_pool,
+                    &host_metrics,
+                    &status_tx,
                 )?;
                 let _ = envelope.response_tx.send(response);
             }
@@ -4308,6 +4321,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 inbound_queue_depth(&inbound_control_rx, &inbound_payload_rx),
                                 &tun_packet_pool_telemetry,
                                 &receiver_payload_pool,
+                                &host_metrics,
+                                &status_tx,
                             )?;
                         }
                         XBondControlMessage::RepairRequest { mut sequences } => {
@@ -7489,6 +7504,89 @@ fn client_stage_timings(counters: &TunnelCounters) -> XBondStageTimingStatus {
     }
 }
 
+/// Host metrics that cost `/proc` and `/sys` reads, sampled off the packet path.
+///
+/// Reading these inline on the scheduler tick stalled packet forwarding once per second:
+/// procfs contents are generated on read, so `/proc/net/snmp` plus the per-interface
+/// statistics files are far more expensive than an in-memory lookup.
+#[derive(Debug, Clone, Default)]
+struct HostMetricsCache {
+    kernel_network: xbond_core::XBondKernelNetworkStatus,
+    rss_bytes: Option<u64>,
+}
+
+/// A status snapshot handed to the writer task. Serialising and writing this on the
+/// scheduler tick blocked the same task that forwards packets.
+struct StatusPublication {
+    status: XBondRuntimeStatus,
+    sender_lanes: Vec<serde_json::Value>,
+}
+
+/// Serialises and writes runtime status away from the packet path.
+///
+/// The channel is depth 1 and published with `try_send`, so a slow filesystem drops a
+/// telemetry sample rather than applying back-pressure to packet forwarding.
+fn spawn_status_writer(
+    config: &ClientConfig,
+) -> (mpsc::Sender<StatusPublication>, tokio::task::JoinHandle<()>) {
+    let (tx, mut rx) = mpsc::channel::<StatusPublication>(1);
+    let runtime_status_path = config.runtime_status_path.clone();
+    let handle = tokio::spawn(async move {
+        let Some(path) = runtime_status_path else {
+            return;
+        };
+        let runtime_path = PathBuf::from(path);
+        // Created once here instead of on every write, which was a syscall per second.
+        if let Some(parent) = runtime_path.parent() {
+            let parent = parent.to_path_buf();
+            let _ = tokio::task::spawn_blocking(move || std::fs::create_dir_all(parent)).await;
+        }
+        while let Some(publication) = rx.recv().await {
+            let target = runtime_path.clone();
+            // Serialising and writing both happen on a blocking worker, so neither the
+            // packet task nor this task's runtime worker stalls on them.
+            let written = tokio::task::spawn_blocking(move || -> Result<()> {
+                let value =
+                    build_runtime_status_value(publication.status, publication.sender_lanes)?;
+                std::fs::write(&target, serde_json::to_string(&value)?)
+                    .with_context(|| format!("failed to write {}", target.display()))
+            })
+            .await;
+            if let Ok(Err(error)) = written {
+                eprintln!("runtime status write failed: {error}");
+            }
+        }
+    });
+    (tx, handle)
+}
+
+/// Samples the `/proc` and `/sys` counters on their own task so the scheduler tick can
+/// read them from memory.
+fn spawn_host_metrics_sampler(
+    tunnel_name: String,
+    cache: Arc<StdMutex<HostMetricsCache>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let baseline = read_linux_kernel_network_status(Some(&tunnel_name));
+        let mut ticker = time::interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let name = tunnel_name.clone();
+            let sample = tokio::task::spawn_blocking(move || HostMetricsCache {
+                kernel_network: read_linux_kernel_network_status(Some(&name)).delta(baseline),
+                rss_bytes: current_process_rss_bytes(),
+            })
+            .await;
+            if let Ok(sample) = sample {
+                if let Ok(mut guard) = cache.lock() {
+                    *guard = sample;
+                }
+            }
+        }
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_tunnel_runtime_status(
     config: &ClientConfig,
@@ -7515,7 +7613,13 @@ fn write_tunnel_runtime_status(
     inbound_queue_depth: usize,
     tun_packet_pool_state: &TunPacketBufferPoolState,
     receiver_payload_pool: &ReceiverPayloadPool,
+    host_metrics: &Arc<StdMutex<HostMetricsCache>>,
+    status_tx: &mpsc::Sender<StatusPublication>,
 ) -> Result<()> {
+    let host_sample = host_metrics
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
     let anchor_stability = roles
         .iter()
         .map(xbond_core::XBondPathAnchorStatus::from)
@@ -7527,8 +7631,9 @@ fn write_tunnel_runtime_status(
         .collect();
     let tunnel_health = aggregate_health.to_status();
 
-    write_runtime_status_with_sender_lanes(
-        config,
+    publish_runtime_status(
+        status_tx,
+        path_runtime,
         XBondRuntimeStatus {
             running: true,
             mode: effective_mode,
@@ -7573,7 +7678,7 @@ fn write_tunnel_runtime_status(
             server_health: server_recovery_status.server_health.clone(),
             process: XBondProcessStatus {
                 process_cpu_percent: None,
-                rss_bytes: current_process_rss_bytes(),
+                rss_bytes: host_sample.rss_bytes,
                 encode_micros_total: counters.encode_micros_total,
                 decode_micros_total: counters.decode_micros_total,
                 encoded_frames: counters.encoded_frames,
@@ -7587,10 +7692,7 @@ fn write_tunnel_runtime_status(
                 udp_socket_buffer_bytes: config.udp_socket_buffer_bytes,
                 udp_receive_batch_size: config.udp_receive_batch_size,
                 socket_buffers: client_socket_buffer_statuses(),
-                kernel_network: read_linux_kernel_network_status(Some(tun.name())).delta(
-                    *KERNEL_NETWORK_BASELINE
-                        .get_or_init(|| read_linux_kernel_network_status(Some(tun.name()))),
-                ),
+                kernel_network: host_sample.kernel_network,
                 saturation: client_saturation_status(),
                 stage_timings: client_stage_timings(counters),
                 tun_queue_drops: counters.tun_queue_drops,
@@ -7610,8 +7712,32 @@ fn write_tunnel_runtime_status(
             message: Some("XBond tunnel is running.".to_string()),
             ..XBondRuntimeStatus::default()
         },
-        path_runtime,
     )
+}
+
+/// Hands a status snapshot to the writer task without blocking.
+///
+/// `try_send` on purpose: the packet-forwarding task must never wait on the filesystem,
+/// and status is telemetry, so dropping a sample when the writer is still busy is the
+/// correct trade. The sender-lane summary is built here because it borrows `path_runtime`,
+/// which cannot cross to another task.
+fn publish_runtime_status(
+    status_tx: &mpsc::Sender<StatusPublication>,
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    status: XBondRuntimeStatus,
+) -> Result<()> {
+    let publication = StatusPublication {
+        status,
+        sender_lanes: sender_lane_metrics_json(path_runtime),
+    };
+    match status_tx.try_send(publication) {
+        Ok(()) => Ok(()),
+        // Full means the previous write is still in flight; the next tick republishes.
+        Err(mpsc::error::TrySendError::Full(_)) => Ok(()),
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(anyhow::anyhow!("runtime status writer task stopped"))
+        }
+    }
 }
 
 fn is_data_like(kind: PacketKind) -> bool {
@@ -8419,43 +8545,20 @@ fn read_runtime_status(config: &ClientConfig) -> Result<XBondRuntimeStatus> {
         .with_context(|| format!("failed to parse {}", runtime_path.display()))
 }
 
-fn write_runtime_status_with_sender_lanes(
-    config: &ClientConfig,
+/// Assembles the published status document. Kept separate from the writer task so the
+/// serialised shape stays directly testable.
+fn build_runtime_status_value(
     status: XBondRuntimeStatus,
-    path_runtime: &HashMap<u16, TunnelPathRuntime>,
-) -> Result<()> {
-    write_runtime_status_value(
-        config,
-        runtime_status_value_with_sender_lanes(status, path_runtime)?,
-    )
-}
-
-fn runtime_status_value_with_sender_lanes(
-    status: XBondRuntimeStatus,
-    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    sender_lanes: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(status)?;
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "sender_lanes".to_string(),
-            serde_json::Value::Array(sender_lane_metrics_json(path_runtime)),
+            serde_json::Value::Array(sender_lanes),
         );
     }
     Ok(value)
-}
-
-fn write_runtime_status_value(config: &ClientConfig, status: serde_json::Value) -> Result<()> {
-    let Some(path) = &config.runtime_status_path else {
-        return Ok(());
-    };
-    let runtime_path = PathBuf::from(path);
-    if let Some(parent) = runtime_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let text = serde_json::to_string(&status)?;
-    std::fs::write(&runtime_path, text)
-        .with_context(|| format!("failed to write {}", runtime_path.display()))
 }
 
 fn toml_or_json_runtime_status(text: &str) -> Result<XBondRuntimeStatus> {
@@ -10641,7 +10744,8 @@ paths = []
             },
         )]);
 
-        let value = runtime_status_value_with_sender_lanes(status, &path_runtime).unwrap();
+        let value =
+            build_runtime_status_value(status, sender_lane_metrics_json(&path_runtime)).unwrap();
 
         assert_eq!(value["process"]["tun_packet_pool"]["retained"], 2);
         assert_eq!(
