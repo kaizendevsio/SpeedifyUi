@@ -3045,6 +3045,15 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     loop {
         tokio::select! {
             _ = scheduler_tick.tick() => {
+                // The scheduler tick shares this task with packet forwarding, so anything
+                // slow here delays traffic. Phase checkpoints exist because the
+                // stage_timings counters do not cover this branch, which left a
+                // once-per-second latency spike unexplained through several wrong guesses.
+                let tick_started = Instant::now();
+                let phase_prelude;
+                let phase_health;
+                let phase_schedule;
+                let phase_heartbeat;
                 apply_tun_writer_metrics(
                     &tun_writer_metrics,
                     &mut counters,
@@ -3159,6 +3168,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &mut repair_cache_status,
                     monotonic_micros(),
                 );
+                phase_prelude = tick_started.elapsed();
                 health = tunnel_health(&config, &path_runtime, &sockets);
                 // `recovery_status` still holds the previous tick's value here; it is
                 // recomputed a few lines below. One tick of lag on trial suppression is
@@ -3199,9 +3209,11 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     recovery_config,
                     5,
                 );
+                phase_health = tick_started.elapsed();
                 transmission_policy = effective_transmission_policy(effective_policy, &recovery_status);
                 transmission_plans =
                     precompute_transmission_plans(&schedule, transmission_policy, &health, policy_config);
+                phase_schedule = tick_started.elapsed();
                 if synchronization.data_plane_ready() {
                     send_tunnel_aggregate_heartbeat(
                         &config,
@@ -3215,6 +3227,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         options.json_events,
                     )?;
                 }
+                phase_heartbeat = tick_started.elapsed();
                 repair.cache_entries = resend_cache.len();
                 if options.json_events && options.status_events {
                     println!(
@@ -3311,6 +3324,25 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     &host_metrics,
                     &status_tx,
                 )?;
+                let tick_elapsed = tick_started.elapsed();
+                if options.json_events && tick_elapsed >= Duration::from_millis(5) {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "scheduler-tick-slow",
+                            "elapsed_ms": tick_elapsed.as_secs_f64() * 1000.0,
+                            "prelude_ms": phase_prelude.as_secs_f64() * 1000.0,
+                            "health_roles_ms":
+                                phase_health.saturating_sub(phase_prelude).as_secs_f64() * 1000.0,
+                            "schedule_ms":
+                                phase_schedule.saturating_sub(phase_health).as_secs_f64() * 1000.0,
+                            "heartbeat_control_ms":
+                                phase_heartbeat.saturating_sub(phase_schedule).as_secs_f64() * 1000.0,
+                            "status_ms":
+                                tick_elapsed.saturating_sub(phase_heartbeat).as_secs_f64() * 1000.0,
+                        })
+                    );
+                }
                 counters.supervisor_control_progress_ticks = counters
                     .supervisor_control_progress_ticks
                     .saturating_add(1);
