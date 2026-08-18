@@ -7,3 +7,6 @@ riderModule.iml
 /xbond/target/
 /artifacts/
 /xbond/lab/results/
+
+__pycache__/
+*.pyc
