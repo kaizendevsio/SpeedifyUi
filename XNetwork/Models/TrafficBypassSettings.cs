@@ -27,7 +27,6 @@ public sealed class TrafficBypassRule
     /// space, where a static CIDR would either miss most traffic or divert unrelated hosts.
     /// Matching is suffix-based: "tiktok.com" also covers "www.tiktok.com".
     /// </summary>
-    [JsonPropertyName("domains")]
     public List<string> Domains { get; set; } = new();
 
     public string Protocol { get; set; } = TrafficBypassProtocols.Any;

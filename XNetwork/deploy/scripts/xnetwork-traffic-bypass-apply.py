@@ -40,6 +40,26 @@ def run(args, *, input_text=None, check=True):
     return result
 
 
+def get_key(mapping, name, default=None):
+    """Reads a key regardless of case.
+
+    The app serialises this file with .NET's default PascalCase ("Rules",
+    "Destinations"), while this script was written against camelCase. The mismatch made
+    every rule invisible here: `config.get("rules")` returned nothing, so an apply
+    reported success while programming no rules at all. Matching case-insensitively keeps
+    both the existing files and any future naming working.
+    """
+    if not isinstance(mapping, dict):
+        return default
+    if name in mapping:
+        return mapping[name]
+    lowered = name.lower()
+    for key, value in mapping.items():
+        if isinstance(key, str) and key.lower() == lowered:
+            return value
+    return default
+
+
 def unsafe_iface(name):
     lowered = name.lower()
     return name in UNSAFE_IFACES or any(lowered.startswith(prefix) for prefix in UNSAFE_IFACE_PREFIXES)
@@ -129,9 +149,9 @@ def nft_set(values):
 
 
 def route_for_rule(rule, defaults):
-    mode = str(rule.get("egressMode") or "auto").strip().lower()
+    mode = str(get_key(rule, "egressMode") or "auto").strip().lower()
     if mode == "interface":
-        dev = str(rule.get("interfaceName") or "").strip()
+        dev = str(get_key(rule, "interfaceName") or "").strip()
         if not dev or not IFACE_RE.match(dev) or unsafe_iface(dev):
             raise ValueError(f"rule {rule_name(rule)} selected unsafe or invalid interface {dev!r}")
         candidates = [item for item in defaults if item["dev"] == dev]
@@ -144,14 +164,14 @@ def route_for_rule(rule, defaults):
 
 
 def rule_name(rule):
-    return str(rule.get("displayName") or rule.get("id") or "unnamed")
+    return str(get_key(rule, "displayName") or get_key(rule, "id") or "unnamed")
 
 
 def build_match_lines(rule, mark, index):
-    destinations = parse_destinations(rule.get("destinations"))
-    domains = parse_domains(rule.get("domains"))
-    ports = parse_ports(rule.get("ports"))
-    protocol = str(rule.get("protocol") or "any").strip().lower()
+    destinations = parse_destinations(get_key(rule, "destinations"))
+    domains = parse_domains(get_key(rule, "domains"))
+    ports = parse_ports(get_key(rule, "ports"))
+    protocol = str(get_key(rule, "protocol") or "any").strip().lower()
     if protocol not in {"any", "tcp", "udp"}:
         raise ValueError(f"rule {rule_name(rule)} has invalid protocol {protocol!r}")
     if not destinations and not ports and not domains:
@@ -233,7 +253,7 @@ def apply(path):
     # which is a valid state to apply, not an error.
     config_path = Path(path)
     config = json.loads(config_path.read_text()) if config_path.exists() else {"rules": []}
-    rules = [rule for rule in config.get("rules", []) if rule.get("enabled", True)]
+    rules = [rule for rule in get_key(config, "rules", []) or [] if get_key(rule, "enabled", True)]
     if len(rules) > MAX_RULES:
         raise ValueError(f"too many enabled bypass rules: {len(rules)} > {MAX_RULES}")
 
@@ -245,7 +265,7 @@ def apply(path):
         table = ROUTE_TABLE_BASE + index
         priority = PRIORITY_BASE + index
         match_lines = build_match_lines(rule, mark, index)
-        domains = parse_domains(rule.get("domains"))
+        domains = parse_domains(get_key(rule, "domains"))
         resolved.append((rule, route, mark, table, priority, match_lines, domains, index))
 
     clear_rules()

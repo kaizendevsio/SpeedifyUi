@@ -93,19 +93,29 @@ public class TrafficBypassDomainTests
         Assert.Contains(result.Errors, error => error.Contains("tiktok.com/path"));
     }
 
+    /// <summary>
+    /// The apply helper reads the saved settings file directly, so the on-disk shape is a
+    /// contract with it. The file is written with .NET's default PascalCase; the helper
+    /// reads keys case-insensitively, which is what makes both work.
+    /// </summary>
     [Fact]
-    public void DomainsSurviveTheHelperPayloadRoundTrip()
+    public void DomainsAreWrittenInTheShapeTheApplyHelperReads()
     {
-        var payload = new TrafficBypassHelperPayload
+        var settings = new TrafficBypassSettings
         {
             Rules = [TrafficBypassService.NormalizeRule(DomainRule("tiktok.com", "tiktokcdn.com"))]
         };
 
-        var json = System.Text.Json.JsonSerializer.Serialize(payload);
-        var parsed = System.Text.Json.JsonSerializer.Deserialize<TrafficBypassHelperPayload>(json);
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            settings,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        var parsed = System.Text.Json.JsonSerializer.Deserialize<TrafficBypassSettings>(json);
 
         Assert.Equal(["tiktok.com", "tiktokcdn.com"], parsed!.Rules[0].Domains);
-        Assert.Contains("\"domains\"", json);
+        // Domains must sit alongside its siblings rather than in a different casing.
+        Assert.Contains("\"Domains\"", json);
+        Assert.Contains("\"Rules\"", json);
+        Assert.Contains("\"Destinations\"", json);
     }
 
     [Fact]
