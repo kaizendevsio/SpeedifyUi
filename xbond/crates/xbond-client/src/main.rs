@@ -8722,7 +8722,36 @@ fn interface_is_live(interface_name: Option<&str>) -> bool {
         return true;
     };
 
-    read_interface_state(interface_name).is_live
+    cached_interface_state(interface_name).is_live
+}
+
+/// Liveness results shared across one scheduler round.
+///
+/// `read_interface_state` forks `ip -4 addr show` per call, and three different per-path
+/// sweeps (socket upkeep, blackhole probes, health snapshots) each called it every tick:
+/// twenty-four subprocess forks per second, measured as three ~11ms blocks that suspended
+/// packet forwarding. The TTL is shorter than the tick, so every round still observes
+/// fresh state exactly once per interface; link-down detection latency is unchanged.
+type InterfaceStateEntry = (InterfaceState, Instant);
+static INTERFACE_STATE_CACHE: OnceLock<StdMutex<HashMap<String, InterfaceStateEntry>>> =
+    OnceLock::new();
+const INTERFACE_STATE_TTL: Duration = Duration::from_millis(900);
+
+fn cached_interface_state(interface_name: &str) -> InterfaceState {
+    let cache = INTERFACE_STATE_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((state, read_at)) = guard.get(interface_name) {
+            if read_at.elapsed() < INTERFACE_STATE_TTL {
+                return *state;
+            }
+        }
+    }
+
+    let state = read_interface_state(interface_name);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(interface_name.to_string(), (state, Instant::now()));
+    }
+    state
 }
 
 fn interface_ifindex(interface_name: Option<&str>) -> Option<u32> {
@@ -8749,7 +8778,7 @@ fn interface_ifindex(interface_name: Option<&str>) -> Option<u32> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct InterfaceState {
     is_live: bool,
 }
