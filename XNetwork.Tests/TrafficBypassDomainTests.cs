@@ -141,6 +141,24 @@ public class TrafficBypassDomainTests
         Assert.True(TrafficBypassService.NormalizeRule(preset).Domains.Count >= 4);
     }
 
+    [Fact]
+    public void BlockModeIsValidWithoutAnInterface()
+    {
+        var service = TestService();
+
+        var result = service.ValidateRule(new TrafficBypassRule
+        {
+            DisplayName = "TikTok in-app DNS",
+            Destinations = ["34.102.215.99"],
+            EgressMode = TrafficBypassEgressModes.Block
+        });
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+        Assert.Equal(
+            TrafficBypassEgressModes.Block,
+            TrafficBypassService.NormalizeRule(new TrafficBypassRule { EgressMode = "BLOCK" }).EgressMode);
+    }
+
     private static TrafficBypassService TestService()
     {
         var filePath = Path.Combine(Path.GetTempPath(), $"bypass-domain-{Guid.NewGuid():N}.json");

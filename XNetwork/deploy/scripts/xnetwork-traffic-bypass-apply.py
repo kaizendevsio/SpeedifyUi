@@ -150,6 +150,11 @@ def nft_set(values):
 
 def route_for_rule(rule, defaults):
     mode = str(get_key(rule, "egressMode") or "auto").strip().lower()
+    if mode == "block":
+        # Matched traffic is routed into a blackhole instead of out an adapter. Exists to
+        # cut off hardcoded in-app DNS endpoints so apps fall back to system DNS, where
+        # domain-based bypass can see them.
+        return {"blackhole": True, "dev": "", "gateway": "", "metric": 0}
     if mode == "interface":
         dev = str(get_key(rule, "interfaceName") or "").strip()
         if not dev or not IFACE_RE.match(dev) or unsafe_iface(dev):
@@ -314,11 +319,14 @@ def apply(path):
     nft_lines.extend(["  }", "}"])
 
     for _, route, mark, table, priority, _, _, _ in resolved:
-        route_args = ["ip", "-4", "route", "replace", "default"]
-        if route["gateway"]:
-            route_args.extend(["via", route["gateway"]])
-        route_args.extend(["dev", route["dev"], "table", str(table)])
-        run(route_args)
+        if route.get("blackhole"):
+            run(["ip", "-4", "route", "replace", "blackhole", "default", "table", str(table)])
+        else:
+            route_args = ["ip", "-4", "route", "replace", "default"]
+            if route["gateway"]:
+                route_args.extend(["via", route["gateway"]])
+            route_args.extend(["dev", route["dev"], "table", str(table)])
+            run(route_args)
         run(["ip", "-4", "rule", "add", "fwmark", f"0x{mark:x}/0xffffffff", "table", str(table), "priority", str(priority)])
 
     run(["nft", "-f", "-"], input_text="\n".join(nft_lines) + "\n")

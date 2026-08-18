@@ -137,10 +137,17 @@ public static class TrafficBypassEgressModes
     public const string AutoPhysical = "auto";
     public const string Interface = "interface";
 
+    /// <summary>
+    /// Drops matched traffic instead of rerouting it. Exists to cut off apps' hardcoded
+    /// in-app DNS endpoints so they fall back to system DNS, where domain-based bypass
+    /// can see them. Not offered as a default; use with specific addresses only.
+    /// </summary>
+    public const string Block = "block";
+
     public static string Normalize(string? value)
     {
         value = value?.Trim().ToLowerInvariant();
-        return value == Interface ? Interface : AutoPhysical;
+        return value is Interface or Block ? value : AutoPhysical;
     }
 }
 

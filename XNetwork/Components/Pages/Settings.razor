@@ -1245,8 +1245,9 @@
                         @bind="_bypassDraft.EgressMode">
                     <option value="@TrafficBypassEgressModes.AutoPhysical">Auto physical</option>
                     <option value="@TrafficBypassEgressModes.Interface">Choose adapter</option>
+                    <option value="@TrafficBypassEgressModes.Block">Block (drop traffic)</option>
                 </select>
-                <span class="mt-1 block text-xs text-slate-500">Auto physical uses the current best non-uLink default route.</span>
+                <span class="mt-1 block text-xs text-slate-500">Auto physical uses the current best non-uLink default route. Block drops matches; used to disable apps' built-in DNS.</span>
             </label>
             @if (_bypassDraft.EgressMode == TrafficBypassEgressModes.Interface)
             {
@@ -2703,9 +2704,12 @@
 
     private static string FormatBypassEgress(TrafficBypassRule rule)
     {
-        return TrafficBypassEgressModes.Normalize(rule.EgressMode) == TrafficBypassEgressModes.Interface
-            ? rule.InterfaceName
-            : "Auto physical";
+        return TrafficBypassEgressModes.Normalize(rule.EgressMode) switch
+        {
+            TrafficBypassEgressModes.Interface => rule.InterfaceName,
+            TrafficBypassEgressModes.Block => "Blocked",
+            _ => "Auto physical"
+        };
     }
 
     private WifiControlInterfaceStatus? GetWifiControlFor(string interfaceName) =>
