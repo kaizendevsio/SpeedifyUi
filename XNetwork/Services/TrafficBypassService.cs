@@ -216,9 +216,9 @@ public sealed class TrafficBypassService(
             result.Errors.Add("Name is required.");
         }
 
-        if (rule.Destinations.Count == 0 && rule.Ports.Count == 0)
+        if (rule.Destinations.Count == 0 && rule.Ports.Count == 0 && rule.Domains.Count == 0)
         {
-            result.Errors.Add("Add at least one destination IP/CIDR or one destination port.");
+            result.Errors.Add("Add at least one destination IP/CIDR, domain, or destination port.");
         }
 
         foreach (var destination in rule.Destinations)
@@ -226,6 +226,14 @@ public sealed class TrafficBypassService(
             if (!IsValidDestination(destination))
             {
                 result.Errors.Add($"Destination {destination} must be an IPv4 address or CIDR.");
+            }
+        }
+
+        foreach (var domain in rule.Domains)
+        {
+            if (!IsValidDomain(domain))
+            {
+                result.Errors.Add($"Domain {domain} must be a host name such as tiktok.com.");
             }
         }
 
@@ -271,6 +279,13 @@ public sealed class TrafficBypassService(
     {
         var destinations = NormalizeList(rule.Destinations);
         var ports = NormalizeList(rule.Ports);
+        // dnsmasq matches domains case-insensitively by suffix, so a leading dot is
+        // redundant and mixed case would produce duplicate entries.
+        var domains = NormalizeList(rule.Domains)
+            .Select(domain => domain.TrimStart('.').ToLowerInvariant())
+            .Where(domain => domain.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         var egressMode = TrafficBypassEgressModes.Normalize(rule.EgressMode);
         return new TrafficBypassRule
         {
@@ -278,6 +293,7 @@ public sealed class TrafficBypassService(
             DisplayName = rule.DisplayName?.Trim() ?? "",
             Enabled = rule.Enabled,
             Destinations = destinations,
+            Domains = domains,
             Protocol = TrafficBypassProtocols.Normalize(rule.Protocol),
             Ports = ports,
             EgressMode = egressMode,
@@ -293,6 +309,43 @@ public sealed class TrafficBypassService(
             .Where(item => !string.IsNullOrWhiteSpace(item))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+
+    /// <summary>
+    /// Accepts a DNS host name. A bare IP is rejected on purpose: it belongs in
+    /// Destinations, and accepting it here would build a DNS rule that never matches.
+    /// </summary>
+    public static bool IsValidDomain(string? value)
+    {
+        value = value?.Trim().TrimStart('.');
+        if (string.IsNullOrEmpty(value) || value.Length > 253)
+        {
+            return false;
+        }
+
+        if (IPAddress.TryParse(value, out _))
+        {
+            return false;
+        }
+
+        var labels = value.Split('.');
+        if (labels.Length < 2)
+        {
+            return false;
+        }
+
+        foreach (var label in labels)
+        {
+            if (label.Length is 0 or > 63 ||
+                label.StartsWith('-') ||
+                label.EndsWith('-') ||
+                !label.All(character => char.IsAsciiLetterOrDigit(character) || character == '-'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     public static bool IsValidDestination(string value)
     {
@@ -359,6 +412,7 @@ public sealed class TrafficBypassService(
         DisplayName = rule.DisplayName,
         Enabled = rule.Enabled,
         Destinations = rule.Destinations.ToList(),
+        Domains = rule.Domains.ToList(),
         Protocol = rule.Protocol,
         Ports = rule.Ports.ToList(),
         EgressMode = rule.EgressMode,

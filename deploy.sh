@@ -53,6 +53,36 @@ else
   echo "Warning: bypass helper source missing at $BYPASS_HELPER_SRC" >&2
 fi
 
+DNS_CONF_SRC="$APP_DIR/XNetwork/deploy/dnsmasq/xnetwork-dns.conf"
+DNS_UNIT_SRC="$APP_DIR/XNetwork/deploy/systemd/xnetwork-dns.service"
+echo "Installing XNetwork LAN resolver (domain-based bypass)..."
+if [[ -f "$DNS_CONF_SRC" && -f "$DNS_UNIT_SRC" ]]; then
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    if ! command -v dnsmasq >/dev/null 2>&1; then
+      echo "Warning: dnsmasq is not installed; domain-based bypass rules will not resolve." >&2
+    else
+      sudo install -d -m 0755 /etc/xnetwork
+      # Created empty so the resolver starts cleanly before any domain rule exists; the
+      # bypass helper regenerates it from the saved rules.
+      sudo test -f /etc/xnetwork/dnsmasq-bypass-domains.conf || \
+        sudo install -m 0644 /dev/null /etc/xnetwork/dnsmasq-bypass-domains.conf
+      sudo install -m 0644 "$DNS_CONF_SRC" /etc/xnetwork/dnsmasq-dns.conf
+      sudo install -m 0644 "$DNS_UNIT_SRC" /etc/systemd/system/xnetwork-dns.service
+      sudo systemctl daemon-reload
+      # Enabled but NOT started here: starting it binds port 53 on the LAN, which is an
+      # operator decision. Settings > Traffic Bypass reports whether it is running.
+      sudo systemctl enable xnetwork-dns.service >/dev/null 2>&1 || true
+      if systemctl is-active --quiet xnetwork-dns.service; then
+        sudo systemctl restart xnetwork-dns.service
+      fi
+    fi
+  else
+    echo "Warning: no passwordless sudo; skipped installing the LAN resolver." >&2
+  fi
+else
+  echo "Warning: LAN resolver sources missing; domain-based bypass will not work." >&2
+fi
+
 APP_VERSION="$(sed -nE 's/.*CurrentVersion = "([^"]+)".*/\1/p' XNetwork/Models/AppChangelog.cs | head -n 1)"
 if [[ -z "$APP_VERSION" ]]; then
   echo "Unable to determine AppChangelog.CurrentVersion" >&2

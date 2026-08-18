@@ -1185,6 +1185,18 @@
              MaxWidthClass="md:max-w-2xl"
              OnClose="CloseBypassEditorAsync">
     <div class="space-y-4">
+        @if (_editingBypassId is null)
+        {
+            <div class="flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/60 px-3 py-2">
+                <span class="text-xs text-slate-400">Quick start:</span>
+                <button type="button"
+                        class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-200 transition-colors hover:bg-cyan-500/20"
+                        @onclick="ApplyTikTokPreset">
+                    TikTok
+                </button>
+                <span class="text-xs text-slate-500">Fills in the domains that decide TikTok's region and currency.</span>
+            </div>
+        }
         <div class="grid gap-4 md:grid-cols-2">
             <label class="block">
                 <span class="text-sm font-medium text-white">Name</span>
@@ -1207,7 +1219,17 @@
                 <textarea class="mt-2 min-h-24 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
                           placeholder="8.8.8.8, 203.0.113.0/24"
                           @bind="_bypassDestinationText"></textarea>
-                <span class="mt-1 block text-xs text-slate-500">IPv4 addresses or CIDR ranges. Leave empty only when matching by port.</span>
+                <span class="mt-1 block text-xs text-slate-500">IPv4 addresses or CIDR ranges. Leave empty only when matching by port or domain.</span>
+            </label>
+            <label class="block md:col-span-2">
+                <span class="text-sm font-medium text-white">Domains</span>
+                <textarea class="mt-2 min-h-24 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-cyan-500"
+                          placeholder="tiktok.com, tiktokcdn.com"
+                          @bind="_bypassDomainText"></textarea>
+                <span class="mt-1 block text-xs text-slate-500">
+                    For services whose addresses change or sit in shared CDN ranges. Matches subdomains too,
+                    and requires the router to be handling DNS for your devices.
+                </span>
             </label>
             <label class="block md:col-span-2">
                 <span class="text-sm font-medium text-white">Destination ports</span>
@@ -1325,6 +1347,7 @@
     private string? _bypassMessage;
     private string _bypassMessageClass = "border-slate-700 bg-slate-950/60 text-slate-200";
     private string _bypassDestinationText = "";
+    private string _bypassDomainText = "";
     private string _bypassPortsText = "";
     private string? _editingProxyId;
     private string? _editingBypassId;
@@ -2247,6 +2270,7 @@
         {
             _bypassDraft.Id = _editingBypassId ?? _bypassDraft.Id;
             _bypassDraft.Destinations = TrafficBypassService.SplitTextList(_bypassDestinationText).ToList();
+            _bypassDraft.Domains = TrafficBypassService.SplitTextList(_bypassDomainText).ToList();
             _bypassDraft.Ports = TrafficBypassService.SplitTextList(_bypassPortsText).ToList();
             _bypassStatus = await TrafficBypassService.SaveRuleAsync(_bypassDraft, _refreshCts.Token);
             await LoadTrafficBypassAsync();
@@ -2300,10 +2324,21 @@
         _editingBypassId = rule.Id;
         _bypassDraft = CopyBypass(rule);
         _bypassDestinationText = string.Join(Environment.NewLine, rule.Destinations);
+        _bypassDomainText = string.Join(Environment.NewLine, rule.Domains);
         _bypassPortsText = string.Join(", ", rule.Ports);
         ClearBypassMessage();
         await LoadTrafficBypassAsync();
         _showBypassEditor = true;
+    }
+
+    private void ApplyTikTokPreset()
+    {
+        var preset = TrafficBypassPresets.TikTok();
+        _bypassDraft = CopyBypass(preset);
+        _bypassDestinationText = "";
+        _bypassDomainText = string.Join(Environment.NewLine, preset.Domains);
+        _bypassPortsText = "";
+        ClearBypassMessage();
     }
 
     private void ResetBypassDraft()
@@ -2311,6 +2346,7 @@
         _editingBypassId = null;
         _bypassDraft = NewBypassDraft();
         _bypassDestinationText = "";
+        _bypassDomainText = "";
         _bypassPortsText = "";
     }
 
@@ -2621,6 +2657,7 @@
         DisplayName = source.DisplayName,
         Enabled = source.Enabled,
         Destinations = source.Destinations.ToList(),
+        Domains = source.Domains.ToList(),
         Protocol = source.Protocol,
         Ports = source.Ports.ToList(),
         EgressMode = source.EgressMode,
@@ -2644,9 +2681,24 @@
 
     private static string FormatBypassMatch(TrafficBypassRule rule)
     {
-        var destinations = rule.Destinations.Count == 0 ? "any destination" : string.Join(", ", rule.Destinations);
+        var parts = new List<string>();
+        if (rule.Domains.Count > 0)
+        {
+            parts.Add(string.Join(", ", rule.Domains));
+        }
+
+        if (rule.Destinations.Count > 0)
+        {
+            parts.Add(string.Join(", ", rule.Destinations));
+        }
+
+        if (parts.Count == 0)
+        {
+            parts.Add("any destination");
+        }
+
         var ports = rule.Ports.Count == 0 ? "any port" : "ports " + string.Join(", ", rule.Ports);
-        return $"{destinations}; {ports}";
+        return $"{string.Join(" or ", parts)}; {ports}";
     }
 
     private static string FormatBypassEgress(TrafficBypassRule rule)

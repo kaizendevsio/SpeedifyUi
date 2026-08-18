@@ -13,13 +13,28 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.131";
+    public const string CurrentVersion = "ulink-2026.06.132";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-18",
+            Summary = "Added domain-based bypass rules, with a one-click TikTok preset.",
+            Changes =
+            [
+                "Bumped the uLink interface version for domain-based bypass.",
+                "Added a Domains box to bypass rules for services whose addresses keep changing.",
+                "Added a TikTok quick-start button that fills in the domains deciding its region and currency.",
+                "Matched subdomains automatically, so tiktok.com also covers www.tiktok.com.",
+                "Added a router DNS service that keeps domain rules pointed at the right addresses.",
+                "Kept Tailscale names working by sending them to Tailscale instead of the public resolvers."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.131",
             Date = "2026-08-18",
             Summary = "Preferred the consistently lowest-latency adapter as the main path.",
             Changes =

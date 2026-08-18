@@ -1,0 +1,18 @@
+[Unit]
+Description=XNetwork LAN DNS resolver (domain-based traffic bypass)
+Documentation=man:dnsmasq(8)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# --keep-in-foreground so systemd tracks the real process, matching cudy-wan-dhcp.service.
+ExecStartPre=/usr/bin/install -d -m 0755 /etc/xnetwork
+ExecStartPre=/bin/sh -c '[ -f /etc/xnetwork/dnsmasq-bypass-domains.conf ] || : > /etc/xnetwork/dnsmasq-bypass-domains.conf'
+ExecStartPre=/usr/sbin/dnsmasq --test --conf-file=/etc/xnetwork/dnsmasq-dns.conf
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/xnetwork/dnsmasq-dns.conf
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
