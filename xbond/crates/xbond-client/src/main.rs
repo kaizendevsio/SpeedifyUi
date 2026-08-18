@@ -7621,9 +7621,15 @@ fn spawn_host_metrics_sampler(
         loop {
             ticker.tick().await;
             let name = tunnel_name.clone();
-            let sample = tokio::task::spawn_blocking(move || HostMetricsCache {
-                kernel_network: read_linux_kernel_network_status(Some(&name)).delta(baseline),
-                rss_bytes: current_process_rss_bytes(),
+            let sample = tokio::task::spawn_blocking(move || {
+                // Refreshing interface liveness here keeps the packet loop's cache warm:
+                // read_interface_state forks `ip -4 addr show`, and paying that on the
+                // scheduler tick was measured at ~8ms of packet-forwarding stall.
+                refresh_known_interface_states();
+                HostMetricsCache {
+                    kernel_network: read_linux_kernel_network_status(Some(&name)).delta(baseline),
+                    rss_bytes: current_process_rss_bytes(),
+                }
             })
             .await;
             if let Ok(sample) = sample {
@@ -8735,7 +8741,27 @@ fn interface_is_live(interface_name: Option<&str>) -> bool {
 type InterfaceStateEntry = (InterfaceState, Instant);
 static INTERFACE_STATE_CACHE: OnceLock<StdMutex<HashMap<String, InterfaceStateEntry>>> =
     OnceLock::new();
-const INTERFACE_STATE_TTL: Duration = Duration::from_millis(900);
+// Longer than the sampler's refresh period, so entries the sampler maintains never expire
+// on the packet loop; a fork only happens inline the first time an interface is seen.
+const INTERFACE_STATE_TTL: Duration = Duration::from_millis(2_500);
+
+/// Re-probes every interface the cache has ever seen. Runs on the host-metrics sampler's
+/// blocking worker, so the packet loop's lookups stay warm and never pay the fork.
+fn refresh_known_interface_states() {
+    let Some(cache) = INTERFACE_STATE_CACHE.get() else {
+        return;
+    };
+    let names: Vec<String> = match cache.lock() {
+        Ok(guard) => guard.keys().cloned().collect(),
+        Err(_) => return,
+    };
+    for name in names {
+        let state = read_interface_state(&name);
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(name, (state, Instant::now()));
+        }
+    }
+}
 
 fn cached_interface_state(interface_name: &str) -> InterfaceState {
     let cache = INTERFACE_STATE_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
