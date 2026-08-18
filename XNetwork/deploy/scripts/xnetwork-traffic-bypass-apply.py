@@ -192,13 +192,13 @@ def build_match_lines(rule, mark, index):
         if ports:
             protocols = ["tcp", "udp"] if protocol == "any" else [protocol]
             lines.extend(
-                f"{dest_clause}ip protocol {proto} {proto} dport {nft_set(ports)} meta mark set 0x{mark:x}"
+                f"{dest_clause}ip protocol {proto} {proto} dport {nft_set(ports)} counter meta mark set 0x{mark:x}"
                 for proto in protocols
             )
         elif protocol == "any":
-            lines.append(f"{dest_clause}meta mark set 0x{mark:x}")
+            lines.append(f"{dest_clause}counter meta mark set 0x{mark:x}")
         else:
-            lines.append(f"{dest_clause}ip protocol {protocol} meta mark set 0x{mark:x}")
+            lines.append(f"{dest_clause}ip protocol {protocol} counter meta mark set 0x{mark:x}")
     return lines
 
 
