@@ -11,6 +11,12 @@ udp_receive_batch_size = 32
 heartbeat_interval_ms = 200
 heartbeat_health_window_samples = 100
 heartbeat_min_quality_samples = 20
+# Recent history the published rtt/jitter/loss figures summarise. Kept far shorter than
+# heartbeat_health_window_samples, which stays long for warm-up gating and failure detection:
+# reporting over the long window lagged reality by tens of seconds in both directions, so a
+# busy link read as healthy and a recovered one read as lossy. Lower reacts faster but makes
+# loss coarser (one miss = one slot).
+heartbeat_metric_window_ms = 3000
 heartbeat_failure_consecutive = 4
 heartbeat_recovery_consecutive = 15
 runtime_status_path = "/run/xbond/client-status.json"

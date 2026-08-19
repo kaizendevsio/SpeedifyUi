@@ -35,6 +35,16 @@ pub struct ClientConfig {
     pub heartbeat_health_window_samples: usize,
     #[serde(default = "default_heartbeat_min_quality_samples")]
     pub heartbeat_min_quality_samples: usize,
+    /// How much recent history the PUBLISHED rtt/jitter/loss figures summarise.
+    ///
+    /// Separate from `heartbeat_health_window_samples`, which stays long because warm-up
+    /// gating and failure detection need the history. Reporting reused that long window, so
+    /// the figures lagged reality badly in both directions: a saturated link still read
+    /// 36 ms while probes measured 110-180 ms, and a link that had fully recovered kept
+    /// reporting ~5% loss and 78 ms for tens of seconds. Those figures feed path scoring and
+    /// the stability penalty, so a fast link was punished for having been busy.
+    #[serde(default = "default_heartbeat_metric_window_ms")]
+    pub heartbeat_metric_window_ms: u64,
     #[serde(default = "default_heartbeat_failure_consecutive")]
     pub heartbeat_failure_consecutive: u32,
     #[serde(default = "default_heartbeat_recovery_consecutive")]
@@ -99,6 +109,7 @@ impl Default for ClientConfig {
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
             heartbeat_health_window_samples: default_heartbeat_health_window_samples(),
             heartbeat_min_quality_samples: default_heartbeat_min_quality_samples(),
+            heartbeat_metric_window_ms: default_heartbeat_metric_window_ms(),
             heartbeat_failure_consecutive: default_heartbeat_failure_consecutive(),
             heartbeat_recovery_consecutive: default_heartbeat_recovery_consecutive(),
             silent_blackhole_probe_targets: Vec::new(),
@@ -421,6 +432,10 @@ pub fn default_heartbeat_interval_ms() -> u64 {
 
 pub fn default_heartbeat_health_window_samples() -> usize {
     100
+}
+
+pub fn default_heartbeat_metric_window_ms() -> u64 {
+    3_000
 }
 
 pub fn default_heartbeat_min_quality_samples() -> usize {

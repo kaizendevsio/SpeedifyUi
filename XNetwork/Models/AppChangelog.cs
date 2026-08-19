@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.137";
+    public const string CurrentVersion = "ulink-2026.06.138";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-19",
+            Summary = "Made the reported latency and loss reflect the last few seconds.",
+            Changes =
+            [
+                "Bumped the uLink interface version for responsive adapter measurements.",
+                "Reported each adapter latency and loss over the last few seconds instead of the last minute.",
+                "Stopped penalising a healthy adapter for a busy period that had already ended.",
+                "Kept the longer history behind the scenes, so warm-up and failure detection are unchanged."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.137",
             Date = "2026-08-19",
             Summary = "Kept bypass rules working after an adapter drops its connection.",
             Changes =

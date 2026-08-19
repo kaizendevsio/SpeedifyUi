@@ -6904,6 +6904,18 @@ fn path_health_window_samples(config: &ClientConfig) -> usize {
     config.heartbeat_health_window_samples.max(1)
 }
 
+/// How many of the stored samples the PUBLISHED rtt/jitter/loss figures summarise.
+///
+/// Derived from the heartbeat cadence so the figures describe roughly the last
+/// `heartbeat_metric_window_ms` rather than the whole stored history. Floors at 3 so a single
+/// miss cannot read as total loss, and never exceeds what is actually stored.
+fn path_metric_window_samples(config: &ClientConfig) -> usize {
+    let interval = config.heartbeat_interval_ms.max(1);
+    let samples =
+        usize::try_from(config.heartbeat_metric_window_ms / interval).unwrap_or(usize::MAX);
+    samples.clamp(3, path_health_window_samples(config))
+}
+
 fn path_min_quality_samples(config: &ClientConfig) -> usize {
     config
         .heartbeat_min_quality_samples
@@ -7337,16 +7349,25 @@ fn correct_tunnel_heartbeat_sample(
     }
 }
 
-fn refresh_tunnel_health(_config: &ClientConfig, runtime: &mut TunnelPathRuntime) {
+fn refresh_tunnel_health(config: &ClientConfig, runtime: &mut TunnelPathRuntime) {
+    // Published figures describe the RECENT past. The full stored window stays behind them
+    // for warm-up gating and failure detection, but summarising all of it meant a saturated
+    // link still reported 36 ms while probes measured 110-180 ms, and a link that had fully
+    // recovered kept reporting several percent loss for tens of seconds. Both figures feed
+    // path scoring and the stability penalty, so the lag punished a link for having been busy.
+    let metric_window = path_metric_window_samples(config);
+
     runtime.loss_rate = if runtime.health_window.is_empty() {
         0.0
     } else {
+        let recent = runtime.health_window.len().min(metric_window);
         let missed = runtime
             .health_window
             .iter()
+            .skip(runtime.health_window.len() - recent)
             .filter(|sample| !sample.delivered)
             .count();
-        missed as f64 / runtime.health_window.len() as f64
+        missed as f64 / recent as f64
     };
 
     if runtime.rtt_samples_ms.is_empty() {
@@ -7355,20 +7376,31 @@ fn refresh_tunnel_health(_config: &ClientConfig, runtime: &mut TunnelPathRuntime
         return;
     }
 
-    let average = runtime.rtt_samples_ms.iter().sum::<f64>() / runtime.rtt_samples_ms.len() as f64;
-    runtime.rtt_ms = Some(average);
+    // Summed in one pass rather than collected, since this runs per heartbeat per path.
+    let recent = runtime.rtt_samples_ms.len().min(metric_window);
+    let mut total_ms = 0.0;
+    let mut delta_total_ms = 0.0;
+    let mut deltas = 0usize;
+    let mut previous: Option<f64> = None;
+    for &sample in runtime
+        .rtt_samples_ms
+        .iter()
+        .skip(runtime.rtt_samples_ms.len() - recent)
+    {
+        total_ms += sample;
+        if let Some(previous) = previous {
+            delta_total_ms += (sample - previous).abs();
+            deltas += 1;
+        }
+        previous = Some(sample);
+    }
 
-    runtime.jitter_ms = if runtime.rtt_samples_ms.len() < 2 {
-        Some(0.0)
+    runtime.rtt_ms = Some(total_ms / recent as f64);
+    runtime.jitter_ms = Some(if deltas == 0 {
+        0.0
     } else {
-        let deltas = runtime
-            .rtt_samples_ms
-            .iter()
-            .zip(runtime.rtt_samples_ms.iter().skip(1))
-            .map(|(left, right)| (right - left).abs())
-            .collect::<Vec<_>>();
-        Some(deltas.iter().sum::<f64>() / deltas.len() as f64)
-    };
+        delta_total_ms / deltas as f64
+    });
 }
 
 fn update_tunnel_throughput(
@@ -9054,6 +9086,120 @@ mod tests {
             .into_iter()
             .map(HeartbeatHealthSample::untagged)
             .collect()
+    }
+
+    fn metric_window_config() -> ClientConfig {
+        ClientConfig {
+            heartbeat_interval_ms: 200,
+            heartbeat_health_window_samples: 100,
+            heartbeat_metric_window_ms: 3_000,
+            ..ClientConfig::default()
+        }
+    }
+
+    #[test]
+    fn published_rtt_reflects_recent_samples_not_the_whole_window() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        // A long calm period, then the link starts queueing badly.
+        for _ in 0..100 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
+        }
+        for _ in 0..15 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(150.0));
+        }
+
+        // Averaging all 100 stored samples would report ~50ms and hide the problem.
+        let reported = runtime.rtt_ms.expect("rtt");
+        assert!(reported > 140.0, "rtt should track the recent samples, got {reported}");
+    }
+
+    #[test]
+    fn a_recovered_path_stops_reporting_loss_promptly() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        // A burst of loss...
+        for _ in 0..20 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(false), None);
+        }
+        // ...then the link is completely clean again.
+        for _ in 0..15 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
+        }
+
+        // This is the reported bug: a healthy link kept showing several percent loss for
+        // tens of seconds after recovering, which penalised it in path scoring.
+        assert_eq!(runtime.loss_rate, 0.0,
+                   "a fully recovered path must not still report loss");
+    }
+
+    #[test]
+    fn loss_resolution_matches_the_metric_window_not_the_stored_window() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        for _ in 0..100 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
+        }
+        record_tunnel_health_sample_inner(
+            &config, &mut runtime, HeartbeatHealthSample::untagged(false), None);
+
+        // 3000ms / 200ms = 15 samples, so one miss is 1/15, not 1/100. Coarser than the old
+        // window on purpose: it is the price of reacting inside a few seconds.
+        let expected = 1.0 / 15.0;
+        assert!((runtime.loss_rate - expected).abs() < 1e-9,
+                "expected {expected}, got {}", runtime.loss_rate);
+    }
+
+    #[test]
+    fn the_stored_window_still_backs_warm_up_gating() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        for _ in 0..100 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
+        }
+
+        // Shortening what gets REPORTED must not shorten the history that decides whether a
+        // path has been observed long enough to trust.
+        assert_eq!(runtime.health_window.len(), 100);
+        assert!(!heartbeat_warming_up(&config, &runtime));
+    }
+
+    #[test]
+    fn a_short_lived_path_reports_from_what_it_has() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        record_tunnel_health_sample_inner(
+            &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(45.0));
+
+        // Fewer samples than the metric window is normal on a new path; report them rather
+        // than nothing.
+        assert_eq!(runtime.rtt_ms, Some(45.0));
+        assert_eq!(runtime.loss_rate, 0.0);
+    }
+
+    #[test]
+    fn jitter_is_measured_over_the_recent_samples() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        for _ in 0..100 {
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
+        }
+        // Alternating RTT: every consecutive delta is 20ms.
+        for index in 0..15 {
+            let rtt = if index % 2 == 0 { 40.0 } else { 60.0 };
+            record_tunnel_health_sample_inner(
+                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(rtt));
+        }
+
+        let jitter = runtime.jitter_ms.expect("jitter");
+        assert!(jitter > 15.0, "jitter should reflect the recent swing, got {jitter}");
     }
 
     fn pooled_test_packet(bytes: &[u8]) -> Arc<PooledTunPacket> {
