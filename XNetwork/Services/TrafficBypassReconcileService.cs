@@ -75,7 +75,8 @@ public sealed class TrafficBypassReconcileService(
                     // Only announce actual repairs. A healthy pass every 20s would be noise.
                     if (status.Message.Contains("repaired", StringComparison.OrdinalIgnoreCase))
                     {
-                        logger.LogInformation("Traffic bypass {Message}", status.Message);
+                        // The helper's own message already names the subsystem.
+                        logger.LogInformation("{Message}", status.Message);
                     }
 
                     continue;
