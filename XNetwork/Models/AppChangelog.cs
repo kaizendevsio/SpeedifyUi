@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.134";
+    public const string CurrentVersion = "ulink-2026.06.135";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-19",
+            Summary = "Favoured adapters that hold steady latency and loss.",
+            Changes =
+            [
+                "Bumped the uLink interface version for stability-aware adapter scoring.",
+                "Scored adapters on how steady their latency and loss have been over the last 30 seconds.",
+                "Ranked a steady adapter above an erratic one even when their averages match.",
+                "Made a newly connected adapter earn its stability rating instead of assuming the best.",
+                "Kept instant failover unchanged: a dead adapter is still replaced immediately."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.134",
             Date = "2026-08-19",
             Summary = "Removed the once-per-second latency spike from the tunnel.",
             Changes =

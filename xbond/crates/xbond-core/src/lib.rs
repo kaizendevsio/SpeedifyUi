@@ -52,10 +52,9 @@ pub use session::{
 pub use status::{
     PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondKernelNetworkStatus,
     XBondPacketPoolStatus, XBondPathAnchorStatus, XBondPathStatus, XBondProcessStatus,
-    XBondReorderStatus,
-    XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus, XBondSaturationStatus,
-    XBondServerHealthStatus, XBondServerHealthTargetStatus, XBondServerIngressReorderStatus,
-    XBondServerRecoveryStatus, XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus,
-    XBondTunnelStatus,
+    XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus,
+    XBondSaturationStatus, XBondServerHealthStatus, XBondServerHealthTargetStatus,
+    XBondServerIngressReorderStatus, XBondServerRecoveryStatus, XBondSocketBufferStatus,
+    XBondStageTimingStatus, XBondStatus, XBondTunnelStatus,
 };
 pub use tun::{is_ipv4_packet, XBondTun};

@@ -269,6 +269,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             path.EffectiveScore = stability.EffectiveScore;
             path.FlapPenalty = stability.FlapPenalty;
             path.Suppressed = stability.Suppressed;
+            path.StabilityPenalty = stability.StabilityPenalty;
+            path.LatencyDeviationMs = stability.LatencyDeviationMs;
+            path.LossDeviation = stability.LossDeviation;
             path.Trial = stability.Trial;
         }
     }

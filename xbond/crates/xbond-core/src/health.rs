@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::anchor::{
     AnchorTrial, AnchorTrialConfig, AnchorTrialStatus, FlapDamping, FlapDampingConfig,
-    PathScoreSmoothing, ScoreSmoothingConfig, TrialObservation, TrialOutcome,
+    PathScoreSmoothing, PathStability, ScoreSmoothingConfig, StabilityConfig, TrialObservation,
+    TrialOutcome,
 };
 
 use std::collections::BTreeMap;
@@ -196,6 +197,14 @@ pub struct ScoredPath {
     /// EWMA of the raw heartbeat RTT, driving the latency-first anchor preference.
     #[serde(default)]
     pub smoothed_rtt_ms: Option<f64>,
+    /// Score points subtracted for unsteady latency/loss, or for not yet having proven
+    /// steadiness. Zero means a fully proven, rock-steady link.
+    #[serde(default)]
+    pub stability_penalty: f64,
+    #[serde(default)]
+    pub latency_deviation_ms: f64,
+    #[serde(default)]
+    pub loss_deviation: f64,
     /// Present only on the path currently under trial.
     #[serde(default)]
     pub trial: Option<AnchorTrialStatus>,
@@ -222,6 +231,9 @@ pub struct RoleSelectionState {
     /// EWMA of raw heartbeat RTT per path; the same filter type as `smoothing`.
     #[serde(default)]
     pub rtt_smoothing: BTreeMap<u16, PathScoreSmoothing>,
+    /// Rolling latency/loss steadiness per path.
+    #[serde(default)]
+    pub stability: BTreeMap<u16, PathStability>,
     #[serde(default)]
     pub flap_damping: FlapDamping,
     #[serde(default)]
@@ -254,6 +266,7 @@ impl Default for RoleSelectionState {
             schedule_change_count: 0,
             smoothing: BTreeMap::new(),
             rtt_smoothing: BTreeMap::new(),
+            stability: BTreeMap::new(),
             flap_damping: FlapDamping::default(),
             latency_candidate_path_id: None,
             latency_candidate_ticks: 0,
@@ -279,6 +292,7 @@ pub struct RoleSelectionConfig {
     /// Zero disables the latency trigger.
     pub latency_stable_ticks: u32,
     pub smoothing: ScoreSmoothingConfig,
+    pub stability: StabilityConfig,
     pub flap: FlapDampingConfig,
     pub trial: AnchorTrialConfig,
 }
@@ -294,6 +308,7 @@ impl Default for RoleSelectionConfig {
             latency_advantage_ms: 15.0,
             latency_stable_ticks: 30,
             smoothing: ScoreSmoothingConfig::default(),
+            stability: StabilityConfig::default(),
             flap: FlapDampingConfig::default(),
             trial: AnchorTrialConfig::default(),
         }
@@ -390,6 +405,9 @@ fn apply_score_smoothing(
     state
         .rtt_smoothing
         .retain(|path_id, _| live_ids.contains(path_id));
+    state
+        .stability
+        .retain(|path_id, _| live_ids.contains(path_id));
 
     for scored_path in scored.iter_mut() {
         let eligible = scored_path.path.is_realtime_eligible();
@@ -419,10 +437,26 @@ fn apply_score_smoothing(
             smoothing.observe(scored_path.score, config.smoothing.alpha);
         }
         scored_path.smoothed_score = smoothing.smoothed;
+
+        // Latency and loss steadiness, tracked over their own window. Only eligible ticks
+        // count: a hard-demoted path is not exhibiting instability, it is simply out.
+        let stability = state.stability.entry(scored_path.path.path_id).or_default();
+        if eligible {
+            stability.observe(
+                scored_path.path.rtt_ms,
+                scored_path.path.loss_rate,
+                config.stability.window_ticks,
+            );
+        }
+        scored_path.latency_deviation_ms = stability.latency_deviation_ms;
+        scored_path.loss_deviation = stability.loss_deviation;
+        scored_path.stability_penalty = stability.penalty(config.stability);
+
         // A hard-demoted path still reports the sentinel, so a good history can never let
         // a dead interface outrank a live one.
         scored_path.effective_score = if eligible {
             smoothing.effective_score(config.smoothing.variance_penalty_weight)
+                - scored_path.stability_penalty
         } else {
             scored_path.score
         };
@@ -774,6 +808,9 @@ fn score_paths(paths: &[PathHealthSnapshot]) -> Vec<ScoredPath> {
                 flap_penalty: 0.0,
                 suppressed: false,
                 smoothed_rtt_ms: None,
+                stability_penalty: 0.0,
+                latency_deviation_ms: 0.0,
+                loss_deviation: 0.0,
                 trial: None,
                 role,
             }
@@ -1346,11 +1383,90 @@ mod tests {
             false,
         );
 
+        let config = RoleSelectionConfig::default();
         let fiber = &roles[0];
-        // First tick seeds the filter, so all three views agree.
+        // First tick seeds the smoothing filter, so the smoothed view matches the raw one.
         assert_eq!(fiber.smoothed_score, fiber.score);
-        assert_eq!(fiber.effective_score, fiber.score);
         assert_eq!(fiber.flap_penalty, 0.0);
+        // The effective score is docked because one sample proves nothing about steadiness;
+        // the path has to hold its latency and loss to earn that back.
+        assert!(fiber.stability_penalty > 0.0);
+        assert_eq!(
+            fiber.effective_score,
+            fiber.score - fiber.stability_penalty,
+            "effective score should be the smoothed score minus the stability penalty"
+        );
+        assert!(fiber.stability_penalty <= config.stability.unproven_penalty);
+    }
+
+    /// The headline behaviour: two links with the same average latency and loss, but one
+    /// steady and one erratic, must not rank equally.
+    #[test]
+    fn a_steady_path_outranks_an_erratic_one_with_the_same_average() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let mut roles = Vec::new();
+
+        for tick in 0..(config.stability.window_ticks * 2) {
+            // Path 2 averages the same 60ms/1% as path 1 but swings hard around it.
+            let (erratic_rtt, erratic_loss) = if tick % 2 == 0 {
+                (20.0, 0.0)
+            } else {
+                (100.0, 0.02)
+            };
+            let mut erratic = path(2, "erratic", erratic_rtt, erratic_loss, 0.0);
+            erratic.jitter_ms = Some(5.0);
+            roles = tick_roles(
+                &mut state,
+                &[path(1, "steady", 60.0, 0.01, 0.0), erratic],
+                config,
+            );
+        }
+
+        let steady = roles.iter().find(|p| p.path.path_id == 1).unwrap();
+        let erratic = roles.iter().find(|p| p.path.path_id == 2).unwrap();
+
+        assert!(
+            erratic.latency_deviation_ms > steady.latency_deviation_ms,
+            "the erratic path should show more latency deviation"
+        );
+        assert!(erratic.loss_deviation > steady.loss_deviation);
+        assert!(
+            erratic.stability_penalty > steady.stability_penalty + 50.0,
+            "steady={} erratic={}",
+            steady.stability_penalty,
+            erratic.stability_penalty
+        );
+        assert!(
+            steady.effective_score > erratic.effective_score,
+            "the steady path must rank higher: steady={} erratic={}",
+            steady.effective_score,
+            erratic.effective_score
+        );
+    }
+
+    /// Steadiness must not rescue a link that is steadily terrible.
+    #[test]
+    fn a_consistently_bad_path_does_not_win_on_steadiness_alone() {
+        let config = RoleSelectionConfig::default();
+        let mut state = state_anchored_on(1);
+        let mut roles = Vec::new();
+
+        for _ in 0..(config.stability.window_ticks * 2) {
+            roles = tick_roles(
+                &mut state,
+                &[
+                    path(1, "good", 30.0, 0.0, 0.0),
+                    path(2, "steadily-awful", 400.0, 0.25, 0.0),
+                ],
+                config,
+            );
+        }
+
+        let good = roles.iter().find(|p| p.path.path_id == 1).unwrap();
+        let awful = roles.iter().find(|p| p.path.path_id == 2).unwrap();
+        assert!(awful.stability_penalty < 5.0, "it is steady, just bad");
+        assert!(good.effective_score > awful.effective_score);
     }
 
     #[test]
@@ -1394,6 +1510,14 @@ mod tests {
     }
 
     fn tick(
+        state: &mut RoleSelectionState,
+        paths: &[PathHealthSnapshot],
+        config: RoleSelectionConfig,
+    ) -> Vec<ScoredPath> {
+        select_path_roles_with_state(paths, 1, state, config, false)
+    }
+
+    fn tick_roles(
         state: &mut RoleSelectionState,
         paths: &[PathHealthSnapshot],
         config: RoleSelectionConfig,
@@ -1586,13 +1710,24 @@ mod tests {
         let mut blipped_fiber = healthy_fiber.clone();
         blipped_fiber.queue_pressure = 1.0;
 
-        tick(&mut state, &[healthy_fiber.clone(), slow_cell.clone()], config);
+        tick(
+            &mut state,
+            &[healthy_fiber.clone(), slow_cell.clone()],
+            config,
+        );
         let roles = tick(&mut state, &[blipped_fiber, slow_cell.clone()], config);
         assert_eq!(anchor_of(&roles), Some(2), "the blip must fail over");
-        assert!(state.flap_damping.penalty(1) > 0.0, "the blip is charged up front");
+        assert!(
+            state.flap_damping.penalty(1) > 0.0,
+            "the blip is charged up front"
+        );
 
         // The line recovers on the very next tick.
-        let roles = tick(&mut state, &[healthy_fiber.clone(), slow_cell.clone()], config);
+        let roles = tick(
+            &mut state,
+            &[healthy_fiber.clone(), slow_cell.clone()],
+            config,
+        );
 
         assert_eq!(
             state.flap_damping.penalty(1),
@@ -1602,13 +1737,21 @@ mod tests {
         assert!(!state
             .flap_damping
             .is_suppressed(1, config.flap.suppress_threshold));
-        assert_eq!(anchor_of(&roles), Some(2), "failback still goes through hysteresis");
+        assert_eq!(
+            anchor_of(&roles),
+            Some(2),
+            "failback still goes through hysteresis"
+        );
 
         // And it reclaims the anchor within the normal candidate + trial budget rather
         // than waiting out a 300-second half-life.
         let mut reclaimed_after = None;
         for index in 0..120u32 {
-            let roles = tick(&mut state, &[healthy_fiber.clone(), slow_cell.clone()], config);
+            let roles = tick(
+                &mut state,
+                &[healthy_fiber.clone(), slow_cell.clone()],
+                config,
+            );
             if anchor_of(&roles) == Some(1) {
                 reclaimed_after = Some(index + 1);
                 break;
@@ -1845,7 +1988,11 @@ mod tests {
         for tick_index in 0..300u32 {
             // 10 fast ticks, then 10 slow ones: the EWMA and the consecutive-tick counter
             // both lose the advantage before the 30-tick window completes.
-            let rtt = if (tick_index / 10) % 2 == 0 { 20.0 } else { 200.0 };
+            let rtt = if (tick_index / 10) % 2 == 0 {
+                20.0
+            } else {
+                200.0
+            };
             let roles = tick(
                 &mut state,
                 &[anchor.clone(), path_with_rtt(2, "flappy", rtt)],
@@ -1884,8 +2031,15 @@ mod tests {
             roles = tick(&mut state, &[anchor.clone(), candidate.clone()], config);
         }
 
-        assert_eq!(anchor_of(&roles), Some(1), "the low-latency anchor must hold");
-        assert_eq!(state.trial_count, 0, "the latency gate must block the trial");
+        assert_eq!(
+            anchor_of(&roles),
+            Some(1),
+            "the low-latency anchor must hold"
+        );
+        assert_eq!(
+            state.trial_count, 0,
+            "the latency gate must block the trial"
+        );
     }
 
     /// A candidate that triggered on idle latency but degrades under mirrored load fails
@@ -1903,14 +2057,25 @@ mod tests {
         for _ in 0..config.latency_stable_ticks + 2 {
             roles = tick(&mut state, &[anchor.clone(), idle_fast.clone()], config);
         }
-        assert_eq!(trial_of(&roles), Some(2), "the latency trigger must start a trial");
+        assert_eq!(
+            trial_of(&roles),
+            Some(2),
+            "the latency trigger must start a trial"
+        );
 
         for _ in 0..config.trial.ticks + 1 {
             roles = tick(&mut state, &[anchor.clone(), loaded_slow.clone()], config);
         }
 
-        assert_eq!(anchor_of(&roles), Some(1), "the anchor must never have moved");
-        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::FailedUnderLoad));
+        assert_eq!(
+            anchor_of(&roles),
+            Some(1),
+            "the anchor must never have moved"
+        );
+        assert_eq!(
+            state.last_trial_outcome,
+            Some(TrialOutcome::FailedUnderLoad)
+        );
         assert!(state.flap_damping.penalty(2) > 0.0);
     }
 
@@ -1975,7 +2140,10 @@ mod tests {
             tick(&mut state, &[anchor.clone(), obstructed_starlink()], config);
         }
 
-        assert_eq!(state.last_trial_outcome, Some(TrialOutcome::FailedUnderLoad));
+        assert_eq!(
+            state.last_trial_outcome,
+            Some(TrialOutcome::FailedUnderLoad)
+        );
         assert!(state
             .flap_damping
             .is_suppressed(2, config.flap.suppress_threshold));

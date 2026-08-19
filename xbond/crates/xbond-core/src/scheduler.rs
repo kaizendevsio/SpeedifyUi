@@ -964,8 +964,10 @@ mod tests {
             RedundancyPolicyConfig::default(),
         );
 
-        assert!(transmissions.iter().any(|transmission| transmission.path_id == 3
-            && transmission.packet_kind == PacketKind::Duplicate));
+        assert!(transmissions
+            .iter()
+            .any(|transmission| transmission.path_id == 3
+                && transmission.packet_kind == PacketKind::Duplicate));
     }
 
     #[test]

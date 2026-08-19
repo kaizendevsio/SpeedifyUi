@@ -189,6 +189,13 @@ pub struct XBondPathAnchorStatus {
     pub suppressed: bool,
     #[serde(default)]
     pub smoothed_rtt_ms: Option<f64>,
+    /// Score points docked for unsteady latency/loss, or for not yet having proven steadiness.
+    #[serde(default)]
+    pub stability_penalty: f64,
+    #[serde(default)]
+    pub latency_deviation_ms: f64,
+    #[serde(default)]
+    pub loss_deviation: f64,
     #[serde(default)]
     pub trial: Option<AnchorTrialStatus>,
 }
@@ -202,6 +209,9 @@ impl From<&ScoredPath> for XBondPathAnchorStatus {
             flap_penalty: value.flap_penalty,
             suppressed: value.suppressed,
             smoothed_rtt_ms: value.smoothed_rtt_ms,
+            stability_penalty: value.stability_penalty,
+            latency_deviation_ms: value.latency_deviation_ms,
+            loss_deviation: value.loss_deviation,
             trial: value.trial.clone(),
         }
     }

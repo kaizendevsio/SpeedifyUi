@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::anchor::{AnchorTrialConfig, FlapDampingConfig, ScoreSmoothingConfig};
+use crate::anchor::{AnchorTrialConfig, FlapDampingConfig, ScoreSmoothingConfig, StabilityConfig};
 use crate::health::RoleSelectionConfig;
 use crate::scheduler::{RecoveryConfig, RedundancyPolicy, ScheduleMode};
 
@@ -156,6 +156,17 @@ impl ClientConfig {
             stable_ticks_required: settings.stable_ticks_required.max(1),
             latency_advantage_ms: settings.latency_advantage_ms.max(0.0),
             latency_stable_ticks: settings.latency_stable_ticks,
+            stability: StabilityConfig {
+                window_ticks: settings.stability_window_ticks.max(1),
+                latency_deviation_penalty_per_ms: settings
+                    .stability_latency_deviation_penalty_per_ms
+                    .max(0.0),
+                loss_deviation_penalty_weight: settings
+                    .stability_loss_deviation_penalty_weight
+                    .max(0.0),
+                unproven_penalty: settings.stability_unproven_penalty.max(0.0),
+                penalty_cap: settings.stability_penalty_cap.max(0.0),
+            },
             smoothing: ScoreSmoothingConfig {
                 alpha: settings.smoothing_alpha.clamp(0.01, 1.0),
                 variance_penalty_weight: settings.variance_penalty_weight.max(0.0),
@@ -196,6 +207,16 @@ pub struct RoleSelectionSettings {
     pub latency_stable_ticks: u32,
     #[serde(default = "default_trial_latency_margin_ms")]
     pub trial_latency_margin_ms: f64,
+    #[serde(default = "default_stability_window_ticks")]
+    pub stability_window_ticks: u32,
+    #[serde(default = "default_stability_latency_deviation_penalty_per_ms")]
+    pub stability_latency_deviation_penalty_per_ms: f64,
+    #[serde(default = "default_stability_loss_deviation_penalty_weight")]
+    pub stability_loss_deviation_penalty_weight: f64,
+    #[serde(default = "default_stability_unproven_penalty")]
+    pub stability_unproven_penalty: f64,
+    #[serde(default = "default_stability_penalty_cap")]
+    pub stability_penalty_cap: f64,
     #[serde(default = "default_smoothing_alpha")]
     pub smoothing_alpha: f64,
     #[serde(default = "default_variance_penalty_weight")]
@@ -233,6 +254,13 @@ impl Default for RoleSelectionSettings {
             latency_advantage_ms: default_latency_advantage_ms(),
             latency_stable_ticks: default_latency_stable_ticks(),
             trial_latency_margin_ms: default_trial_latency_margin_ms(),
+            stability_window_ticks: default_stability_window_ticks(),
+            stability_latency_deviation_penalty_per_ms:
+                default_stability_latency_deviation_penalty_per_ms(),
+            stability_loss_deviation_penalty_weight:
+                default_stability_loss_deviation_penalty_weight(),
+            stability_unproven_penalty: default_stability_unproven_penalty(),
+            stability_penalty_cap: default_stability_penalty_cap(),
             smoothing_alpha: default_smoothing_alpha(),
             variance_penalty_weight: default_variance_penalty_weight(),
             flap_penalty_demoted: default_flap_penalty_demoted(),
@@ -272,6 +300,26 @@ fn default_latency_stable_ticks() -> u32 {
 
 fn default_trial_latency_margin_ms() -> f64 {
     10.0
+}
+
+fn default_stability_window_ticks() -> u32 {
+    30
+}
+
+fn default_stability_latency_deviation_penalty_per_ms() -> f64 {
+    3.0
+}
+
+fn default_stability_loss_deviation_penalty_weight() -> f64 {
+    1_500.0
+}
+
+fn default_stability_unproven_penalty() -> f64 {
+    60.0
+}
+
+fn default_stability_penalty_cap() -> f64 {
+    250.0
 }
 
 fn default_smoothing_alpha() -> f64 {

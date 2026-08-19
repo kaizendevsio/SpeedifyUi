@@ -60,3 +60,12 @@ trial_ticks = 20
 trial_success_ticks = 15
 trial_min_bytes = 5000000
 trial_min_interval_ticks = 60
+
+# Stability scoring: latency and loss steadiness over a rolling window. A link that holds
+# its latency and loss outranks an erratic one with the same average, and a newly appeared
+# path is docked until it has filled the window rather than starting out looking perfect.
+stability_window_ticks = 30
+stability_latency_deviation_penalty_per_ms = 3.0
+stability_loss_deviation_penalty_weight = 1500.0
+stability_unproven_penalty = 60.0
+stability_penalty_cap = 250.0

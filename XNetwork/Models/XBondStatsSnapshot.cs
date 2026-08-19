@@ -360,6 +360,16 @@ public sealed class XBondPathStatsSnapshot
     /// </summary>
     public bool IsSuppressed { get; init; }
 
+    /// <summary>Points docked for unsteady latency/loss, or for unproven steadiness.</summary>
+    public double StabilityPenalty { get; init; }
+
+    public double LatencyDeviationMs { get; init; }
+
+    public double LossDeviation { get; init; }
+
+    /// <summary>True when this path's latency and loss have been holding steady.</summary>
+    public bool IsSteady => StabilityPenalty < 10;
+
     public XBondPathTrialStatus? Trial { get; init; }
 
     public bool IsTrial => string.Equals(Role, "trial", StringComparison.OrdinalIgnoreCase);

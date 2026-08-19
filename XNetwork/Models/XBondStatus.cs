@@ -141,6 +141,16 @@ public class XBondPathAnchorStatus
     [JsonPropertyName("suppressed")]
     public bool Suppressed { get; set; }
 
+    /// <summary>Points docked for unsteady latency/loss, or for unproven steadiness.</summary>
+    [JsonPropertyName("stability_penalty")]
+    public double StabilityPenalty { get; set; }
+
+    [JsonPropertyName("latency_deviation_ms")]
+    public double LatencyDeviationMs { get; set; }
+
+    [JsonPropertyName("loss_deviation")]
+    public double LossDeviation { get; set; }
+
     [JsonPropertyName("trial")]
     public XBondPathTrialStatus? Trial { get; set; }
 }
@@ -256,6 +266,16 @@ public class XBondPathStatus
     /// <summary>Client-computed, because the suppression threshold is operator-configurable.</summary>
     [JsonPropertyName("suppressed")]
     public bool Suppressed { get; set; }
+
+    /// <summary>Points docked for unsteady latency/loss, or for unproven steadiness.</summary>
+    [JsonPropertyName("stability_penalty")]
+    public double StabilityPenalty { get; set; }
+
+    [JsonPropertyName("latency_deviation_ms")]
+    public double LatencyDeviationMs { get; set; }
+
+    [JsonPropertyName("loss_deviation")]
+    public double LossDeviation { get; set; }
 
     [JsonPropertyName("trial")]
     public XBondPathTrialStatus? Trial { get; set; }

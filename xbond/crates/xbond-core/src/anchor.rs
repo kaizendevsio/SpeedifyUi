@@ -155,6 +155,100 @@ impl FlapDamping {
     }
 }
 
+/// How steadiness of latency and loss is rewarded, measured over a rolling window.
+///
+/// Separate from `ScoreSmoothingConfig`, which watches the composite score: that conflates
+/// latency swings with throughput and queue movement, so a link with rock-steady latency
+/// but variable throughput was being treated as unstable. The anchor carries interactive
+/// traffic, so latency and loss steadiness specifically are what matter.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StabilityConfig {
+    /// Rolling window length in scheduler ticks (one per second).
+    pub window_ticks: u32,
+    /// Score points charged per millisecond of latency deviation.
+    pub latency_deviation_penalty_per_ms: f64,
+    /// Score points charged per unit of loss-rate deviation (loss is 0.0..1.0).
+    pub loss_deviation_penalty_weight: f64,
+    /// Charged to a path that has not yet filled its window, decaying to zero as it does.
+    /// Without this a freshly appeared path shows zero deviation and would masquerade as
+    /// the steadiest link on the router.
+    pub unproven_penalty: f64,
+    /// Ceiling so instability cannot swamp every other term in the score.
+    pub penalty_cap: f64,
+}
+
+impl Default for StabilityConfig {
+    fn default() -> Self {
+        Self {
+            window_ticks: 30,
+            latency_deviation_penalty_per_ms: 3.0,
+            loss_deviation_penalty_weight: 1_500.0,
+            unproven_penalty: 60.0,
+            penalty_cap: 250.0,
+        }
+    }
+}
+
+/// Rolling mean and mean-absolute-deviation of one path's latency and loss.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct PathStability {
+    pub latency_mean_ms: f64,
+    pub latency_deviation_ms: f64,
+    pub loss_mean: f64,
+    pub loss_deviation: f64,
+    /// Observations recorded, saturating at the window length.
+    pub samples: u32,
+    latency_initialized: bool,
+    loss_initialized: bool,
+}
+
+impl PathStability {
+    pub fn observe(&mut self, rtt_ms: Option<f64>, loss_rate: f64, window_ticks: u32) {
+        let alpha = (2.0 / f64::from(window_ticks.max(1) + 1)).clamp(0.001, 1.0);
+
+        // An unmeasured RTT is a gap in knowledge, not a reading of zero; folding it in
+        // would invent deviation that the link never exhibited.
+        if let Some(rtt_ms) = rtt_ms {
+            if self.latency_initialized {
+                let error = rtt_ms - self.latency_mean_ms;
+                self.latency_mean_ms += alpha * error;
+                self.latency_deviation_ms += alpha * (error.abs() - self.latency_deviation_ms);
+            } else {
+                self.latency_mean_ms = rtt_ms;
+                self.latency_deviation_ms = 0.0;
+                self.latency_initialized = true;
+            }
+        }
+
+        let loss_rate = loss_rate.clamp(0.0, 1.0);
+        if self.loss_initialized {
+            let error = loss_rate - self.loss_mean;
+            self.loss_mean += alpha * error;
+            self.loss_deviation += alpha * (error.abs() - self.loss_deviation);
+        } else {
+            self.loss_mean = loss_rate;
+            self.loss_deviation = 0.0;
+            self.loss_initialized = true;
+        }
+
+        self.samples = self.samples.saturating_add(1).min(window_ticks.max(1));
+    }
+
+    /// Score points to subtract. Zero means a fully proven, perfectly steady link.
+    pub fn penalty(&self, config: StabilityConfig) -> f64 {
+        let window = config.window_ticks.max(1);
+        let latency = self.latency_deviation_ms * config.latency_deviation_penalty_per_ms.max(0.0);
+        let loss = self.loss_deviation * config.loss_deviation_penalty_weight.max(0.0);
+        let proven = f64::from(self.samples.min(window)) / f64::from(window);
+        let unproven = config.unproven_penalty.max(0.0) * (1.0 - proven);
+        (latency + loss + unproven).min(config.penalty_cap.max(0.0))
+    }
+
+    pub fn is_proven(&self, config: StabilityConfig) -> bool {
+        self.samples >= config.window_ticks.max(1)
+    }
+}
+
 /// Rules for the load test a path must pass before it may take the anchor role.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AnchorTrialConfig {
@@ -411,6 +505,127 @@ mod tests {
         assert_eq!(
             damping.seconds_until_clear(4, config.suppress_threshold, config.half_life_secs),
             0
+        );
+    }
+
+    fn settle(stability: &mut PathStability, rtt: f64, loss: f64, ticks: u32, window: u32) {
+        for _ in 0..ticks {
+            stability.observe(Some(rtt), loss, window);
+        }
+    }
+
+    #[test]
+    fn a_steady_link_outranks_an_erratic_one_with_the_same_average() {
+        let config = StabilityConfig::default();
+        let mut steady = PathStability::default();
+        let mut erratic = PathStability::default();
+
+        for tick in 0..60 {
+            steady.observe(Some(60.0), 0.01, config.window_ticks);
+            // Same 60ms mean and same 1% mean loss, but swinging hard around them.
+            let (rtt, loss) = if tick % 2 == 0 {
+                (20.0, 0.0)
+            } else {
+                (100.0, 0.02)
+            };
+            erratic.observe(Some(rtt), loss, config.window_ticks);
+        }
+
+        assert!(
+            (steady.latency_mean_ms - erratic.latency_mean_ms).abs() < 12.0,
+            "fixture broken: means should be close, got {} vs {}",
+            steady.latency_mean_ms,
+            erratic.latency_mean_ms
+        );
+        assert!(
+            steady.penalty(config) < 1.0,
+            "a steady link should be unpenalised"
+        );
+        assert!(
+            erratic.penalty(config) > 60.0,
+            "an erratic link should be heavily penalised, got {}",
+            erratic.penalty(config)
+        );
+    }
+
+    #[test]
+    fn a_new_path_must_earn_its_stability_rating() {
+        let config = StabilityConfig::default();
+        let mut fresh = PathStability::default();
+        fresh.observe(Some(30.0), 0.0, config.window_ticks);
+
+        // Zero deviation but almost no evidence: it must not outrank a proven link.
+        assert!(fresh.latency_deviation_ms == 0.0);
+        assert!(!fresh.is_proven(config));
+        let early = fresh.penalty(config);
+        assert!(
+            early > 50.0,
+            "unproven path should be penalised, got {early}"
+        );
+
+        let mut proven = PathStability::default();
+        settle(
+            &mut proven,
+            30.0,
+            0.0,
+            config.window_ticks,
+            config.window_ticks,
+        );
+        assert!(proven.is_proven(config));
+        assert!(proven.penalty(config) < early);
+        assert!(proven.penalty(config) < 1.0);
+    }
+
+    #[test]
+    fn penalty_is_capped_so_instability_cannot_swamp_the_score() {
+        let config = StabilityConfig::default();
+        let mut wild = PathStability::default();
+        for tick in 0..200 {
+            let (rtt, loss) = if tick % 2 == 0 {
+                (5.0, 0.0)
+            } else {
+                (1_500.0, 1.0)
+            };
+            wild.observe(Some(rtt), loss, config.window_ticks);
+        }
+
+        assert_eq!(wild.penalty(config), config.penalty_cap);
+    }
+
+    #[test]
+    fn an_unmeasured_rtt_does_not_invent_latency_deviation() {
+        let config = StabilityConfig::default();
+        let mut stability = PathStability::default();
+        settle(&mut stability, 40.0, 0.0, 20, config.window_ticks);
+        let before = stability.latency_deviation_ms;
+
+        for _ in 0..5 {
+            stability.observe(None, 0.0, config.window_ticks);
+        }
+
+        assert_eq!(stability.latency_deviation_ms, before);
+        assert_eq!(stability.latency_mean_ms, 40.0);
+        // Loss still counts, so the window keeps filling.
+        assert!(stability.samples > 20);
+    }
+
+    #[test]
+    fn loss_instability_is_penalised_even_when_latency_is_perfect() {
+        let config = StabilityConfig::default();
+        let mut flappy_loss = PathStability::default();
+        for tick in 0..60 {
+            flappy_loss.observe(
+                Some(30.0),
+                if tick % 2 == 0 { 0.0 } else { 0.08 },
+                config.window_ticks,
+            );
+        }
+
+        assert_eq!(flappy_loss.latency_deviation_ms, 0.0);
+        assert!(
+            flappy_loss.penalty(config) > 30.0,
+            "loss swings must be punished on their own, got {}",
+            flappy_loss.penalty(config)
         );
     }
 

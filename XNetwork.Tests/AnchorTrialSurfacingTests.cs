@@ -218,6 +218,64 @@ public class AnchorTrialSurfacingTests
         Assert.Equal("anchor", status.Paths.Single(path => path.PathId == 1).Role);
     }
 
+    /// <summary>
+    /// Stability is what makes a steady link outrank an erratic one, so the operator has to
+    /// be able to see it — and it only reaches the dashboard through the parallel
+    /// anchor_stability array, not the per-path health block.
+    /// </summary>
+    [Fact]
+    public void StabilityReachesTheDashboardThroughTheRealPipeline()
+    {
+        const string json = """
+        {
+          "enabled": true, "running": true, "mode": "anchor-duplicate-1",
+          "redundancy_policy": "balanced", "server_addr": "1.2.3.4:8444",
+          "anchor_path_id": 1,
+          "schedule": { "mode": "anchor-duplicate-1", "anchor_path_id": 1,
+            "data_path_ids": [1], "duplicate_path_ids": [2], "fec_path_ids": [] },
+          "paths": [
+            { "path_id": 1, "name": "steady", "interface_name": "enx1",
+              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
+              "interface_up": true, "in_cooldown": false },
+            { "path_id": 2, "name": "erratic", "interface_name": "enx2",
+              "loss_rate": 0.0, "late_rate": 0.0, "queue_depth": 0, "throughput_bps": 1000,
+              "interface_up": true, "in_cooldown": false }
+          ],
+          "anchor_stability": [
+            { "path_id": 1, "effective_score": 900.0, "stability_penalty": 0.0,
+              "latency_deviation_ms": 0.4, "loss_deviation": 0.0 },
+            { "path_id": 2, "effective_score": 700.0, "stability_penalty": 145.0,
+              "latency_deviation_ms": 38.2, "loss_deviation": 0.01 }
+          ],
+          "data_packets_sent": 0, "duplicate_packets_sent": 0, "duplicate_packets_dropped": 0,
+          "data_packets_received": 0, "data_bytes_sent": 0, "data_bytes_received": 0,
+          "outbound_throughput_bps": 0, "inbound_throughput_bps": 0,
+          "fec_packets_sent": 0, "fec_packets_recovered": 0, "fec_packets_skipped": 0,
+          "late_packets_dropped": 0, "message": ""
+        }
+        """;
+
+        var status = XBondStatusService.ParseRuntimeStatusJson(json, new XBondSettings(), DateTime.UtcNow);
+        var snapshot = XBondStatsService.FromStatus(
+            status,
+            [],
+            new Dictionary<string, F50ModemTelemetry>(StringComparer.OrdinalIgnoreCase),
+            [],
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            [],
+            []);
+
+        var steady = snapshot.Paths.Single(path => path.PathId == 1);
+        var erratic = snapshot.Paths.Single(path => path.PathId == 2);
+
+        Assert.Equal(0.0, steady.StabilityPenalty);
+        Assert.Equal(145.0, erratic.StabilityPenalty);
+        Assert.Equal(38.2, erratic.LatencyDeviationMs);
+        Assert.True(steady.IsSteady);
+        Assert.False(erratic.IsSteady);
+    }
+
     [Fact]
     public void TrialPathCountsAsActiveAndKeepsItsTrialRole()
     {
