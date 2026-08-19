@@ -243,6 +243,104 @@ def restart_dns_service():
     run(["systemctl", "restart", DNSMASQ_SERVICE], check=False)
 
 
+def install_route(table, route):
+    """Installs the single default route that a rule's marked traffic should follow."""
+    if route.get("blackhole"):
+        run(["ip", "-4", "route", "replace", "blackhole", "default", "table", str(table)])
+        return
+    args = ["ip", "-4", "route", "replace", "default"]
+    if route["gateway"]:
+        args.extend(["via", route["gateway"]])
+    args.extend(["dev", route["dev"], "table", str(table)])
+    run(args)
+
+
+def route_is_current(table, route):
+    """True when the table already holds exactly the default route we want."""
+    text = (run(["ip", "-4", "route", "show", "table", str(table)], check=False).stdout or "").strip()
+    if not text:
+        return False
+    # Trailing space so "dev enx1" cannot match "dev enx10".
+    first = text.splitlines()[0].strip() + " "
+    if route.get("blackhole"):
+        return first.startswith("blackhole default")
+    if not first.startswith("default "):
+        return False
+    if route["gateway"] and f"via {route['gateway']} " not in first:
+        return False
+    return f"dev {route['dev']} " in first
+
+
+def fwmark_rule_present(priority, table, mark):
+    """True when the fwmark policy rule for this bypass rule is already installed.
+
+    Checked because `ip rule add` is not idempotent -- repairing without this would stack
+    a duplicate rule onto the table on every pass.
+    """
+    text = run(["ip", "-4", "rule", "show"], check=False).stdout or ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith(f"{priority}:") and f"0x{mark:x}" in line and f"lookup {table}" in line:
+            return True
+    return False
+
+
+def repair(path):
+    """Reinstalls only the policy routes and fwmark rules.
+
+    The kernel deletes every route that references a device when that device goes down,
+    and a DHCP lease renewal counts. That silently empties the bypass route tables while
+    the nft marking and the fwmark rules survive, so matched traffic finds nothing in its
+    table, falls through to main, and goes straight back down the tunnel. The bypass looks
+    like it switched itself off, with the wrong exit country as the only symptom.
+
+    Deliberately does NOT touch the nft table, its sets, or dnsmasq. `apply` deletes the
+    table and recreates the sets EMPTY, then restarts the resolver to refill them from
+    live DNS answers, so running apply on a timer would discard every cached address and
+    break the very bypass it was meant to protect.
+    """
+    config_path = Path(path)
+    config = json.loads(config_path.read_text()) if config_path.exists() else {"rules": []}
+    rules = [rule for rule in get_key(config, "rules", []) or [] if get_key(rule, "enabled", True)]
+    if not rules:
+        print("No enabled traffic bypass rules to repair.")
+        return
+
+    # With no nft table nothing marks packets, so routes alone would achieve nothing.
+    # That is a full-apply job; say so and let the caller escalate.
+    if not (run(["nft", "list", "table", "inet", TABLE_NAME], check=False).stdout or "").strip():
+        raise RuntimeError("nftables bypass table is missing; run apply instead of repair")
+
+    defaults = read_defaults()
+    repaired = []
+    problems = []
+    for index, rule in enumerate(rules, start=1):
+        table = ROUTE_TABLE_BASE + index
+        mark = MARK_BASE + index
+        priority = PRIORITY_BASE + index
+        try:
+            route = route_for_rule(rule, defaults)
+        except ValueError as exc:
+            # One unroutable rule must not stop the others being repaired.
+            problems.append(str(exc))
+            continue
+        if not route_is_current(table, route):
+            install_route(table, route)
+            repaired.append(
+                f"{rule_name(rule)}: route -> {'blackhole' if route.get('blackhole') else route['dev']}")
+        if not fwmark_rule_present(priority, table, mark):
+            run(["ip", "-4", "rule", "add", "fwmark", f"0x{mark:x}/0xffffffff",
+                 "table", str(table), "priority", str(priority)])
+            repaired.append(f"{rule_name(rule)}: fwmark rule {priority}")
+
+    for problem in problems:
+        print(problem, file=sys.stderr)
+    if repaired:
+        print(f"Traffic bypass routes repaired: {len(repaired)} change(s): " + "; ".join(repaired))
+    else:
+        print("Traffic bypass routes already correct.")
+
+
 def clear_rules():
     run(["nft", "delete", "table", "inet", TABLE_NAME], check=False)
     for offset in range(1, MAX_RULES + 1):
@@ -319,14 +417,7 @@ def apply(path):
     nft_lines.extend(["  }", "}"])
 
     for _, route, mark, table, priority, _, _, _ in resolved:
-        if route.get("blackhole"):
-            run(["ip", "-4", "route", "replace", "blackhole", "default", "table", str(table)])
-        else:
-            route_args = ["ip", "-4", "route", "replace", "default"]
-            if route["gateway"]:
-                route_args.extend(["via", route["gateway"]])
-            route_args.extend(["dev", route["dev"], "table", str(table)])
-            run(route_args)
+        install_route(table, route)
         run(["ip", "-4", "rule", "add", "fwmark", f"0x{mark:x}/0xffffffff", "table", str(table), "priority", str(priority)])
 
     run(["nft", "-f", "-"], input_text="\n".join(nft_lines) + "\n")
@@ -357,8 +448,8 @@ def status():
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in {"apply", "clear", "status"}:
-        print("usage: xnetwork-traffic-bypass-apply apply <settings.json> | clear | status", file=sys.stderr)
+    if len(sys.argv) < 2 or sys.argv[1] not in {"apply", "repair", "clear", "status"}:
+        print("usage: xnetwork-traffic-bypass-apply apply <settings.json> | repair <settings.json> | clear | status", file=sys.stderr)
         return 2
     try:
         if sys.argv[1] == "clear":
@@ -366,6 +457,10 @@ def main():
             print("Traffic bypass rules cleared.")
         elif sys.argv[1] == "status":
             status()
+        elif sys.argv[1] == "repair":
+            if len(sys.argv) != 3:
+                raise ValueError("repair requires settings path")
+            repair(sys.argv[2])
         else:
             if len(sys.argv) != 3:
                 raise ValueError("apply requires settings path")

@@ -135,7 +135,7 @@ builder.Services.AddSingleton(sp =>
     return settings;
 });
 builder.Services.AddSingleton<TrafficBypassService>();
-builder.Services.AddHostedService<TrafficBypassStartupService>();
+builder.Services.AddHostedService<TrafficBypassReconcileService>();
 
 // Add direct Starlink dish telemetry polling for Starlink adapters
 builder.Services.AddSingleton(sp =>

@@ -13,13 +13,26 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.136";
+    public const string CurrentVersion = "ulink-2026.06.137";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-19",
+            Summary = "Kept bypass rules working after an adapter drops its connection.",
+            Changes =
+            [
+                "Bumped the uLink interface version for bypass rule self-healing.",
+                "Re-checked bypass routes every 20 seconds, so a bypass no longer stops working when an adapter renews its connection.",
+                "Repaired only the affected routes, keeping the learned TikTok addresses instead of discarding them.",
+                "Rebuilt the rules from scratch automatically if the firewall table itself goes missing."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.136",
             Date = "2026-08-19",
             Summary = "Steadied the router's own name lookups and quietened repeat warnings.",
             Changes =

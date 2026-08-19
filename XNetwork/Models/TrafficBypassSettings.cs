@@ -9,6 +9,15 @@ public sealed class TrafficBypassSettings
     public string ApplyHelperPath { get; set; } = "/usr/local/sbin/xnetwork-traffic-bypass-apply";
 
     public int CommandTimeoutSeconds { get; set; } = 15;
+
+    /// <summary>
+    /// How often the policy routes are re-verified. An adapter losing its DHCP lease empties
+    /// the bypass route tables without touching anything else, and the only visible symptom is
+    /// traffic leaving through the tunnel again, so this needs checking rather than trusting.
+    /// </summary>
+    public int ReconcileIntervalSeconds { get; set; } = 20;
+
+    public TimeSpan ReconcileInterval => TimeSpan.FromSeconds(Math.Clamp(ReconcileIntervalSeconds, 5, 900));
 }
 
 public sealed class TrafficBypassRule

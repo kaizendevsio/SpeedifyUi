@@ -14,6 +14,7 @@ public sealed class TrafficBypassService(
     private static readonly Regex SafeInterfaceName = new(@"^[A-Za-z0-9_.:@-]{1,64}$", RegexOptions.Compiled);
     private readonly object _lock = new();
     private TrafficBypassApplyStatus? _lastApplyStatus;
+    private TrafficBypassApplyStatus? _lastRepairStatus;
 
     public IReadOnlyList<TrafficBypassRule> GetRules()
     {
@@ -84,16 +85,55 @@ public sealed class TrafficBypassService(
         return await ApplyAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Rebuilds every bypass rule from scratch: nft table, sets, routes and fwmark rules.
+    /// </summary>
     public async Task<TrafficBypassApplyStatus> ApplyAsync(CancellationToken cancellationToken = default)
+    {
+        return SetLastApplyStatus(await RunHelperAsync("apply", cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Reinstalls only the policy routes and fwmark rules, leaving the nft sets and the
+    /// resolver alone.
+    /// </summary>
+    /// <remarks>
+    /// The kernel drops every route referencing a device when that device goes down, and a
+    /// DHCP lease renewal counts, so the bypass route tables empty themselves while the
+    /// marking survives. Matched traffic then falls through to the main table and back into
+    /// the tunnel, which shows up only as traffic exiting the wrong country. A full apply
+    /// would fix it but also recreates the nft sets empty, discarding every address learnt
+    /// from DNS, so recovery has to be this narrower operation.
+    /// </remarks>
+    public async Task<TrafficBypassApplyStatus> RepairAsync(CancellationToken cancellationToken = default)
+    {
+        var status = await RunHelperAsync("repair", cancellationToken).ConfigureAwait(false);
+        lock (_lock)
+        {
+            _lastRepairStatus = status;
+        }
+
+        return status;
+    }
+
+    public TrafficBypassApplyStatus? GetLastRepairStatus()
+    {
+        lock (_lock)
+        {
+            return _lastRepairStatus;
+        }
+    }
+
+    private async Task<TrafficBypassApplyStatus> RunHelperAsync(string verb, CancellationToken cancellationToken)
     {
         if (!OperatingSystem.IsLinux())
         {
-            return SetLastApplyStatus(new TrafficBypassApplyStatus(
+            return new TrafficBypassApplyStatus(
                 IsSupported: false,
                 Applied: false,
                 Message: "Traffic bypass rules are only applied on Linux routers.",
                 Error: null,
-                UpdatedAtUtc: DateTimeOffset.UtcNow));
+                UpdatedAtUtc: DateTimeOffset.UtcNow);
         }
 
         var helperPath = string.IsNullOrWhiteSpace(settings.ApplyHelperPath)
@@ -101,12 +141,12 @@ public sealed class TrafficBypassService(
             : settings.ApplyHelperPath.Trim();
         if (!File.Exists(helperPath))
         {
-            return SetLastApplyStatus(new TrafficBypassApplyStatus(
+            return new TrafficBypassApplyStatus(
                 IsSupported: true,
                 Applied: false,
                 Message: "Traffic bypass helper is not installed yet.",
                 Error: helperPath,
-                UpdatedAtUtc: DateTimeOffset.UtcNow));
+                UpdatedAtUtc: DateTimeOffset.UtcNow);
         }
 
         // The helper reads this file directly. On a router that has never saved a rule it does not
@@ -119,12 +159,12 @@ public sealed class TrafficBypassService(
             }
             catch (Exception ex)
             {
-                return SetLastApplyStatus(new TrafficBypassApplyStatus(
+                return new TrafficBypassApplyStatus(
                     IsSupported: true,
                     Applied: false,
                     Message: "Traffic bypass rules could not be written.",
                     Error: ex.Message,
-                    UpdatedAtUtc: DateTimeOffset.UtcNow));
+                    UpdatedAtUtc: DateTimeOffset.UtcNow);
             }
         }
 
@@ -148,18 +188,18 @@ public sealed class TrafficBypassService(
                 startInfo.ArgumentList.Add(helperPath);
             }
 
-            startInfo.ArgumentList.Add("apply");
+            startInfo.ArgumentList.Add(verb);
             startInfo.ArgumentList.Add(store.FilePath);
 
             using var process = Process.Start(startInfo);
             if (process is null)
             {
-                return SetLastApplyStatus(new TrafficBypassApplyStatus(
+                return new TrafficBypassApplyStatus(
                     IsSupported: true,
                     Applied: false,
                     Message: "Traffic bypass helper could not be started.",
                     Error: null,
-                    UpdatedAtUtc: DateTimeOffset.UtcNow));
+                    UpdatedAtUtc: DateTimeOffset.UtcNow);
             }
 
             var outputTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
@@ -169,40 +209,40 @@ public sealed class TrafficBypassService(
             var error = (await errorTask.ConfigureAwait(false)).Trim();
             if (process.ExitCode == 0)
             {
-                return SetLastApplyStatus(new TrafficBypassApplyStatus(
+                return new TrafficBypassApplyStatus(
                     IsSupported: true,
                     Applied: true,
                     Message: string.IsNullOrWhiteSpace(output) ? "Traffic bypass rules applied." : output,
                     Error: null,
-                    UpdatedAtUtc: DateTimeOffset.UtcNow));
+                    UpdatedAtUtc: DateTimeOffset.UtcNow);
             }
 
             var detail = string.IsNullOrWhiteSpace(error) ? output : error;
-            return SetLastApplyStatus(new TrafficBypassApplyStatus(
+            return new TrafficBypassApplyStatus(
                 IsSupported: true,
                 Applied: false,
                 Message: "Traffic bypass rules could not be applied.",
                 Error: string.IsNullOrWhiteSpace(detail) ? $"helper exited {process.ExitCode}" : detail,
-                UpdatedAtUtc: DateTimeOffset.UtcNow));
+                UpdatedAtUtc: DateTimeOffset.UtcNow);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            return SetLastApplyStatus(new TrafficBypassApplyStatus(
+            return new TrafficBypassApplyStatus(
                 IsSupported: true,
                 Applied: false,
                 Message: "Traffic bypass helper timed out.",
                 Error: null,
-                UpdatedAtUtc: DateTimeOffset.UtcNow));
+                UpdatedAtUtc: DateTimeOffset.UtcNow);
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Traffic bypass helper failed");
-            return SetLastApplyStatus(new TrafficBypassApplyStatus(
+            return new TrafficBypassApplyStatus(
                 IsSupported: true,
                 Applied: false,
                 Message: "Traffic bypass helper failed.",
                 Error: ex.Message,
-                UpdatedAtUtc: DateTimeOffset.UtcNow));
+                UpdatedAtUtc: DateTimeOffset.UtcNow);
         }
     }
 
