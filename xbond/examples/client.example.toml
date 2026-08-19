@@ -19,6 +19,12 @@ heartbeat_min_quality_samples = 20
 # is not this file's heartbeat_interval_ms (~600ms observed against 200ms configured) and slows
 # further under load, which would stretch a count-based window exactly when it matters.
 heartbeat_metric_window_ms = 3000
+# Loss gets its OWN, much longer window. Loss is a ratio, so its resolution is one over the
+# samples in the window: at ~600ms cadence a 3s window holds ~6 samples, making one blipped
+# heartbeat read as 16.7% -- eight times the 2% duplicate_loss_threshold, enough to switch bulk
+# duplication on and to fail an anchor trial. ~100 samples keeps one miss near 1%. Reacting to
+# a genuinely dead path does not depend on this; that runs off consecutive misses.
+heartbeat_loss_window_ms = 60000
 heartbeat_failure_consecutive = 4
 heartbeat_recovery_consecutive = 15
 runtime_status_path = "/run/xbond/client-status.json"

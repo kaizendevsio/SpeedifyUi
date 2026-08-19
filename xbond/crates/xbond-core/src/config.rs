@@ -45,6 +45,18 @@ pub struct ClientConfig {
     /// the stability penalty, so a fast link was punished for having been busy.
     #[serde(default = "default_heartbeat_metric_window_ms")]
     pub heartbeat_metric_window_ms: u64,
+    /// Recent history the published LOSS figure summarises. Deliberately much longer than
+    /// `heartbeat_metric_window_ms`.
+    ///
+    /// Loss is a ratio, so its resolution is one over the samples in the window; there is no
+    /// way to have both fine resolution and a short window. A 3s window holds ~6 samples at
+    /// the real cadence, which made a single blipped heartbeat read as 16.7% -- eight times
+    /// the 2% `duplicate_loss_threshold`, enough to switch bulk duplication on and to fail an
+    /// anchor trial. Latency has no such problem: one sample is a valid reading, so RTT keeps
+    /// the short window. Fast reaction to a genuinely dead path does not depend on this
+    /// either, because that runs off `heartbeat_consecutive_misses`.
+    #[serde(default = "default_heartbeat_loss_window_ms")]
+    pub heartbeat_loss_window_ms: u64,
     #[serde(default = "default_heartbeat_failure_consecutive")]
     pub heartbeat_failure_consecutive: u32,
     #[serde(default = "default_heartbeat_recovery_consecutive")]
@@ -110,6 +122,7 @@ impl Default for ClientConfig {
             heartbeat_health_window_samples: default_heartbeat_health_window_samples(),
             heartbeat_min_quality_samples: default_heartbeat_min_quality_samples(),
             heartbeat_metric_window_ms: default_heartbeat_metric_window_ms(),
+            heartbeat_loss_window_ms: default_heartbeat_loss_window_ms(),
             heartbeat_failure_consecutive: default_heartbeat_failure_consecutive(),
             heartbeat_recovery_consecutive: default_heartbeat_recovery_consecutive(),
             silent_blackhole_probe_targets: Vec::new(),
@@ -463,6 +476,13 @@ pub fn default_heartbeat_health_window_samples() -> usize {
 
 pub fn default_heartbeat_metric_window_ms() -> u64 {
     3_000
+}
+
+pub fn default_heartbeat_loss_window_ms() -> u64 {
+    // ~100 samples at the observed cadence, so one miss reads as ~1% and stays clear of the
+    // 2% duplication threshold. This is the resolution the code had before the window was
+    // shortened, which was known good.
+    60_000
 }
 
 pub fn default_heartbeat_min_quality_samples() -> usize {

@@ -6916,9 +6916,17 @@ fn path_health_window_samples(config: &ClientConfig) -> usize {
     config.heartbeat_health_window_samples.max(1)
 }
 
-/// How much recent time the PUBLISHED rtt/jitter/loss figures summarise.
+/// How much recent time the published rtt/jitter figures summarise.
 fn path_metric_window(config: &ClientConfig) -> Duration {
     Duration::from_millis(config.heartbeat_metric_window_ms.max(1))
+}
+
+/// How much recent time the published loss figure summarises.
+///
+/// Separate from the RTT window because loss is a ratio: its resolution is one over the
+/// samples in the window, so a short window quantises a single miss into a large percentage.
+fn path_loss_window(config: &ClientConfig) -> Duration {
+    Duration::from_millis(config.heartbeat_loss_window_ms.max(1))
 }
 
 /// Floor on how many samples back the published figures reach, so they never rest on a single
@@ -7390,15 +7398,20 @@ fn correct_tunnel_heartbeat_sample(
 fn refresh_tunnel_health(config: &ClientConfig, runtime: &mut TunnelPathRuntime, now: Instant) {
     // Published figures describe the RECENT past. The full stored window stays behind them
     // for warm-up gating and failure detection, but summarising all of it meant a saturated
-    // link still reported 36 ms while probes measured 110-180 ms, and a link that had fully
-    // recovered kept reporting several percent loss for tens of seconds. Both figures feed
-    // path scoring and the stability penalty, so the lag punished a link for having been busy.
-    let window = path_metric_window(config);
+    // link still reported 36 ms while probes measured 110-180 ms. Both figures feed path
+    // scoring and the stability penalty, so the lag punished a link for having been busy.
+    //
+    // The two windows differ on purpose: latency is meaningful from a single sample, loss is
+    // a ratio whose resolution is one over the sample count. Sharing one short window made a
+    // single blipped heartbeat read as 16.7% loss.
+    let rtt_window = path_metric_window(config);
+    let loss_window = path_loss_window(config);
 
     runtime.loss_rate = if runtime.health_window.is_empty() {
         0.0
     } else {
-        let recent = metric_window_span(&runtime.health_window, window, now, |sample| sample.at);
+        let recent =
+            metric_window_span(&runtime.health_window, loss_window, now, |sample| sample.at);
         let missed = runtime
             .health_window
             .iter()
@@ -7415,7 +7428,7 @@ fn refresh_tunnel_health(config: &ClientConfig, runtime: &mut TunnelPathRuntime,
     }
 
     // Summed in one pass rather than collected, since this runs per heartbeat per path.
-    let recent = metric_window_span(&runtime.rtt_samples, window, now, |sample| sample.at);
+    let recent = metric_window_span(&runtime.rtt_samples, rtt_window, now, |sample| sample.at);
     let mut total_ms = 0.0;
     let mut delta_total_ms = 0.0;
     let mut deltas = 0usize;
@@ -9132,6 +9145,7 @@ mod tests {
             heartbeat_interval_ms: 200,
             heartbeat_health_window_samples: 100,
             heartbeat_metric_window_ms: 3_000,
+            heartbeat_loss_window_ms: 60_000,
             ..ClientConfig::default()
         }
     }
@@ -9178,21 +9192,67 @@ mod tests {
     }
 
     #[test]
-    fn a_recovered_path_stops_reporting_loss_promptly() {
+    fn a_single_miss_stays_below_the_duplication_threshold() {
+        // The regression this guards: with loss sharing the 3s RTT window, one blipped
+        // heartbeat read as 16.7% -- eight times the threshold that switches bulk
+        // duplication on and enough to fail an anchor trial on the score comparison.
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
+        let cadence = Duration::from_millis(600); // the cadence actually observed on the router
         let start = Instant::now();
-        let cadence = Duration::from_millis(200);
-        let after_loss = feed_samples(&config, &mut runtime, start, 20, cadence, false, None);
-        // Twice the metric window of clean samples, so the last miss has definitely aged out
-        // rather than sitting exactly on the boundary.
-        feed_samples(&config, &mut runtime, after_loss, 30, cadence, true, Some(32.0));
+        let after = feed_samples(&config, &mut runtime, start, 100, cadence, true, Some(32.0));
+        record_tunnel_health_sample_inner(
+            &config,
+            &mut runtime,
+            HeartbeatHealthSample::untagged(false, after),
+            None,
+        );
 
-        // This is the reported bug: a healthy link kept showing several percent loss for
-        // tens of seconds after recovering, which penalised it in path scoring.
+        let threshold = xbond_core::RedundancyPolicyConfig::default().duplicate_loss_threshold;
+        assert!(
+            runtime.loss_rate < threshold,
+            "one miss reported {} loss, at or above the {} duplication threshold",
+            runtime.loss_rate,
+            threshold
+        );
+    }
+
+    #[test]
+    fn rtt_and_loss_use_independent_windows() {
+        // Latency must stay responsive while loss stays coarse; that is the whole point of
+        // splitting them. A latency step is fully reflected while loss is untouched.
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        let cadence = Duration::from_millis(200);
+        let start = Instant::now();
+        let after_calm = feed_samples(&config, &mut runtime, start, 100, cadence, true, Some(30.0));
+        feed_samples(&config, &mut runtime, after_calm, 30, cadence, true, Some(160.0));
+
+        let reported = runtime.rtt_ms.expect("rtt");
+        assert!(
+            (reported - 160.0).abs() < 1.0,
+            "rtt should track its own short window, got {reported}"
+        );
+        assert_eq!(runtime.loss_rate, 0.0, "no samples were missed");
+    }
+
+    #[test]
+    fn a_loss_burst_clears_once_the_loss_window_has_passed() {
+        // Loss does decay away, just over its own longer window rather than the RTT one.
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        let cadence = Duration::from_millis(600);
+        let start = Instant::now();
+        let after_loss = feed_samples(&config, &mut runtime, start, 20, cadence, false, None);
+        let burst = runtime.loss_rate;
+        assert!(burst > 0.5, "the burst itself must register, got {burst}");
+
+        // Clean samples spanning more than the loss window.
+        feed_samples(&config, &mut runtime, after_loss, 110, cadence, true, Some(32.0));
+
         assert_eq!(
             runtime.loss_rate, 0.0,
-            "a fully recovered path must not still report loss"
+            "a fully recovered path must eventually report no loss"
         );
     }
 

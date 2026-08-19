@@ -38,7 +38,7 @@ public class BuildInfoTests
     {
         var buildInfo = new BuildInfo { Version = version };
 
-        Assert.Equal("2026.06.139", buildInfo.DisplayVersion);
+        Assert.Equal("2026.06.140", buildInfo.DisplayVersion);
         Assert.NotEqual("1.0.0", buildInfo.DisplayVersion);
     }
 }
