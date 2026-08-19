@@ -1451,13 +1451,25 @@ impl RecentlyExpiredHeartbeatProbes {
 struct HeartbeatHealthSample {
     sequence: Option<u64>,
     delivered: bool,
+    /// When the sample was taken. The published figures summarise a time window rather than a
+    /// sample count, because per-path heartbeat cadence is not the configured interval and
+    /// slows further under load -- deriving the window from a sample count made the figures
+    /// stretch precisely when responsiveness mattered most.
+    at: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RttSample {
+    at: Instant,
+    rtt_ms: f64,
 }
 
 impl HeartbeatHealthSample {
-    fn untagged(delivered: bool) -> Self {
+    fn untagged(delivered: bool, at: Instant) -> Self {
         Self {
             sequence: None,
             delivered,
+            at,
         }
     }
 }
@@ -1498,7 +1510,7 @@ struct TunnelPathRuntime {
     heartbeat_late_acks: u64,
     heartbeat_rebind_discarded: u64,
     health_window: VecDeque<HeartbeatHealthSample>,
-    rtt_samples_ms: VecDeque<f64>,
+    rtt_samples: VecDeque<RttSample>,
     rtt_ms: Option<f64>,
     jitter_ms: Option<f64>,
     loss_rate: f64,
@@ -6904,16 +6916,34 @@ fn path_health_window_samples(config: &ClientConfig) -> usize {
     config.heartbeat_health_window_samples.max(1)
 }
 
-/// How many of the stored samples the PUBLISHED rtt/jitter/loss figures summarise.
+/// How much recent time the PUBLISHED rtt/jitter/loss figures summarise.
+fn path_metric_window(config: &ClientConfig) -> Duration {
+    Duration::from_millis(config.heartbeat_metric_window_ms.max(1))
+}
+
+/// Floor on how many samples back the published figures reach, so they never rest on a single
+/// observation: one miss out of one sample would read as total loss.
+const METRIC_MIN_SAMPLES: usize = 3;
+
+/// Trailing samples inside the metric window, floored at [`METRIC_MIN_SAMPLES`].
 ///
-/// Derived from the heartbeat cadence so the figures describe roughly the last
-/// `heartbeat_metric_window_ms` rather than the whole stored history. Floors at 3 so a single
-/// miss cannot read as total loss, and never exceeds what is actually stored.
-fn path_metric_window_samples(config: &ClientConfig) -> usize {
-    let interval = config.heartbeat_interval_ms.max(1);
-    let samples =
-        usize::try_from(config.heartbeat_metric_window_ms / interval).unwrap_or(usize::MAX);
-    samples.clamp(3, path_health_window_samples(config))
+/// Counted by timestamp rather than position, so a path probed every 600ms and one probed
+/// every 200ms both report over the same span of real time.
+fn metric_window_span<T>(
+    items: &VecDeque<T>,
+    window: Duration,
+    now: Instant,
+    at: impl Fn(&T) -> Instant,
+) -> usize {
+    let mut inside = 0usize;
+    for item in items.iter().rev() {
+        if now.saturating_duration_since(at(item)) > window {
+            break;
+        }
+        inside += 1;
+    }
+
+    inside.max(METRIC_MIN_SAMPLES).min(items.len())
 }
 
 fn path_min_quality_samples(config: &ClientConfig) -> usize {
@@ -7093,7 +7123,7 @@ fn record_tunnel_heartbeat_ack(
     runtime.stale_ack_ticks = 0;
     runtime.ineffective_rebinds = 0;
     if corrected_expiry {
-        record_tunnel_rtt_sample(config, runtime, rtt_ms);
+        record_tunnel_rtt_sample(config, runtime, rtt_ms, received_at);
     } else {
         record_tunnel_heartbeat_health_sample(config, runtime, sequence, true, Some(rtt_ms));
     }
@@ -7106,7 +7136,7 @@ fn record_aggregate_tunnel_health_sample(
 ) {
     record_aggregate_tunnel_health_sample_inner(
         aggregate_health,
-        HeartbeatHealthSample::untagged(delivered),
+        HeartbeatHealthSample::untagged(delivered, Instant::now()),
         rtt_ms,
     );
 }
@@ -7122,6 +7152,7 @@ fn record_aggregate_tunnel_heartbeat_health_sample(
         HeartbeatHealthSample {
             sequence: Some(sequence),
             delivered,
+            at: Instant::now(),
         },
         rtt_ms,
     );
@@ -7255,7 +7286,7 @@ fn record_tunnel_health_sample(
     record_tunnel_health_sample_inner(
         config,
         runtime,
-        HeartbeatHealthSample::untagged(delivered),
+        HeartbeatHealthSample::untagged(delivered, Instant::now()),
         rtt_ms,
     );
 }
@@ -7273,6 +7304,7 @@ fn record_tunnel_heartbeat_health_sample(
         HeartbeatHealthSample {
             sequence: Some(sequence),
             delivered,
+            at: Instant::now(),
         },
         rtt_ms,
     );
@@ -7309,18 +7341,23 @@ fn record_tunnel_health_sample_inner(
     }
 
     if let Some(rtt_ms) = rtt_ms.filter(|value| value.is_finite()) {
-        record_tunnel_rtt_sample(config, runtime, rtt_ms);
+        record_tunnel_rtt_sample(config, runtime, rtt_ms, sample.at);
     }
 
-    refresh_tunnel_health(config, runtime);
+    refresh_tunnel_health(config, runtime, sample.at);
 }
 
-fn record_tunnel_rtt_sample(config: &ClientConfig, runtime: &mut TunnelPathRuntime, rtt_ms: f64) {
-    if runtime.rtt_samples_ms.len() == path_health_window_samples(config) {
-        runtime.rtt_samples_ms.pop_front();
+fn record_tunnel_rtt_sample(
+    config: &ClientConfig,
+    runtime: &mut TunnelPathRuntime,
+    rtt_ms: f64,
+    at: Instant,
+) {
+    if runtime.rtt_samples.len() == path_health_window_samples(config) {
+        runtime.rtt_samples.pop_front();
     }
-    runtime.rtt_samples_ms.push_back(rtt_ms);
-    refresh_tunnel_health(config, runtime);
+    runtime.rtt_samples.push_back(RttSample { at, rtt_ms });
+    refresh_tunnel_health(config, runtime, at);
 }
 
 fn correct_tunnel_heartbeat_sample(
@@ -7345,22 +7382,23 @@ fn correct_tunnel_heartbeat_sample(
                 runtime.heartbeat_failed = false;
             }
         }
-        refresh_tunnel_health(config, runtime);
+        let at = sample.at;
+        refresh_tunnel_health(config, runtime, at);
     }
 }
 
-fn refresh_tunnel_health(config: &ClientConfig, runtime: &mut TunnelPathRuntime) {
+fn refresh_tunnel_health(config: &ClientConfig, runtime: &mut TunnelPathRuntime, now: Instant) {
     // Published figures describe the RECENT past. The full stored window stays behind them
     // for warm-up gating and failure detection, but summarising all of it meant a saturated
     // link still reported 36 ms while probes measured 110-180 ms, and a link that had fully
     // recovered kept reporting several percent loss for tens of seconds. Both figures feed
     // path scoring and the stability penalty, so the lag punished a link for having been busy.
-    let metric_window = path_metric_window_samples(config);
+    let window = path_metric_window(config);
 
     runtime.loss_rate = if runtime.health_window.is_empty() {
         0.0
     } else {
-        let recent = runtime.health_window.len().min(metric_window);
+        let recent = metric_window_span(&runtime.health_window, window, now, |sample| sample.at);
         let missed = runtime
             .health_window
             .iter()
@@ -7370,29 +7408,29 @@ fn refresh_tunnel_health(config: &ClientConfig, runtime: &mut TunnelPathRuntime)
         missed as f64 / recent as f64
     };
 
-    if runtime.rtt_samples_ms.is_empty() {
+    if runtime.rtt_samples.is_empty() {
         runtime.rtt_ms = None;
         runtime.jitter_ms = None;
         return;
     }
 
     // Summed in one pass rather than collected, since this runs per heartbeat per path.
-    let recent = runtime.rtt_samples_ms.len().min(metric_window);
+    let recent = metric_window_span(&runtime.rtt_samples, window, now, |sample| sample.at);
     let mut total_ms = 0.0;
     let mut delta_total_ms = 0.0;
     let mut deltas = 0usize;
     let mut previous: Option<f64> = None;
-    for &sample in runtime
-        .rtt_samples_ms
+    for sample in runtime
+        .rtt_samples
         .iter()
-        .skip(runtime.rtt_samples_ms.len() - recent)
+        .skip(runtime.rtt_samples.len() - recent)
     {
-        total_ms += sample;
+        total_ms += sample.rtt_ms;
         if let Some(previous) = previous {
-            delta_total_ms += (sample - previous).abs();
+            delta_total_ms += (sample.rtt_ms - previous).abs();
             deltas += 1;
         }
-        previous = Some(sample);
+        previous = Some(sample.rtt_ms);
     }
 
     runtime.rtt_ms = Some(total_ms / recent as f64);
@@ -9082,9 +9120,10 @@ mod tests {
     }
 
     fn health_samples(values: impl IntoIterator<Item = bool>) -> VecDeque<HeartbeatHealthSample> {
+        let now = Instant::now();
         values
             .into_iter()
-            .map(HeartbeatHealthSample::untagged)
+            .map(|delivered| HeartbeatHealthSample::untagged(delivered, now))
             .collect()
     }
 
@@ -9097,72 +9136,180 @@ mod tests {
         }
     }
 
+    /// Feeds samples at an explicit cadence and returns the timestamp after the last one.
+    fn feed_samples(
+        config: &ClientConfig,
+        runtime: &mut TunnelPathRuntime,
+        start: Instant,
+        count: usize,
+        cadence: Duration,
+        delivered: bool,
+        rtt_ms: Option<f64>,
+    ) -> Instant {
+        let mut at = start;
+        for _ in 0..count {
+            record_tunnel_health_sample_inner(
+                config,
+                runtime,
+                HeartbeatHealthSample::untagged(delivered, at),
+                rtt_ms,
+            );
+            at += cadence;
+        }
+        at
+    }
+
     #[test]
     fn published_rtt_reflects_recent_samples_not_the_whole_window() {
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
-        // A long calm period, then the link starts queueing badly.
-        for _ in 0..100 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
-        }
-        for _ in 0..15 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(150.0));
-        }
+        let start = Instant::now();
+        let cadence = Duration::from_millis(200);
+        // A long calm period, then the link starts queueing badly for a full window.
+        let after_calm = feed_samples(&config, &mut runtime, start, 100, cadence, true, Some(32.0));
+        feed_samples(&config, &mut runtime, after_calm, 15, cadence, true, Some(150.0));
 
         // Averaging all 100 stored samples would report ~50ms and hide the problem.
         let reported = runtime.rtt_ms.expect("rtt");
-        assert!(reported > 140.0, "rtt should track the recent samples, got {reported}");
+        assert!(
+            reported > 140.0,
+            "rtt should track the recent samples, got {reported}"
+        );
     }
 
     #[test]
     fn a_recovered_path_stops_reporting_loss_promptly() {
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
-        // A burst of loss...
-        for _ in 0..20 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(false), None);
-        }
-        // ...then the link is completely clean again.
-        for _ in 0..15 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
-        }
+        let start = Instant::now();
+        let cadence = Duration::from_millis(200);
+        let after_loss = feed_samples(&config, &mut runtime, start, 20, cadence, false, None);
+        // Twice the metric window of clean samples, so the last miss has definitely aged out
+        // rather than sitting exactly on the boundary.
+        feed_samples(&config, &mut runtime, after_loss, 30, cadence, true, Some(32.0));
 
         // This is the reported bug: a healthy link kept showing several percent loss for
         // tens of seconds after recovering, which penalised it in path scoring.
-        assert_eq!(runtime.loss_rate, 0.0,
-                   "a fully recovered path must not still report loss");
+        assert_eq!(
+            runtime.loss_rate, 0.0,
+            "a fully recovered path must not still report loss"
+        );
     }
 
     #[test]
-    fn loss_resolution_matches_the_metric_window_not_the_stored_window() {
+    fn the_metric_window_is_time_based_not_sample_based() {
+        // The measured per-path cadence on the real router was ~600ms, not the configured
+        // 200ms, and it slows further under load. A sample-count window therefore stretched
+        // exactly when responsiveness mattered. Both cadences must summarise the same span.
+        let config = metric_window_config();
+        let mut reported = Vec::new();
+        for cadence_ms in [200u64, 600u64] {
+            let cadence = Duration::from_millis(cadence_ms);
+            let mut runtime = TunnelPathRuntime::default();
+            let start = Instant::now();
+            let after_calm =
+                feed_samples(&config, &mut runtime, start, 60, cadence, true, Some(30.0));
+            // Twice the metric window of degraded samples, at either cadence.
+            let degraded = (6_000 / cadence_ms) as usize;
+            feed_samples(
+                &config,
+                &mut runtime,
+                after_calm,
+                degraded,
+                cadence,
+                true,
+                Some(130.0),
+            );
+            reported.push(runtime.rtt_ms.expect("rtt"));
+        }
+
+        // The same span of degraded conditions must read the same at either cadence. A
+        // sample-count window would have reported the 600ms path as three times calmer.
+        for value in &reported {
+            assert!(
+                (*value - 130.0).abs() < 1.0,
+                "both cadences should fully reflect the step, got {reported:?}"
+            );
+        }
+        assert!(
+            (reported[0] - reported[1]).abs() < 1.0,
+            "cadence must not change the reading, got {reported:?}"
+        );
+    }
+
+    #[test]
+    fn stale_samples_outside_the_window_are_ignored() {
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
-        for _ in 0..100 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
-        }
+        let start = Instant::now();
+        feed_samples(
+            &config,
+            &mut runtime,
+            start,
+            20,
+            Duration::from_millis(200),
+            true,
+            Some(200.0),
+        );
+        // One fresh sample long after the bad patch: the old readings are history now.
         record_tunnel_health_sample_inner(
-            &config, &mut runtime, HeartbeatHealthSample::untagged(false), None);
+            &config,
+            &mut runtime,
+            HeartbeatHealthSample::untagged(true, start + Duration::from_secs(60)),
+            Some(30.0),
+        );
 
-        // 3000ms / 200ms = 15 samples, so one miss is 1/15, not 1/100. Coarser than the old
-        // window on purpose: it is the price of reacting inside a few seconds.
-        let expected = 1.0 / 15.0;
-        assert!((runtime.loss_rate - expected).abs() < 1e-9,
-                "expected {expected}, got {}", runtime.loss_rate);
+        // Only the minimum-sample floor keeps two stale readings in play, so this lands well
+        // below the 200ms plateau rather than being dragged up to it.
+        let reported = runtime.rtt_ms.expect("rtt");
+        assert!(
+            reported < 160.0,
+            "stale samples should age out, got {reported}"
+        );
+    }
+
+    #[test]
+    fn a_single_miss_cannot_read_as_total_loss() {
+        let config = metric_window_config();
+        let mut runtime = TunnelPathRuntime::default();
+        let start = Instant::now();
+        feed_samples(
+            &config,
+            &mut runtime,
+            start,
+            10,
+            Duration::from_millis(200),
+            true,
+            Some(32.0),
+        );
+        // A miss arriving long after the others would otherwise be alone in the window.
+        record_tunnel_health_sample_inner(
+            &config,
+            &mut runtime,
+            HeartbeatHealthSample::untagged(false, start + Duration::from_secs(30)),
+            None,
+        );
+
+        assert!(
+            runtime.loss_rate <= 1.0 / METRIC_MIN_SAMPLES as f64,
+            "the sample floor should bound a lone miss, got {}",
+            runtime.loss_rate
+        );
     }
 
     #[test]
     fn the_stored_window_still_backs_warm_up_gating() {
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
-        for _ in 0..100 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
-        }
+        feed_samples(
+            &config,
+            &mut runtime,
+            Instant::now(),
+            100,
+            Duration::from_millis(200),
+            true,
+            Some(32.0),
+        );
 
         // Shortening what gets REPORTED must not shorten the history that decides whether a
         // path has been observed long enough to trust.
@@ -9175,7 +9322,11 @@ mod tests {
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
         record_tunnel_health_sample_inner(
-            &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(45.0));
+            &config,
+            &mut runtime,
+            HeartbeatHealthSample::untagged(true, Instant::now()),
+            Some(45.0),
+        );
 
         // Fewer samples than the metric window is normal on a new path; report them rather
         // than nothing.
@@ -9187,19 +9338,33 @@ mod tests {
     fn jitter_is_measured_over_the_recent_samples() {
         let config = metric_window_config();
         let mut runtime = TunnelPathRuntime::default();
-        for _ in 0..100 {
-            record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(32.0));
-        }
+        let cadence = Duration::from_millis(200);
+        let mut at = feed_samples(
+            &config,
+            &mut runtime,
+            Instant::now(),
+            100,
+            cadence,
+            true,
+            Some(32.0),
+        );
         // Alternating RTT: every consecutive delta is 20ms.
         for index in 0..15 {
             let rtt = if index % 2 == 0 { 40.0 } else { 60.0 };
             record_tunnel_health_sample_inner(
-                &config, &mut runtime, HeartbeatHealthSample::untagged(true), Some(rtt));
+                &config,
+                &mut runtime,
+                HeartbeatHealthSample::untagged(true, at),
+                Some(rtt),
+            );
+            at += cadence;
         }
 
         let jitter = runtime.jitter_ms.expect("jitter");
-        assert!(jitter > 15.0, "jitter should reflect the recent swing, got {jitter}");
+        assert!(
+            jitter > 15.0,
+            "jitter should reflect the recent swing, got {jitter}"
+        );
     }
 
     fn pooled_test_packet(bytes: &[u8]) -> Arc<PooledTunPacket> {
@@ -10155,7 +10320,7 @@ paths = []
         ));
         aggregate
             .health_window
-            .push_back(HeartbeatHealthSample::untagged(true));
+            .push_back(HeartbeatHealthSample::untagged(true, Instant::now()));
         assert!(!aggregate_tunnel_is_confirmed_blackhole(
             &aggregate, threshold
         ));
@@ -10255,7 +10420,7 @@ paths = []
         }
 
         assert_eq!(
-            path.rtt_samples_ms.len(),
+            path.rtt_samples.len(),
             config.heartbeat_health_window_samples
         );
         assert_eq!(path.rtt_ms, Some(240.0));

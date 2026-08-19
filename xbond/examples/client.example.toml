@@ -15,7 +15,9 @@ heartbeat_min_quality_samples = 20
 # heartbeat_health_window_samples, which stays long for warm-up gating and failure detection:
 # reporting over the long window lagged reality by tens of seconds in both directions, so a
 # busy link read as healthy and a recovered one read as lossy. Lower reacts faster but makes
-# loss coarser (one miss = one slot).
+# loss coarser. Measured in real time, not sample count, because per-path heartbeat cadence
+# is not this file's heartbeat_interval_ms (~600ms observed against 200ms configured) and slows
+# further under load, which would stretch a count-based window exactly when it matters.
 heartbeat_metric_window_ms = 3000
 heartbeat_failure_consecutive = 4
 heartbeat_recovery_consecutive = 15
