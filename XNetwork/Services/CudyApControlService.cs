@@ -14,6 +14,7 @@ public class CudyApControlService(
     private DateTime? _homeSeenSinceUtc;
     private DateTime? _homeMissingSinceUtc;
     private bool? _lastCommandedApDisabled;
+    private string? _lastUnreachableSignature;
 
     public CudyApAutomationSettings Settings => settings;
 
@@ -56,6 +57,8 @@ public class CudyApControlService(
                 {
                     UpdateStatusFromSettings();
                 }
+
+                _lastUnreachableSignature = null;
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -63,7 +66,7 @@ public class CudyApControlService(
             }
             catch (Exception ex)
             {
-                logger.LogWarning(ex, "Cudy AP automation check failed");
+                LogEvaluationFailure(ex);
                 UpdateStatus(status =>
                 {
                     status.LastError = ex.Message;
@@ -173,6 +176,37 @@ public class CudyApControlService(
         UpdateStatus(status => status.Message = homeNetwork == null
             ? "Configured home Wi-Fi is not visible; no Cudy AP change."
             : $"Home Wi-Fi signal is weak ({homeNetwork.Signal}%); no Cudy AP change.");
+    }
+
+    /// <summary>
+    /// An unreachable Cudy is an expected condition on this router -- the LAN cable comes out, the
+    /// AP reboots -- so it gets one line, not a stack trace repeated at the poll interval.
+    /// Anything we might actually have caused keeps its full detail.
+    /// </summary>
+    private void LogEvaluationFailure(Exception ex)
+    {
+        if (!PeerReachability.IsUnreachable(ex))
+        {
+            _lastUnreachableSignature = null;
+            logger.LogWarning(ex, "Cudy AP automation check failed");
+            return;
+        }
+
+        var signature = $"{ex.GetType().FullName}:{ex.Message}";
+        if (string.Equals(_lastUnreachableSignature, signature, StringComparison.Ordinal))
+        {
+            logger.LogDebug(
+                "Cudy AP automation still cannot reach {ManagementBaseUrl}: {Reason}",
+                settings.ManagementBaseUrl,
+                ex.Message);
+            return;
+        }
+
+        _lastUnreachableSignature = signature;
+        logger.LogWarning(
+            "Cudy AP automation cannot reach {ManagementBaseUrl}: {Reason}",
+            settings.ManagementBaseUrl,
+            ex.Message);
     }
 
     private async Task ApplyCudyApStateAsync(bool enabled, string reason, CancellationToken cancellationToken)

@@ -4457,7 +4457,9 @@ fn spawn_server_status_writer(
         while let Some(document) = rx.recv().await {
             let target = status_path.clone();
             let written = tokio::task::spawn_blocking(move || -> Result<()> {
-                std::fs::write(&target, serde_json::to_vec(&document)?)
+                // Published via a rename so a concurrent reader sees the previous document
+                // or the new one, never a prefix of either.
+                xbond_core::write_atomic(&target, &serde_json::to_vec(&document)?)
                     .with_context(|| format!("failed to write {}", target.display()))
             })
             .await;

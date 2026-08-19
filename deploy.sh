@@ -92,6 +92,22 @@ else
   echo "Warning: LAN resolver sources missing; domain-based bypass will not work." >&2
 fi
 
+RESOLVER_PIN_SRC="$APP_DIR/XNetwork/deploy/scripts/xnetwork-router-resolver-apply"
+echo "Pinning router resolver to the local dnsmasq..."
+if [[ -f "$RESOLVER_PIN_SRC" ]]; then
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    sudo install -m 0755 "$RESOLVER_PIN_SRC" /usr/local/sbin/xnetwork-router-resolver-apply
+    # Without this, Tailscale reclaims /etc/resolv.conf across a reboot and becomes its own
+    # DNS upstream, which breaks every public lookup the router makes (ISP identity included).
+    sudo /usr/local/sbin/xnetwork-router-resolver-apply || \
+      echo "Warning: could not pin the router resolver; ISP identity may read Unavailable." >&2
+  else
+    echo "Warning: no passwordless sudo; skipped pinning the router resolver." >&2
+  fi
+else
+  echo "Warning: router resolver script missing; skipped pinning." >&2
+fi
+
 APP_VERSION="$(sed -nE 's/.*CurrentVersion = "([^"]+)".*/\1/p' XNetwork/Models/AppChangelog.cs | head -n 1)"
 if [[ -z "$APP_VERSION" ]]; then
   echo "Unable to determine AppChangelog.CurrentVersion" >&2

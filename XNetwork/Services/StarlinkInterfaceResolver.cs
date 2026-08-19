@@ -14,6 +14,8 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
     private readonly SemaphoreSlim _probeLock = new(1, 1);
     private StarlinkInterfaceResolution? _cachedProbeResolution;
     private DateTimeOffset _cachedProbeExpiresAtUtc = DateTimeOffset.MinValue;
+    private string? _unverifiedInterface;
+    private int _unverifiedStreak;
 
     public StarlinkInterfaceResolver(
         StarlinkTelemetrySettings settings,
@@ -51,15 +53,68 @@ public sealed class StarlinkInterfaceResolver : IStarlinkInterfaceResolver
         if (xbondMatch.IsAvailable &&
             await VerifyInterfaceAsync(xbondMatch.InterfaceName!, cancellationToken).ConfigureAwait(false))
         {
+            ForgetUnverifiedStreak();
             return CacheProbe(StarlinkInterfaceResolution.Available(
                 xbondMatch.InterfaceName!,
                 $"Verified {xbondMatch.InterfaceName} against Starlink management host {_settings.Host}."));
         }
 
-        return await ResolveByProbeAsync(
+        var probed = await ResolveByProbeAsync(
             xbondMatch.Reason,
             xbondMatch.IsAvailable ? xbondMatch.InterfaceName : null,
             cancellationToken).ConfigureAwait(false);
+
+        // Another adapter answering means the dish genuinely moved, so take the probe's word
+        // for it. Nothing to tolerate.
+        if (probed.IsAvailable || !xbondMatch.IsAvailable)
+        {
+            ForgetUnverifiedStreak();
+            return probed;
+        }
+
+        return ToleratedPathMatch(xbondMatch, probed);
+    }
+
+    /// <summary>
+    /// uLink still reports this path up and matching the Starlink hints, and no other adapter
+    /// answered the management host either -- so the interface has not moved, the dish is just
+    /// briefly unreachable. Holding the match for a few reconciles stops LAN access rules being
+    /// torn down and reapplied every cycle while the dish is obstructed.
+    /// </summary>
+    private StarlinkInterfaceResolution ToleratedPathMatch(
+        StarlinkInterfaceResolution xbondMatch,
+        StarlinkInterfaceResolution probed)
+    {
+        var interfaceName = xbondMatch.InterfaceName!;
+        if (!string.Equals(_unverifiedInterface, interfaceName, StringComparison.OrdinalIgnoreCase))
+        {
+            _unverifiedInterface = interfaceName;
+            _unverifiedStreak = 0;
+        }
+
+        _unverifiedStreak++;
+        var tolerance = _settings.VerifyFailureTolerance;
+        if (_unverifiedStreak > tolerance)
+        {
+            // A dish that never comes back is a real fault and must surface as unavailable.
+            _logger.LogDebug(
+                "Starlink management host {Host} unanswered on {InterfaceName} for {Streak} consecutive checks; releasing the path match",
+                _settings.Host,
+                interfaceName,
+                _unverifiedStreak);
+            return probed;
+        }
+
+        return StarlinkInterfaceResolution.Available(
+            interfaceName,
+            $"Matched live uLink path {interfaceName} but Starlink management host {_settings.Host} " +
+            $"did not answer ({_unverifiedStreak}/{tolerance} tolerated).");
+    }
+
+    private void ForgetUnverifiedStreak()
+    {
+        _unverifiedInterface = null;
+        _unverifiedStreak = 0;
     }
 
     private async Task<StarlinkInterfaceResolution> ResolveFromXBondPathsAsync(CancellationToken cancellationToken)

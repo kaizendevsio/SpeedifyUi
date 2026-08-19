@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.135";
+    public const string CurrentVersion = "ulink-2026.06.136";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-08-19",
+            Summary = "Steadied the router's own name lookups and quietened repeat warnings.",
+            Changes =
+            [
+                "Bumped the uLink interface version for resolver and logging repairs.",
+                "Pinned the router's name lookups to its own resolver, so ISP names no longer read Unavailable after a restart.",
+                "Published the uLink status file in one step, so the dashboard cannot read it half-written.",
+                "Held on to the Starlink adapter through a brief dish outage instead of dropping and re-adding its LAN access every few seconds.",
+                "Reported an unreachable Cudy access point once instead of on every check."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.135",
             Date = "2026-08-19",
             Summary = "Favoured adapters that hold steady latency and loss.",
             Changes =

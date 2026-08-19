@@ -144,6 +144,101 @@ public class StarlinkInterfaceResolverTests
     }
 
     [Fact]
+    public async Task ResolveAsync_KeepsMatchedPathWhenTheDishBrieflyStopsAnswering()
+    {
+        // An obstructed dish drops its management endpoint intermittently. uLink still reports
+        // the path up and matching the Starlink hints, and no other adapter answers, so the
+        // interface has not moved -- abandoning it here flapped the LAN access rules.
+        var resolver = CreateResolver(
+            StarlinkPathSnapshot("enx-starlink"),
+            interfaces:
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-starlink", Type: "ethernet", State: "connected",
+                    ConnectionName: "Starlink", DisplayName: "Starlink"),
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-other", Type: "ethernet", State: "connected",
+                    ConnectionName: "USB WAN", DisplayName: "USB WAN")
+            ],
+            probe: (_, _) => Task.FromResult(false));
+
+        var resolution = await resolver.ResolveAsync();
+
+        Assert.True(resolution.IsAvailable);
+        Assert.Equal("enx-starlink", resolution.InterfaceName);
+        Assert.Contains("did not answer", resolution.Reason);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_GivesUpOnTheMatchedPathOnceToleranceIsExhausted()
+    {
+        var settings = new StarlinkTelemetrySettings { AdapterVerifyFailureTolerance = 2 };
+        var resolver = CreateResolver(
+            StarlinkPathSnapshot("enx-starlink"),
+            interfaces:
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-starlink", Type: "ethernet", State: "connected",
+                    ConnectionName: "Starlink", DisplayName: "Starlink")
+            ],
+            probe: (_, _) => Task.FromResult(false),
+            settings: settings);
+
+        Assert.True((await resolver.ResolveAsync()).IsAvailable);
+        Assert.True((await resolver.ResolveAsync()).IsAvailable);
+
+        // A dish that never comes back is a real fault and must surface as unavailable.
+        var exhausted = await resolver.ResolveAsync();
+
+        Assert.False(exhausted.IsAvailable);
+        Assert.Null(exhausted.InterfaceName);
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ForgivesEarlierMissesOnceTheDishAnswersAgain()
+    {
+        var settings = new StarlinkTelemetrySettings { AdapterVerifyFailureTolerance = 2 };
+        var reachable = false;
+        var resolver = CreateResolver(
+            StarlinkPathSnapshot("enx-starlink"),
+            interfaces:
+            [
+                new InterfaceMetadataService.InterfaceMetadata(
+                    Device: "enx-starlink", Type: "ethernet", State: "connected",
+                    ConnectionName: "Starlink", DisplayName: "Starlink")
+            ],
+            // ReSharper disable once AccessToModifiedClosure
+            probe: (_, _) => Task.FromResult(reachable),
+            settings: settings);
+
+        await resolver.ResolveAsync();
+        await resolver.ResolveAsync();
+        reachable = true;
+        Assert.Contains("Verified", (await resolver.ResolveAsync()).Reason);
+        reachable = false;
+
+        // The streak resets, so a later obstruction is tolerated afresh rather than tripping
+        // straight to unavailable.
+        Assert.True((await resolver.ResolveAsync()).IsAvailable);
+    }
+
+    private static XBondStatsSnapshot StarlinkPathSnapshot(string interfaceName) =>
+        new()
+        {
+            Paths =
+            [
+                new XBondPathStatsSnapshot
+                {
+                    PathId = 1,
+                    Name = "Starlink",
+                    InterfaceName = interfaceName,
+                    InterfaceUp = true,
+                    IsConfigured = true
+                }
+            ]
+        };
+
+    [Fact]
     public async Task BoundFactory_FailsClosedWhenResolverHasNoInterface()
     {
         var factory = new StarlinkBoundHttpClientFactory(
@@ -172,12 +267,13 @@ public class StarlinkInterfaceResolverTests
     private static StarlinkInterfaceResolver CreateResolver(
         XBondStatsSnapshot snapshot,
         IReadOnlyList<InterfaceMetadataService.InterfaceMetadata>? interfaces = null,
-        Func<string, CancellationToken, Task<bool>>? probe = null)
+        Func<string, CancellationToken, Task<bool>>? probe = null,
+        StarlinkTelemetrySettings? settings = null)
     {
         var cache = new XBondSnapshotCache(new StaticStatsProvider(snapshot));
         var metadataService = new InterfaceMetadataService(NullLogger<InterfaceMetadataService>.Instance);
         return new StarlinkInterfaceResolver(
-            new StarlinkTelemetrySettings(),
+            settings ?? new StarlinkTelemetrySettings(),
             cache,
             metadataService,
             NullLogger<StarlinkInterfaceResolver>.Instance,

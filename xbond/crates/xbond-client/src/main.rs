@@ -7596,7 +7596,10 @@ fn spawn_status_writer(
             let written = tokio::task::spawn_blocking(move || -> Result<()> {
                 let value =
                     build_runtime_status_value(publication.status, publication.sender_lanes)?;
-                std::fs::write(&target, serde_json::to_string(&value)?)
+                // Published via a rename so the dashboard cannot read a half-written
+                // document; the status JSON is well past the buffer size at which a
+                // truncating write starts tearing.
+                xbond_core::write_atomic(&target, serde_json::to_string(&value)?.as_bytes())
                     .with_context(|| format!("failed to write {}", target.display()))
             })
             .await;

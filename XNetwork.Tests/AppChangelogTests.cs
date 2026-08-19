@@ -7,7 +7,7 @@ public class AppChangelogTests
     [Fact]
     public void CurrentVersion_UsesDateBasedMonthlyRevision()
     {
-        Assert.Equal("ulink-2026.06.135", AppChangelog.CurrentVersion);
+        Assert.Equal("ulink-2026.06.136", AppChangelog.CurrentVersion);
         Assert.Matches(@"^ulink-\d{4}\.\d{2}\.\d+$", AppChangelog.CurrentVersion);
     }
 
@@ -18,7 +18,9 @@ public class AppChangelogTests
 
         Assert.Equal(AppChangelog.CurrentVersion, entry.Version);
         Assert.Contains(entry.Changes, change => change.Contains("version", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(entry.Changes, change => change.Contains("steady", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(entry.Changes, change => change.Contains("resolver", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(AppChangelog.Entries.SelectMany(item => item.Changes),
+            change => change.Contains("steady", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(AppChangelog.Entries.SelectMany(item => item.Changes),
             change => change.Contains("bypass", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(AppChangelog.Entries.SelectMany(item => item.Changes),
