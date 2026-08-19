@@ -55,6 +55,16 @@ flap_half_life_secs = 300
 # loaded line can saturate its queue for a single second; without this it would be exiled
 # for a half-life and traffic would sit on a worse path.
 flap_transient_grace_ticks = 5
+# Rehabilitation: a penalised adapter earns credit back by staying healthy, not just by
+# waiting out the decay. Without this, suppression removed a path from candidacy and only
+# candidates get trialled, so a recovered adapter had no way to prove itself and stayed
+# locked out while traffic sat on a worse link.
+flap_rehabilitation_ticks = 45
+flap_rehabilitation_credit = 250.0
+# Credit also requires steadiness over the stability window, not just momentary health. A
+# link that cycles (an obstructed dish) looks fine during its good phase, and crediting that
+# would let it buy its way back between failures -- exactly what flap damping prevents.
+flap_rehabilitation_max_stability_penalty = 20.0
 # Latency-first anchor preference: the path whose average heartbeat RTT beats the
 # anchor's by latency_advantage_ms for latency_stable_ticks consecutive seconds earns a
 # trial, and any promotion (score- or latency-triggered) requires holding latency within

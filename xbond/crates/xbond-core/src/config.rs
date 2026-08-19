@@ -189,6 +189,11 @@ impl ClientConfig {
                 penalty_cap: settings.flap_penalty_cap.max(0.0),
                 half_life_secs: settings.flap_half_life_secs.max(1),
                 transient_grace_ticks: settings.flap_transient_grace_ticks,
+                rehabilitation_ticks: settings.flap_rehabilitation_ticks.max(1),
+                rehabilitation_credit: settings.flap_rehabilitation_credit.max(0.0),
+                rehabilitation_max_stability_penalty: settings
+                    .flap_rehabilitation_max_stability_penalty
+                    .max(0.0),
             },
             trial: AnchorTrialConfig {
                 enabled: settings.trial_enabled,
@@ -244,6 +249,12 @@ pub struct RoleSelectionSettings {
     pub flap_half_life_secs: u64,
     #[serde(default = "default_flap_transient_grace_ticks")]
     pub flap_transient_grace_ticks: u32,
+    #[serde(default = "default_flap_rehabilitation_ticks")]
+    pub flap_rehabilitation_ticks: u32,
+    #[serde(default = "default_flap_rehabilitation_credit")]
+    pub flap_rehabilitation_credit: f64,
+    #[serde(default = "default_flap_rehabilitation_max_stability_penalty")]
+    pub flap_rehabilitation_max_stability_penalty: f64,
     #[serde(default = "default_trial_enabled")]
     pub trial_enabled: bool,
     #[serde(default = "default_trial_ticks")]
@@ -280,6 +291,10 @@ impl Default for RoleSelectionSettings {
             flap_penalty_cap: default_flap_penalty_cap(),
             flap_half_life_secs: default_flap_half_life_secs(),
             flap_transient_grace_ticks: default_flap_transient_grace_ticks(),
+            flap_rehabilitation_ticks: default_flap_rehabilitation_ticks(),
+            flap_rehabilitation_credit: default_flap_rehabilitation_credit(),
+            flap_rehabilitation_max_stability_penalty:
+                default_flap_rehabilitation_max_stability_penalty(),
             trial_enabled: default_trial_enabled(),
             trial_ticks: default_trial_ticks(),
             trial_success_ticks: default_trial_success_ticks(),
@@ -359,6 +374,18 @@ fn default_flap_penalty_cap() -> f64 {
 
 fn default_flap_half_life_secs() -> u64 {
     300
+}
+
+fn default_flap_rehabilitation_ticks() -> u32 {
+    45
+}
+
+fn default_flap_rehabilitation_credit() -> f64 {
+    250.0
+}
+
+fn default_flap_rehabilitation_max_stability_penalty() -> f64 {
+    20.0
 }
 
 fn default_flap_transient_grace_ticks() -> u32 {

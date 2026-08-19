@@ -72,6 +72,26 @@ pub struct FlapDampingConfig {
     /// A loaded line can saturate its queue for a single second; banishing it for a
     /// half-life over that would strand traffic on a worse path.
     pub transient_grace_ticks: u32,
+    /// Consecutive eligible ticks a penalised path must serve to earn a credit back.
+    ///
+    /// Decay alone makes recovery a function of elapsed time, which treats a link that has
+    /// genuinely recovered exactly like one still flapping. Worse, suppression removes a
+    /// path from candidacy, and only candidates are trialled -- so a recovered path could
+    /// not prove itself and had no way back except waiting out repeated exiles. Sustained
+    /// health now buys penalty back, because that is the evidence actually worth crediting.
+    pub rehabilitation_ticks: u32,
+    /// Penalty forgiven each time `rehabilitation_ticks` of unbroken health is served.
+    pub rehabilitation_credit: f64,
+    /// Steadiness a path must also hold to earn rehabilitation credit.
+    ///
+    /// Eligibility alone is not enough. A link that cycles -- an obstructed dish, say --
+    /// looks perfectly healthy during its good phase, so crediting mere eligibility let it
+    /// buy its way out of suppression between obstructions and resume stealing the anchor,
+    /// which is the exact behaviour flap damping exists to stop. Steadiness is measured over
+    /// the stability window, so a cycling link fails this bar even mid-good-phase, while a
+    /// genuinely recovered link passes it. Since the stability penalty also carries the
+    /// unproven term, a path with too little history cannot clear this either.
+    pub rehabilitation_max_stability_penalty: f64,
 }
 
 impl Default for FlapDampingConfig {
@@ -83,6 +103,11 @@ impl Default for FlapDampingConfig {
             penalty_cap: 4_000.0,
             half_life_secs: 300,
             transient_grace_ticks: 5,
+            // Two clean minutes clears a full displacement penalty, so a healthy runner-up
+            // is trialable again in minutes rather than being stranded for a half-life.
+            rehabilitation_ticks: 45,
+            rehabilitation_credit: 250.0,
+            rehabilitation_max_stability_penalty: 20.0,
         }
     }
 }

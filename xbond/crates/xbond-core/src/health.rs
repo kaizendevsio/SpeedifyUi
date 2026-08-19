@@ -236,6 +236,9 @@ pub struct RoleSelectionState {
     pub stability: BTreeMap<u16, PathStability>,
     #[serde(default)]
     pub flap_damping: FlapDamping,
+    /// Consecutive eligible ticks served by each penalised path, toward rehabilitation.
+    #[serde(default)]
+    pub healthy_streak: BTreeMap<u16, u32>,
     #[serde(default)]
     pub latency_candidate_path_id: Option<u16>,
     #[serde(default)]
@@ -263,6 +266,7 @@ impl Default for RoleSelectionState {
             anchor_candidate_ticks: 0,
             backup_candidate_path_ids: Vec::new(),
             backup_candidate_ticks: 0,
+            healthy_streak: BTreeMap::new(),
             schedule_change_count: 0,
             smoothing: BTreeMap::new(),
             rtt_smoothing: BTreeMap::new(),
@@ -331,6 +335,7 @@ pub fn select_path_roles_with_state(
     state.flap_damping.retain_paths(&live_ids);
     apply_score_smoothing(&mut scored, state, config, &live_ids);
     settle_demotion_probation(&scored, state);
+    rehabilitate_healthy_paths(&scored, state, config);
 
     let previous_anchor = state.anchor_path_id;
     let previous_backups = state.backup_path_ids.clone();
@@ -362,11 +367,7 @@ pub fn select_path_roles_with_state(
         // Being displaced costs the outgoing anchor some trust, which is what stops
         // A -> B -> A ping-ponging.
         if let Some(outgoing) = previous_anchor {
-            state.flap_damping.add(
-                outgoing,
-                config.flap.penalty_demoted,
-                config.flap.penalty_cap,
-            );
+            penalise_path(state, outgoing, config.flap.penalty_demoted, config);
             // A path that hard-failed gets a refundable window: a one-tick queue
             // saturation on an otherwise good line must not strand traffic elsewhere for
             // a half-life. A path displaced while still healthy lost fairly to a
@@ -737,11 +738,7 @@ fn advance_trial(
             promoted
         }
         TrialOutcome::FailedUnderLoad => {
-            state.flap_damping.add(
-                trial.path_id,
-                config.flap.penalty_trial_failed,
-                config.flap.penalty_cap,
-            );
+            penalise_path(state, trial.path_id, config.flap.penalty_trial_failed, config);
             end_trial(state, outcome);
             current_anchor_id
         }
@@ -750,6 +747,62 @@ fn advance_trial(
             current_anchor_id
         }
     }
+}
+
+/// Lets a penalised path earn its way back by staying healthy, rather than only by waiting.
+///
+/// Applies to every adapter uniformly. A path that is still failing accrues no credit, so a
+/// genuinely flapping link stays suppressed while a recovered one returns in bounded time.
+fn rehabilitate_healthy_paths(
+    scored: &[ScoredPath],
+    state: &mut RoleSelectionState,
+    config: RoleSelectionConfig,
+) {
+    let required = config.flap.rehabilitation_ticks.max(1);
+    for scored_path in scored {
+        let path_id = scored_path.path.path_id;
+        if state.flap_damping.penalty(path_id) <= 0.0 {
+            state.healthy_streak.remove(&path_id);
+            continue;
+        }
+
+        // Eligible AND steady. A cycling link is eligible during its good phase, so
+        // eligibility alone would let it buy its way back between failures.
+        if !is_role_eligible(scored_path)
+            || scored_path.stability_penalty > config.flap.rehabilitation_max_stability_penalty
+        {
+            // Still unwell or still erratic, so it has proven nothing; the clock restarts.
+            state.healthy_streak.remove(&path_id);
+            continue;
+        }
+
+        let streak = state.healthy_streak.entry(path_id).or_insert(0);
+        *streak = streak.saturating_add(1);
+        if *streak >= required {
+            *streak = 0;
+            state
+                .flap_damping
+                .forgive(path_id, config.flap.rehabilitation_credit);
+        }
+    }
+
+    state
+        .healthy_streak
+        .retain(|path_id, _| scored.iter().any(|path| path.path.path_id == *path_id));
+}
+
+/// Charges a flap penalty and restarts the path's rehabilitation clock, so credit has to be
+/// earned again from scratch after a fresh failure.
+fn penalise_path(
+    state: &mut RoleSelectionState,
+    path_id: u16,
+    amount: f64,
+    config: RoleSelectionConfig,
+) {
+    state
+        .flap_damping
+        .add(path_id, amount, config.flap.penalty_cap);
+    state.healthy_streak.remove(&path_id);
 }
 
 /// Resolves a refundable anchor-loss penalty: refund if the path came back inside the
@@ -1930,6 +1983,171 @@ mod tests {
         assert!(trial.trial.is_some());
         let reason = trial.path.role_reason.as_deref().unwrap();
         assert!(reason.contains("trial"), "unexpected reason: {reason}");
+    }
+
+    /// Drives whole ticks so rehabilitation is exercised through the real entry point.
+    fn run_ticks(
+        paths: &[PathHealthSnapshot],
+        state: &mut RoleSelectionState,
+        config: RoleSelectionConfig,
+        ticks: usize,
+    ) {
+        for _ in 0..ticks {
+            select_path_roles_with_state(paths, 1, state, config, false);
+        }
+    }
+
+    #[test]
+    fn sustained_health_earns_a_path_out_of_suppression() {
+        // The reported case: a healthy fiber line was displaced, charged the full penalty,
+        // and could not be trialled again because suppression removes a path from candidacy.
+        // Waiting was the only way back, so an adapter that had already recovered stayed
+        // locked out while traffic sat on a worse link.
+        let config = RoleSelectionConfig::default();
+        let mut state = RoleSelectionState::default();
+        let paths = vec![
+            path_with_rtt(1, "fiber", 30.0),
+            path_with_rtt(2, "backup", 90.0),
+        ];
+        state
+            .flap_damping
+            .add(1, config.flap.penalty_demoted, config.flap.penalty_cap);
+        assert!(state
+            .flap_damping
+            .is_suppressed(1, config.flap.suppress_threshold));
+
+        // Bound the wait to minutes rather than half-lives, and prove that decay ALONE
+        // could not have cleared it in that time -- otherwise this test would pass without
+        // rehabilitation doing anything. Credit starts accruing only once the stability
+        // window has enough history to show the path is steady, so the first credit lands
+        // later than rehabilitation_ticks alone would suggest.
+        let bound = 150usize;
+        let decay_only = config.flap.penalty_demoted
+            * 0.5f64.powf(bound as f64 / config.flap.half_life_secs as f64);
+        assert!(
+            decay_only > config.flap.suppress_threshold,
+            "premise broken: decay alone would already clear this in {bound} ticks ({decay_only})"
+        );
+
+        run_ticks(&paths, &mut state, config, bound);
+
+        assert!(
+            !state
+                .flap_damping
+                .is_suppressed(1, config.flap.suppress_threshold),
+            "a path healthy this long must be promotable again, penalty was {}",
+            state.flap_damping.penalty(1)
+        );
+    }
+
+    #[test]
+    fn a_still_failing_path_earns_no_rehabilitation() {
+        let config = RoleSelectionConfig::default();
+        let mut state = RoleSelectionState::default();
+        // heartbeat_failed makes the path ineligible for a role.
+        let mut broken = path_with_rtt(1, "flapping", 30.0);
+        broken.heartbeat_failed = true;
+        let paths = vec![broken, path_with_rtt(2, "backup", 90.0)];
+        state
+            .flap_damping
+            .add(1, config.flap.penalty_demoted, config.flap.penalty_cap);
+        let before = state.flap_damping.penalty(1);
+
+        run_ticks(&paths, &mut state, config, config.flap.rehabilitation_ticks as usize * 2 + 2);
+
+        // Only decay may have touched it; no credit is earned by a link still failing.
+        let after = state.flap_damping.penalty(1);
+        assert!(
+            after > before - config.flap.rehabilitation_credit,
+            "a failing path must not be forgiven: {before} -> {after}"
+        );
+        assert!(state
+            .flap_damping
+            .is_suppressed(1, config.flap.suppress_threshold));
+    }
+
+    #[test]
+    fn a_fresh_penalty_restarts_the_rehabilitation_clock() {
+        let config = RoleSelectionConfig::default();
+        let mut state = RoleSelectionState::default();
+        let paths = vec![
+            path_with_rtt(1, "fiber", 30.0),
+            path_with_rtt(2, "backup", 90.0),
+        ];
+        state
+            .flap_damping
+            .add(1, config.flap.penalty_demoted, config.flap.penalty_cap);
+        // Almost enough health to earn a credit...
+        run_ticks(&paths, &mut state, config, config.flap.rehabilitation_ticks as usize - 1);
+        assert!(state.healthy_streak.get(&1).copied().unwrap_or(0) > 0);
+
+        // ...then it misbehaves again.
+        penalise_path(&mut state, 1, config.flap.penalty_trial_failed, config);
+
+        assert_eq!(
+            state.healthy_streak.get(&1).copied().unwrap_or(0),
+            0,
+            "a fresh penalty must restart the clock, not inherit nearly-earned credit"
+        );
+    }
+
+    #[test]
+    fn rehabilitation_applies_to_every_adapter() {
+        // Not a fiber-specific carve-out: whichever adapter was penalised gets the same
+        // chance to prove itself.
+        let config = RoleSelectionConfig::default();
+        let mut state = RoleSelectionState::default();
+        let paths = vec![
+            path_with_rtt(1, "one", 30.0),
+            path_with_rtt(2, "two", 40.0),
+            path_with_rtt(3, "three", 50.0),
+        ];
+        for path_id in [2, 3] {
+            state
+                .flap_damping
+                .add(path_id, config.flap.penalty_demoted, config.flap.penalty_cap);
+        }
+
+        run_ticks(&paths, &mut state, config, 150);
+
+        for path_id in [2, 3] {
+            assert!(
+                !state
+                    .flap_damping
+                    .is_suppressed(path_id, config.flap.suppress_threshold),
+                "path {path_id} should have been rehabilitated, penalty {}",
+                state.flap_damping.penalty(path_id)
+            );
+        }
+    }
+
+    #[test]
+    fn a_rehabilitated_path_becomes_a_trial_candidate_again() {
+        // The point of rehabilitation is not the number going down, it is regaining the
+        // chance to prove itself in a trial and take the anchor back.
+        let config = RoleSelectionConfig::default();
+        let mut state = RoleSelectionState::default();
+        let paths = vec![
+            path_with_rtt(1, "fast-fiber", 30.0),
+            path_with_rtt(2, "slow-backup", 200.0),
+        ];
+        // Establish the slow path as anchor while the fast one is suppressed.
+        state.anchor_path_id = Some(2);
+        state
+            .flap_damping
+            .add(1, config.flap.penalty_demoted, config.flap.penalty_cap);
+
+        run_ticks(&paths, &mut state, config, 5);
+        assert_eq!(state.anchor_path_id, Some(2), "suppressed path must not jump straight in");
+
+        run_ticks(&paths, &mut state, config, config.flap.rehabilitation_ticks as usize * 3);
+
+        assert!(
+            state.anchor_path_id == Some(1) || state.trial.is_some(),
+            "after rehabilitation the better path must be trialled or promoted, anchor={:?} trial={:?}",
+            state.anchor_path_id,
+            state.trial.as_ref().map(|trial| trial.path_id)
+        );
     }
 
     fn path_with_rtt(path_id: u16, name: &str, rtt_ms: f64) -> PathHealthSnapshot {
