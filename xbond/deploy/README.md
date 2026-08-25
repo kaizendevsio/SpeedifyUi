@@ -25,7 +25,6 @@ install -m 0644 xbond-client.service /etc/systemd/system/xbond-client.service
 install -m 0755 scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
 install -m 0755 scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 systemctl daemon-reload
-systemctl disable --now speedify.service speedify-sharing.service
 systemctl enable --now xbond-client.service
 ```
 
@@ -33,7 +32,7 @@ systemctl enable --now xbond-client.service
 Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
-The XBond client unit conflicts with `speedify.service` and `speedify-sharing.service`, removes any stale `xbond0` default route before socket startup, pins the XBond server IPv4 endpoint to a physical route, reapplies `10.250.0.2/30` to `xbond0`, and installs the IPv4 default route through `xbond0` after each service start. It also reads the XNetwork Cudy management URL from the non-secret runtime settings file and pins that local management host to a physical route before installing the XBond default route. The unit includes the current Cudy management host as a non-secret local-bypass fallback so service restarts keep local management off `xbond0` even if the app settings file cannot be read at that instant. XBond data sockets still bind directly to their physical interfaces; the pre-start physical route prevents recursive routing during cold restarts.
+The uLink client unit removes any stale `xbond0` default route before socket startup, pins the XBond server IPv4 endpoint to a physical route, reapplies `10.250.0.2/30` to `xbond0`, and installs the IPv4 default route through `xbond0` after each service start. It also reads the XNetwork Cudy management URL from the non-secret runtime settings file and pins that local management host to a physical route before installing the XBond default route. The unit includes the current Cudy management host as a non-secret local-bypass fallback so service restarts keep local management off `xbond0` even if the app settings file cannot be read at that instant. XBond data sockets still bind directly to their physical interfaces; the pre-start physical route prevents recursive routing during cold restarts.
 Set `XBOND_LOCAL_BYPASS_HOSTS` or `XBOND_LOCAL_MANAGEMENT_HOSTS` in `/etc/xbond/client.env` for extra IPv4 local-management hosts or CIDRs that must never route through `xbond0`. Optional `XBOND_LOCAL_BYPASS_DEV` and `XBOND_LOCAL_BYPASS_GATEWAY` force those bypass routes through a specific physical interface/gateway.
 Use `xbond-client-rollback [target-ip]` to remove one scoped `/32` route, or run it without arguments to remove all `/32` routes on `xbond0`.
 
@@ -62,7 +61,7 @@ Run `systemctl stop xbond-server-nat.service` to remove the NAT rules through `E
 ## XBond Limits
 
 - `xbond-client tunnel` opens a TUN and encapsulates IPv4 packets.
-- XNetwork keeps manual `/32` route diagnostics, while `xbond-client.service` owns the IPv4 default route through `xbond0` in this branch. No automatic rollback to Speedify is implemented.
+- XNetwork keeps manual `/32` route diagnostics, while `xbond-client.service` owns the IPv4 default route through `xbond0` in this branch. No automatic rollback to a previous runtime is implemented.
 - Every `xbond-client` tunnel and diagnostic invocation uses a fresh runtime session ID so service restarts and repeated diagnostics cannot reuse packet nonces or be mistaken for duplicate old packets by the server.
 - Frame nonce derivation includes the authenticated random session epoch and wire send time. This is shared client/server behavior, so deploy both binaries together whenever the crypto implementation changes.
 - `xbond-server --tun-name <name>` writes first-arrival IPv4 payloads to a TUN and reads return packets from the server TUN for encapsulation back to the client.

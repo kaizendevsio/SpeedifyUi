@@ -92,7 +92,7 @@ public sealed class WifiControlInterfaceStatus
 
 - [ ] **Step 3: Build**
 
-Run: `dotnet build SpeedifyUi.sln -c Release`
+Run: `dotnet build uLink.sln -c Release`
 Expected: Build succeeded. (Use Release: a local Debug instance may hold the output.)
 
 - [ ] **Step 4: Commit**
@@ -616,7 +616,7 @@ Sibling of `AdapterIdentity`:
 
 - [ ] **Step 3: Build**
 
-Run: `dotnet build SpeedifyUi.sln -c Release`
+Run: `dotnet build uLink.sln -c Release`
 Expected: Build succeeded.
 
 - [ ] **Step 4: Commit**
@@ -749,7 +749,7 @@ extend the existing `disabled` expression with
 
 - [ ] **Step 5: Build and run the suite**
 
-Run: `dotnet build SpeedifyUi.sln -c Release`
+Run: `dotnet build uLink.sln -c Release`
 Expected: Build succeeded.
 
 Run: `dotnet test XNetwork.Tests/XNetwork.Tests.csproj -c Release --filter "FullyQualifiedName!~BrowserSmokeTests"`

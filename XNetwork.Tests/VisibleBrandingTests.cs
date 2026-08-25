@@ -93,7 +93,7 @@ public sealed partial class VisibleBrandingTests
 
         while (directory is not null)
         {
-            if (File.Exists(Path.Combine(directory.FullName, "SpeedifyUi.sln")))
+            if (File.Exists(Path.Combine(directory.FullName, "uLink.sln")))
             {
                 return Path.Combine([directory.FullName, .. pathParts]);
             }
@@ -101,7 +101,7 @@ public sealed partial class VisibleBrandingTests
             directory = directory.Parent;
         }
 
-        throw new DirectoryNotFoundException("Could not locate SpeedifyUi repository root.");
+        throw new DirectoryNotFoundException("Could not locate uLink repository root.");
     }
 
     [GeneratedRegex(@"(?<![A-Za-z0-9_])xbond(?![A-Za-z0-9_])", RegexOptions.IgnoreCase)]

@@ -180,7 +180,7 @@ Delete the now-unused `SolSocket`/`SoBindToDevice` constants, `CreateSocket`, `C
 
 - [ ] **Step 3: Build and run existing tests to prove no regression**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 Run: `dotnet test XNetwork.Tests/XNetwork.Tests.csproj --filter "FullyQualifiedName!~BrowserSmokeTests"`
@@ -319,7 +319,7 @@ public sealed class AdapterTelemetrySample
 
 - [ ] **Step 4: Build**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 - [ ] **Step 5: Commit**
@@ -1372,7 +1372,7 @@ Add as a sibling of `"StarlinkTelemetry"`:
 
 - [ ] **Step 4: Build**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 - [ ] **Step 5: Commit**
@@ -1792,7 +1792,7 @@ Delete the moved private copies from `Home.razor` and update every call site in 
 
 - [ ] **Step 2: Build**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded, no CS0103 (name does not exist) errors.
 
 - [ ] **Step 3: Commit**
@@ -1841,7 +1841,7 @@ Everything else (JS module import of `./js/statisticsCharts.js`, `initializeOrUp
 
 - [ ] **Step 2: Build**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 - [ ] **Step 3: Commit**
@@ -1903,7 +1903,7 @@ Step 1 that is no longer referenced by `Home.razor`.
 
 - [ ] **Step 3: Build**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 - [ ] **Step 4: Commit**
@@ -2093,7 +2093,7 @@ public void Invalidate(string interfaceName)
 
 - [ ] **Step 4: Build and run the full suite**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 Run: `dotnet test XNetwork.Tests/XNetwork.Tests.csproj --filter "FullyQualifiedName!~BrowserSmokeTests"`
@@ -2154,7 +2154,7 @@ if (AdapterIdentitySettings.Enabled != _adapterIdentityEnabled)
 
 - [ ] **Step 3: Build**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded.
 
 - [ ] **Step 4: Commit**
@@ -2203,7 +2203,7 @@ git commit -m "docs: release ulink-2026.06.123"
 
 - [ ] **Step 1: Full local verification**
 
-Run: `dotnet build SpeedifyUi.sln`
+Run: `dotnet build uLink.sln`
 Expected: Build succeeded, 0 errors.
 
 Run: `dotnet test XNetwork.Tests/XNetwork.Tests.csproj --filter "FullyQualifiedName!~BrowserSmokeTests"`

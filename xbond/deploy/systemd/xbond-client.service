@@ -3,8 +3,6 @@ Description=XBond client tunnel
 Documentation=man:systemd.service(5)
 After=network-online.target
 Wants=network-online.target
-Conflicts=speedify.service speedify-sharing.service
-Before=speedify.service speedify-sharing.service
 
 [Service]
 Type=simple

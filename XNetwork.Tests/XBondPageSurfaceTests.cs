@@ -243,7 +243,7 @@ public class XBondPageSurfaceTests
         while (directory is not null)
         {
             var candidateRoot = directory.FullName;
-            if (File.Exists(Path.Combine(candidateRoot, "SpeedifyUi.sln")))
+            if (File.Exists(Path.Combine(candidateRoot, "uLink.sln")))
             {
                 return Path.Combine([candidateRoot, .. pathParts]);
             }
@@ -251,6 +251,6 @@ public class XBondPageSurfaceTests
             directory = directory.Parent;
         }
 
-        throw new DirectoryNotFoundException("Could not locate SpeedifyUi repository root.");
+        throw new DirectoryNotFoundException("Could not locate uLink repository root.");
     }
 }

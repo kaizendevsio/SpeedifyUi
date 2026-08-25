@@ -4,7 +4,7 @@ Date: 2026-06-13
 
 ## Summary
 
-Build `XBond` as a side-by-side reliability tunnel prototype before replacing Speedify. The packet dataplane will be Rust. XNetwork/Blazor will remain the UI and control plane.
+Build `XBond` as a side-by-side reliability tunnel prototype before replacing the legacy VPN runtime. The packet dataplane will be Rust. XNetwork/Blazor will remain the UI and control plane.
 
 The core invariant is: XBond must never perform worse than the best currently working adapter just because a weaker redundant adapter is present.
 
@@ -13,7 +13,7 @@ The core invariant is: XBond must never perform worse than the best currently wo
 - `xbond-client` runs on `xeon-network`.
 - `xbond-server` runs on `xeon-speedify-vultr-01`.
 - XNetwork observes and controls the client through a local status command/API.
-- V1 is a test tunnel only; it must not route all router traffic or replace Speedify by default.
+- V1 is a test tunnel only; it must not route all router traffic or replace the legacy VPN runtime by default.
 
 Target flow:
 
@@ -55,7 +55,7 @@ Default for future live testing: `AnchorFec`.
 
 - Add an XBond status model and service.
 - Add a read-only XBond UI page for status, current mode, anchor, path health, duplicate drops, and FEC counters.
-- Keep Speedify controls separate so XBond can be compared side-by-side.
+- Keep the legacy runtime's controls separate so XBond can be compared side-by-side.
 - Do not start/stop privileged tunnel services from the first UI implementation unless explicitly enabled later.
 
 ## Deployment Shape
@@ -76,7 +76,7 @@ VPS:
 /etc/systemd/system/xbond-server.service
 ```
 
-Use a dedicated UDP port, for example `8444/udp`; do not reuse Speedify ports.
+Use a dedicated UDP port, for example `8444/udp`; do not reuse the legacy runtime's ports.
 
 ## Test Milestones
 

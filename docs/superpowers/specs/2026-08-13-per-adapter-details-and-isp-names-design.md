@@ -232,7 +232,7 @@ xUnit in `XNetwork.Tests` (no bUnit in the project, so coverage targets services
 - Skip rules: `xbond0`, `tailscale0`, `lo`, and down interfaces are never probed.
 - `AdapterTelemetryHistory` pruning by sample count and per-interface isolation.
 
-Commands: `dotnet build SpeedifyUi.sln` and `dotnet test XNetwork.Tests/XNetwork.Tests.csproj`.
+Commands: `dotnet build uLink.sln` and `dotnet test XNetwork.Tests/XNetwork.Tests.csproj`.
 
 ## Versioning
 

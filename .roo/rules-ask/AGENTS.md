@@ -1,16 +1,17 @@
 # Ask Mode - Non-Obvious Context
 
 ## Misleading Naming
-- "XNetwork" project name vs "SpeedifyUi" solution name - same project
-- Adapter "Name" is technical ID, "Isp" is display name
+- "XNetwork" project name vs "uLink" product and solution name - same thing
+- "xbond" is the Rust tunnel workspace; "uLink" is the product as a whole
+- Adapter "Name" is a technical ID, "Isp" is the display name
 - `WhitelistedLinks` expects adapter Names (IDs), not ISP names
 
 ## Hidden Dependencies
-- Requires Speedify CLI (`speedify_cli`) installed and in PATH
-- Linux-only for NetworkMonitorService features
-- Chart.js and Tailwind loaded via CDN, not bundled
+- The router-side integrations are Linux-only: nftables, `ip` policy routing, systemd, NetworkManager, dnsmasq
+- `xbond-client` must be running for the dashboard to show any tunnel state
+- Chart.js and Tailwind are loaded via CDN, not bundled
 
 ## Configuration Gotchas
-- Port 8080 hardcoded in appsettings.json, not in launchSettings.json
+- Port 8080 comes from `Kestrel.Endpoints` in appsettings.json, not launchSettings.json
 - `DownTimeoutSeconds` applies per adapter, not globally
-- No actual tests despite XNetwork.csproj being a web project
+- Tunnel behaviour is configured separately, in `/etc/xbond/client.toml` on the router

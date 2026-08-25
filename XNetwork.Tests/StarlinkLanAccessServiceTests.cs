@@ -160,7 +160,7 @@ public sealed class StarlinkLanAccessServiceTests
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (File.Exists(Path.Combine(directory.FullName, "SpeedifyUi.sln")))
+            if (File.Exists(Path.Combine(directory.FullName, "uLink.sln")))
             {
                 return Path.Combine([directory.FullName, .. pathParts]);
             }
@@ -168,6 +168,6 @@ public sealed class StarlinkLanAccessServiceTests
             directory = directory.Parent;
         }
 
-        throw new DirectoryNotFoundException("Could not locate SpeedifyUi repository root.");
+        throw new DirectoryNotFoundException("Could not locate uLink repository root.");
     }
 }

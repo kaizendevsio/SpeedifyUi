@@ -5,7 +5,7 @@ Branch: `feature/xband-only-runtime`
 Audited commit: `561c3bf8141445c7afa27dd00c4446a285cb69fe`
 Scope: Rust XBond client, server, core protocol, scheduler, queues, crypto, TUN, repair, FEC, and recovery behavior
 
-Out of scope: XNetwork visual design, Speedify, Proxmox, modem/Starlink management, and unrelated application services
+Out of scope: XNetwork visual design, Proxmox, modem/Starlink management, and unrelated application services
 
 ## Purpose
 

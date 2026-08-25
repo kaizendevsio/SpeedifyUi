@@ -23,7 +23,7 @@ applied on the routers with `tc netem` or a narrow iptables rule.
 From PowerShell:
 
 ```powershell
-cd C:\Users\Xeon\RiderProjects\SpeedifyUi\xbond\lab
+cd C:\Users\Xeon\RiderProjects\uLink\xbond\lab
 .\run.ps1 topology-smoke
 ```
 
