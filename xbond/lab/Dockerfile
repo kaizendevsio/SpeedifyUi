@@ -5,11 +5,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --workspace --release
 
-FROM debian:bookworm-slim
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-bookworm-slim
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         iperf3 \
         iproute2 \
         iptables \
@@ -19,6 +20,7 @@ RUN apt-get update \
         procps \
         python3 \
         python3-jsonschema \
+        socat \
         tcpdump \
     && rm -rf /var/lib/apt/lists/*
 

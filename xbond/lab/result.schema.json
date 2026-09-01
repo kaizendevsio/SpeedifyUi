@@ -821,6 +821,10 @@
     "scenario": {
       "enum": [
         "topology-smoke",
+        "four-wan-smoke",
+        "four-wan-resilience",
+        "app-smoke",
+        "dev-stack",
         "healthy-single",
         "anchor-bad-backup",
         "all-intermittent",

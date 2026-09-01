@@ -1125,6 +1125,15 @@ class ResultSchemaTests(unittest.TestCase):
     def test_non_soak_result_does_not_require_baseline_evidence(self):
         self.validator.validate(result("topology-smoke"))
 
+    def test_four_wan_and_app_results_are_supported(self):
+        for scenario in (
+            "four-wan-smoke",
+            "four-wan-resilience",
+            "app-smoke",
+            "dev-stack",
+        ):
+            self.validator.validate(result(scenario))
+
 
 if __name__ == "__main__":
     unittest.main()

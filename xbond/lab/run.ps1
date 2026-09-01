@@ -2,6 +2,10 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet(
         "topology-smoke",
+        "four-wan-smoke",
+        "four-wan-resilience",
+        "app-smoke",
+        "dev-stack",
         "healthy-single",
         "anchor-bad-backup",
         "all-intermittent",
@@ -34,7 +38,11 @@ $ErrorActionPreference = "Stop"
 $dockerContext = "xeon-dev"
 $labRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $xbondRoot = Split-Path -Parent $labRoot
+$repoRoot = Split-Path -Parent $xbondRoot
 $results = Join-Path $labRoot "results"
+$appScenarios = @("app-smoke", "dev-stack")
+$needsApp = $appScenarios -contains $Scenario
+$appPublish = $null
 New-Item -ItemType Directory -Force -Path $results | Out-Null
 
 if (($Scenario -eq "soak" -or $Scenario -eq "matrix") -and $DurationSeconds -lt 1800) {
@@ -123,30 +131,47 @@ try {
         result_schema_hash_matches_source    = $true
     }
 
-    & docker --context $dockerContext create `
-        --name $container `
-        --privileged `
-        --cap-add NET_ADMIN `
-        --cap-add NET_RAW `
-        --cap-add SYS_ADMIN `
-        --security-opt seccomp=unconfined `
-        --env "XBOND_PSK=xbond-local-lab-key" `
-        --env "LAB_RESULTS_DIR=/results" `
-        --env "LAB_GIT_COMMIT=$gitCommit" `
-        --env "LAB_GIT_BRANCH=$gitBranch" `
-        --env "LAB_GIT_DIRTY=$gitDirty" `
-        --env "LAB_DOCKER_CONTEXT=$dockerContext" `
-        --env "LAB_DOCKER_HOST=$dockerHost" `
-        --env "LAB_DOCKER_ENGINE_VERSION=$dockerEngineVersion" `
-        --env "LAB_DOCKER_KERNEL=$dockerKernel" `
-        --env "LAB_DOCKER_OS=$dockerOs" `
-        --env "LAB_IMAGE_ID=$imageId" `
-        --env "LAB_IMAGE_DIGESTS=$imageDigestEnv" `
-        --env "LAB_ORCHESTRATOR_SHA256=$labOrchestratorHash" `
-        --env "LAB_SCHEMA_SHA256=$resultSchemaHash" `
-        $image `
-        $Scenario `
-        --duration-seconds $DurationSeconds | Out-Null
+    if ($needsApp) {
+        $appPublish = Join-Path ([System.IO.Path]::GetTempPath()) "ulink-lab-$([Guid]::NewGuid().ToString('N'))"
+        & dotnet publish (Join-Path $repoRoot "XNetwork\XNetwork.csproj") `
+            -c Release `
+            -o $appPublish `
+            --nologo
+        if ($LASTEXITCODE -ne 0) {
+            throw "uLink app publish failed."
+        }
+    }
+
+    $createArgs = @(
+        "--context", $dockerContext,
+        "create",
+        "--name", $container,
+        "--privileged",
+        "--cap-add", "NET_ADMIN",
+        "--cap-add", "NET_RAW",
+        "--cap-add", "SYS_ADMIN",
+        "--security-opt", "seccomp=unconfined",
+        "--env", "XBOND_PSK=xbond-local-lab-key",
+        "--env", "LAB_RESULTS_DIR=/results",
+        "--env", "LAB_GIT_COMMIT=$gitCommit",
+        "--env", "LAB_GIT_BRANCH=$gitBranch",
+        "--env", "LAB_GIT_DIRTY=$gitDirty",
+        "--env", "LAB_DOCKER_CONTEXT=$dockerContext",
+        "--env", "LAB_DOCKER_HOST=$dockerHost",
+        "--env", "LAB_DOCKER_ENGINE_VERSION=$dockerEngineVersion",
+        "--env", "LAB_DOCKER_KERNEL=$dockerKernel",
+        "--env", "LAB_DOCKER_OS=$dockerOs",
+        "--env", "LAB_IMAGE_ID=$imageId",
+        "--env", "LAB_IMAGE_DIGESTS=$imageDigestEnv",
+        "--env", "LAB_ORCHESTRATOR_SHA256=$labOrchestratorHash",
+        "--env", "LAB_SCHEMA_SHA256=$resultSchemaHash"
+    )
+    if ($needsApp) {
+        $createArgs += @("--publish", "100.75.11.49:18080:8080")
+    }
+    $createArgs += @($image, $Scenario, "--duration-seconds", $DurationSeconds)
+
+    & docker @createArgs | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "XBond lab container creation failed."
     }
@@ -158,6 +183,16 @@ try {
     & docker --context $dockerContext cp (Join-Path $labRoot "result.schema.json") "${container}:/opt/xbond/lab/result.schema.json"
     if ($LASTEXITCODE -ne 0) {
         throw "Could not copy the current result schema into the container."
+    }
+    & docker --context $dockerContext cp (Join-Path $labRoot "modem_fixture.py") "${container}:/opt/xbond/lab/modem_fixture.py"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not copy the current modem fixtures into the container."
+    }
+    if ($needsApp) {
+        & docker --context $dockerContext cp $appPublish "${container}:/opt/ulink"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not copy the published uLink app into the container."
+        }
     }
 
     & docker --context $dockerContext start --attach $container
@@ -212,6 +247,9 @@ finally {
     }
     if ($lockAcquired) {
         & docker --context $dockerContext network rm $lockNetwork *> $null
+    }
+    if ($appPublish -and (Test-Path -LiteralPath $appPublish)) {
+        Remove-Item -LiteralPath $appPublish -Recurse -Force
     }
     $ErrorActionPreference = $previousPreference
 }

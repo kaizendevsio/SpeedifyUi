@@ -6,11 +6,12 @@ not replace the protocol with a simulator.
 
 ## Topology
 
-The container creates:
+The lab topology creates four physical lanes. Established release scenarios
+start uLink on the first three, while the four-WAN scenarios use all four:
 
-- one client namespace with `cpath1`, `cpath2`, `cpath3`, and `xbond0`
-- one server namespace with `spath1`, `spath2`, `spath3`, and `xbonds0`
-- three independent router namespaces, one for each physical path
+- one client namespace with `cpath1` through `cpath4` and `xbond0`
+- one server namespace with `spath1` through `spath4` and `xbonds0`
+- four independent router namespaces, one for each physical path
 - a common server loopback endpoint at `10.255.0.1:8444`
 - a TUN endpoint pair at `10.250.0.2/30` and `10.250.0.1/30`
 
@@ -18,12 +19,17 @@ Each client path uses its own source address, policy-routing table, Linux
 interface, UDP socket, router namespace, and server return route. Impairment is
 applied on the routers with `tc netem` or a narrow iptables rule.
 
+The four-WAN development scenarios add `cpath4`/`spath4` and a fourth router.
+They model Starlink, SMART F50, GOMO F50, and a low-latency fiber/Wi-Fi path.
+The names describe repeatable network profiles; they do not claim to emulate
+radio firmware or physical USB hardware.
+
 ## One-command usage
 
 From PowerShell:
 
 ```powershell
-cd C:\Users\Xeon\RiderProjects\uLink\xbond\lab
+cd C:\Users\Xeon\RiderProjects\SpeedifyUi\xbond\lab
 .\run.ps1 topology-smoke
 ```
 
@@ -37,7 +43,23 @@ Run one validation scenario:
 .\run.ps1 server-process-restart
 .\run.ps1 server-tun-write-backpressure
 .\run.ps1 mtu-sweep
+.\run.ps1 four-wan-smoke
+.\run.ps1 four-wan-resilience
+.\run.ps1 app-smoke
 ```
+
+Run an interactive uLink development stack for one hour:
+
+```powershell
+.\run.ps1 dev-stack -DurationSeconds 3600
+```
+
+While it is running, open `http://100.75.11.49:18080/`. The stack contains the
+real uLink client/server and Blazor app, four independently shaped WANs, two F50
+HTTP fixtures, a Cudy LuCI fixture, and a Starlink gRPC-Web fixture. Destructive
+host controls, watchdog restarts, Starlink LAN route changes, and automatic
+modem recovery are disabled in this environment. Stopping the wrapper removes
+the container, namespaces, qdiscs, and temporary app publish.
 
 Run the full matrix:
 
@@ -69,6 +91,10 @@ never relies on a Windows bind path being visible to the remote daemon.
 | Scenario | Coverage |
 | --- | --- |
 | `topology-smoke` | Three physical paths, real TUNs, client/server startup, tunnel ping |
+| `four-wan-smoke` | Four shaped WANs with independent sockets/routes and live tunnel traffic |
+| `four-wan-resilience` | Drops the selected anchor and verifies automatic failover through the remaining WANs |
+| `app-smoke` | Runs the Blazor app against the live four-WAN status and modem fixtures, then checks routes and proxying |
+| `dev-stack` | Keeps the complete four-WAN app environment available for bounded interactive development |
 | `healthy-single` | Single-path RTT, loss, throughput, CPU/RSS |
 | `anchor-bad-backup` | Median clean-tunnel versus impaired-tunnel throughput with explicit before/after anchor, backup degradation, and recovery preconditions |
 | `all-intermittent` | Delay, jitter, correlated loss, and reordering on all paths |
@@ -174,3 +200,16 @@ changes.
 The lab always attempts cleanup. A scenario that otherwise passes is changed
 to `fail` if an `xbl-*` namespace, managed process, or managed `netem` qdisc
 remains.
+
+## Scope and limitations
+
+This environment is authoritative for uLink protocol behavior, scheduling,
+recovery, queueing, socket rebinding, Linux routing, status parsing, and the web
+UI's consumption of live runtime state. It can reproduce controlled delay,
+jitter, loss, reordering, rate limits, blackholes, and interface replacement.
+
+It does not reproduce Raspberry Pi ARM performance, electrical USB faults,
+carrier NAT/BGP behavior, real modem firmware, or radio conditions. Those still
+require final hardware acceptance on the router. Absolute throughput on
+`xeon-dev` is also subject to shared-VM contention; compare candidates using
+the same host and profile rather than treating the number as Pi capacity.

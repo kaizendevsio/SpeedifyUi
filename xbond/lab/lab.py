@@ -33,8 +33,19 @@ import jsonschema
 
 CLIENT_NS = "xbl-client"
 SERVER_NS = "xbl-server"
-ROUTER_NAMES = ("xbl-r1", "xbl-r2", "xbl-r3")
+ROUTER_NAMES = ("xbl-r1", "xbl-r2", "xbl-r3", "xbl-r4")
 ALL_NAMESPACES = (CLIENT_NS, SERVER_NS, *ROUTER_NAMES)
+PATH_NAMES = ("Starlink", "SMART F50", "GOMO F50", "Fiber Wi-Fi")
+FOUR_WAN_PROFILES = {
+    1: "delay 18ms 8ms distribution normal loss 0.3% rate 180mbit",
+    2: "delay 28ms 6ms distribution normal loss 0.5% rate 100mbit",
+    3: "delay 45ms 20ms distribution normal loss 1.5% rate 35mbit",
+    4: "delay 5ms 1ms distribution normal loss 0.05% rate 300mbit",
+}
+MANAGEMENT_HOST_INTERFACE = "xblmgth"
+MANAGEMENT_CLIENT_INTERFACE = "xblmgtc"
+MANAGEMENT_HOST_IP = "172.31.255.1"
+MANAGEMENT_CLIENT_IP = "172.31.255.2"
 SERVER_VIP = "10.255.0.1"
 SERVER_PORT = 8444
 CLIENT_TUN_IP = "10.250.0.2"
@@ -1136,6 +1147,7 @@ class XBondLab:
     def clean_existing(self) -> None:
         for namespace in ALL_NAMESPACES:
             run(["ip", "netns", "del", namespace], check=False)
+        run(["ip", "link", "del", MANAGEMENT_HOST_INTERFACE], check=False)
         RUN_ROOT.mkdir(parents=True, exist_ok=True)
         LOG_ROOT.mkdir(parents=True, exist_ok=True)
         for path in (self.client_status, self.server_status, self.client_config):
@@ -1238,6 +1250,29 @@ class XBondLab:
 
         ns_run(SERVER_NS, ["ip", "addr", "add", f"{SERVER_VIP}/32", "dev", "lo"])
 
+    def setup_management_link(self) -> None:
+        run(
+            [
+                "ip",
+                "link",
+                "add",
+                MANAGEMENT_HOST_INTERFACE,
+                "type",
+                "veth",
+                "peer",
+                "name",
+                MANAGEMENT_CLIENT_INTERFACE,
+            ]
+        )
+        run(["ip", "link", "set", MANAGEMENT_CLIENT_INTERFACE, "netns", CLIENT_NS])
+        run(["ip", "addr", "add", f"{MANAGEMENT_HOST_IP}/30", "dev", MANAGEMENT_HOST_INTERFACE])
+        run(["ip", "link", "set", MANAGEMENT_HOST_INTERFACE, "up"])
+        ns_run(
+            CLIENT_NS,
+            ["ip", "addr", "add", f"{MANAGEMENT_CLIENT_IP}/30", "dev", MANAGEMENT_CLIENT_INTERFACE],
+        )
+        ns_run(CLIENT_NS, ["ip", "link", "set", MANAGEMENT_CLIENT_INTERFACE, "up"])
+
     def write_config(
         self,
         *,
@@ -1249,12 +1284,13 @@ class XBondLab:
     ) -> None:
         paths = []
         for index in range(1, path_count + 1):
+            path_name = PATH_NAMES[index - 1] if index <= len(PATH_NAMES) else f"Lab path {index}"
             paths.append(
                 "\n".join(
                     [
                         "[[paths]]",
                         f"id = {index}",
-                        f'name = "Lab path {index}"',
+                        f'name = "{path_name}"',
                         f'interface_name = "cpath{index}"',
                         f'bind_addr = "10.{index}.0.2:0"',
                         "enabled = true",
@@ -1314,6 +1350,202 @@ class XBondLab:
         )
         self._record_process(process)
         return process
+
+    def _start_host(
+        self,
+        command: list[str],
+        log_name: str,
+        *,
+        env_overrides: dict[str, str] | None = None,
+    ) -> subprocess.Popen[str]:
+        env = os.environ.copy()
+        if env_overrides:
+            env.update(env_overrides)
+        log_path = LOG_ROOT / f"{self.scenario}-{log_name}.log"
+        handle = log_path.open("w", encoding="utf-8")
+        self.log_handles.append(handle)
+        process = subprocess.Popen(
+            command,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
+        self._record_process(process)
+        return process
+
+    def apply_four_wan_profiles(self) -> None:
+        for path, specification in FOUR_WAN_PROFILES.items():
+            self.apply_netem(path, specification)
+
+    def start_modem_fixtures(self) -> None:
+        fixtures = (
+            (ROUTER_NAMES[0], "starlink", "Starlink", 5),
+            (ROUTER_NAMES[1], "f50", "SMART", 4),
+            (ROUTER_NAMES[2], "f50", "GOMO", 3),
+            (ROUTER_NAMES[3], "cudy", "Fiber Wi-Fi", 5),
+        )
+        for index, (namespace, profile, provider, signal_bars) in enumerate(fixtures, start=1):
+            self.track_process(
+                self._start(
+                    namespace,
+                    [
+                        "python3",
+                        "/opt/xbond/lab/modem_fixture.py",
+                        "--profile",
+                        profile,
+                        "--provider",
+                        provider,
+                        "--signal-bars",
+                        str(signal_bars),
+                    ],
+                    f"fixture-{index}",
+                )
+            )
+        wait_for(
+            lambda: all(
+                ns_run(CLIENT_NS, ["curl", "-fsS", f"http://10.{path}.0.1/"], check=False).returncode == 0
+                for path in range(1, 5)
+            ),
+            10,
+            "modem fixtures",
+        )
+
+    def configure_app_routes(self) -> None:
+        for path in range(1, 5):
+            ns_run(
+                CLIENT_NS,
+                [
+                    "ip",
+                    "route",
+                    "replace",
+                    "default",
+                    "via",
+                    f"10.{path}.0.1",
+                    "dev",
+                    f"cpath{path}",
+                    "metric",
+                    str(100 + path),
+                ],
+            )
+        ns_run(CLIENT_NS, ["ip", "route", "replace", "default", "dev", "xbond0", "metric", "1"])
+        ns_run(SERVER_NS, ["ip", "addr", "replace", "8.8.8.8/32", "dev", "lo"])
+
+    def _write_app_fixture_settings(self) -> pathlib.Path:
+        config_root = pathlib.Path("/tmp/ulink-home/.config/XNetwork")
+        config_root.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "Entries": [
+                {
+                    "Id": "lab-smart",
+                    "DisplayName": "SMART F50",
+                    "ProxyMode": "port",
+                    "ListenPort": 18081,
+                    "ExposedRoute": "",
+                    "TargetUrl": "http://10.2.0.1",
+                    "Enabled": True,
+                    "TelemetryEnabled": True,
+                },
+                {
+                    "Id": "lab-gomo",
+                    "DisplayName": "GOMO F50",
+                    "ProxyMode": "port",
+                    "ListenPort": 18083,
+                    "ExposedRoute": "",
+                    "TargetUrl": "http://10.3.0.1",
+                    "Enabled": True,
+                    "TelemetryEnabled": True,
+                },
+            ]
+        }
+        (config_root / "local-device-proxies.json").write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+        return config_root
+
+    def start_ulink_app(self) -> subprocess.Popen[str]:
+        if not pathlib.Path("/opt/ulink/XNetwork.dll").exists():
+            raise RuntimeError("uLink app publish is missing from the lab container")
+        self.setup_management_link()
+        config_root = self._write_app_fixture_settings()
+        environment = {
+            "HOME": "/tmp/ulink-home",
+            "XDG_CONFIG_HOME": str(config_root.parent),
+            "ASPNETCORE_ENVIRONMENT": "Development",
+            "XBond__RuntimeStatusPath": str(self.client_status),
+            "XBond__ClientConfigPath": str(self.client_config),
+            "XBond__ClientControlSocketPath": str(RUN_ROOT / "client-control.sock"),
+            "XBond__AllowServiceControl": "false",
+            "XBond__UseSudoForServiceManager": "false",
+            "XBond__StatusTimeoutSeconds": "5",
+            "NetworkMonitor__Enabled": "false",
+            "AdapterIdentity__Enabled": "false",
+            "F50ModemRecovery__Enabled": "false",
+            "XBondClientWatchdog__Enabled": "false",
+            "StarlinkLanAccess__Enabled": "false",
+            "StarlinkTelemetry__Enabled": "true",
+            "StarlinkTelemetry__Host": "10.1.0.1",
+            "StarlinkTelemetry__GrpcPort": "9200",
+            "StarlinkTelemetry__GrpcWebPort": "9201",
+            "StarlinkTelemetry__AdapterProbeEnabled": "false",
+            "CudyApAutomation__Enabled": "false",
+            "CudyApAutomation__ManagementBaseUrl": "http://10.4.0.1",
+            "CudyApAutomation__AdminPassword": "lab-password",
+            "CudyApAutomation__RequestTimeoutSeconds": "5",
+        }
+        app = self._start(
+            CLIENT_NS,
+            ["dotnet", "/opt/ulink/XNetwork.dll", "--urls", "http://0.0.0.0:8080"],
+            "app",
+            env_overrides=environment,
+        )
+        self.track_process(app)
+        forwarder = self._start_host(
+            [
+                "socat",
+                "TCP-LISTEN:8080,reuseaddr,fork",
+                f"TCP:{MANAGEMENT_CLIENT_IP}:8080",
+            ],
+            "app-forwarder",
+        )
+        self.track_process(forwarder)
+        wait_for(
+            lambda: ns_run(
+                CLIENT_NS,
+                ["curl", "-fsS", "http://127.0.0.1:8080/"],
+                check=False,
+                timeout=5,
+            ).returncode
+            == 0,
+            30,
+            "uLink app",
+        )
+        return app
+
+    def app_route_status(self, route: str) -> dict[str, Any]:
+        response = ns_run(
+            CLIENT_NS,
+            [
+                "curl",
+                "-sS",
+                "-o",
+                "/tmp/ulink-route-body",
+                "-w",
+                "%{http_code}",
+                f"http://127.0.0.1:8080{route}",
+            ],
+            check=False,
+            timeout=15,
+        )
+        body = pathlib.Path("/tmp/ulink-route-body").read_text(encoding="utf-8", errors="replace")
+        return {
+            "route": route,
+            "status": int(response.stdout.strip() or 0),
+            "body_has_ulink": "uLink" in body,
+            "body_has_four_paths": all(name in body for name in PATH_NAMES),
+        }
 
     def start_runtime(
         self,
@@ -1809,6 +2041,7 @@ class XBondLab:
                 namespace_pids_remaining[namespace] = pids
         for namespace in ALL_NAMESPACES:
             run(["ip", "netns", "del", namespace], check=False)
+        run(["ip", "link", "del", MANAGEMENT_HOST_INTERFACE], check=False)
         remaining_namespaces = [
             name
             for name in run(["ip", "netns", "list"], check=False).stdout.split()
@@ -2643,6 +2876,187 @@ def scenario_topology_smoke(lab: XBondLab, result: LabResult, _: int) -> None:
         "pass"
         if all(item.get("loss_percent") == 0 for item in physical)
         and tunnel.get("loss_percent") == 0
+        else "fail"
+    )
+
+
+def scenario_four_wan_smoke(lab: XBondLab, result: LabResult, _: int) -> None:
+    lab.setup_topology()
+    lab.apply_four_wan_profiles()
+    lab.start_runtime(path_count=4)
+    physical = [lab.physical_ping(index, count=8) for index in range(1, 5)]
+    tunnel = lab.tunnel_ping(count=12)
+    status = json_file(lab.client_status) or {}
+    result.metrics.update(
+        {
+            "profiles": FOUR_WAN_PROFILES,
+            "physical_paths": physical,
+            "tunnel_ping": tunnel,
+            "runtime_path_count": len(status.get("paths", [])),
+            "runtime": lab.collect_runtime_metrics(),
+        }
+    )
+    result.thresholds = {
+        "runtime_path_count": 4,
+        "physical_loss_percent_max": 25,
+        "tunnel_loss_percent_max": 2,
+    }
+    result.status = (
+        "pass"
+        if len(status.get("paths", [])) == 4
+        and all(item.get("loss_percent", 100) <= 25 for item in physical)
+        and tunnel.get("loss_percent", 100) <= 2
+        else "fail"
+    )
+
+
+def scenario_four_wan_resilience(lab: XBondLab, result: LabResult, _: int) -> None:
+    lab.setup_topology()
+    lab.apply_four_wan_profiles()
+    lab.start_runtime(path_count=4)
+    baseline = lab.tunnel_ping(count=8)
+    before = json_file(lab.client_status) or {}
+    original_anchor = (before.get("schedule") or {}).get("anchor_path_id") or before.get("anchor_path_id")
+    if not isinstance(original_anchor, int) or original_anchor not in FOUR_WAN_PROFILES:
+        raise RuntimeError("four-WAN runtime did not publish a valid anchor")
+
+    lab.apply_netem(original_anchor, "loss 100%")
+    wait_for(
+        lambda: (
+            ((json_file(lab.client_status) or {}).get("schedule") or {}).get("anchor_path_id")
+            not in {None, original_anchor}
+        ),
+        12,
+        "four-WAN anchor failover",
+    )
+    during = json_file(lab.client_status) or {}
+    outage_ping = lab.tunnel_ping(count=16)
+    replacement_anchor = (during.get("schedule") or {}).get("anchor_path_id") or during.get("anchor_path_id")
+    lab.apply_netem(original_anchor, FOUR_WAN_PROFILES[original_anchor])
+
+    result.metrics.update(
+        {
+            "profiles": FOUR_WAN_PROFILES,
+            "baseline_ping": baseline,
+            "outage_ping": outage_ping,
+            "original_anchor": original_anchor,
+            "replacement_anchor": replacement_anchor,
+            "runtime": lab.collect_runtime_metrics(),
+        }
+    )
+    result.thresholds = {
+        "baseline_loss_percent_max": 2,
+        "outage_loss_percent_max": 10,
+        "anchor_must_change": True,
+    }
+    result.status = (
+        "pass"
+        if baseline.get("loss_percent", 100) <= 2
+        and outage_ping.get("loss_percent", 100) <= 10
+        and replacement_anchor not in {None, original_anchor}
+        else "fail"
+    )
+
+
+def prepare_app_lab(lab: XBondLab) -> subprocess.Popen[str]:
+    lab.setup_topology()
+    lab.apply_four_wan_profiles()
+    lab.start_modem_fixtures()
+    lab.start_runtime(path_count=4)
+    lab.configure_app_routes()
+    return lab.start_ulink_app()
+
+
+def scenario_app_smoke(lab: XBondLab, result: LabResult, _: int) -> None:
+    app = prepare_app_lab(lab)
+    time.sleep(7)
+    routes = [lab.app_route_status(route) for route in ("/", "/details", "/wifi", "/settings", "/xbond")]
+    proxy = ns_run(
+        CLIENT_NS,
+        [
+            "curl",
+            "-fsS",
+            "http://127.0.0.1:18081/goform/goform_get_cmd_process?cmd=network_provider,signalbar",
+        ],
+        check=False,
+        timeout=10,
+    )
+    cudy = ns_run(
+        CLIENT_NS,
+        ["curl", "-fsS", "http://10.4.0.1/cgi-bin/luci/admin/network/wireless/config/combo"],
+        check=False,
+        timeout=10,
+    )
+    tunnel = lab.tunnel_ping(count=8)
+    status = json_file(lab.client_status) or {}
+    result.metrics.update(
+        {
+            "app_routes": routes,
+            "app_process_running": app.poll() is None,
+            "runtime_path_count": len(status.get("paths", [])),
+            "f50_proxy_reachable": proxy.returncode == 0 and "SMART" in proxy.stdout,
+            "cudy_fixture_reachable": cudy.returncode == 0 and "smart.connect" in cudy.stdout,
+            "tunnel_ping": tunnel,
+            "external_url": "http://100.75.11.49:18080/",
+            "runtime": lab.collect_runtime_metrics(),
+        }
+    )
+    result.thresholds = {
+        "all_app_routes_http_200": True,
+        "runtime_path_count": 4,
+        "hardware_fixtures_reachable": True,
+        "tunnel_loss_percent_max": 2,
+    }
+    result.status = (
+        "pass"
+        if app.poll() is None
+        and all(route["status"] == 200 and route["body_has_ulink"] for route in routes)
+        and len(status.get("paths", [])) == 4
+        and proxy.returncode == 0
+        and "SMART" in proxy.stdout
+        and cudy.returncode == 0
+        and tunnel.get("loss_percent", 100) <= 2
+        else "fail"
+    )
+
+
+def scenario_dev_stack(lab: XBondLab, result: LabResult, duration: int) -> None:
+    app = prepare_app_lab(lab)
+    print(
+        json.dumps(
+            {
+                "event": "ulink-dev-stack-ready",
+                "url": "http://100.75.11.49:18080/",
+                "duration_seconds": duration,
+            }
+        ),
+        flush=True,
+    )
+    deadline = time.monotonic() + max(10, duration)
+    while time.monotonic() < deadline:
+        if app.poll() is not None or lab.client is None or lab.client.poll() is not None:
+            raise RuntimeError("uLink development stack process exited unexpectedly")
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+    routes = [lab.app_route_status(route) for route in ("/", "/settings")]
+    tunnel = lab.tunnel_ping(count=8)
+    result.metrics.update(
+        {
+            "app_routes": routes,
+            "external_url": "http://100.75.11.49:18080/",
+            "duration_seconds": duration,
+            "tunnel_ping": tunnel,
+            "runtime": lab.collect_runtime_metrics(),
+        }
+    )
+    result.thresholds = {
+        "app_routes_http_200": True,
+        "tunnel_loss_percent_max": 2,
+    }
+    result.status = (
+        "pass"
+        if all(route["status"] == 200 for route in routes)
+        and tunnel.get("loss_percent", 100) <= 2
         else "fail"
     )
 
@@ -5788,6 +6202,10 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
 
 SCENARIOS: dict[str, Callable[[XBondLab, LabResult, int], None]] = {
     "topology-smoke": scenario_topology_smoke,
+    "four-wan-smoke": scenario_four_wan_smoke,
+    "four-wan-resilience": scenario_four_wan_resilience,
+    "app-smoke": scenario_app_smoke,
+    "dev-stack": scenario_dev_stack,
     "healthy-single": scenario_healthy_single,
     "anchor-bad-backup": scenario_anchor_bad_backup,
     "all-intermittent": scenario_all_intermittent,
@@ -5933,7 +6351,7 @@ def main() -> int:
         return 0 if payload["status"] == "pass" else 1
 
     matrix_started_at = utc_now()
-    matrix_scenarios = list(SCENARIOS)
+    matrix_scenarios = [scenario for scenario in SCENARIOS if scenario not in {"app-smoke", "dev-stack"}]
     summaries = []
     paths = []
     for scenario in matrix_scenarios:
