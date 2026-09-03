@@ -14,6 +14,7 @@ start uLink on the first three, while the four-WAN scenarios use all four:
 - four independent router namespaces, one for each physical path
 - a common server loopback endpoint at `10.255.0.1:8444`
 - a TUN endpoint pair at `10.250.0.2/30` and `10.250.0.1/30`
+- a LAN client behind the uLink router at `192.168.200.2/24`
 
 Each client path uses its own source address, policy-routing table, Linux
 interface, UDP socket, router namespace, and server return route. Impairment is
@@ -45,6 +46,8 @@ Run one validation scenario:
 .\run.ps1 mtu-sweep
 .\run.ps1 four-wan-smoke
 .\run.ps1 four-wan-resilience
+.\run.ps1 direct-failover
+.\run.ps1 adaptive-fallback
 .\run.ps1 app-smoke
 ```
 
@@ -93,6 +96,8 @@ never relies on a Windows bind path being visible to the remote daemon.
 | `topology-smoke` | Three physical paths, real TUNs, client/server startup, tunnel ping |
 | `four-wan-smoke` | Four shaped WANs with independent sockets/routes and live tunnel traffic |
 | `four-wan-resilience` | Drops the selected anchor and verifies automatic failover through the remaining WANs |
+| `direct-failover` | Verifies direct LAN routing, conntrack pinning, bypass precedence, sub-second hard failover, failed-flow cleanup, and the physical-route stop fallback |
+| `adaptive-fallback` | Verifies direct-first routing, Reliable tunnel fallback, the 30-second clean return, and physical egress when the tunnel server is unavailable |
 | `app-smoke` | Runs the Blazor app against the live four-WAN status and modem fixtures, then checks routes and proxying |
 | `dev-stack` | Keeps the complete four-WAN app environment available for bounded interactive development |
 | `healthy-single` | Single-path RTT, loss, throughput, CPU/RSS |

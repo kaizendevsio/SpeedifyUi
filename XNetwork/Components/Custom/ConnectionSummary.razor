@@ -52,6 +52,11 @@
                                                 IconClass="fas fa-layer-group"
                                                 PillClass="connection-summary-pill-neutral"
                                                 Title="uLink redundancy policy" />
+                            <AnimatedStatusPill Visible="@ShowActiveEgress"
+                                                Text="@ActiveEgressLabel"
+                                                IconClass="fas fa-route"
+                                                PillClass="@GetActiveEgressClass()"
+                                                Title="@ActiveEgressDetails" />
                             <AnimatedStatusPill Visible="@IsProtectingFromLoss"
                                                 Text="Protecting from loss"
                                                 IconClass="fas fa-shield-alt"
@@ -116,6 +121,9 @@
     [Parameter] public bool IsStable { get; set; } = true;
     [Parameter] public string? Mode { get; set; }
     [Parameter] public bool ShowMode { get; set; }
+    [Parameter] public bool ShowActiveEgress { get; set; }
+    [Parameter] public string? ActiveEgressLabel { get; set; }
+    [Parameter] public string? ActiveEgressDetails { get; set; }
     [Parameter] public bool IsProtectingFromLoss { get; set; }
     [Parameter] public string? ProtectionReason { get; set; }
     [Parameter] public bool IsRecoveryActive { get; set; }
@@ -287,10 +295,18 @@
     {
         return (!IsStable && !isInitializing) ||
                (ShowMode && !string.IsNullOrWhiteSpace(Mode)) ||
+               ShowActiveEgress ||
                IsProtectingFromLoss ||
                IsRecoveryActive ||
                ShowServerHealth;
     }
+
+    private string GetActiveEgressClass() => ActiveEgressLabel switch
+    {
+        "No usable egress" => "connection-summary-pill-danger",
+        "Reliable tunnel fallback" => "connection-summary-pill-warning",
+        _ => "connection-summary-pill-good"
+    };
 
     private static string GetPillRowClass(bool visible)
     {

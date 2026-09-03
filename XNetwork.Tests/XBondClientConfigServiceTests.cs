@@ -12,6 +12,7 @@ public class XBondClientConfigServiceTests
             enabled = true
             session_id = 42
             server_addr = "45.77.241.247:8444"
+            traffic_mode = "adaptive"
             mode = "anchor-duplicate-1"
             redundancy_policy = "balanced"
             max_active_backups = 1
@@ -57,6 +58,7 @@ public class XBondClientConfigServiceTests
         Assert.True(config.Enabled);
         Assert.Equal((ulong)42, config.SessionId);
         Assert.Equal("45.77.241.247:8444", config.ServerAddress);
+        Assert.Equal("adaptive", config.TrafficMode);
         Assert.Equal("anchor-duplicate-1", config.Mode);
         Assert.Equal("balanced", config.RedundancyPolicy);
         Assert.Equal(1, config.MaxActiveBackups);
@@ -158,6 +160,7 @@ public class XBondClientConfigServiceTests
         var rendered = XBondClientConfigService.RenderConfig(config);
 
         Assert.Contains("server_addr = \"45.77.241.247:8444\"", rendered);
+        Assert.Contains("traffic_mode = \"tunnel\"", rendered);
         Assert.Contains("redundancy_policy = \"fast\"", rendered);
         Assert.Contains("interactive_packet_threshold_bytes = 512", rendered);
         Assert.Contains("duplicate_loss_threshold = 0.05", rendered);
@@ -189,6 +192,34 @@ public class XBondClientConfigServiceTests
 
         var reparsed = XBondClientConfigService.ParseConfig(rendered);
         Assert.Equal(["enx103c59f1039c", "wlan0"], reparsed.Paths.Select(path => path.InterfaceName).ToArray());
+    }
+
+    [Fact]
+    public void ParseConfig_LegacyConfigDefaultsToTunnelTrafficMode()
+    {
+        var config = XBondClientConfigService.ParseConfig(
+            """
+            enabled = true
+            server_addr = "45.77.241.247:8444"
+            mode = "anchor-duplicate-1"
+            redundancy_policy = "balanced"
+            """);
+
+        Assert.Equal("tunnel", config.TrafficMode);
+        Assert.Equal("balanced", config.RedundancyPolicy);
+    }
+
+    [Theory]
+    [InlineData("direct-failover")]
+    [InlineData("adaptive")]
+    [InlineData("tunnel")]
+    public void RenderConfig_RoundTripsTrafficMode(string trafficMode)
+    {
+        var config = new XNetwork.Models.XBondClientConfig { TrafficMode = trafficMode };
+
+        var reparsed = XBondClientConfigService.ParseConfig(XBondClientConfigService.RenderConfig(config));
+
+        Assert.Equal(trafficMode, reparsed.TrafficMode);
     }
 
     [Fact]

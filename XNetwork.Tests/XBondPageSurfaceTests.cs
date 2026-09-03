@@ -49,7 +49,8 @@ public class XBondPageSurfaceTests
         Assert.DoesNotContain("GetServerBadgeClass", home);
         Assert.DoesNotContain("XBond active", home);
         Assert.DoesNotContain("<h3 class=\"text-lg font-semibold text-white\">XBond Tunnel</h3>", home);
-        Assert.Contains("Mode=\"@FormatMode(_snapshot.RedundancyPolicy)\"", home);
+        Assert.Contains("Mode=\"@FormatMode(_snapshot.TrafficMode, _snapshot.RedundancyPolicy)\"", home);
+        Assert.Contains("ActiveEgressLabel=\"@_snapshot.ActiveEgressLabel\"", home);
         Assert.Contains("IsRecoveryActive=\"@_snapshot.IsRecoveryActive\"", home);
         Assert.Contains("ShowServerHealth", summary);
         Assert.Contains("Recovery {RecoveryHoldMs} ms", summary);

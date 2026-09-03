@@ -8,6 +8,8 @@ public sealed class XBondClientConfig
 
     public string ServerAddress { get; set; } = "45.77.241.247:8444";
 
+    public string TrafficMode { get; set; } = "tunnel";
+
     public string Mode { get; set; } = "anchor-duplicate-1";
 
     public string RedundancyPolicy { get; set; } = "balanced";
@@ -93,6 +95,8 @@ public sealed class XBondAdapterConfigStatus
     public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
 
     public string Mode { get; set; } = "anchor-duplicate-1";
+
+    public string TrafficMode { get; set; } = "tunnel";
 
     public string RedundancyPolicy { get; set; } = "balanced";
 

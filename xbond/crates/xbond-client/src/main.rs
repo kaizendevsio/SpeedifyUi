@@ -28,14 +28,15 @@ use xbond_core::{
     encode_sealed_payload_into, expand_schedule_for_recovery, is_ipv4_packet,
     precompute_transmission_plans, read_linux_kernel_network_status,
     recommended_repair_cache_bytes, select_path_roles, select_path_roles_with_state,
-    stabilize_recovery_schedule, update_recovery_state, ClientConfig, FrameReceiver, PacketKind,
+    stabilize_recovery_schedule, update_recovery_state, ClientConfig, EgressController,
+    EgressDecision, EgressEvaluation, EgressTarget, EgressThresholds, FrameReceiver, PacketKind,
     PacketReorderBuffer, PacketTransmissionPlans, PathHealthSnapshot, PathIsolationStatus,
     ProbeAggregate, ProbePathStats, ReceiveOutcome, RecoveryConfig, RecoveryScheduleStabilityState,
     RecoveryState, RecoveryStatus, RedundancyPolicy, RedundancyPolicyConfig, ReorderedPacket,
     RepairPayload, ResendCache, RoleSelectionState, RouteVerification, ScheduleControlMessage,
     ScheduleMode, SchedulePlan, SessionHandshakeNonce, XBondControlMessage,
-    XBondDiagnosticOverrideStatus, XBondFecStatus, XBondFrame, XBondHeader, XBondKey,
-    XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
+    XBondDiagnosticOverrideStatus, XBondEgressStatus, XBondFecStatus, XBondFrame, XBondHeader,
+    XBondKey, XBondPacketPoolStatus, XBondPathStatus, XBondProcessStatus, XBondReorderStatus,
     XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus, XBondSaturationStatus,
     XBondServerRecoveryStatus, XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus,
     XBondTun, XBondTunnelStatus, XorFecBlock, FLAG_SERVER_TO_CLIENT,
@@ -667,6 +668,7 @@ struct SilentBlackholeProbeResult {
     path_id: u16,
     socket_generation: u64,
     reachable: bool,
+    reached_target: Option<String>,
     error: Option<String>,
 }
 
@@ -1569,8 +1571,204 @@ struct TunnelPathRuntime {
     stale_ack_ticks: u32,
     direct_probe_in_flight: bool,
     last_direct_probe_at: Option<Instant>,
+    last_direct_probe_reachable: Option<bool>,
+    last_direct_probe_result_at: Option<Instant>,
     pmtu_error_count: u64,
     last_pmtu_encoded_bytes: Option<u64>,
+}
+
+#[derive(Debug)]
+struct EgressApplyRequest {
+    decision: EgressDecision,
+    previous: EgressTarget,
+}
+
+#[derive(Debug)]
+struct EgressApplyResult {
+    decision: EgressDecision,
+    previous: EgressTarget,
+    result: std::result::Result<(), String>,
+}
+
+struct EgressRuntime {
+    controller: EgressController,
+    applied: EgressTarget,
+    apply_in_flight: bool,
+    route_ready: bool,
+    route_error: Option<String>,
+    last_switch_at_micros: Option<u64>,
+}
+
+impl EgressRuntime {
+    fn new(mode: xbond_core::TrafficMode) -> Self {
+        let applied = if mode == xbond_core::TrafficMode::Tunnel {
+            EgressTarget::Tunnel
+        } else {
+            EgressTarget::None
+        };
+        Self {
+            controller: EgressController::new(mode, EgressThresholds::default()),
+            applied,
+            apply_in_flight: false,
+            route_ready: mode == xbond_core::TrafficMode::Tunnel,
+            route_error: None,
+            last_switch_at_micros: None,
+        }
+    }
+
+    fn evaluate(
+        &mut self,
+        evaluation: EgressEvaluation<'_>,
+        apply_tx: &mpsc::Sender<EgressApplyRequest>,
+    ) {
+        if self.apply_in_flight {
+            return;
+        }
+        let Some(decision) = self.controller.evaluate(evaluation) else {
+            return;
+        };
+        let request = EgressApplyRequest {
+            decision,
+            previous: self.applied.clone(),
+        };
+        match apply_tx.try_send(request) {
+            Ok(()) => {
+                self.apply_in_flight = true;
+                self.route_ready = false;
+            }
+            Err(error) => {
+                self.controller.restore_active(
+                    self.applied.clone(),
+                    format!("Egress helper request was not accepted: {error}"),
+                );
+                self.route_error = Some(error.to_string());
+            }
+        }
+    }
+
+    fn complete(&mut self, result: EgressApplyResult) {
+        self.apply_in_flight = false;
+        match result.result {
+            Ok(()) => {
+                self.applied = result.decision.target;
+                self.route_ready = true;
+                self.route_error = None;
+                self.last_switch_at_micros = Some(now_micros());
+            }
+            Err(error) => {
+                self.controller.restore_active(
+                    result.previous.clone(),
+                    format!("Egress switch failed; retained previous route: {error}"),
+                );
+                self.applied = result.previous;
+                self.route_ready = !matches!(self.applied, EgressTarget::None);
+                self.route_error = Some(error);
+            }
+        }
+    }
+
+    fn status(&self, configured_mode: xbond_core::TrafficMode, now_ms: u64) -> XBondEgressStatus {
+        let (active_egress, direct_path_id, direct_interface_name) = match &self.applied {
+            EgressTarget::Tunnel => ("tunnel".to_string(), None, None),
+            EgressTarget::Direct {
+                path_id,
+                interface_name,
+            } => (
+                "direct".to_string(),
+                Some(*path_id),
+                Some(interface_name.clone()),
+            ),
+            EgressTarget::None => ("none".to_string(), None, None),
+        };
+        XBondEgressStatus {
+            configured_mode,
+            active_egress,
+            direct_path_id,
+            direct_interface_name,
+            switch_reason: self.controller.reason().to_string(),
+            last_switch_at_micros: self.last_switch_at_micros,
+            switch_count: self.controller.switch_count(),
+            clean_return_progress_seconds: self.controller.clean_return_progress_ms(now_ms) / 1_000,
+            route_ready: self.route_ready && !self.apply_in_flight,
+            route_error: self.route_error.clone(),
+        }
+    }
+}
+
+fn spawn_egress_apply_worker() -> (
+    mpsc::Sender<EgressApplyRequest>,
+    mpsc::Receiver<EgressApplyResult>,
+) {
+    let (request_tx, mut request_rx) = mpsc::channel::<EgressApplyRequest>(1);
+    let (result_tx, result_rx) = mpsc::channel::<EgressApplyResult>(1);
+    tokio::spawn(async move {
+        while let Some(request) = request_rx.recv().await {
+            let decision = request.decision.clone();
+            let previous = request.previous.clone();
+            let worker_decision = decision.clone();
+            let result =
+                tokio::task::spawn_blocking(move || apply_egress_decision(&worker_decision))
+                    .await
+                    .map_err(|error| format!("egress helper task failed: {error}"))
+                    .and_then(|result| result);
+            if result_tx
+                .send(EgressApplyResult {
+                    decision,
+                    previous,
+                    result,
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    (request_tx, result_rx)
+}
+
+fn apply_egress_decision(decision: &EgressDecision) -> std::result::Result<(), String> {
+    let helper = std::env::var("ULINK_EGRESS_HELPER")
+        .unwrap_or_else(|_| "/usr/local/sbin/xbond-client-egress".to_string());
+    let mut command = ProcessCommand::new(&helper);
+    command.arg("switch");
+    match &decision.target {
+        EgressTarget::Tunnel => {
+            command.args(["--egress", "tunnel"]);
+        }
+        EgressTarget::Direct {
+            path_id,
+            interface_name,
+        } => {
+            command.args([
+                "--egress",
+                "direct",
+                "--path-id",
+                &path_id.to_string(),
+                "--interface",
+                interface_name,
+            ]);
+        }
+        EgressTarget::None => {
+            command.args(["--egress", "none"]);
+        }
+    }
+    if let Some(path_id) = decision.failed_path_id {
+        command.args(["--flush-failed-path-id", &path_id.to_string()]);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to execute {helper}: {error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() {
+            format!("{helper} exited with {}", output.status)
+        } else {
+            detail
+        })
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1606,6 +1804,20 @@ impl TunnelAggregateHealthRuntime {
             reason,
         }
     }
+}
+
+fn tunnel_is_usable(
+    synchronization: &ClientSynchronizationState,
+    health: &TunnelAggregateHealthRuntime,
+) -> bool {
+    // A schedule-generation update briefly pauses the data plane while the server accepts the
+    // new schedule. The authenticated tunnel remains available during that handshake, so an
+    // Adaptive egress decision must not churn routes on this transient control-plane state.
+    synchronization.session_accepted()
+        && health
+            .last_success_at
+            .is_some_and(|last| last.elapsed() <= Duration::from_secs(5))
+        && health.loss_rate.is_none_or(|loss| loss < 1.0)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2336,10 +2548,15 @@ fn effective_mode_and_policy(
     active_override: &mut Option<ActiveScheduleOverride>,
 ) -> (ScheduleMode, RedundancyPolicy) {
     prune_expired_override(active_override);
-    active_override
+    let configured = active_override
         .as_ref()
         .map(|override_state| (override_state.mode, override_state.redundancy_policy))
-        .unwrap_or((config.mode, config.redundancy_policy))
+        .unwrap_or((config.mode, config.redundancy_policy));
+    if active_override.is_none() && config.traffic_mode == xbond_core::TrafficMode::Adaptive {
+        (configured.0, RedundancyPolicy::Reliable)
+    } else {
+        configured
+    }
 }
 
 fn build_effective_schedule(
@@ -2921,6 +3138,9 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
     let mut current_schedule_generation = 1u64;
     let mut last_control_signature: Option<ScheduleControlSignature>;
     let mut last_control_sent_at: Instant;
+    let egress_started_at = Instant::now();
+    let mut egress_runtime = EgressRuntime::new(config.traffic_mode);
+    let (egress_apply_tx, mut egress_apply_rx) = spawn_egress_apply_worker();
 
     if options.json_events {
         println!(
@@ -3019,6 +3239,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
         effective_policy,
         &recovery_status,
         &aggregate_health,
+        &egress_runtime,
+        egress_started_at.elapsed().as_millis() as u64,
         active_override.as_ref(),
         role_state.schedule_change_count,
         current_schedule_generation,
@@ -3201,6 +3423,20 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_mode_and_policy(&config, &mut active_override);
                 recovery_status =
                     update_recovery_state(&mut recovery_state, effective_policy, &health, recovery_config);
+                let tunnel_usable = tunnel_is_usable(&synchronization, &aggregate_health);
+                let direct_egress_health = egress_health(&health, &path_runtime, tunnel_usable);
+                egress_runtime.evaluate(
+                    EgressEvaluation {
+                        mode: config.traffic_mode,
+                        paths: &direct_egress_health,
+                        preferred_path_id: role_state.anchor_path_id,
+                        tunnel_usable,
+                        scheduler_round: true,
+                        now_ms: egress_started_at.elapsed().as_millis() as u64,
+                        recovery: recovery_config,
+                    },
+                    &egress_apply_tx,
+                );
                 update_return_reorder_hold(
                     &mut return_reorder,
                     config.reorder_hold_ms,
@@ -3320,6 +3556,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_policy,
                     &recovery_status,
                     &aggregate_health,
+                    &egress_runtime,
+                    egress_started_at.elapsed().as_millis() as u64,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     current_schedule_generation,
@@ -3411,6 +3649,37 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                         &mut counters,
                         options.json_events,
                     )?;
+                    health = tunnel_health(&config, &path_runtime, &sockets);
+                    let tunnel_usable = tunnel_is_usable(&synchronization, &aggregate_health);
+                    let direct_egress_health = egress_health(&health, &path_runtime, tunnel_usable);
+                    egress_runtime.evaluate(
+                        EgressEvaluation {
+                            mode: config.traffic_mode,
+                            paths: &direct_egress_health,
+                            preferred_path_id: role_state.anchor_path_id,
+                            tunnel_usable,
+                            scheduler_round: false,
+                            now_ms: egress_started_at.elapsed().as_millis() as u64,
+                            recovery: recovery_config,
+                        },
+                        &egress_apply_tx,
+                    );
+                }
+            }
+
+            Some(result) = egress_apply_rx.recv() => {
+                let helper_error = result.result.as_ref().err().cloned();
+                egress_runtime.complete(result);
+                if options.json_events {
+                    if let Some(error) = helper_error {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": "egress-switch-failed",
+                                "error": error,
+                            })
+                        );
+                    }
                 }
             }
 
@@ -3626,6 +3895,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                     effective_policy,
                     &recovery_status,
                     &aggregate_health,
+                    &egress_runtime,
+                    egress_started_at.elapsed().as_millis() as u64,
                     active_override.as_ref(),
                     role_state.schedule_change_count,
                     current_schedule_generation,
@@ -3746,8 +4017,12 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                 ) {
                     let runtime = path_runtime.entry(result.path_id).or_default();
                     runtime.direct_probe_in_flight = false;
+                    runtime.last_direct_probe_reachable = Some(result.reachable);
+                    runtime.last_direct_probe_result_at = Some(Instant::now());
                     let should_rebind =
-                        result.reachable && path_is_silent_blackhole_candidate(runtime, threshold);
+                        result.reachable
+                            && !aggregate_failed
+                            && path_is_silent_blackhole_candidate(runtime, threshold);
                     let should_restart_session =
                         should_rebind && record_ineffective_rebind(runtime);
                     (
@@ -3805,6 +4080,7 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                             "path_id": result.path_id,
                             "socket_generation": result.socket_generation,
                             "reachable": result.reachable,
+                            "reached_target": result.reached_target,
                             "rebind_requested": should_rebind,
                             "path_hard_demoted": should_restart_session && !aggregate_failed,
                             "aggregate_failed": aggregate_failed,
@@ -4363,6 +4639,8 @@ async fn run_tunnel(options: TunnelOptions) -> Result<()> {
                                 effective_policy,
                                 &recovery_status,
                                 &aggregate_health,
+                                &egress_runtime,
+                                egress_started_at.elapsed().as_millis() as u64,
                                 active_override.as_ref(),
                                 role_state.schedule_change_count,
                                 current_schedule_generation,
@@ -5776,6 +6054,39 @@ fn tunnel_health(
         .collect()
 }
 
+fn egress_health(
+    tunnel_health: &[PathHealthSnapshot],
+    path_runtime: &HashMap<u16, TunnelPathRuntime>,
+    tunnel_usable: bool,
+) -> Vec<PathHealthSnapshot> {
+    let mut direct_health = tunnel_health.to_vec();
+    if tunnel_usable {
+        return direct_health;
+    }
+
+    for path in &mut direct_health {
+        let direct_probe_is_fresh = path_runtime.get(&path.path_id).is_some_and(|runtime| {
+            runtime.last_direct_probe_reachable == Some(true)
+                && runtime
+                    .last_direct_probe_result_at
+                    .is_some_and(|at| at.elapsed() <= Duration::from_secs(10))
+        });
+        if !direct_probe_is_fresh || !path.interface_up {
+            continue;
+        }
+
+        // A server outage invalidates tunnel heartbeats, not the physical WAN itself.
+        // A recent interface-bound external TCP connection is sufficient proof for direct
+        // fallback, but it never changes the tunnel scheduler's own health snapshot.
+        path.in_cooldown = false;
+        path.send_failure_streak = 0;
+        path.stale_ack_ms = Some(0);
+        path.heartbeat_failed = false;
+        path.heartbeat_consecutive_successes = path.heartbeat_consecutive_successes.max(3);
+    }
+    direct_health
+}
+
 const THROUGHPUT_COLLAPSE_MIN_PEAK_BPS: u64 = 1_000_000;
 const THROUGHPUT_COLLAPSE_WINDOW: Duration = Duration::from_secs(30);
 const THROUGHPUT_COLLAPSE_MAX_SAMPLES: usize = 60;
@@ -6059,16 +6370,21 @@ fn schedule_silent_blackhole_probes(
                 )
             })
             .await;
-            let (reachable, error) = match probe {
-                Ok(Ok(())) => (true, None),
-                Ok(Err(error)) => (false, Some(error.to_string())),
-                Err(error) => (false, Some(format!("direct probe task failed: {error}"))),
+            let (reachable, reached_target, error) = match probe {
+                Ok(Ok(target)) => (true, Some(target), None),
+                Ok(Err(error)) => (false, None, Some(error.to_string())),
+                Err(error) => (
+                    false,
+                    None,
+                    Some(format!("direct probe task failed: {error}")),
+                ),
             };
             let _ = result_tx
                 .send(SilentBlackholeProbeResult {
                     path_id,
                     socket_generation,
                     reachable,
+                    reached_target,
                     error,
                 })
                 .await;
@@ -6095,14 +6411,14 @@ fn silent_blackhole_probe_targets(config: &ClientConfig) -> Vec<String> {
     targets
 }
 
-fn probe_any_silent_blackhole_target<F>(targets: &[String], mut probe: F) -> Result<()>
+fn probe_any_silent_blackhole_target<F>(targets: &[String], mut probe: F) -> Result<String>
 where
     F: FnMut(&str) -> Result<()>,
 {
     let mut failures = Vec::new();
     for target in targets {
         match probe(target) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(target.clone()),
             Err(error) => failures.push(format!("{target}: {error:#}")),
         }
     }
@@ -6117,7 +6433,7 @@ fn direct_interface_tcp_probe(
     spec: &ProbePathSpec,
     targets: &[String],
     timeout: Duration,
-) -> Result<()> {
+) -> Result<String> {
     probe_any_silent_blackhole_target(targets, |target| {
         direct_interface_tcp_probe_target(spec, target, timeout)
     })
@@ -7740,6 +8056,8 @@ fn write_tunnel_runtime_status(
     effective_policy: RedundancyPolicy,
     recovery_status: &RecoveryStatus,
     aggregate_health: &TunnelAggregateHealthRuntime,
+    egress_runtime: &EgressRuntime,
+    egress_now_ms: u64,
     active_override: Option<&ActiveScheduleOverride>,
     schedule_change_count: u64,
     schedule_generation: u64,
@@ -7778,6 +8096,7 @@ fn write_tunnel_runtime_status(
             running: true,
             mode: effective_mode,
             redundancy_policy: effective_policy,
+            egress: egress_runtime.status(config.traffic_mode, egress_now_ms),
             server_addr: config.server_addr.clone(),
             tunnel: XBondTunnelStatus {
                 state: "running".to_string(),
@@ -9181,7 +9500,15 @@ mod tests {
         let cadence = Duration::from_millis(200);
         // A long calm period, then the link starts queueing badly for a full window.
         let after_calm = feed_samples(&config, &mut runtime, start, 100, cadence, true, Some(32.0));
-        feed_samples(&config, &mut runtime, after_calm, 15, cadence, true, Some(150.0));
+        feed_samples(
+            &config,
+            &mut runtime,
+            after_calm,
+            15,
+            cadence,
+            true,
+            Some(150.0),
+        );
 
         // Averaging all 100 stored samples would report ~50ms and hide the problem.
         let reported = runtime.rtt_ms.expect("rtt");
@@ -9226,7 +9553,15 @@ mod tests {
         let cadence = Duration::from_millis(200);
         let start = Instant::now();
         let after_calm = feed_samples(&config, &mut runtime, start, 100, cadence, true, Some(30.0));
-        feed_samples(&config, &mut runtime, after_calm, 30, cadence, true, Some(160.0));
+        feed_samples(
+            &config,
+            &mut runtime,
+            after_calm,
+            30,
+            cadence,
+            true,
+            Some(160.0),
+        );
 
         let reported = runtime.rtt_ms.expect("rtt");
         assert!(
@@ -9248,7 +9583,15 @@ mod tests {
         assert!(burst > 0.5, "the burst itself must register, got {burst}");
 
         // Clean samples spanning more than the loss window.
-        feed_samples(&config, &mut runtime, after_loss, 110, cadence, true, Some(32.0));
+        feed_samples(
+            &config,
+            &mut runtime,
+            after_loss,
+            110,
+            cadence,
+            true,
+            Some(32.0),
+        );
 
         assert_eq!(
             runtime.loss_rate, 0.0,

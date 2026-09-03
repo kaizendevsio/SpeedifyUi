@@ -24,6 +24,8 @@ param(
         "stale-return-schedule",
         "queue-saturation",
         "mtu-sweep",
+        "direct-failover",
+        "adaptive-fallback",
         "soak",
         "matrix"
     )]

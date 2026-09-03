@@ -226,8 +226,8 @@ public sealed class XBondClientConfigService(
         }
     }
 
-    public async Task<XBondAdapterConfigStatus> SetPolicyAsync(
-        string redundancyPolicy,
+    public async Task<XBondAdapterConfigStatus> SetConnectionModeAsync(
+        string connectionMode,
         int interactivePacketThresholdBytes,
         double duplicateLossThreshold,
         double backupLossDisableThreshold,
@@ -247,7 +247,20 @@ public sealed class XBondClientConfigService(
         try
         {
             var config = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
-            config.RedundancyPolicy = NormalizePolicy(redundancyPolicy);
+            var normalizedMode = NormalizeConnectionMode(connectionMode);
+            if (normalizedMode is "direct-failover" or "adaptive")
+            {
+                config.TrafficMode = normalizedMode;
+                if (normalizedMode == "adaptive")
+                {
+                    config.RedundancyPolicy = "reliable";
+                }
+            }
+            else
+            {
+                config.TrafficMode = "tunnel";
+                config.RedundancyPolicy = normalizedMode;
+            }
             config.InteractivePacketThresholdBytes = Math.Clamp(interactivePacketThresholdBytes, 64, 1_500);
             config.DuplicateLossThreshold = Math.Clamp(duplicateLossThreshold, 0.0, 1.0);
             config.BackupLossDisableThreshold = Math.Clamp(backupLossDisableThreshold, 0.0, 1.0);
@@ -257,18 +270,18 @@ public sealed class XBondClientConfigService(
             var serviceStatus = await trafficEngineService.RestartAsync(cancellationToken).ConfigureAwait(false);
             var refreshed = await ReadConfigAsync(cancellationToken).ConfigureAwait(false);
             var refreshedInterfaces = await interfaceMetadataService.GetInterfacesAsync(cancellationToken).ConfigureAwait(false);
-            var status = BuildStatus(refreshed, refreshedInterfaces, "uLink policy saved.");
+            var status = BuildStatus(refreshed, refreshedInterfaces, "uLink connection mode saved.");
             if (serviceStatus.HasError)
             {
                 status.Error = serviceStatus.Error;
-                status.Message = "uLink policy was saved, but restarting the tunnel failed.";
+                status.Message = "uLink connection mode was saved, but restarting the client failed.";
             }
 
             return status;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException)
         {
-            logger.LogWarning(ex, "Failed to change uLink policy");
+            logger.LogWarning(ex, "Failed to change uLink connection mode");
             return ErrorStatus(ex.Message);
         }
         finally
@@ -403,6 +416,7 @@ public sealed class XBondClientConfigService(
             CanEdit = settings.AllowServiceControl && OperatingSystem.IsLinux(),
             Message = message ?? "Choose which connected adapters uLink should use.",
             Mode = config.Mode,
+            TrafficMode = config.TrafficMode,
             RedundancyPolicy = config.RedundancyPolicy,
             MaxActiveBackups = config.MaxActiveBackups,
             RealtimeDeadlineMs = config.RealtimeDeadlineMs,
@@ -483,6 +497,7 @@ public sealed class XBondClientConfigService(
         builder.AppendLine($"enabled = {FormatBool(config.Enabled)}");
         builder.AppendLine($"session_id = {config.SessionId}");
         builder.AppendLine($"server_addr = {Quote(config.ServerAddress)}");
+        builder.AppendLine($"traffic_mode = {Quote(NormalizeTrafficMode(config.TrafficMode))}");
         builder.AppendLine($"mode = {Quote(config.Mode)}");
         builder.AppendLine($"redundancy_policy = {Quote(config.RedundancyPolicy)}");
         builder.AppendLine($"max_active_backups = {Math.Max(0, config.MaxActiveBackups)}");
@@ -542,6 +557,9 @@ public sealed class XBondClientConfigService(
                 break;
             case "server_addr":
                 config.ServerAddress = Unquote(value);
+                break;
+            case "traffic_mode":
+                config.TrafficMode = NormalizeTrafficMode(Unquote(value));
                 break;
             case "mode":
                 config.Mode = Unquote(value);
@@ -664,6 +682,7 @@ public sealed class XBondClientConfigService(
             config.Mode = settings.ScheduleMode;
         }
 
+        config.TrafficMode = NormalizeTrafficMode(config.TrafficMode);
         config.RedundancyPolicy = NormalizePolicy(config.RedundancyPolicy);
 
         if (config.MaxActiveBackups < 0)
@@ -881,6 +900,28 @@ public sealed class XBondClientConfigService(
         {
             "reliable" => "reliable",
             "fast" => "fast",
+            _ => "balanced"
+        };
+    }
+
+    private static string NormalizeTrafficMode(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "direct-failover" => "direct-failover",
+            "adaptive" => "adaptive",
+            _ => "tunnel"
+        };
+    }
+
+    private static string NormalizeConnectionMode(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "reliable" => "reliable",
+            "fast" => "fast",
+            "direct-failover" => "direct-failover",
+            "adaptive" => "adaptive",
             _ => "balanced"
         };
     }

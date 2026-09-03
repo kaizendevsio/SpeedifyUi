@@ -16,6 +16,9 @@ public class XBondStatus
     [JsonPropertyName("redundancy_policy")]
     public string RedundancyPolicy { get; set; } = "balanced";
 
+    [JsonPropertyName("egress")]
+    public XBondEgressStatus Egress { get; set; } = new();
+
     [JsonPropertyName("server_addr")]
     public string ServerAddress { get; set; } = "";
 
@@ -96,6 +99,39 @@ public class XBondStatus
 
     [JsonIgnore]
     public bool HasError => !string.IsNullOrWhiteSpace(Error);
+}
+
+public sealed class XBondEgressStatus
+{
+    [JsonPropertyName("configured_mode")]
+    public string ConfiguredMode { get; set; } = "tunnel";
+
+    [JsonPropertyName("active_egress")]
+    public string ActiveEgress { get; set; } = "tunnel";
+
+    [JsonPropertyName("direct_path_id")]
+    public int? DirectPathId { get; set; }
+
+    [JsonPropertyName("direct_interface_name")]
+    public string? DirectInterfaceName { get; set; }
+
+    [JsonPropertyName("switch_reason")]
+    public string SwitchReason { get; set; } = "";
+
+    [JsonPropertyName("last_switch_at_micros")]
+    public ulong? LastSwitchAtMicros { get; set; }
+
+    [JsonPropertyName("switch_count")]
+    public ulong SwitchCount { get; set; }
+
+    [JsonPropertyName("clean_return_progress_seconds")]
+    public ulong CleanReturnProgressSeconds { get; set; }
+
+    [JsonPropertyName("route_ready")]
+    public bool RouteReady { get; set; }
+
+    [JsonPropertyName("route_error")]
+    public string? RouteError { get; set; }
 }
 
 public class XBondSchedulePlan

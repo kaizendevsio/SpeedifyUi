@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Branch = "feature/xband-only-runtime",
+    [string]$Branch = "main",
     [string]$RouterHost = "xeon-network",
     [string]$RouterUser = "xeon-network",
     [string]$RouterRepo = "/home/xeon-network/xnetwork",
@@ -65,8 +65,15 @@ git checkout '$Branch'
 git pull --ff-only
 ./deploy.sh
 cargo build --release --manifest-path xbond/Cargo.toml -p xbond-client
+if ! command -v nft >/dev/null 2>&1 || ! command -v conntrack >/dev/null 2>&1; then
+  sudo -n apt-get update
+  sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y nftables conntrack
+fi
 sudo -n install -m 0755 xbond/target/release/xbond-client /usr/local/bin/xbond-client
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
+sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-egress.py /usr/local/sbin/xbond-client-egress
+sudo -n install -d -m 0755 /etc/NetworkManager/dispatcher.d
+sudo -n install -m 0755 xbond/deploy/scripts/90-ulink-egress /etc/NetworkManager/dispatcher.d/90-ulink-egress
 sudo -n install -m 0755 xbond/deploy/scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 sudo -n install -m 0644 xbond/deploy/systemd/xbond-client.service /etc/systemd/system/xbond-client.service
 sudo -n install -m 0644 xbond/deploy/sysctl/90-xbond.conf /etc/sysctl.d/90-xbond.conf
@@ -94,7 +101,20 @@ sudo -n /usr/local/bin/xbond-client override status --json
 for path in / /xbond /details /settings /xrouter /wifi; do
   curl -fsS -o /dev/null "http://127.0.0.1:8080`$path"
 done
-ip route get 8.8.8.8 | grep 'dev xbond0'
+active_egress="`$(python3 -c 'import json; print(json.load(open("/run/xbond/client-status.json")).get("egress", {}).get("active_egress", "tunnel"))')"
+case "`$active_egress" in
+  tunnel)
+    ip route get 8.8.8.8 | grep 'dev xbond0'
+    ;;
+  direct)
+    direct_if="`$(python3 -c 'import json; print(json.load(open("/run/xbond/client-status.json"))["egress"]["direct_interface_name"])')"
+    ip route get 8.8.8.8 | grep "dev `$direct_if"
+    ;;
+  *)
+    echo "uLink deployed without a usable egress route" >&2
+    exit 1
+    ;;
+esac
 cudy_host="`$(sed -n 's/.*"ManagementBaseUrl"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /home/xeon-network/.config/XNetwork/cudy-ap-automation-settings.json 2>/dev/null | head -n 1 | sed 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:.*##')"
 if [ -n "`$cudy_host" ]; then
   ip route get "`$cudy_host" | grep -v 'dev xbond0'

@@ -2,6 +2,7 @@ pub mod anchor;
 pub mod atomic_file;
 pub mod config;
 pub mod crypto;
+pub mod egress;
 pub mod fec;
 pub mod health;
 pub mod linux_metrics;
@@ -23,8 +24,11 @@ pub use config::{
     default_inbound_queue_capacity, default_tun_queue_capacity, default_udp_receive_batch_size,
     default_udp_socket_buffer_bytes,
 };
-pub use config::{ClientConfig, PathConfig, RoleSelectionSettings};
+pub use config::{ClientConfig, PathConfig, RoleSelectionSettings, TrafficMode};
 pub use crypto::XBondKey;
+pub use egress::{
+    EgressController, EgressDecision, EgressEvaluation, EgressTarget, EgressThresholds,
+};
 pub use fec::{FecError, XorFecBlock};
 pub use health::{
     select_path_roles, select_path_roles_with_state, PathHealthSnapshot, PathRole,
@@ -52,11 +56,11 @@ pub use session::{
     SessionProofOutcome,
 };
 pub use status::{
-    PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondFecStatus, XBondKernelNetworkStatus,
-    XBondPacketPoolStatus, XBondPathAnchorStatus, XBondPathStatus, XBondProcessStatus,
-    XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus, XBondRuntimeStatus,
-    XBondSaturationStatus, XBondServerHealthStatus, XBondServerHealthTargetStatus,
-    XBondServerIngressReorderStatus, XBondServerRecoveryStatus, XBondSocketBufferStatus,
-    XBondStageTimingStatus, XBondStatus, XBondTunnelStatus,
+    PathIsolationStatus, XBondDiagnosticOverrideStatus, XBondEgressStatus, XBondFecStatus,
+    XBondKernelNetworkStatus, XBondPacketPoolStatus, XBondPathAnchorStatus, XBondPathStatus,
+    XBondProcessStatus, XBondReorderStatus, XBondRepairCacheStatus, XBondRepairStatus,
+    XBondRuntimeStatus, XBondSaturationStatus, XBondServerHealthStatus,
+    XBondServerHealthTargetStatus, XBondServerIngressReorderStatus, XBondServerRecoveryStatus,
+    XBondSocketBufferStatus, XBondStageTimingStatus, XBondStatus, XBondTunnelStatus,
 };
 pub use tun::{is_ipv4_packet, XBondTun};

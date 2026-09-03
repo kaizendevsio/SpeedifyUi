@@ -4,10 +4,21 @@ use crate::anchor::{AnchorTrialConfig, FlapDampingConfig, ScoreSmoothingConfig, 
 use crate::health::RoleSelectionConfig;
 use crate::scheduler::{RecoveryConfig, RedundancyPolicy, ScheduleMode};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TrafficMode {
+    #[default]
+    Tunnel,
+    DirectFailover,
+    Adaptive,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub enabled: bool,
     pub server_addr: String,
+    #[serde(default)]
+    pub traffic_mode: TrafficMode,
     pub mode: ScheduleMode,
     #[serde(default)]
     pub redundancy_policy: RedundancyPolicy,
@@ -106,6 +117,7 @@ impl Default for ClientConfig {
         Self {
             enabled: false,
             server_addr: "127.0.0.1:8444".to_string(),
+            traffic_mode: TrafficMode::Tunnel,
             mode: ScheduleMode::AnchorDuplicate1,
             redundancy_policy: RedundancyPolicy::Balanced,
             max_active_backups: 1,
@@ -564,6 +576,37 @@ fn default_recovery_path_loss_exclude_threshold() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_traffic_mode_defaults_to_tunnel() {
+        let config = toml::from_str::<ClientConfig>(
+            r#"enabled = true
+server_addr = "127.0.0.1:8444"
+mode = "anchor-duplicate-1"
+max_active_backups = 1
+realtime_deadline_ms = 500
+paths = []"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.traffic_mode, TrafficMode::Tunnel);
+    }
+
+    #[test]
+    fn traffic_modes_use_kebab_case() {
+        let direct = toml::from_str::<ClientConfig>(
+            r#"enabled = true
+server_addr = "127.0.0.1:8444"
+traffic_mode = "direct-failover"
+mode = "anchor-duplicate-1"
+max_active_backups = 1
+realtime_deadline_ms = 500
+paths = []"#,
+        )
+        .unwrap();
+
+        assert_eq!(direct.traffic_mode, TrafficMode::DirectFailover);
+    }
 
     #[test]
     fn missing_role_selection_table_uses_sticky_defaults() {

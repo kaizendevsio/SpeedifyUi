@@ -74,6 +74,7 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
             RedundancyPolicy = string.IsNullOrWhiteSpace(runtime.RedundancyPolicy)
                 ? "balanced"
                 : runtime.RedundancyPolicy,
+            Egress = runtime.Egress ?? new XBondEgressStatus(),
             ServerAddress = string.IsNullOrWhiteSpace(runtime.ServerAddress)
                 ? settings.PublicTestServerAddress
                 : runtime.ServerAddress,
@@ -393,6 +394,9 @@ public class XBondStatusService(ILogger<XBondStatusService> logger, XBondSetting
 
         [JsonPropertyName("redundancy_policy")]
         public string RedundancyPolicy { get; set; } = "balanced";
+
+        [JsonPropertyName("egress")]
+        public XBondEgressStatus? Egress { get; set; }
 
         [JsonPropertyName("server_addr")]
         public string ServerAddress { get; set; } = "";

@@ -33,8 +33,9 @@ import jsonschema
 
 CLIENT_NS = "xbl-client"
 SERVER_NS = "xbl-server"
+LAN_NS = "xbl-lan"
 ROUTER_NAMES = ("xbl-r1", "xbl-r2", "xbl-r3", "xbl-r4")
-ALL_NAMESPACES = (CLIENT_NS, SERVER_NS, *ROUTER_NAMES)
+ALL_NAMESPACES = (CLIENT_NS, SERVER_NS, LAN_NS, *ROUTER_NAMES)
 PATH_NAMES = ("Starlink", "SMART F50", "GOMO F50", "Fiber Wi-Fi")
 FOUR_WAN_PROFILES = {
     1: "delay 18ms 8ms distribution normal loss 0.3% rate 180mbit",
@@ -50,6 +51,12 @@ SERVER_VIP = "10.255.0.1"
 SERVER_PORT = 8444
 CLIENT_TUN_IP = "10.250.0.2"
 SERVER_TUN_IP = "10.250.0.1"
+LAN_CLIENT_INTERFACE = "lan0"
+LAN_ROUTER_INTERFACE = "lanpeer0"
+LAN_CLIENT_IP = "192.168.200.2"
+LAN_ROUTER_IP = "192.168.200.1"
+LAN_CIDR = "192.168.200.0/24"
+DIRECT_TEST_IP = "203.0.113.10"
 RESULTS_DIR = pathlib.Path(os.environ.get("LAB_RESULTS_DIR", "/results"))
 RUN_ROOT = pathlib.Path("/run/xbond-lab")
 LOG_ROOT = pathlib.Path("/tmp/xbond-lab")
@@ -1101,6 +1108,7 @@ class XBondLab:
         self.client_status = RUN_ROOT / "client-status.json"
         self.server_status = RUN_ROOT / "server-status.json"
         self.client_config = RUN_ROOT / "client.toml"
+        self.egress_state = RUN_ROOT / "egress-state.json"
         self.process_pids: list[int] = []
         self.process_groups: set[int] = set()
 
@@ -1150,7 +1158,7 @@ class XBondLab:
         run(["ip", "link", "del", MANAGEMENT_HOST_INTERFACE], check=False)
         RUN_ROOT.mkdir(parents=True, exist_ok=True)
         LOG_ROOT.mkdir(parents=True, exist_ok=True)
-        for path in (self.client_status, self.server_status, self.client_config):
+        for path in (self.client_status, self.server_status, self.client_config, self.egress_state):
             path.unlink(missing_ok=True)
 
     def setup_topology(self) -> None:
@@ -1162,6 +1170,7 @@ class XBondLab:
             ns_run(namespace, ["sysctl", "-qw", "net.ipv4.conf.default.rp_filter=0"])
         ns_run(CLIENT_NS, ["sysctl", "-qw", "net.core.rmem_max=16777216"])
         ns_run(CLIENT_NS, ["sysctl", "-qw", "net.core.wmem_max=16777216"])
+        ns_run(CLIENT_NS, ["sysctl", "-qw", "net.ipv4.ip_forward=1"])
         ns_run(SERVER_NS, ["sysctl", "-qw", "net.core.rmem_max=33554432"])
         ns_run(SERVER_NS, ["sysctl", "-qw", "net.core.wmem_max=33554432"])
 
@@ -1227,6 +1236,7 @@ class XBondLab:
                 ["ip", "route", "add", f"10.{index}.0.0/24", "via", server_gateway, "dev", server_if],
             )
             ns_run(router, ["ip", "route", "add", f"{SERVER_VIP}/32", "via", server_ip, "dev", router_server_if])
+            ns_run(router, ["ip", "route", "add", f"{DIRECT_TEST_IP}/32", "via", server_ip, "dev", router_server_if])
             ns_run(
                 router,
                 [
@@ -1249,6 +1259,16 @@ class XBondLab:
             )
 
         ns_run(SERVER_NS, ["ip", "addr", "add", f"{SERVER_VIP}/32", "dev", "lo"])
+        ns_run(SERVER_NS, ["ip", "addr", "add", f"{DIRECT_TEST_IP}/32", "dev", "lo"])
+
+        run(["ip", "link", "add", LAN_CLIENT_INTERFACE, "type", "veth", "peer", "name", LAN_ROUTER_INTERFACE])
+        run(["ip", "link", "set", LAN_CLIENT_INTERFACE, "netns", LAN_NS])
+        run(["ip", "link", "set", LAN_ROUTER_INTERFACE, "netns", CLIENT_NS])
+        ns_run(LAN_NS, ["ip", "addr", "add", f"{LAN_CLIENT_IP}/24", "dev", LAN_CLIENT_INTERFACE])
+        ns_run(LAN_NS, ["ip", "link", "set", LAN_CLIENT_INTERFACE, "up"])
+        ns_run(LAN_NS, ["ip", "route", "add", "default", "via", LAN_ROUTER_IP, "dev", LAN_CLIENT_INTERFACE])
+        ns_run(CLIENT_NS, ["ip", "addr", "add", f"{LAN_ROUTER_IP}/24", "dev", LAN_ROUTER_INTERFACE])
+        ns_run(CLIENT_NS, ["ip", "link", "set", LAN_ROUTER_INTERFACE, "up"])
 
     def setup_management_link(self) -> None:
         run(
@@ -1281,6 +1301,7 @@ class XBondLab:
         inbound_capacity: int = 4096,
         mode: str = "anchor-duplicate-1",
         policy: str = "balanced",
+        traffic_mode: str = "tunnel",
     ) -> None:
         paths = []
         for index in range(1, path_count + 1):
@@ -1303,6 +1324,7 @@ class XBondLab:
                 f'server_addr = "{SERVER_VIP}:{SERVER_PORT}"',
                 f'mode = "{mode}"',
                 f'redundancy_policy = "{policy}"',
+                f'traffic_mode = "{traffic_mode}"',
                 f"max_active_backups = {max(0, path_count - 1)}",
                 "realtime_deadline_ms = 500",
                 "interactive_packet_threshold_bytes = 768",
@@ -1412,7 +1434,7 @@ class XBondLab:
             "modem fixtures",
         )
 
-    def configure_app_routes(self) -> None:
+    def configure_physical_defaults(self) -> None:
         for path in range(1, 5):
             ns_run(
                 CLIENT_NS,
@@ -1429,8 +1451,97 @@ class XBondLab:
                     str(100 + path),
                 ],
             )
+
+    def configure_app_routes(self) -> None:
+        self.configure_physical_defaults()
         ns_run(CLIENT_NS, ["ip", "route", "replace", "default", "dev", "xbond0", "metric", "1"])
         ns_run(SERVER_NS, ["ip", "addr", "replace", "8.8.8.8/32", "dev", "lo"])
+
+    def run_egress_helper(
+        self,
+        egress: str,
+        *,
+        path_id: int | None = None,
+        interface: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        command = [
+            "env",
+            f"ULINK_EGRESS_HELPER=/opt/xbond/bin/xbond-client-egress",
+            f"ULINK_LAN_IF={LAN_ROUTER_INTERFACE}",
+            f"ULINK_LAN_CIDR={LAN_CIDR}",
+            "XBOND_TUN_IF=xbond0",
+            "/opt/xbond/bin/xbond-client-egress",
+            "switch",
+            "--egress",
+            egress,
+        ]
+        if path_id is not None:
+            command.extend(["--path-id", str(path_id)])
+        if interface is not None:
+            command.extend(["--interface", interface])
+        return ns_run(CLIENT_NS, command, check=False)
+
+    def active_egress_status(self) -> dict[str, Any]:
+        return (json_file(self.client_status) or {}).get("egress") or {}
+
+    def main_default_device(self) -> str | None:
+        routes = ns_run(
+            CLIENT_NS,
+            ["ip", "-j", "-4", "route", "show", "default", "metric", "1"],
+            check=False,
+        )
+        with contextlib.suppress(json.JSONDecodeError):
+            values = json.loads(routes.stdout or "[]")
+            if values and isinstance(values[0], dict):
+                return values[0].get("dev") or values[0].get("type")
+        return None
+
+    def lan_http(self, *, port: int = 443) -> subprocess.CompletedProcess[str]:
+        return ns_run(
+            LAN_NS,
+            [
+                "curl",
+                "-fsS",
+                "--max-time",
+                "3",
+                f"http://{DIRECT_TEST_IP}:{port}/",
+            ],
+            check=False,
+            timeout=5,
+        )
+
+    def start_held_tcp_flow(self, port: int, seconds: int = 20) -> subprocess.Popen[str]:
+        server_script = (
+            "import socket,time; "
+            f"s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); "
+            f"s.bind(('{DIRECT_TEST_IP}',{port})); s.listen(1); c,_=s.accept(); time.sleep({seconds})"
+        )
+        client_script = (
+            "import socket,time; "
+            f"s=socket.create_connection(('{DIRECT_TEST_IP}',{port}),3); time.sleep({seconds})"
+        )
+        server = self.track_process(
+            self._start(SERVER_NS, ["python3", "-c", server_script], f"hold-server-{port}")
+        )
+        time.sleep(0.15)
+        client = self.track_process(
+            self._start(LAN_NS, ["python3", "-c", client_script], f"hold-client-{port}")
+        )
+        wait_for(lambda: self.conntrack_mark(port) is not None, 5, f"conntrack entry for port {port}")
+        return client
+
+    def conntrack_mark(self, port: int) -> int | None:
+        entry = self.conntrack_entry(port)
+        match = re.search(r"\bmark=(\d+)\b", entry)
+        return int(match.group(1)) if match else None
+
+    def conntrack_entry(self, port: int) -> str:
+        completed = ns_run(
+            CLIENT_NS,
+            ["conntrack", "-L", "-p", "tcp", "--dport", str(port)],
+            check=False,
+        )
+        return completed.stdout
 
     def _write_app_fixture_settings(self) -> pathlib.Path:
         config_root = pathlib.Path("/tmp/ulink-home/.config/XNetwork")
@@ -1560,11 +1671,13 @@ class XBondLab:
         client_log_name: str = "client",
         server_log_name: str = "server",
         direct_probe_log_name: str = "direct-probe",
+        traffic_mode: str = "tunnel",
     ) -> None:
         self.write_config(
             path_count=path_count,
             queue_capacity=queue_capacity,
             inbound_capacity=inbound_capacity,
+            traffic_mode=traffic_mode,
         )
         self.server = self._start(
             SERVER_NS,
@@ -1605,6 +1718,15 @@ class XBondLab:
         )
         ns_run(SERVER_NS, ["ip", "addr", "replace", f"{SERVER_TUN_IP}/30", "dev", "xbonds0"])
         ns_run(SERVER_NS, ["ip", "link", "set", "xbonds0", "mtu", str(tun_mtu), "up"])
+        ns_run(SERVER_NS, ["ip", "route", "replace", LAN_CIDR, "dev", "xbonds0"])
+
+        effective_client_env = {
+            "ULINK_EGRESS_HELPER": "/opt/xbond/bin/xbond-client-egress",
+            "ULINK_LAN_IF": LAN_ROUTER_INTERFACE,
+            "ULINK_LAN_CIDR": LAN_CIDR,
+            "XBOND_TUN_IF": "xbond0",
+        }
+        effective_client_env.update(client_env or {})
 
         self.client = self._start(
             CLIENT_NS,
@@ -1623,7 +1745,7 @@ class XBondLab:
                 *(client_extra_args or []),
             ],
             client_log_name,
-            env_overrides=client_env,
+            env_overrides=effective_client_env,
         )
         wait_for(
             lambda: ns_run(CLIENT_NS, ["ip", "link", "show", "xbond0"], check=False).returncode == 0,
@@ -6200,6 +6322,351 @@ def scenario_soak(lab: XBondLab, result: LabResult, duration: int) -> None:
     )
 
 
+def scenario_direct_failover(lab: XBondLab, result: LabResult, _: int) -> None:
+    lab.setup_topology()
+    lab.apply_four_wan_profiles()
+    lab.configure_physical_defaults()
+    lab.start_runtime(path_count=4, traffic_mode="direct-failover")
+    wait_for(
+        lambda: lab.active_egress_status().get("active_egress") == "direct"
+        and lab.active_egress_status().get("route_ready") is True,
+        15,
+        "initial direct egress",
+    )
+    initial_status = lab.active_egress_status()
+    selected_path = int(initial_status["direct_path_id"])
+    selected_interface = f"cpath{selected_path}"
+    initial_http = lab.lan_http()
+    initial_route = lab.main_default_device()
+
+    first_flow_port = 8088
+    lab.start_held_tcp_flow(first_flow_port)
+    initial_mark = lab.conntrack_mark(first_flow_port)
+    expected_initial_mark = 0x130000 + selected_path
+
+    alternate_path = next(path for path in range(1, 5) if path != selected_path)
+    alternate_interface = f"cpath{alternate_path}"
+    manual_switch = lab.run_egress_helper(
+        "direct", path_id=alternate_path, interface=alternate_interface
+    )
+    second_flow_port = 8089
+    lab.start_held_tcp_flow(second_flow_port)
+    retained_mark = lab.conntrack_mark(first_flow_port)
+    new_flow_mark = lab.conntrack_mark(second_flow_port)
+    expected_alternate_mark = 0x130000 + alternate_path
+    restored_switch = lab.run_egress_helper(
+        "direct", path_id=selected_path, interface=selected_interface
+    )
+
+    ns_run(
+        CLIENT_NS,
+        ["ip", "-4", "route", "flush", "table", str(13000 + selected_path)],
+    )
+    reconcile = ns_run(
+        CLIENT_NS,
+        [
+            "env",
+            f"ULINK_LAN_IF={LAN_ROUTER_INTERFACE}",
+            f"ULINK_LAN_CIDR={LAN_CIDR}",
+            "XBOND_TUN_IF=xbond0",
+            "/opt/xbond/bin/xbond-client-egress",
+            "reconcile",
+        ],
+        check=False,
+    )
+    reconciled_route = ns_run(
+        CLIENT_NS,
+        [
+            "ip", "-4", "route", "get", DIRECT_TEST_IP,
+            "mark", f"0x{expected_initial_mark:x}",
+        ],
+        check=False,
+    )
+
+    bypass_path = next(
+        path for path in range(1, 5) if path not in {selected_path, alternate_path}
+    )
+    bypass_mark = 0x120001
+    ns_run(
+        CLIENT_NS,
+        [
+            "ip", "-4", "route", "replace", "default", "via", f"10.{bypass_path}.0.1",
+            "dev", f"cpath{bypass_path}", "table", "12101",
+        ],
+    )
+    ns_run(
+        CLIENT_NS,
+        [
+            "ip", "-4", "rule", "add", "fwmark", "0x120001/0xffffffff",
+            "table", "12101", "priority", "12101",
+        ],
+    )
+    bypass_nft = f"""table inet xnetwork_bypass_test {{
+  chain prerouting {{
+    type filter hook prerouting priority mangle; policy accept;
+    ip daddr {DIRECT_TEST_IP} tcp dport 8090 meta mark set 0x120001
+  }}
+  chain postrouting {{
+    type nat hook postrouting priority srcnat; policy accept;
+    meta mark 0x120001 masquerade
+  }}
+}}
+"""
+    # ns_run cannot pass stdin, so load the small deterministic ruleset through sh.
+    ns_run(
+        CLIENT_NS,
+        ["sh", "-lc", f"printf %s {shlex.quote(bypass_nft)} | nft -f -"],
+    )
+    lab.start_held_tcp_flow(8090)
+    bypass_conntrack = lab.conntrack_entry(8090)
+    observed_bypass_source = f"dst=10.{bypass_path}.0.2" in bypass_conntrack
+    ns_run(CLIENT_NS, ["nft", "delete", "table", "inet", "xnetwork_bypass_test"], check=False)
+    ns_run(CLIENT_NS, ["ip", "-4", "rule", "del", "priority", "12101"], check=False)
+    ns_run(CLIENT_NS, ["ip", "-4", "route", "flush", "table", "12101"], check=False)
+
+    failure_flow_port = 8091
+    lab.start_held_tcp_flow(failure_flow_port)
+    failure_flow_mark_before = lab.conntrack_mark(failure_flow_port)
+    lab.apply_netem(selected_path, "loss 100%")
+    failure_started = time.monotonic()
+    failover_deadline = time.monotonic() + 3
+    while lab.main_default_device() in {None, selected_interface}:
+        if time.monotonic() >= failover_deadline:
+            raise TimeoutError("timed out waiting for direct route failover")
+        time.sleep(0.01)
+    failover_seconds = time.monotonic() - failure_started
+    wait_for(
+        lambda: lab.active_egress_status().get("active_egress") == "direct"
+        and lab.active_egress_status().get("direct_path_id") != selected_path
+        and lab.active_egress_status().get("route_ready") is True,
+        3,
+        "published replacement direct egress",
+    )
+    replacement_status = lab.active_egress_status()
+    replacement_http = lab.lan_http()
+    failed_flow_mark_after = lab.conntrack_mark(failure_flow_port)
+
+    lab.stop_process(lab.client)
+    lab.client = None
+    failsafe = ns_run(
+        CLIENT_NS,
+        [
+            "env",
+            f"ULINK_LAN_IF={LAN_ROUTER_INTERFACE}",
+            f"ULINK_LAN_CIDR={LAN_CIDR}",
+            "XBOND_TUN_IF=xbond0",
+            "/opt/xbond/bin/xbond-client-egress",
+            "failsafe",
+            "--config",
+            str(lab.client_config),
+        ],
+        check=False,
+    )
+    failsafe_route = lab.main_default_device()
+    failsafe_http = lab.lan_http()
+
+    result.metrics.update(
+        {
+            "initial_status": initial_status,
+            "initial_main_default": initial_route,
+            "initial_http_exit_code": initial_http.returncode,
+            "selected_path": selected_path,
+            "flow_pinning": {
+                "initial_mark": initial_mark,
+                "retained_mark_after_score_switch": retained_mark,
+                "new_flow_mark": new_flow_mark,
+                "expected_initial_mark": expected_initial_mark,
+                "expected_new_mark": expected_alternate_mark,
+                "manual_switch_exit_code": manual_switch.returncode,
+                "restore_exit_code": restored_switch.returncode,
+            },
+            "route_reconcile": {
+                "exit_code": reconcile.returncode,
+                "route": reconciled_route.stdout.strip(),
+            },
+            "bypass_precedence": {
+                "packet_mark": bypass_mark,
+                "expected_source_interface": f"cpath{bypass_path}",
+                "observed_source_address": observed_bypass_source,
+            },
+            "failure_flow_mark_before": failure_flow_mark_before,
+            "failed_flow_mark_after": failed_flow_mark_after,
+            "failover_seconds": round(failover_seconds, 3),
+            "replacement_status": replacement_status,
+            "replacement_http_exit_code": replacement_http.returncode,
+            "failsafe_exit_code": failsafe.returncode,
+            "failsafe_main_default": failsafe_route,
+            "failsafe_http_exit_code": failsafe_http.returncode,
+        }
+    )
+    result.thresholds = {
+        "failover_seconds_max": 1.0,
+        "direct_http_exit_code": 0,
+        "failed_conntrack_must_be_removed": True,
+        "failsafe_must_select_physical": True,
+    }
+    result.status = (
+        "pass"
+        if initial_http.returncode == 0
+        and initial_route == selected_interface
+        and initial_mark == expected_initial_mark
+        and retained_mark == expected_initial_mark
+        and new_flow_mark == expected_alternate_mark
+        and manual_switch.returncode == 0
+        and restored_switch.returncode == 0
+        and reconcile.returncode == 0
+        and f"dev {selected_interface}" in reconciled_route.stdout
+        and observed_bypass_source
+        and failure_flow_mark_before == expected_initial_mark
+        and failed_flow_mark_after is None
+        and failover_seconds <= 1.0
+        and replacement_http.returncode == 0
+        and failsafe.returncode == 0
+        and isinstance(failsafe_route, str)
+        and failsafe_route.startswith("cpath")
+        and failsafe_http.returncode == 0
+        else "fail"
+    )
+
+
+def scenario_adaptive_fallback(lab: XBondLab, result: LabResult, _: int) -> None:
+    lab.setup_topology()
+    lab.apply_four_wan_profiles()
+    lab.configure_physical_defaults()
+    lab.start_runtime(path_count=4, traffic_mode="adaptive")
+    wait_for(
+        lambda: lab.active_egress_status().get("active_egress") == "direct"
+        and lab.active_egress_status().get("route_ready") is True,
+        15,
+        "adaptive initial direct egress",
+    )
+    initial_status = lab.active_egress_status()
+
+    for path in range(1, 5):
+        lab.apply_netem(path, "delay 70ms")
+    wait_for(
+        lambda: lab.active_egress_status().get("active_egress") == "tunnel"
+        and lab.active_egress_status().get("route_ready") is True,
+        20,
+        "adaptive Reliable tunnel fallback",
+    )
+    fallback_status = lab.active_egress_status()
+    fallback_route = lab.main_default_device()
+    fallback_http = lab.lan_http()
+
+    recovery_started = time.monotonic()
+    lab.apply_netem(4, FOUR_WAN_PROFILES[4])
+    recovery_history: list[dict[str, Any]] = []
+    last_observed: tuple[Any, ...] | None = None
+    recovery_deadline = time.monotonic() + 55
+    while time.monotonic() < recovery_deadline:
+        client_status = json_file(lab.client_status) or {}
+        egress = client_status.get("egress") or {}
+        tunnel = client_status.get("tunnel") or {}
+        observed = (
+            egress.get("active_egress"),
+            egress.get("direct_path_id"),
+            egress.get("switch_count"),
+            egress.get("clean_return_progress_seconds"),
+            tunnel.get("status"),
+            tunnel.get("last_success_age_ms"),
+        )
+        if observed != last_observed:
+            recovery_history.append(
+                {
+                    "elapsed_seconds": round(time.monotonic() - recovery_started, 3),
+                    "egress": egress,
+                    "tunnel": tunnel,
+                    "paths": [
+                        {
+                            "path_id": path.get("path_id"),
+                            "rtt_ms": path.get("rtt_ms"),
+                            "loss_rate": path.get("loss_rate"),
+                            "stale_ack_ms": path.get("stale_ack_ms"),
+                            "heartbeat_failed": path.get("heartbeat_failed"),
+                        }
+                        for path in client_status.get("paths", [])
+                    ],
+                }
+            )
+            last_observed = observed
+        if (
+            egress.get("active_egress") == "direct"
+            and egress.get("direct_path_id") == 4
+            and egress.get("route_ready") is True
+        ):
+            break
+        time.sleep(0.2)
+    else:
+        raise TimeoutError("timed out waiting for adaptive 30-second clean return")
+    return_seconds = time.monotonic() - recovery_started
+    returned_status = lab.active_egress_status()
+    returned_http = lab.lan_http()
+
+    lab.stop_process(lab.server)
+    lab.server = None
+    server_down_samples: list[dict[str, Any]] = []
+    server_down_deadline = time.monotonic() + 7
+    while time.monotonic() < server_down_deadline:
+        status = lab.active_egress_status()
+        route = lab.main_default_device()
+        server_down_samples.append(
+            {
+                "active_egress": status.get("active_egress"),
+                "direct_path_id": status.get("direct_path_id"),
+                "switch_count": status.get("switch_count"),
+                "main_default": route,
+            }
+        )
+        time.sleep(0.25)
+    server_down_status = lab.active_egress_status()
+    server_down_route = lab.main_default_device()
+    server_down_http = lab.lan_http()
+
+    result.metrics.update(
+        {
+            "initial_status": initial_status,
+            "fallback_status": fallback_status,
+            "fallback_main_default": fallback_route,
+            "fallback_http_exit_code": fallback_http.returncode,
+            "clean_return_seconds": round(return_seconds, 3),
+            "recovery_history": recovery_history,
+            "returned_status": returned_status,
+            "returned_http_exit_code": returned_http.returncode,
+            "server_down_status": server_down_status,
+            "server_down_main_default": server_down_route,
+            "server_down_http_exit_code": server_down_http.returncode,
+            "server_down_samples": server_down_samples,
+        }
+    )
+    result.thresholds = {
+        "fallback_after_degraded_rounds": 2,
+        "clean_return_seconds_min": 30,
+        "clean_return_seconds_max": 55,
+        "server_down_must_remain_direct": True,
+    }
+    result.status = (
+        "pass"
+        if initial_status.get("active_egress") == "direct"
+        and fallback_status.get("active_egress") == "tunnel"
+        and fallback_route == "xbond0"
+        and fallback_http.returncode == 0
+        and 30 <= return_seconds <= 55
+        and returned_http.returncode == 0
+        and server_down_status.get("active_egress") == "direct"
+        and all(sample.get("active_egress") == "direct" for sample in server_down_samples)
+        and all(
+            isinstance(sample.get("main_default"), str)
+            and sample["main_default"].startswith("cpath")
+            for sample in server_down_samples
+        )
+        and isinstance(server_down_route, str)
+        and server_down_route.startswith("cpath")
+        and server_down_http.returncode == 0
+        else "fail"
+    )
+
+
 SCENARIOS: dict[str, Callable[[XBondLab, LabResult, int], None]] = {
     "topology-smoke": scenario_topology_smoke,
     "four-wan-smoke": scenario_four_wan_smoke,
@@ -6224,6 +6691,8 @@ SCENARIOS: dict[str, Callable[[XBondLab, LabResult, int], None]] = {
     "stale-return-schedule": scenario_stale_return_schedule,
     "queue-saturation": scenario_queue_saturation,
     "mtu-sweep": scenario_mtu_sweep,
+    "direct-failover": scenario_direct_failover,
+    "adaptive-fallback": scenario_adaptive_fallback,
     "soak": scenario_soak,
 }
 

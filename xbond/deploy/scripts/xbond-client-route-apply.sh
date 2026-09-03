@@ -278,5 +278,21 @@ esac
 
 if [ "$ACTION" = "apply" ]; then
     apply_local_bypass_routes
-    ip route replace default dev "$TUN_IF" src "$TUN_SRC" metric 1
+    traffic_mode="$(awk -F= '
+        /^[[:space:]]*traffic_mode[[:space:]]*=/ {
+            value = $2
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            gsub(/^"|"$/, "", value)
+            print value
+            exit
+        }
+    ' "$CONFIG_PATH")"
+    case "$traffic_mode" in
+        direct-failover|adaptive)
+            /usr/local/sbin/xbond-client-egress bootstrap --config "$CONFIG_PATH"
+            ;;
+        *)
+            ip route replace default dev "$TUN_IF" src "$TUN_SRC" metric 1
+            ;;
+    esac
 fi

@@ -13,13 +13,27 @@ public sealed record ChangelogEntry
 
 public static class AppChangelog
 {
-    public const string CurrentVersion = "ulink-2026.06.140";
+    public const string CurrentVersion = "ulink-2026.06.141";
 
     public static IReadOnlyList<ChangelogEntry> Entries { get; } =
     [
         new ChangelogEntry
         {
             Version = CurrentVersion,
+            Date = "2026-09-03",
+            Summary = "Added direct WAN failover and automatic tunnel fallback modes.",
+            Changes =
+            [
+                "Bumped the uLink interface version for direct and adaptive routing modes.",
+                "Added Direct Failover, which sends new connections through the best healthy physical adapter while keeping the uLink tunnel warm.",
+                "Added Adaptive mode, which uses direct access normally and activates Reliable tunnel protection when all direct paths show sustained latency or loss.",
+                "Kept established connections on their healthy WAN during score changes and cleared failed-WAN sessions during hard failover.",
+                "Added active-egress status and route-switch diagnostics to the dashboard."
+            ]
+        },
+        new ChangelogEntry
+        {
+            Version = "ulink-2026.06.140",
             Date = "2026-08-20",
             Summary = "Stopped a single dropped packet from looking like heavy loss.",
             Changes =

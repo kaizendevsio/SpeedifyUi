@@ -843,7 +843,9 @@
         "stale-return-schedule",
         "queue-saturation",
         "mtu-sweep",
-        "soak"
+        "soak",
+        "direct-failover",
+        "adaptive-fallback"
       ]
     },
     "status": { "enum": ["pass", "fail", "blocked", "error"] },

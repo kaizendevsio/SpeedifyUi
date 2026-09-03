@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+# NetworkManager removes device routes while replacing a DHCP lease. Reapply the
+# route tables for the target already selected by xbond-client; never select a
+# different WAN from this hook.
+case "${2:-}" in
+    up|dhcp4-change|connectivity-change)
+        /usr/local/sbin/xbond-client-egress reconcile >/dev/null 2>&1 || true
+        ;;
+esac

@@ -23,6 +23,9 @@ install -m 0644 /tmp/client.toml /etc/xbond/client.toml
 install -m 0600 /tmp/client.env /etc/xbond/client.env
 install -m 0644 xbond-client.service /etc/systemd/system/xbond-client.service
 install -m 0755 scripts/xbond-client-route-apply.sh /usr/local/sbin/xbond-client-route-apply
+install -m 0755 scripts/xbond-client-egress.py /usr/local/sbin/xbond-client-egress
+install -d -m 0755 /etc/NetworkManager/dispatcher.d
+install -m 0755 scripts/90-ulink-egress /etc/NetworkManager/dispatcher.d/90-ulink-egress
 install -m 0755 scripts/xbond-client-rollback.sh /usr/local/sbin/xbond-client-rollback
 systemctl daemon-reload
 systemctl enable --now xbond-client.service
@@ -32,7 +35,9 @@ systemctl enable --now xbond-client.service
 Keep `/etc/xbond/client.env` mode `0600`, but `/etc/xbond` and `/run/xbond` can be searchable/readable so the unprivileged XNetwork UI can read non-secret config/status.
 
 The service needs `CAP_NET_ADMIN` for `/dev/net/tun` and `CAP_NET_RAW` for `SO_BINDTODEVICE`.
-The uLink client unit removes any stale `xbond0` default route before socket startup, pins the XBond server IPv4 endpoint to a physical route, reapplies `10.250.0.2/30` to `xbond0`, and installs the IPv4 default route through `xbond0` after each service start. It also reads the XNetwork Cudy management URL from the non-secret runtime settings file and pins that local management host to a physical route before installing the XBond default route. The unit includes the current Cudy management host as a non-secret local-bypass fallback so service restarts keep local management off `xbond0` even if the app settings file cannot be read at that instant. XBond data sockets still bind directly to their physical interfaces; the pre-start physical route prevents recursive routing during cold restarts.
+The uLink client unit removes any stale `xbond0` default route before socket startup, pins the XBond server IPv4 endpoint to a physical route, and reapplies `10.250.0.2/30` to `xbond0`. Tunnel mode installs the IPv4 default through `xbond0`; Direct Failover and Adaptive install policy routes and connection marks for the selected physical WAN while keeping the tunnel warm. The NetworkManager dispatcher reapplies the already-selected egress after DHCP/link changes without making an independent mode decision. On stop or crash, direct modes select the best configured kernel physical default rather than leaving `xbond0` as a dead route.
+
+The egress helper reserves marks `0x130000-0x13ffff`, route tables from `13000`, and policy priorities from `13000`. Existing traffic-bypass rules use the earlier `0x120000`/`12100` namespace and therefore retain precedence. Direct mode masquerades only direct-marked LAN flows; the existing server-side tunnel NAT remains unchanged.
 Set `XBOND_LOCAL_BYPASS_HOSTS` or `XBOND_LOCAL_MANAGEMENT_HOSTS` in `/etc/xbond/client.env` for extra IPv4 local-management hosts or CIDRs that must never route through `xbond0`. Optional `XBOND_LOCAL_BYPASS_DEV` and `XBOND_LOCAL_BYPASS_GATEWAY` force those bypass routes through a specific physical interface/gateway.
 Use `xbond-client-rollback [target-ip]` to remove one scoped `/32` route, or run it without arguments to remove all `/32` routes on `xbond0`.
 

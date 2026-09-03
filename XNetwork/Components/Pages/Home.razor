@@ -104,8 +104,11 @@
             AnchorDownload="@GetAnchorDownloadMbps()"
             BackupDownload="@GetBackupDownloadMbps()"
             IsStable="@IsConnectionStable()"
-            Mode="@FormatMode(_snapshot.RedundancyPolicy)"
+            Mode="@FormatMode(_snapshot.TrafficMode, _snapshot.RedundancyPolicy)"
             ShowMode="@UiDisplayPreferences.ShowConnectionMode"
+            ActiveEgressLabel="@_snapshot.ActiveEgressLabel"
+            ActiveEgressDetails="@_snapshot.ActiveEgressDetails"
+            ShowActiveEgress="@_snapshot.ShowActiveEgress"
             IsProtectingFromLoss="@_snapshot.IsProtectingFromLoss"
             ProtectionReason="@_snapshot.ProtectionReason"
             IsRecoveryActive="@_snapshot.IsRecoveryActive"
@@ -986,14 +989,19 @@
         };
     }
 
-    private static string FormatMode(string? mode)
+    private static string FormatMode(string? trafficMode, string? policy)
     {
-        if (string.IsNullOrWhiteSpace(mode))
+        if (trafficMode is "direct-failover" or "adaptive")
+        {
+            return trafficMode.Replace('-', ' ');
+        }
+
+        if (string.IsNullOrWhiteSpace(policy))
         {
             return "uLink";
         }
 
-        return mode.Replace('-', ' ');
+        return policy.Replace('-', ' ');
     }
 
     private static string DownloadTitle(XBondPathStatsSnapshot path)

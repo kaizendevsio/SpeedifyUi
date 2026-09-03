@@ -122,12 +122,12 @@
         </div>
     </Accordion>
 
-    <Accordion Title="uLink Policy" IsExpanded="_policyExpanded" OnToggle="(expanded) => _policyExpanded = expanded" BadgeText="@FormatPolicy(_policy)">
+    <Accordion Title="Connection Mode" IsExpanded="_policyExpanded" OnToggle="(expanded) => _policyExpanded = expanded" BadgeText="@FormatPolicy(_policy)">
         <div class="space-y-4 pt-2">
         <div class="flex flex-wrap items-start justify-between gap-4">
             <div>
-                <h2 class="text-lg font-semibold text-white">uLink Policy</h2>
-                <p class="mt-1 text-sm text-slate-400">Choose how aggressively uLink duplicates packets across backup paths.</p>
+                <h2 class="text-lg font-semibold text-white">Connection Mode</h2>
+                <p class="mt-1 text-sm text-slate-400">Choose tunnel bonding, direct WAN failover, or automatic tunnel fallback.</p>
             </div>
             <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-xs font-semibold text-cyan-100">
                 @FormatPolicy(_policy)
@@ -136,11 +136,13 @@
 
         <div class="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <label class="block rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-                <span class="text-xs uppercase tracking-wide text-slate-500">Policy</span>
+                <span class="text-xs uppercase tracking-wide text-slate-500">Mode</span>
                 <select class="mt-2 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-2 text-sm text-white outline-none focus:border-cyan-500" @bind="_policy">
                     <option value="balanced">Balanced</option>
                     <option value="reliable">Reliable</option>
                     <option value="fast">Fast</option>
+                    <option value="direct-failover">Direct Failover</option>
+                    <option value="adaptive">Adaptive</option>
                 </select>
                 <span class="mt-2 block text-xs leading-relaxed text-slate-400">@PolicyShortDescription(_policy)</span>
             </label>
@@ -163,7 +165,7 @@
         </div>
         <div class="mt-4 flex flex-wrap items-center gap-3">
             <button type="button" class="rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-40" disabled="@_busy" @onclick="SaveXBondPolicyAsync">
-                Save policy
+                Save mode
             </button>
             <p class="text-xs text-slate-500">@PolicySaveHint(_policy)</p>
         </div>
@@ -1709,7 +1711,7 @@
         _error = null;
         try
         {
-            _xbondAdapterStatus = await XBondClientConfigService.SetPolicyAsync(
+            _xbondAdapterStatus = await XBondClientConfigService.SetConnectionModeAsync(
                 _policy,
                 _interactivePacketThresholdBytes,
                 _duplicateLossThresholdPercent / 100d,
@@ -3098,9 +3100,14 @@
             return;
         }
 
-        _policy = string.IsNullOrWhiteSpace(_xbondAdapterStatus.RedundancyPolicy)
-            ? "balanced"
-            : _xbondAdapterStatus.RedundancyPolicy;
+        _policy = _xbondAdapterStatus.TrafficMode switch
+        {
+            "direct-failover" => "direct-failover",
+            "adaptive" => "adaptive",
+            _ => string.IsNullOrWhiteSpace(_xbondAdapterStatus.RedundancyPolicy)
+                ? "balanced"
+                : _xbondAdapterStatus.RedundancyPolicy
+        };
         _interactivePacketThresholdBytes = _xbondAdapterStatus.InteractivePacketThresholdBytes;
         _duplicateLossThresholdPercent = Math.Round(_xbondAdapterStatus.DuplicateLossThreshold * 100, 1);
         _backupLossDisableThresholdPercent = Math.Round(_xbondAdapterStatus.BackupLossDisableThreshold * 100, 1);
@@ -3116,6 +3123,8 @@
     {
         "reliable" => "Most protective. Duplicates real-time and bulk traffic over the anchor plus the best healthy backup.",
         "fast" => "Lowest overhead. Uses the anchor first and only adds extra protection when the anchor degrades.",
+        "direct-failover" => "Uses the best physical WAN directly. New connections move to a proven backup when it fails.",
+        "adaptive" => "Uses direct WAN access normally, then activates a warm Reliable tunnel when all direct paths degrade.",
         _ => "Recommended default. Duplicates small real-time packets, but keeps bulk traffic anchor-first unless loss rises."
     };
 
@@ -3123,6 +3132,8 @@
     {
         "reliable" => "Packet survival first",
         "fast" => "Lowest overhead",
+        "direct-failover" => "Direct WAN with fast failover",
+        "adaptive" => "Direct first, tunnel when needed",
         _ => "Recommended default"
     };
 
@@ -3130,6 +3141,8 @@
     {
         "reliable" => "Reliable favors packet survival and can use more bandwidth or add latency on rough links.",
         "fast" => "Fast favors throughput and lower overhead, with less protection until recovery is needed.",
+        "direct-failover" => "Existing connections stay on their healthy WAN; connections on a failed WAN must reconnect.",
+        "adaptive" => "Adaptive returns from Reliable tunnel fallback after a direct path remains clean for 30 seconds.",
         _ => "Balanced protects calls/Moonlight-style traffic while avoiding unnecessary duplicate bulk traffic."
     };
 

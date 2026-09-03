@@ -650,6 +650,36 @@ public class XBondStatusServiceTests
     }
 
     [Fact]
+    public void ParseRuntimeStatusJson_MapsAdaptiveDirectEgress()
+    {
+        var status = XBondStatusService.ParseRuntimeStatusJson(
+            """
+            {
+              "running": true,
+              "mode": "anchor-duplicate-1",
+              "egress": {
+                "configured_mode": "adaptive",
+                "active_egress": "direct",
+                "direct_path_id": 2,
+                "direct_interface_name": "wlan0",
+                "switch_reason": "direct path is clean",
+                "switch_count": 3,
+                "clean_return_progress_seconds": 0,
+                "route_ready": true
+              },
+              "paths": []
+            }
+            """,
+            new XBondSettings());
+
+        Assert.Equal("adaptive", status.Egress.ConfiguredMode);
+        Assert.Equal("direct", status.Egress.ActiveEgress);
+        Assert.Equal(2, status.Egress.DirectPathId);
+        Assert.Equal("wlan0", status.Egress.DirectInterfaceName);
+        Assert.True(status.Egress.RouteReady);
+    }
+
+    [Fact]
     public void ParseRuntimeStatusJson_ZeroSamplePathDoesNotInferFallbackAnchor()
     {
         var status = XBondStatusService.ParseRuntimeStatusJson(

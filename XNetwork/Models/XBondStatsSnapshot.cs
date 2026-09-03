@@ -22,6 +22,36 @@ public sealed class XBondStatsSnapshot
 
     public string RedundancyPolicy => RawStatus.RedundancyPolicy;
 
+    public string TrafficMode => RawStatus.Egress.ConfiguredMode;
+
+    public string ActiveEgressLabel
+    {
+        get
+        {
+            if (string.Equals(RawStatus.Egress.ActiveEgress, "direct", StringComparison.OrdinalIgnoreCase))
+            {
+                var path = Paths.FirstOrDefault(item => item.PathId == RawStatus.Egress.DirectPathId);
+                return $"Direct via {path?.Name ?? RawStatus.Egress.DirectInterfaceName ?? "adapter"}";
+            }
+
+            if (string.Equals(RawStatus.Egress.ActiveEgress, "tunnel", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(TrafficMode, "adaptive", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Reliable tunnel fallback";
+            }
+
+            return string.Equals(RawStatus.Egress.ActiveEgress, "none", StringComparison.OrdinalIgnoreCase)
+                ? "No usable egress"
+                : "";
+        }
+    }
+
+    public bool ShowActiveEgress => !string.IsNullOrWhiteSpace(ActiveEgressLabel);
+
+    public string ActiveEgressDetails => string.IsNullOrWhiteSpace(RawStatus.Egress.RouteError)
+        ? RawStatus.Egress.SwitchReason
+        : RawStatus.Egress.RouteError!;
+
     public DateTime UpdatedAtUtc => RawStatus.UpdatedAtUtc;
 
     public int? AnchorPathId => RawStatus.AnchorPathId;

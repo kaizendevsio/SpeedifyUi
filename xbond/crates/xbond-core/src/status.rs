@@ -722,6 +722,30 @@ pub struct XBondDiagnosticOverrideStatus {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct XBondEgressStatus {
+    #[serde(default)]
+    pub configured_mode: crate::config::TrafficMode,
+    #[serde(default)]
+    pub active_egress: String,
+    #[serde(default)]
+    pub direct_path_id: Option<u16>,
+    #[serde(default)]
+    pub direct_interface_name: Option<String>,
+    #[serde(default)]
+    pub switch_reason: String,
+    #[serde(default)]
+    pub last_switch_at_micros: Option<u64>,
+    #[serde(default)]
+    pub switch_count: u64,
+    #[serde(default)]
+    pub clean_return_progress_seconds: u64,
+    #[serde(default)]
+    pub route_ready: bool,
+    #[serde(default)]
+    pub route_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct XBondRuntimeStatus {
     #[serde(default)]
     pub running: bool,
@@ -729,6 +753,8 @@ pub struct XBondRuntimeStatus {
     pub mode: ScheduleMode,
     #[serde(default)]
     pub redundancy_policy: RedundancyPolicy,
+    #[serde(default)]
+    pub egress: XBondEgressStatus,
     #[serde(default)]
     pub server_addr: String,
     #[serde(default)]
